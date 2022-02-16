@@ -3,9 +3,11 @@ Archive of Rust IRC logs.
 There is currently one directory here:
 
 - [logbot] - from November 2017 until March 2020, [logbot.info] logged many Rust channels.
+  Obtained from the logbot.info [archive page].
 
 [logbot]: ./logbot
 [logbot.info]: https://logbot.info
+[archive page]: https://archive.logbot.info/
 
 From April 2013 until 2018 #rust and #rust-internals were logged by [botbot.me].
 I am still trying to obtain an archive of these logs.
