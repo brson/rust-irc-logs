@@ -1,0 +1,1771 @@
+2018-12-09T11:52:55 #rust-sci <logbot> channel logging requested by sebk: https://mozilla.logbot.info/rust-sci
+2018-12-09T11:53:27 #rust-sci <sebk> test
+2018-12-09T11:55:18 #rust-sci <SuperFluffy> Alright, party's over. Now everybody watch what you write! Best behaviour!
+2018-12-09T11:59:07 #rust-sci <bluss> sebk: thanks for fixing that!
+2018-12-09T19:51:46 #rust-sci <WindowsBunny> logbot: yayyyyy
+2018-12-09T22:24:32 #rust-sci <SuperFluffy> What do you think about making gemm_packed into a trait method?
+2018-12-09T22:24:40 #rust-sci <SuperFluffy> bluss: ^
+2018-12-09T22:24:45 #rust-sci <SuperFluffy> And then specialize it for each type?
+2018-12-09T22:25:00 #rust-sci <bluss> shouldnt be needed i hope
+2018-12-09T22:25:12 #rust-sci <SuperFluffy> I just don't know what to do about mask_buf
+2018-12-09T22:25:42 #rust-sci <SuperFluffy> It's not only a problem with the igemm stuff, it's just most exacerbated because those kernels are SO much larger.
+2018-12-09T22:25:57 #rust-sci <SuperFluffy> Same thing would happen with making a kernel for haswell or newer architectures
+2018-12-09T22:26:12 #rust-sci <bluss> sure but there are ways to solve that I'm sure
+2018-12-09T22:26:37 #rust-sci <SuperFluffy> Vec's definitely a horrible idea. See benches in PR
+2018-12-11T21:31:28 #rust-sci <SuperFluffy> bluss: Hi, I wanted to pick your brain on the packing mechanism.
+2018-12-11T21:32:12 #rust-sci <SuperFluffy> How hard do you think would it be to have non-standard packing orders, i.e. not row major and not column major?
+2018-12-11T21:35:05 #rust-sci <sebk> SuperFluffy: I tried something for 2d arrays…
+2018-12-11T21:35:18 #rust-sci <sebk> the generics get ugly pretty fast
+2018-12-11T21:35:45 #rust-sci <sebk> *something like this
+2018-12-11T21:42:07 #rust-sci <sebk> but with a bit more care…
+2018-12-13T14:24:18 #rust-sci <SuperFluffy> If I have an arrayview, how do I determine the stride towards the next element?
+2018-12-13T14:25:00 #rust-sci <SuperFluffy> Here my arrayview is an ArrayView1
+2018-12-13T14:25:09 #rust-sci <bluss> SuperFluffy: just .stride_of(Axis(0))
+2018-12-13T14:25:20 #rust-sci <bluss> you have a stride per axis
+2018-12-13T14:25:46 #rust-sci <bluss> we finally added that method in 0.12.1 so you can also use .strides()[0]
+2018-12-13T14:25:53 #rust-sci <SuperFluffy> bluss: And ArrayView1 is guaranteed to only have one axis, right?
+2018-12-13T14:26:08 #rust-sci <bluss> yep, it's in the type
+2018-12-13T14:26:33 #rust-sci <bluss> .ndim() is the number of axes
+2018-12-13T14:27:32 #rust-sci <SuperFluffy> bluss: My suggestion on github was unsound, but was it incorrect?
+2018-12-13T14:27:49 #rust-sci <SuperFluffy> Specifically, can I construct a slice that way?
+2018-12-13T14:28:50 #rust-sci <bluss> SuperFluffy: I haven't checked the math. It sounds right to construct a slice with this idea but I'm not sure I dare to say anything about the borrowing rules
+2018-12-13T14:29:15 #rust-sci <bluss> if you don't have mutable borrows involved for example, it should work out with slices
+2018-12-13T14:29:28 #rust-sci <SuperFluffy> Yeah, it's immutable borrows.
+2018-12-13T14:30:12 #rust-sci <SuperFluffy> So extrapolating from .strides()[0] <--- for a 1d view, this already contains all necessary info to jump to the next element, right?
+2018-12-13T14:30:36 #rust-sci <bluss> yes. from the .as_ptr() in stride steps
+2018-12-13T14:31:00 #rust-sci <SuperFluffy> OK, cool. That makes it easier.
+2018-12-13T14:31:02 #rust-sci <bluss> it's basically clear as mud https://docs.rs/ndarray/0.12.1/ndarray/struct.ArrayBase.html#method.as_ptr
+2018-12-13T14:31:29 #rust-sci <SuperFluffy> clear as mud, huh? :D
+2018-12-13T14:31:58 #rust-sci <SuperFluffy> Yeah, now I get it. I was somehow of the impression that the stride of a view should follow the stride of the underlying source array
+2018-12-13T14:32:02 #rust-sci <bluss> there's also .uget() for unchecked indexing. Hopefully it doesn't give you overhead
+2018-12-13T14:32:25 #rust-sci <bluss> the view has its own stride information, so that it can be a subset of the base yeah
+2018-12-13T14:32:27 #rust-sci <SuperFluffy> No, that's fine. I am using cblas::dasum, which takes a ptr, a total len, and a incx/stride
+2018-12-13T14:33:20 #rust-sci <bluss> hm ok with blas you'll have to look out with negative strides I think
+2018-12-13T14:33:31 #rust-sci <bluss> we don't match them there in what the pointer should be I believe
+2018-12-13T14:34:07 #rust-sci <bluss> you'll have to know which element you should pass a pointer to. Ndarray's pointer is always the one at index 0 or index (0, 0) etc depending on dimension
+2018-12-13T14:34:23 #rust-sci <bluss> but some blas functionality will want a pointer to the first element in memory instead
+2018-12-13T14:34:47 #rust-sci <SuperFluffy> bluss: Wait, if I have an arrayview, does as_ptr() not always point to the first element of that view?
+2018-12-13T14:35:00 #rust-sci <SuperFluffy> It does, right?
+2018-12-13T14:35:07 #rust-sci <bluss> SuperFluffy: it does and the definition of first element is?
+2018-12-13T14:35:18 #rust-sci <bluss> the definition we use is the element at index (0, ..., 0)
+2018-12-13T14:35:36 #rust-sci <SuperFluffy> bluss: yes, but the element of the ArrayView, not of the underlying source array?
+2018-12-13T14:35:49 #rust-sci <bluss> SuperFluffy: sure
+2018-12-13T14:35:59 #rust-sci <SuperFluffy> ok, I was hoping you'd not say no :D
+2018-12-13T14:36:23 #rust-sci <bluss> the array view has forgotten about what the original Array looks like
+2018-12-13T14:36:27 #rust-sci <bluss> just like a slice for a vec
+2018-12-13T14:36:30 #rust-sci <SuperFluffy> Alright, I haven't encountered blas functions that ask for the very first elem of the memory region, instead of the very first element of the subview I pass in
+2018-12-13T14:36:56 #rust-sci <bluss> just saying that in ndarray, the first element is not first in memory if the stride is negative
+2018-12-13T14:37:28 #rust-sci <SuperFluffy> Ah ok, that makes sense. looks like *asum is short-circuiting if you have a negative striide
+2018-12-13T14:37:33 #rust-sci <SuperFluffy> But I'll keep that in mind
+2018-12-13T14:37:55 #rust-sci <SuperFluffy> (but what you are saying makes sense, of course. Otherwise we'd need some kind of wrap-around)
+2018-12-13T14:38:32 #rust-sci <SuperFluffy> bluss: I'll let the igemm stuff rest for a bit. I have been studying gemmlowp, and they are using some fancy packing methods to make integer gemm fast.
+2018-12-13T14:38:52 #rust-sci <SuperFluffy> The packing is necessary, because otherwise you have permanent register spilling.
+2018-12-13T14:39:16 #rust-sci <bluss> ok. Kernel-specific packing should be possible
+2018-12-13T14:39:29 #rust-sci <bluss> but if it uses allocated space differently it could be tricky?
+2018-12-13T14:40:45 #rust-sci <SuperFluffy> bluss: Imagine it like this: right now we take a small panel from a bigger matrix and puts its rows or cols next to another in memory.
+2018-12-13T14:41:28 #rust-sci <SuperFluffy> For efficient igemm, you instead need to take that panel, slice it up into its own subpanels, and put the sub panels next to another in memory.
+2018-12-13T14:42:19 #rust-sci <SuperFluffy> Does that make sense?
+2018-12-13T14:43:33 #rust-sci <bluss> I'd understand it with a picture maybe :)
+2018-12-13T14:43:42 #rust-sci <SuperFluffy> Yeah, hold on
+2018-12-13T14:53:15 #rust-sci <SuperFluffy> http://ix.io/1vVf
+2018-12-13T14:53:17 #rust-sci <SuperFluffy> bluss ^
+2018-12-13T14:55:24 #rust-sci <bluss> aha ok. I made some experiments with multithreading. It's a bit tricky, at least to get more than 2x speedup on my four cores for some reason. 
+2018-12-13T14:55:41 #rust-sci <bluss> rayon works better than that, if one sets up a thread pool with exactly the number of threads required and not more
+2018-12-13T14:58:47 #rust-sci <SuperFluffy> bluss: http://ix.io/1vVi
+2018-12-13T14:58:58 #rust-sci <SuperFluffy> New version, with stuff added at the bottom
+2018-12-13T14:59:02 #rust-sci <SuperFluffy> That should make it even more clear what's going on
+2018-12-13T15:00:47 #rust-sci <SuperFluffy> So the main thing is that right now we multiply simple “cells” with one another, namely <M, 1> and <1, N>, and we have k of each.
+2018-12-13T15:01:28 #rust-sci <SuperFluffy> For igemm, the cells need to change to something like <8, 2> and <2, 4>
+2018-12-13T15:02:17 #rust-sci <bluss> makes sense, the elements are only bytes by themselves
+2018-12-13T15:02:52 #rust-sci <SuperFluffy> The design also comes from the availability of certain simd intrinsics.
+2018-12-13T15:03:45 #rust-sci <SuperFluffy> Best case scenario, you have to load 16 i8 in one go, sign-extending them to 16 i16.
+2018-12-13T15:03:56 #rust-sci <SuperFluffy> But the latter 8 you don't need, so you permute them out.
+2018-12-13T15:04:14 #rust-sci <SuperFluffy> But in the next iteration, you only shift the pointer by 8 bytes
+2018-12-13T15:04:30 #rust-sci <SuperFluffy> So yeah, bit of a mess.
+2018-12-13T15:05:35 #rust-sci <SuperFluffy> bluss: Yeah, I saw your multithreading code. I wonder what's better: fixing rayon or implementing your own threadpool :D
+2018-12-13T15:09:12 #rust-sci <Andlon> what's wrong with Rayon...?
+2018-12-13T15:14:05 #rust-sci <SuperFluffy> Andlon: https://github.com/rayon-rs/rayon/issues/614
+2018-12-13T15:38:18 #rust-sci <bluss> SuperFluffy: well so far I can say that the own threadpool is better if we have a low number of parallel jobs and rayon is better if it is high
+2018-12-13T15:38:58 #rust-sci <bluss> so the poc threadpool isn't doing that well (it does static splits like loop 3 in two threads and loop 2 splits each of those into each two threads)
+2018-12-13T15:41:30 #rust-sci <bluss> too big thread pool and rayon uses more cpu without improving execution time
+2018-12-13T15:59:01 #rust-sci <Andlon> ah, that's maybe why I was observing some major overhead for parallelizing small/medium-sized data sets!
+2018-12-13T15:59:28 #rust-sci <Andlon> I was surprised that the overhead was so much higher than what I'd expect from e.g. OpenMP (though I know OpenMP uses a static scheduler and Rayon a dynamic one)
+2018-12-13T15:59:50 #rust-sci <bluss> yeah test by setting RAYON_NUM_THREADS to exactly the number of jobs needed for that section
+2018-12-13T16:00:07 #rust-sci <bluss> but in a big program we need to support that different sections are differently parallel
+2018-12-13T16:04:42 #rust-sci <Andlon> hmm, I hope something can resolve this
+2018-12-13T16:04:57 #rust-sci <Andlon> I was quite disappointed when trying to use Rayon for embarassingly parallel data-parallelism
+2018-12-13T16:05:28 #rust-sci <Andlon> (I was doing some simulation of deformables, and the simulation mostly consisted of simple embarassingly parallel loops over particles
+2018-12-13T16:11:37 #rust-sci <sebk> if you know the size of the workset and that it is uniform
+2018-12-13T16:11:51 #rust-sci <sebk> i'd assume just running N threads with 1/N of the work each is the best
+2018-12-13T16:12:12 #rust-sci <sebk> simply because you get pretty much zero overhead
+2018-12-13T16:12:40 #rust-sci <sebk> (if N == number of fpus)
+2018-12-13T16:13:03 #rust-sci <Andlon> yes, a static schedule usually works best for this
+2018-12-13T16:13:25 #rust-sci <Andlon> but afaik you can't use a static scheduler for Rayon
+2018-12-13T16:13:35 #rust-sci <sebk> (and the jobs don't overlap in the cache)
+2018-12-13T16:13:36 #rust-sci <Andlon> and I don't know of any similar library that offers this in Rust atm...
+2018-12-13T16:13:50 #rust-sci <sebk> yea… rayon might be too smart for this
+2018-12-13T16:15:01 #rust-sci <bluss> Andlon: I tried to make a simple static split threadpool https://github.com/bluss/joinpool  but if I have many jobs, rayon's smartness wins
+2018-12-13T16:15:09 #rust-sci <bluss> and I haven't figured out why this isn't good enough yet
+2018-12-13T16:15:53 #rust-sci <Andlon> bluss, very interesting!
+2018-12-13T16:16:08 #rust-sci <bluss> uh yeah it's just a poc
+2018-12-13T16:16:17 #rust-sci <bluss> and it hasn't proven anything yet :)
+2018-12-13T16:16:40 #rust-sci <Andlon> does the recursion cause problems as opposed to lienarly distributing the jobs, perhaps?
+2018-12-13T16:17:56 #rust-sci <bluss> maybe. But my main case is literally 2x2 parallelism, so one loop in two parts, each of those has a loop in two parts, so it reflects this perfectly
+2018-12-13T16:20:04 #rust-sci <sebk> bluss: what was the jobsize?
+2018-12-13T16:25:13 #rust-sci <bluss> it's some of the loops in matrixmultiply so in a 256x256 matrix multiplication for example. Parallelizing loops 2 and 3. https://github.com/bluss/matrixmultiply/issues/25#issuecomment-442154079
+2018-12-13T16:25:35 #rust-sci <bluss> and loop 3 is the outermost for that size
+2018-12-13T16:27:42 #rust-sci <sebk> hm..
+2018-12-13T16:28:19 #rust-sci <sebk> how long does it run=
+2018-12-13T16:28:37 #rust-sci * sebk wonders if rayon runs it in serial
+2018-12-13T16:29:42 #rust-sci <bluss> rayon can def parallelize this and joinpool too, but they struggle with more than 2x speedup. could be something I'm doing wrong.
+2018-12-13T16:29:53 #rust-sci <bluss> single thread uses 695,114 ns/iter
+2018-12-13T16:30:08 #rust-sci <sebk> hm.. 0.7ms
+2018-12-13T16:30:15 #rust-sci <bluss> two threads 377,950 ns/iter
+2018-12-13T16:30:19 #rust-sci <bluss> that's good so far
+2018-12-13T16:30:32 #rust-sci <sebk> so the cost of spawning a thread is quite significant
+2018-12-13T16:30:47 #rust-sci <sebk> does rayon prespawn them?
+2018-12-13T16:30:51 #rust-sci <sebk> or reuse
+2018-12-13T16:31:01 #rust-sci <bluss> that should be mostly amortized. Still testing this with joinpool but i can switch to rayon
+2018-12-13T16:32:09 #rust-sci <bluss> rayon 2 threads does 410,391 ns/iter. Not sure about the deviation, could just be noise since I'm not rerunning this with a cold laptop
+2018-12-13T16:32:53 #rust-sci <bluss> the problem is partly that rayon by default uses 8 threads here, takes 509,307 ns/iter and uses more cpu % by doing so
+2018-12-13T16:33:53 #rust-sci <bluss> rayon reuses threads
+2018-12-13T16:33:55 #rust-sci * sebk is used to jobs taking seconds to minutes…
+2018-12-13T16:34:36 #rust-sci <bluss> well I always make a benchmark that doesn't take forever so that I can improve it hopefully
+2018-12-13T16:42:58 #rust-sci <bluss> ok now the full 2x2 split (instead of previous numbers of 1x2 split), joinpool and rayon 4 threads both can do 223,457 ns/iter, they had similar numbers. I guess 3.1x speedup is not so bad on 4 threads. I'd guess that cache plays a role here
+2018-12-13T19:42:50 #rust-sci <SuperFluffy> bluss: what does "amortize" mean in the context of spawning and reusing a thread?
+2018-12-13T20:03:22 #rust-sci <bluss> SuperFluffy: I think just that the cost of creating the thread is spread out over all uses of it
+2018-12-13T20:12:57 #rust-sci <SuperFluffy> Alright
+2018-12-13T20:13:01 #rust-sci <SuperFluffy> Tahnks
+2018-12-15T22:12:08 #rust-sci <bluss> In case someone missed it, this channel is logged nowadays. Logs at https://mozilla.logbot.info/rust-sci
+2018-12-15T22:14:37 #rust-sci <sebk> bluss: good point
+2018-12-18T20:19:10 #rust-sci <jturner314> bluss (IRC): Should I be using the `ndassert!` macro instead of `assert!` when writing code for `ndarray`?
+2018-12-18T20:21:54 #rust-sci <bluss> jturner314: the idea is to avoid extra code size from asssert_eq and assert with formatting, they used to add that. Could be revisited. I think you should use it
+2018-12-18T20:25:27 #rust-sci <bluss> jturner314: not sure if I'm out on a fight against windmills there
+2018-12-18T20:26:11 #rust-sci <jturner314> bluss (IRC): Okay, thanks. I think there are cases where it's helpful to have the panic message even release mode (e.g. when checking the number of dimensions when slicing), but yeah I understand the motivation to eliminate the formatting code in most cases.
+2018-12-18T20:27:26 #rust-sci <jturner314> I guess a panic message usually isn't sufficient anyway, though. (I usually have to use RUST_BACKTRACE=1 to isolate the issue.)
+2018-12-18T20:27:58 #rust-sci <jturner314> which makes me think that panic messages aren't especially important
+2018-12-18T20:29:34 #rust-sci <bluss> maybe we can in all cases just have if (check) { non_inline_error_function() }  like it's done in some place
+2018-12-18T20:35:25 #rust-sci <jturner314> bluss (IRC): We could define `ndassert` that way, right?
+2018-12-19T10:41:31 #rust-sci <bluss> jturner314: I looked again, and of course assert with a message is fine. What's problematic is assert with formatting. So assert!(false, "this is wrong") is good, but assert!(false, "Step {} must not be..", step); adds some extra code
+2018-12-19T19:45:46 #rust-sci <jturner314> bluss (IRC): I think what I'd like to do is use informative assert messages (with formatting) even in release mode, and only remove the formatting when benchmarks/profiling show a potential improvement. Thoughts?
+2018-12-19T20:15:52 #rust-sci <bluss> jturner314: I think, only if they are non-inline. microbenches don't tell us about all we lose with the extra code size, so maybe if we profile a big project we could know more
+2018-12-19T20:35:02 #rust-sci <jturner314> bluss (IRC): Okay, that makes sense.
+2018-12-20T15:48:34 #rust-sci <SuperFluffy> If you apply ndarray::mean_axis to a Array1<f64>, the result is an Array0
+2018-12-20T15:48:38 #rust-sci <SuperFluffy> How do you get the value out of there?
+2018-12-20T15:48:44 #rust-sci <SuperFluffy> I can't index it
+2018-12-20T17:08:58 #rust-sci <jturner314> SuperFluffy (IRC): You can use `.into_scalar()` (added in 0.12.1). https://docs.rs/ndarray/0.12.1/ndarray/type.Array.html#method.into_scalar
+2018-12-20T17:09:18 #rust-sci <jturner314> or index with an empty tuple `the_array[()]`
+2018-12-20T22:14:20 #rust-sci <SuperFluffy> jturner314: Thanks for the info. I didn't know about indexing with the empty tuple. I tried [0], but the compiler yelled at me.
+2018-12-20T22:15:33 #rust-sci <bluss> and empty array :)
+2019-02-07T16:32:40 #rust-sci <Ploppz> I guess ndarray is used a lot in scientific computing?
+2019-02-07T18:01:38 #rust-sci <sebk> Ploppz: one of the n-dim arrays is often used
+2019-02-07T18:02:19 #rust-sci * sebk would say > 50% involves 2d arrays or higher
+2019-02-07T20:41:46 #rust-sci <Ploppz> I meant the crate ndarray, maybe you too
+2019-02-07T20:52:41 #rust-sci <sebk> well… there are a few options. ndarray being one
+2019-02-07T20:55:56 #rust-sci <Ploppz> and is it a good option?
+2019-02-07T21:37:25 #rust-sci <sebk> definitly
+2019-02-08T12:29:02 #rust-sci <Ploppz> shame that there are no mature neural network libraries :(
+2019-02-08T14:37:42 #rust-sci <Ploppz> tensorflow rust bindings are rather worthless for creating NN
+2019-02-08T14:46:08 #rust-sci <Ploppz> I could do something simple for my particular use case. However I could also start a library that uses operation graphs as in TensorFlow, which can find derivative etc... That will be a lot of work. And also to be any good for machine learning, it should be able to run on GPU
+2019-02-08T14:46:56 #rust-sci <Ploppz> sebk: you have worked on a math library that can compile to gpu target. Would you also be interested in such a math library that uses operation graphs?
+2019-02-08T14:48:15 #rust-sci <Ploppz> it's not really a requirement that it has to use a dataflow graph. Just need something that can create neural networks, and that could potentially be written to run on GPU. I kinda like the idea of dataflow graph though
+2019-02-08T14:51:55 #rust-sci <Ploppz> Wouldn't it be cool to have something like TensorFlow in Rust?
+2019-02-08T15:00:26 #rust-sci <Ploppz> What I like about dataflow graph as opposed to, say, a more imperative approach, is that you can make a system that finds the derivative.
+2019-02-08T16:44:27 #rust-sci <jturner314> Ploppz: You may be interested in https://github.com/TimelyDataflow/differential-dataflow. AFAIK, it doesn't provide automatic differentiation, but it does provide a dataflow-oriented framework.
+2019-02-08T16:50:13 #rust-sci <Ploppz> Thanks. jturner314: Can it now or potentially in the future run on the GPU? And do you think it's possible to add automatic differentiation?
+2019-02-08T16:51:09 #rust-sci <jturner314> Ploppz: I'm not sure. I've not used it myself; I've just heard about it and thought it sounded relevant.
+2019-02-08T16:53:44 #rust-sci <jturner314> Ploppz: There's also https://crates.io/crates/arrayfire which is designed for GPU execution. I don't really know anything about it, though.
+2019-02-08T16:55:21 #rust-sci <Ploppz> Thanks!
+2019-02-08T17:13:21 #rust-sci <sebk> Ploppz: bullet actually uses operation graphs already
+2019-02-08T17:14:06 #rust-sci <sebk> (and automatic derivatives)
+2019-02-08T17:14:45 #rust-sci <sebk> it just needs matrix / ndarray support
+2019-02-08T17:15:00 #rust-sci <jturner314> sebk (IRC): What's the repository URL? The one provided at https://crates.io/crates/bullet is broken.
+2019-02-08T17:15:08 #rust-sci <sebk> oh
+2019-02-08T17:15:27 #rust-sci <sebk> https://gitlab.com/sebk/bullet
+2019-02-08T17:16:28 #rust-sci <Ploppz> I had a hunch it might be your thing :P Pleasantly surprised. I guess some work is still needed to use it for ML. Do you think it fits the use case?
+2019-02-08T17:16:34 #rust-sci <Ploppz> would be fun to help develop it to that end
+2019-02-08T17:16:37 #rust-sci <jturner314> Thanks! That looks really cool!
+2019-02-08T17:16:51 #rust-sci <sebk> imo it needs a rewrite
+2019-02-08T17:17:07 #rust-sci <sebk> but… meh. thats how I write code
+2019-02-08T17:17:16 #rust-sci <sebk> draft, second draft
+2019-02-08T17:17:49 #rust-sci <Ploppz> Sure. Do you want it to be able to run on GPU as well?
+2019-02-08T17:17:55 #rust-sci <sebk> definitly
+2019-02-08T17:18:03 #rust-sci <sebk> I think some stuff alraedy runs
+2019-02-08T17:18:13 #rust-sci <Ploppz> awesome. What sort of system is it (or will it be)? A graph?
+2019-02-08T17:18:35 #rust-sci <Ploppz> (afk for a while)
+2019-02-08T17:21:40 #rust-sci <sebk> okay, it doesn't compile to PTX yet
+2019-02-08T17:21:45 #rust-sci <sebk> but it can run ptx
+2019-02-08T17:22:26 #rust-sci <sebk> regarding the system: definitly a graph
+2019-02-08T17:27:44 #rust-sci <sebk> open questions are mostly: reprensentation of array ops, repr of functions
+2019-02-08T18:38:24 #rust-sci <Ploppz> it's for my thesis, and right now I have to focus on just gettings basic stuff working so I will use whatever simple NN implementations I can find. But later, I hope it will be possible to help with bullet and transition to it
+2019-02-08T18:56:24 #rust-sci <sebk> oh there was a new shiny crate…
+2019-02-08T19:00:25 #rust-sci * sebk can't find it
+2019-02-08T19:02:57 #rust-sci <sebk> Ploppz: https://github.com/diffeo/kodama
+2019-02-08T19:04:11 #rust-sci <Ploppz> I don't think I need clustering though. What I need is a function approximator, and so far in Python I have been using a deep NN
+2019-02-08T19:05:03 #rust-sci <sebk> polynom?
+2019-02-08T19:05:21 #rust-sci <sebk> what kind of function?
+2019-02-08T19:08:31 #rust-sci <Ploppz> some complex function, not a parameterized one. A type of function that you need an NN to estimate
+2019-02-08T19:08:41 #rust-sci <Ploppz> an unknown function that is
+2019-02-08T19:10:26 #rust-sci <Ploppz> that's the problem that (deep) neural networks solve: You have points (input, output) of a function. Use these to estimate the function. So the neural network can do two things: train(input, output) and predict(input) -> output
+2019-02-08T22:21:59 #rust-sci <Ploppz> there's someone working on neural network stuff. So I might also use what they make, or help development there. Dunno, we'll see
+2019-02-11T04:45:28 #rust-sci <meretrix> I've had a good experience with Rust, but after reevaluating Julia, I've made the switch for my numeric work and am much happier with a language and community with a focus that is more aligned with scientific computing.  I was especially surprised that it's easier to write low-level highly-optimized vectorized code with Julia than with Rust.
+2019-02-11T04:46:03 #rust-sci <meretrix> Sorry if this seen as trolling, but just wish someone had pushed me in that direction sooner. ;)
+2019-02-11T04:47:14 #rust-sci <meretrix> So if you haven't already (or haven't recently, as Julia has been improving rapidly), I'd suggest taking a look.
+2019-02-11T09:15:53 #rust-sci <sebk> meretrix: interesting
+2019-02-11T09:16:01 #rust-sci <sebk> I didn't find Julia that nice
+2019-02-11T09:26:36 #rust-sci <sebk> for (key, val) in mapping
+2019-02-11T09:26:36 #rust-sci <sebk>         # skip the "order" pesudo-aesthetic, used to order layers
+2019-02-11T09:26:36 #rust-sci <sebk> key == :order && continue
+2019-02-11T10:04:29 #rust-sci <meretrix> sebk: What didn't you like?  For me, the REPL is a huge win.  The ability to easily view a function's assembly, LLVM IR, and inferred types and the benchmark tools that show allocations made profiling easier.  Session and function-level flags for bounds checking and fast-math are also nice.  Syntax for array operations is generally more natural.  Calling argmax() on floats works as expected.
+2019-02-11T10:05:10 #rust-sci <meretrix> The only thing I found myself missing were Rust's iterators, which are nicer.
+2019-02-11T10:16:21 #rust-sci <sebk> I miss a lot of rusts features
+2019-02-11T10:16:26 #rust-sci <sebk> and the syntax is … uhh
+2019-02-11T17:00:56 #rust-sci <sebk> meretrix: I think julia might make for a good number crunching lang
+2019-02-11T17:01:24 #rust-sci <sebk> when you don't need layers of abstractions or a general purpose language
+2019-02-15T11:53:32 #rust-sci <Andlon_> I know I've been spoiled with the quality of Rust documentation, but I really notice it now that I'm trying out Julia for some prototype code
+2019-02-15T11:53:52 #rust-sci <Andlon_> cool language, but it's so damn hard to find out how to do things, and many packages of wholly incomplete documentation to the point that I have no idea how to use them
+2019-02-15T11:54:23 #rust-sci <Andlon_> rustdoc is amazing, as even the bare docs generated from types often gives you enough to grasp connections
+2019-02-15T11:54:54 #rust-sci <Andlon_> whereas Julia is a more dynamic language and such automated facilities are much more limited, so like Python it relies on painstaking manual docs
+2019-02-16T09:31:30 #rust-sci <Ploppz>  Andlon_ My experience in Python agrees. Good automatic documentation is a must-have once you know it exists...
+2019-02-16T09:32:12 #rust-sci <Ploppz> I personally don't like dynamic languages for anything else than quick prototyping
+2019-02-16T10:15:01 #rust-sci <Andlon_> I'm in agreement
+2019-02-17T11:35:55 #rust-sci <Ploppz> I wonder if it's possible to create a function (or trait) that can calculate sum, mean, or whatever, across any axis, in any nesting of Vec (for example Vec<Vec<Vec<T>>>)
+2019-02-17T13:50:21 #rust-sci <Ploppz> along any axis *
+2019-02-17T20:02:44 #rust-sci <sebk> Ploppz: why a nested Vec ?
+2019-02-17T20:09:01 #rust-sci <sebk> what does sum across the second axis mean in a matrix?
+2019-02-17T20:09:13 #rust-sci <sebk> do you get a vector output?
+2019-02-17T20:13:13 #rust-sci <Ploppz> Indeed
+2019-02-17T20:13:43 #rust-sci <Ploppz> a nested Vec because I don't wanna deal with some wrapper struct like in ndarray. (especially when different crates start using different n-dimensional array strsucts
+2019-02-17T20:15:04 #rust-sci <sebk> well… Vec is quite suboptimal
+2019-02-17T20:15:34 #rust-sci <sebk> ndarray boils down to one Vec (manually allocated with a few more options)
+2019-02-17T20:16:40 #rust-sci <sebk> if you have a 5x5x5x5 tensor…
+2019-02-17T20:16:46 #rust-sci <sebk> j: 5^4
+2019-02-17T20:16:46 #rust-sci -j- 5⁴
+2019-02-17T20:16:48 #rust-sci <sebk> …
+2019-02-17T20:16:51 #rust-sci <sebk> eval: 5^4
+2019-02-17T20:16:54 #rust-sci <sebk> dammit
+2019-02-17T20:16:57 #rust-sci <Ploppz> that's XOR :P
+2019-02-17T20:17:20 #rust-sci <Ploppz> oh.. hm. My main trouble recently with it though, is that you can't create an ndarray from some nested Vec. Because elsewhere in my work I use nested Vecs.
+2019-02-17T20:17:34 #rust-sci <sebk> say… 10^6
+2019-02-17T20:17:36 #rust-sci <sebk> so 6 dims
+2019-02-17T20:17:51 #rust-sci <sebk> thats 4MB of data for f32
+2019-02-17T20:18:03 #rust-sci <sebk> but you would need >10^5 vecs
+2019-02-17T20:18:43 #rust-sci <sebk> each using 24bytes + whatever the allocator uses internally
+2019-02-17T20:18:59 #rust-sci <sebk> another 2.4MB
+2019-02-17T20:19:09 #rust-sci <Ploppz> Good point
+2019-02-17T20:19:15 #rust-sci <sebk> and you have to chase 10 pointers…
+2019-02-17T20:19:16 #rust-sci <Ploppz> But ergonomics
+2019-02-17T20:19:23 #rust-sci <sebk> so… SLOW code
+2019-02-17T20:19:24 #rust-sci <sebk> really slow
+2019-02-17T20:19:41 #rust-sci <sebk> good chance of 9 cache misses
+2019-02-17T20:20:20 #rust-sci <sebk> ndarray isn't that bad
+2019-02-17T20:44:33 #rust-sci <jturner314> Ploppz: I commented on your GitHub issue: https://github.com/rust-ndarray/ndarray/issues/590
+2019-02-17T20:46:08 #rust-sci <jturner314> sebk (IRC) is right that `ndarray::Array` will tend to have substantially better performance than nested `Vec`s.
+2019-02-17T20:46:56 #rust-sci <jturner314> But, if you want to convert nested `Vec`s to an `Array`, that's possible by cloning all the elements.
+2019-02-17T20:48:35 #rust-sci <jturner314> (In general, it's not possible to avoid cloning elements (other than reusing the first innermost `Vec` if desired), because `Array` contains a single `Vec` of all the elements, while nested `Vec`s can be scattered all over memory.)
+2019-02-17T21:14:02 #rust-sci <Ploppz> I see. Thanks!
+2019-02-17T23:29:34 #rust-sci <SuperFluffy> Andlon: What you wrote about Julia yesterday: I absolutely share your concerns
+2019-02-17T23:31:00 #rust-sci <SuperFluffy> I find Julia very hard to intellectually grasp. There is so much overloading and opaque type inference happening, that I have a hard time grokking what's happening.
+2019-02-17T23:31:36 #rust-sci <SuperFluffy> Plus, the part about importing literally everything into your namespace is super difficult.
+2019-02-17T23:31:46 #rust-sci <SuperFluffy> Like doing ::* on every use statement in rust.
+2019-02-18T00:44:36 #rust-sci <est31> SuperFluffy: so like C/C++ then?
+2019-02-18T00:50:23 #rust-sci <SuperFluffy> kinda
+2019-02-19T11:34:01 #rust-sci <Andlon> SuperFluffy, continuing the Julia discussion: it seems to me that Rust is the best long-term candidate for most of my scientific programming needs. My julia code now in the end looks not too different from that of my Rust code
+2019-02-19T11:34:45 #rust-sci <Andlon> I guess the main advantage Julia has over Rust right now are: 1. REPL (I don't care so much about that though, but it is sometimes nice to have) 2. Most users are numerics users, and so it has a lot of libraries and solutions to numerical problems
+2019-02-19T11:35:10 #rust-sci <Andlon> if Rust can catch up on the libraries part I'd be very content
+2019-02-19T12:02:20 #rust-sci <SuperFluffy> Andlon: Yes, I feel similarly.
+2019-02-19T12:02:41 #rust-sci <SuperFluffy> At first I was very impressed with the amount of libraries available. But then you quickly realize that it's mostly one person running the show behind each.
+2019-02-19T12:03:32 #rust-sci <SuperFluffy> Also, I find it very hard to get started using julia and its libraries outside of the stuff which is explicitly documented in tutorials and how-tos.
+2019-02-19T12:03:46 #rust-sci <SuperFluffy> I find its discoverability very bad.
+2019-02-19T12:04:16 #rust-sci <SuperFluffy> unclear is a better word
+2019-02-19T12:44:36 #rust-sci <Andlon> SuperFluffy, yes, that mirrors my experience with it so far almost exactly
+2019-02-19T13:42:02 #rust-sci <Ploppz> BTW plotting libs - what do you use? I started using `plotlib` and started contributing to it (upcoming PR). It looks promising, and can render to ASC-II and .svg.
+2019-02-19T13:42:55 #rust-sci <SuperFluffy> gnuplot
+2019-02-19T13:43:44 #rust-sci <SuperFluffy> Using the RustGnuplot controller right this moment actually. :)
+2019-02-19T13:44:48 #rust-sci <Ploppz> that didn't really work for me, don't remember exactly why
+2019-02-19T13:45:39 #rust-sci <SuperFluffy> Yeah, I hope it will for me. Looks like the maintainer of plotlib is not very active anymore?
+2019-02-19T13:46:16 #rust-sci <Ploppz> indeed, but I'm willing to pick up where he left; already made quite some changes
+2019-02-19T13:50:42 #rust-sci <Andlon> that's cool - native plotting in Rust would be neat
+2019-02-19T13:50:49 #rust-sci <Andlon> How does plotlib actually work? Does it create a window for the plot?
+2019-02-19T13:51:56 #rust-sci <Andlon> I think Rust might make a lot of sense for plotting - because my *by far* main issue with plotting libs is figuring out how to use them in the face of too little documentation
+2019-02-19T13:52:07 #rust-sci <Andlon> With Rust, the API could almost document itself - to a certain extent anyway
+2019-02-19T13:52:28 #rust-sci <Andlon> and *every* plotting lib I've ever used does suffer from too little documentation
+2019-02-19T13:52:31 #rust-sci <SuperFluffy> Yeah, a native plotting lib would be sweet.
+2019-02-19T13:56:24 #rust-sci <Andlon> sadly I've really been struggling with finding time for my Rust projects lately. Would really love to contribute more to the ecosystem
+2019-02-19T13:56:43 #rust-sci <Andlon> it's not too far away from me being able to use it for my main work right now
+2019-02-19T13:57:00 #rust-sci <SuperFluffy> Andlon: what do you work on?
+2019-02-19T13:57:44 #rust-sci <Andlon> SuperFluffy, I'm a (PhD) researcher in physics-based animation. I'm specifically more interested in the realistic simulation of deformable bodies with continuum mechanics model that approach the "real physics"
+2019-02-19T13:57:59 #rust-sci <Andlon> mostly variants of finite element methods
+2019-02-19T13:58:29 #rust-sci <Ploppz> it doesn't show a window atm. Atm can only either print the plot in terminal, or save to svg
+2019-02-19T13:58:43 #rust-sci <Andlon> Ploppz, SVG is a good start though :-)
+2019-02-19T13:58:57 #rust-sci <SuperFluffy> Cool; I was working on cfd for a year, so I was reading up on FEM and non-newtonian fluids and things
+2019-02-19T13:58:58 #rust-sci <Ploppz> yeah, that's just what I wanted. Since images have finite resolution
+2019-02-19T13:59:09 #rust-sci <Ploppz> idk what to do when the owner of a repo has been inactive for 5 months...
+2019-02-19T13:59:19 #rust-sci <SuperFluffy> He doesn't seem inactive in general.
+2019-02-19T13:59:36 #rust-sci <Andlon> SuperFluffy, nice. Yeah, we also do fluid simulation, rigid body simulation and, well, basically anything related to animation to some extent
+2019-02-19T13:59:57 #rust-sci <Andlon> SuperFluffy, what do you work on now? I think you've told me before but I can't recall
+2019-02-19T14:00:17 #rust-sci <SuperFluffy> Ploppz: maybe reach out to him; his email from Cargo.toml: authors = ["Matt Williams <matt⊙mc>"]
+2019-02-19T14:00:35 #rust-sci <SuperFluffy> Andlon: nonlinear dynamics, coupled oscillator networks, and recurrent chaotic neural networks.
+2019-02-19T14:00:47 #rust-sci <Andlon> hah, I guess that e-mail must be a way to fool spam filters? Surely his address is not "milliams" when his name is Williams?
+2019-02-19T14:00:48 #rust-sci <SuperFluffy> ODE solving, mainly :D
+2019-02-19T14:00:56 #rust-sci <Andlon> SuperFluffy, cool, in what context?
+2019-02-19T14:01:03 #rust-sci <SuperFluffy> PhD
+2019-02-19T14:01:11 #rust-sci <SuperFluffy> Andlon: his nick is milliams
+2019-02-19T14:01:22 #rust-sci <Andlon> ah, right, it makes sense
+2019-02-19T14:02:13 #rust-sci <Andlon> SuperFluffy, do you also consider applications, or is it more of a pure basic research kind of pursuit?
+2019-02-19T14:03:01 #rust-sci <SuperFluffy> Pure research atm, although there are people who use this kinda stuff for epilsepy research
+2019-02-19T14:03:13 #rust-sci <SuperFluffy> So this is going in the direction of theoretical/computational neuroscience
+2019-02-19T14:03:27 #rust-sci <SuperFluffy> But I want to shift to industry after I am done with the PhD
+2019-02-19T14:03:35 #rust-sci <SuperFluffy> Looking for rust jobs :D
+2019-02-19T14:05:14 #rust-sci <Andlon> SuperFluffy, my grand plan is to eventually transition from my PhD to a startup developing cutting edge real-time simulators for industrial purposes (hopefully in Rust). Let's team up, perhaps :p
+2019-02-19T14:11:17 #rust-sci <SuperFluffy> Oh totally!
+2019-02-19T14:11:27 #rust-sci <SuperFluffy> rust + startup sounds like lots of fun
+2019-02-19T14:11:31 #rust-sci <SuperFluffy> Andlon: Where are you located at?
+2019-02-19T14:12:09 #rust-sci <SuperFluffy> Got it from your github
+2019-02-19T14:12:13 #rust-sci <SuperFluffy> Ok, you will have to come to berlin :D
+2019-02-19T14:51:35 #rust-sci <Andlon> :P
+2019-02-19T14:51:50 #rust-sci <Andlon> Munich would be more attractive... I miss mountains (I'm from the western part of Norway)
+2019-02-19T14:55:05 #rust-sci <Ploppz> oh western Norway is truly beautiful
+2019-02-19T14:55:25 #rust-sci <Ploppz> I was hiking in the mountains some years ago
+2019-02-19T14:55:31 #rust-sci <Andlon> oh, nice! Where?
+2019-02-19T14:55:58 #rust-sci <Ploppz> maybe close to my birthplace, Aurland
+2019-02-19T14:56:22 #rust-sci <Ploppz> (I was young and with my family so I didn't have to know the names)
+2019-02-19T14:57:31 #rust-sci <Ploppz> yeah think it was Aurland
+2019-02-19T14:59:10 #rust-sci <Andlon> cool. Haven't been quite so far into Sogn og Fjordane (the county), but I can imagine it's nice there, yeah
+2019-02-19T15:00:08 #rust-sci <Ploppz> pretty sure I was at this exact spot and took the same picture :P https://en.wikipedia.org/wiki/Aurland#/media/File:Aurlandsvangen.JPG
+2019-02-19T15:01:14 #rust-sci <Ploppz> shame that my family moved away from there :o I have lived most of my life in Tronderlag
+2019-02-19T15:01:23 #rust-sci <Ploppz> (terminal can't handle norwegian letters)
+2019-02-19T15:06:24 #rust-sci <Andlon> I studied in Trondheim for ~5 years or so. I find it a nice place :-)
+2019-02-19T15:06:59 #rust-sci <Andlon> (Trondelag is bigger than Trondheim though, of course, heh)
+2019-02-19T15:07:10 #rust-sci <Andlon> yeah, I also don't have the proper Norwegian letters with this German setup :P
+2019-02-19T15:08:09 #rust-sci <Ploppz> I also studied in Trondheim, at NTNU, my bachelor in informatics! Before that I lived quite close. Now I live in Belgium writing master thesis
+2019-02-19T15:08:41 #rust-sci <Ploppz> I find it nice there too. I miss the nature, when I live in Belgium
+2019-02-19T15:10:36 #rust-sci <Andlon> Yeah, I also studied at NTNU
+2019-02-19T15:10:56 #rust-sci <Andlon> and that's also what I miss the most living in western Germany (it's so flat! :P)
+2019-02-19T15:13:40 #rust-sci <SuperFluffy> Yøu need to configure yøur systems prøperly, then you døn't need to cømplåin åbøut yøur respective setups/ ;) 
+2019-02-19T15:14:29 #rust-sci <SuperFluffy> Æ Ø Å
+2019-02-19T15:14:59 #rust-sci <SuperFluffy> You need us altgr-intl on linux
+2019-02-19T15:17:35 #rust-sci <Andlon> hehe, I know I can - I just very very rarely have the need to write Norwegian letters from my work computer
+2019-02-19T16:44:58 #rust-sci <sebk> how relevant is the location for a startup?
+2019-02-19T16:46:18 #rust-sci <SuperFluffy> sebk: Very
+2019-02-19T16:46:36 #rust-sci <SuperFluffy> Though one should add: depends on whether you have a team and at which stage you are.
+2019-02-19T16:49:07 #rust-sci <SuperFluffy> And of course depends on which stage you are at.
+2019-02-19T16:49:24 #rust-sci <sebk> hm..
+2019-02-19T16:49:42 #rust-sci <SuperFluffy> The moment you want to hire an extra person you better be in a place with talent around you. :)
+2019-02-19T16:50:34 #rust-sci <SuperFluffy> I was talking to a startup that had its offices outside of Berlin, and they had a really really bad time ther.
+2019-02-19T16:50:38 #rust-sci <SuperFluffy> Nobody wanted to commute.
+2019-02-19T16:51:51 #rust-sci <sebk> yea… I can see that it might be tricky to get city people and mountain people into the same space
+2019-02-19T18:48:51 #rust-sci <emerent_> that's when you go to mountain city
+2019-02-19T18:48:57 #rust-sci <emerent_> tennessee
+2019-02-20T15:04:50 #rust-sci <Andlon> SuperFluffy, a further observation about Julia: It seems to me that to get truly fast code you need to very carefully ensure that all your code is type stable. My experience so far is that this is much harder than just writing the code with types in Rust in the first place, taking away much of the benefit of using Julia
+2019-02-20T15:05:39 #rust-sci <Andlon> otherwise you end up having significant loss of performance due to heap allocation and GC (though in the end performance is much, much better than Python still, so it's nice for prototyping)
+2019-02-20T15:05:51 #rust-sci <Andlon> but so far I'm not convinced that it does or can solve the "two-language problem"
+2019-02-20T15:21:44 #rust-sci <SuperFluffy> Andlon: Ohhh yes, absolutely.
+2019-02-20T15:21:47 #rust-sci <SuperFluffy> I had exactely the same impression.
+2019-02-20T15:23:17 #rust-sci <SuperFluffy> The moment I started going down that path, I found a lot of suggestions by (what looks like) core julia devs giving suggestions on how to use proper type annotations to get exactly what you want.
+2019-02-20T15:23:31 #rust-sci <SuperFluffy> But I felt the intellectual load rising by the minute.
+2019-02-20T15:24:46 #rust-sci <Andlon> yeah, it's terrible actually :P
+2019-02-20T15:24:54 #rust-sci <Andlon> it gets *really* hairy really quickly
+2019-02-21T19:38:14 #rust-sci <Ploppz> how useful is slog? my friend stopped using it because it's allegedly quite 'bloated'. I'm wondering whether it could be used for just gathering data during an experiment. All kinds of statistics. (and then you can save it, and do whatever you want with it, e.g. plot something)
+2019-02-21T19:38:28 #rust-sci <Ploppz> or is there something else for gathering statistics/data?
+2019-02-21T19:39:12 #rust-sci <sebk> yea. bloated is certainly a matching term
+2019-02-21T19:39:20 #rust-sci <sebk> also annoying to use
+2019-02-21T19:39:57 #rust-sci <sebk> but if you want a backtrace context for your errors…
+2019-02-21T19:40:01 #rust-sci <Ploppz> slog_scope I found ok to use
+2019-02-21T19:40:49 #rust-sci <Ploppz> æøå oh you fixed my unicode problem :D I can now see your `...`s instead of just `?`
+2019-02-21T19:42:02 #rust-sci <sebk> must have been fixed with the tmux fix then
+2019-02-21T19:42:08 #rust-sci * sebk didn't touch the server after that
+2019-02-21T19:43:03 #rust-sci <Ploppz> I see
+2019-02-21T19:44:27 #rust-sci <sebk> hm…
+2019-02-21T19:44:36 #rust-sci * sebk has an idea for a buffered logger
+2019-02-21T19:45:17 #rust-sci <sebk> ideally… the the logger could use the stack…
+2019-02-21T19:45:26 #rust-sci <sebk> (which slog does afaik)
+2019-02-21T19:45:40 #rust-sci <sebk> from the technical side, slog is quite nice
+2019-02-24T22:14:32 #rust-sci <mefistofeles> oh, nice this exists
+2019-02-24T23:16:05 #rust-sci <est31> mefistofeles: and you don't even have to sell your soul
+2019-02-25T00:44:01 #rust-sci <mefistofeles> est31: so you say, we'll see
+2019-02-25T00:44:02 #rust-sci <mefistofeles> haha
+2019-03-01T22:08:15 #rust-sci <sebk> Ploppz: you mentioned a plot/graph thing you wrote. any details?
+2019-03-01T22:12:30 #rust-sci <mark_> i've been looking for plot stuff too
+2019-03-01T22:12:54 #rust-sci * sebk has also written some
+2019-03-01T22:13:08 #rust-sci <sebk> miight be worth to combine it
+2019-03-01T22:13:10 #rust-sci <mark_> i'm just about at the limit of what i feel like doing in gnuplot
+2019-03-01T22:13:21 #rust-sci <sebk> what are you plotting?
+2019-03-01T22:13:50 #rust-sci <mark_> well, right now i'd love something that did parametric 3d shapes
+2019-03-01T22:14:15 #rust-sci <sebk> hm…
+2019-03-01T22:14:24 #rust-sci <sebk> how does one put that into code?
+2019-03-01T22:14:37 #rust-sci <mark_> raw gnuplot makes it kindof easy though
+2019-03-01T22:14:48 #rust-sci <sebk> surface of a 4d function?
+2019-03-01T22:15:42 #rust-sci <sebk> or f(c) -> (x, y, z) ?
+2019-03-01T22:16:07 #rust-sci <mark_> well, there's https://github.com/hmeyer/tessellation
+2019-03-01T22:16:46 #rust-sci <sebk> ah
+2019-03-01T22:16:52 #rust-sci <sebk> so a 3d surface
+2019-03-01T22:17:18 #rust-sci <sebk> sounds like a raytracer might work?
+2019-03-01T22:17:30 #rust-sci <mark_> well, a surface of a 3d object will be 2d, so you could just have f(u,v) -> (x, y, z)
+2019-03-01T22:17:54 #rust-sci <sebk> not really…
+2019-03-01T22:18:01 #rust-sci <sebk> it can have annoying topology
+2019-03-01T22:18:33 #rust-sci <sebk> purely analytic functions?
+2019-03-01T22:18:39 #rust-sci <mark_> for topological spheres :)
+2019-03-01T22:18:46 #rust-sci <sebk> ah
+2019-03-01T22:20:15 #rust-sci <mark_> no but torus would map from the same spaces, just with a different map
+2019-03-01T22:20:17 #rust-sci <Ploppz> here is my latest work sebk https://github.com/Ploppz/plotlib/tree/wip just forked existing work that I thought looked promising
+2019-03-01T22:23:51 #rust-sci <sebk> hmmm
+2019-03-01T22:23:57 #rust-sci * sebk looks at https://docs.rs/plotlib/0.3.0/plotlib/function/struct.Function.html
+2019-03-01T22:24:07 #rust-sci <sebk> they assume… a continuous function?
+2019-03-01T22:24:27 #rust-sci <sebk> and have a fixed sample size
+2019-03-01T22:25:37 #rust-sci <Ploppz> what do you mean with fixed? you can give any amount
+2019-03-01T22:25:51 #rust-sci <Ploppz> they also have discrete representations (ways to plot stuff)
+2019-03-01T22:26:12 #rust-sci <sebk> there is no way of setting the sample rate
+2019-03-01T22:26:32 #rust-sci <Ploppz> e.g. not use all the provided samples in `data`?
+2019-03-01T22:26:49 #rust-sci <sebk> no
+2019-03-01T22:26:49 #rust-sci <sebk> https://github.com/Ploppz/plotlib/blob/wip/src/repr/function.rs#L35
+2019-03-01T22:27:01 #rust-sci <sebk> say you are plotting … sin(1/x)
+2019-03-01T22:27:16 #rust-sci <sebk> then you want a really good sample rate
+2019-03-01T22:27:23 #rust-sci <sebk> actually one that gets finer as x -> 0
+2019-03-01T22:27:41 #rust-sci <Ploppz> ah ok
+2019-03-01T22:27:47 #rust-sci <sebk> I suppose one has to create a Line then=
+2019-03-01T22:28:05 #rust-sci * sebk has a function polygon-izer
+2019-03-01T22:28:26 #rust-sci <sebk> that analyzes the angle at each point
+2019-03-01T22:28:37 #rust-sci <sebk> and subdivides if it is too big
+2019-03-01T22:28:47 #rust-sci <sebk> or the error is too big
+2019-03-01T22:28:53 #rust-sci <sebk> ofc. you don't want to feed it sin(1/x) …
+2019-03-01T22:28:59 #rust-sci <Ploppz> the lib is quite early stage btw
+2019-03-01T22:29:13 #rust-sci <Ploppz> sorry afk for a while
+2019-03-01T22:32:47 #rust-sci <Ploppz> oh that is nice sebk
+2019-03-01T22:33:01 #rust-sci <Ploppz> it would indeed be good to merge our efforts
+2019-03-01T22:33:54 #rust-sci <Ploppz> is your stuff hosted somewhere?
+2019-03-01T22:34:26 #rust-sci <Ploppz> btw in my branch I have restructured a lot so docs.rs is quite different
+2019-03-01T22:39:00 #rust-sci <sebk> https://gitlab.com/sebk/canvas is what I have in rust so far
+2019-03-01T22:39:23 #rust-sci <sebk> https://gitlab.com/sebk/canvas/blob/master/src/plot.rs is the interesting one
+2019-03-01T22:39:36 #rust-sci <sebk> but I only have pixel based stuff
+2019-03-01T22:40:29 #rust-sci <sebk> but SVG can embedd/link images, so that might work
+2019-03-01T23:30:32 #rust-sci <Ploppz> we should ultimately aim to converge to one library that becomes the "go-to plotting lib"
+2019-03-01T23:35:46 #rust-sci <mark_> watching raph's stuff
+2019-03-02T02:07:28 #rust-sci <mark_> https://www.ncollide.org/mesh_generation/
+2019-03-02T16:08:30 #rust-sci <Ploppz> started making a crate for hyper parameter optimization https://github.com/Ploppz/blackbox/blob/master/examples/simple.rs what do you think about the approach/API?
+2019-03-02T17:06:13 #rust-sci * sebk will look soon
+2019-03-02T17:06:28 #rust-sci * sebk has to start intalling debian oh his telephine first
+2019-03-02T17:06:32 #rust-sci <sebk> *telephone
+2019-03-02T17:07:41 #rust-sci <Ploppz> you mean mobile phone? :o
+2019-03-02T17:07:49 #rust-sci <sebk> yes
+2019-03-02T17:08:04 #rust-sci <sebk> it now runs cyanogen mod 11
+2019-03-02T17:08:14 #rust-sci <sebk> and there are no upates since 2 years
+2019-03-02T17:27:04 #rust-sci <Ploppz> didn't know you could have debian on phone :o
+2019-03-02T17:34:03 #rust-sci <sebk> http://julianwi.square7.ch/debian-on-smartphone/
+2019-03-02T17:34:08 #rust-sci <sebk> is *should* be possible
+2019-03-02T17:42:59 #rust-sci <sebk> Ploppz: hmmmm
+2019-03-02T17:43:08 #rust-sci <sebk> sure random search is a good idea?
+2019-03-02T17:43:38 #rust-sci <sebk> and not some kind of optimizing thing
+2019-03-02T17:44:24 #rust-sci <sebk> there are a bunch of really good optimization algos
+2019-03-02T18:05:07 #rust-sci <Ploppz> sebk: yeah, definitely gonna implement several others! random search was just a start
+2019-03-02T20:33:49 #rust-sci * sebk failed.
+2019-03-02T20:36:45 #rust-sci <Ploppz> D:
+2019-03-02T21:44:14 #rust-sci <sebk> meh. I have "debian" running
+2019-03-02T21:44:23 #rust-sci <sebk> but not even sshd works
+2019-03-02T22:00:06 #rust-sci <jturner314> Ploppz: That example reminds me of the `proptest` crate (in the sense that you have a macro that takes a function and generates random inputs).
+2019-03-02T22:00:44 #rust-sci <jturner314> https://docs.rs/proptest/0.9.1/proptest/macro.proptest.html
+2019-03-02T22:02:07 #rust-sci <jturner314> Maybe some of the code from `proptest` would be useful for your project.
+2019-03-03T00:37:27 #rust-sci * sebk will try to look at the plotting api tomorrow
+2019-03-03T12:00:30 #rust-sci <sebk> sooo…
+2019-03-03T12:00:32 #rust-sci <sebk> plotting api
+2019-03-03T12:00:36 #rust-sci <sebk> http://collabedit.com/patfc
+2019-03-03T12:23:43 #rust-sci <sebk> hm…
+2019-03-03T12:23:58 #rust-sci <sebk> so I wonder… would it make sense to use some kind of CSS?
+2019-03-03T12:24:20 #rust-sci <sebk> my python plotting lib does contain a number of style attributes
+2019-03-03T12:24:30 #rust-sci <sebk> Ploppz: ^
+2019-03-03T12:39:55 #rust-sci <Ploppz> sebk: What do you think about building on plotlib? There are already several people working on it
+2019-03-03T12:40:56 #rust-sci <Ploppz> interesting jturner314 thanks
+2019-03-03T12:41:34 #rust-sci <Ploppz> Atm I'm implementing Bayesian optimization in `blackbox` (https://towardsdatascience.com/a-conceptual-explanation-of-bayesian-model-based-hyperparameter-optimization-for-machine-learning-b8172278050f)
+2019-03-03T12:41:51 #rust-sci <Ploppz> (^ just an unrelated  "btw")
+2019-03-03T12:46:04 #rust-sci <Ploppz> I'd definitely be up to discuss changes in the API of plotlib sebk
+2019-03-03T12:47:24 #rust-sci <sebk> from my experience a good plotting lib needs:
+2019-03-03T12:47:35 #rust-sci <sebk> - a very good algorithm to determine axis labels
+2019-03-03T12:47:59 #rust-sci <sebk> eg turn 0.0214231 …0.0234451
+2019-03-03T12:48:17 #rust-sci <sebk> into 21 … 24 (·10^⁻3)
+2019-03-03T12:48:37 #rust-sci <sebk> and render that in a good way
+2019-03-03T12:48:58 #rust-sci <sebk> which gets even more interesting with units involved
+2019-03-03T12:49:22 #rust-sci <sebk> eg 0.021423m -> 21 mm
+2019-03-03T12:50:51 #rust-sci <Ploppz> Yeah, sounds kinda tricky
+2019-03-03T12:50:57 #rust-sci <sebk> oh and it should support LaTeX style math
+2019-03-03T12:51:22 #rust-sci <Ploppz> how can we do that currently?
+2019-03-03T12:51:33 #rust-sci <Ploppz> anyway imo it's not really crucial
+2019-03-03T12:51:34 #rust-sci <sebk> retex works
+2019-03-03T12:51:50 #rust-sci <sebk> we have a working renderer for latex into svg
+2019-03-03T12:51:50 #rust-sci <Ploppz> cool
+2019-03-03T12:51:56 #rust-sci <Ploppz> oh that's perfect
+2019-03-03T12:52:35 #rust-sci <Ploppz> I have started implementing legends in plotlib (atm very naive placement alg..)
+2019-03-03T12:52:50 #rust-sci <Ploppz> maybe you wanna PR your derivative-based sampling desntiy stuff?
+2019-03-03T12:52:58 #rust-sci <Ploppz> density*
+2019-03-03T12:53:11 #rust-sci <sebk> I will have to port my code first
+2019-03-03T12:53:22 #rust-sci <sebk> and then probably put that into a crate, as it seems useful in many places
+2019-03-03T12:53:32 #rust-sci <Ploppz> oh ok, sounds nice
+2019-03-03T12:56:15 #rust-sci <sebk> https://en.wikipedia.org/wiki/Simulated_annealing
+2019-03-03T12:56:34 #rust-sci <sebk> for blackbox
+2019-03-03T12:58:38 #rust-sci <Ploppz> oh yeah, I have read about it, might implement it. For hyperparam optimization, which is my personal use case, I am not sure if it is that good though, because in that setting, evaluating score is very expensive
+2019-03-03T12:58:56 #rust-sci <Ploppz> so it's for later. First bayesian opt
+2019-03-03T12:59:09 #rust-sci <Ploppz> (which is very widely used in hyperparam opt)
+2019-03-03T13:35:58 #rust-sci <Ploppz> hm, so I understand the algorithm (SMBO) but I need a way to approximate (represent) a density function
+2019-03-03T13:39:55 #rust-sci <Ploppz> one paper ( https://papers.nips.cc/paper/4443-algorithms-for-hyper-parameter-optimization.pdf section 4.2 ) seems to say a way to do this: a gaussian for each point, with variance equal to the distance to some neighbor. I wonder if this should go into another crate... 
+2019-03-03T13:44:46 #rust-sci <Ploppz> oh, seems like this is an instance of "kernel densitfy estimation"
+2019-03-03T13:49:41 #rust-sci <Ploppz> maybe...
+2019-03-03T18:12:29 #rust-sci * sebk is back on an actual computer
+2019-03-03T19:01:18 #rust-sci <Ploppz> having some problems implementing that bayesian optimization method https://www.reddit.com/r/rust/comments/awx6l6/trying_to_implement_a_bayesian_optimization_method/
+2019-03-03T19:01:40 #rust-sci <Ploppz> not sure how I can read up to gain the same knowledge that for example those who already implemented such thing in Python, had .
+2019-03-03T19:21:48 #rust-sci * sebk stares at the integral
+2019-03-03T19:23:04 #rust-sci <sebk> \int p(y) dy 
+2019-03-03T19:23:06 #rust-sci <sebk> is the last expr
+2019-03-03T19:23:12 #rust-sci <sebk> (with some factor)
+2019-03-03T19:23:52 #rust-sci <sebk> the neat thing about p(y) is that as long as y is "well within" your integral, you can just add 1
+2019-03-03T19:24:43 #rust-sci <sebk> do they ever define p(y) ?
+2019-03-03T19:38:13 #rust-sci <Ploppz> sebk: what do you mean, how can I just add 1
+2019-03-03T19:38:15 #rust-sci <Ploppz> ?
+2019-03-03T19:38:39 #rust-sci <sebk> I assumed p(y) is a density function, normalized to 1
+2019-03-03T19:38:51 #rust-sci <Ploppz> p(y|x) is an estimated density function, of the score (y) given the parameters (x). I read somewhere else that it can be approximated as a sum of gaussians
+2019-03-03T19:38:56 #rust-sci <sebk> so int_-inf^inf p(y) dy = 1
+2019-03-03T19:39:10 #rust-sci <sebk> hm
+2019-03-03T19:39:17 #rust-sci <Ploppz> Oh, yeah. But you can't do that when you also have (y* - y) in there
+2019-03-03T19:39:18 #rust-sci <sebk> okay. thats not the density function I know
+2019-03-03T19:39:56 #rust-sci <sebk> the last part of (3) has that
+2019-03-03T19:40:22 #rust-sci <sebk> oh hey, they evaluate it even further
+2019-03-03T19:41:17 #rust-sci <Ploppz> what (3) are you referring to?
+2019-03-03T19:41:35 #rust-sci <sebk> equation 3 on page 4
+2019-03-03T19:45:19 #rust-sci <Ploppz> ah you're looking at that sorry I thought you were looking at the last link. Well they show kinda the same math. So, regarding (3), ... oh I didn't notice that they do evaluate it further. Thanks for pointing that out! Hm..
+2019-03-03T19:45:56 #rust-sci <Ploppz> so actually it is p(x|y) that will be estimated probably as a sum of gaussians
+2019-03-03T19:46:02 #rust-sci <sebk> yea. they have hidden it really well
+2019-03-03T19:48:46 #rust-sci <Ploppz> my eyes probably just skipped over that part because it was so dense with math :o
+2019-03-03T19:49:19 #rust-sci <Ploppz> oh, they evaluate it so far..... that it's not even an integral anymore!!
+2019-03-03T23:08:22 #rust-sci <sebk> hm
+2019-03-03T23:08:37 #rust-sci <sebk> are there collaborative edit things that are still usable?
+2019-03-03T23:08:51 #rust-sci * sebk wants a collab playground…
+2019-03-04T15:29:50 #rust-sci <Ploppz> hm it will be a little tricky.. I need to implement multivariate kernel density estimator
+2019-03-04T15:30:01 #rust-sci <Ploppz> .. where some variables may be discrete
+2019-03-04T15:35:14 #rust-sci <Ploppz> but in the definition of multivariate KDE, there is nothing about discrete variables
+2019-03-04T18:13:02 #rust-sci <sebk> lol
+2019-03-04T18:13:10 #rust-sci <sebk> yea… thats not going to work
+2019-03-04T18:13:44 #rust-sci <sebk> you need someone who knows far more math than I do
+2019-03-04T19:44:06 #rust-sci <sebk> as far as the plotting lib is concerend: http://www.pgfplots.net/tikz/examples/
+2019-03-04T19:44:16 #rust-sci <sebk> this is basically the gold standard for it
+2019-03-04T22:00:30 #rust-sci <sebk> > Run with LuaLaTeX and have a coffee.
+2019-03-04T22:00:31 #rust-sci <sebk> lol
+2019-03-04T22:00:36 #rust-sci <sebk> (http://www.pgfplots.net/tikz/examples/julia/)
+2019-03-04T23:39:30 #rust-sci <sebk> what not to do: https://www.dummies.com/programming/r/how-to-create-different-plot-types-in-r/
+2019-03-05T00:23:23 #rust-sci <sebk> > Fortunately, most people have a web browser available, and Altair provides the Chart.serve() method which will seamlessly convert the plot to HTML, start a webserver serving that HTML, and open your system’s default web browser to view it.
+2019-03-05T00:23:25 #rust-sci <sebk> whoa
+2019-03-05T00:23:36 #rust-sci <sebk> maaaybe not that much
+2019-03-05T09:03:30 #rust-sci <meretrix> Ploppz: I saw you mentioned using Bayesian Optimization for hyperparameter tuning.. I've been using BO a bit for calibrating my simulation and found that modeling heteroskedastic noise was needed for good performance with my low signal-to-noise objectives.
+2019-03-05T09:03:43 #rust-sci <meretrix> The only implementation that worked well for me was in R:
+2019-03-05T09:03:47 #rust-sci <meretrix> https://cran.r-project.org/web/packages/hetGP/index.html
+2019-03-05T09:04:55 #rust-sci <meretrix> The vignette is quite good about explaining the benefits of replication.
+2019-03-05T22:20:22 #rust-sci <sebk> uuhhh
+2019-03-05T22:20:34 #rust-sci <sebk> any recommendations for a svg writer crate?
+2019-03-05T22:20:43 #rust-sci <sebk> the svg crate has a stupid api…
+2019-03-05T22:32:17 #rust-sci * est31 dumps the xml manually
+2019-03-05T22:32:35 #rust-sci <est31> via += on strings
+2019-03-05T22:37:50 #rust-sci <sebk> hm…
+2019-03-05T22:38:01 #rust-sci * sebk tries write!
+2019-03-05T23:21:02 #rust-sci <sebk> http://svgur.com/s/BZX
+2019-03-05T23:21:03 #rust-sci <sebk> yay
+2019-03-05T23:21:29 #rust-sci <sarnold> cool
+2019-03-05T23:33:16 #rust-sci <sebk> so… algo ported…
+2019-03-05T23:33:24 #rust-sci <sebk> now I just need to make it reliable
+2019-03-05T23:33:38 #rust-sci <sebk> and clean
+2019-03-05T23:37:03 #rust-sci <sebk> https://play.rust-lang.org/?version=stable&mode=debug&edition=2018&gist=9a8015439df400f8c4231fccb9f00bd0
+2019-03-06T00:14:09 #rust-sci <est31> TIL about svgur
+2019-03-06T09:05:35 #rust-sci <Ploppz> meretrix: thanks. What does this mean? "Replicated observations are encouraged as they yield computational savings."
+2019-03-06T09:19:38 #rust-sci <Ploppz> sampling the score at the same parameters several times to account for variance?
+2019-03-06T10:46:07 #rust-sci <Ploppz> meretrix: do you know how the alg works? Maybe feeling up to writing it in Rust? :D
+2019-03-06T10:46:28 #rust-sci <Ploppz> (I have very little time lately, and I'm not the best at this)
+2019-03-06T10:47:19 #rust-sci <Ploppz> someone I mailed about TPE also said it's not the best algorithm in practice.
+2019-03-06T12:15:31 #rust-sci <meretrix> Ploppz: Replication has two benefits:
+2019-03-06T12:15:40 #rust-sci <meretrix> 1. It allows for direct measure of noise variance (rather than mixed noise+signal variance), so that the "nugget effect" no longer needs to be estimated via MLE.
+2019-03-06T12:15:45 #rust-sci <meretrix> 2. Gaussian Processes scale very poorly in number of samples (O(n^3)), but multiple replications of the same parameter set can be modeled as a single sample, so the dimensionality of the GP is reduced by a factor of the average number of replications.
+2019-03-06T12:16:56 #rust-sci <meretrix> I've switched to Julia for most of my work, so if I port it to anything, it will be to that. ;)
+2019-03-06T15:41:35 #rust-sci <Ploppz> And by replication, you mean to sample the score several times in the same (parameter) point?
+2019-03-06T21:29:56 #rust-sci <sebk> Ploppz: hm…
+2019-03-06T21:30:07 #rust-sci <sebk> why not take an iterator yielding coordinates?
+2019-03-06T21:30:26 #rust-sci <sebk> Item=(f64, f64)
+2019-03-06T21:41:25 #rust-sci <Ploppz> what are you refering to sebk?
+2019-03-06T21:42:45 #rust-sci <sebk> Ploppz: https://github.com/Ploppz/experiment/blob/master/src/lib.rs#L37
+2019-03-06T21:45:17 #rust-sci <Ploppz> well that Iterator approach didn't work anyway
+2019-03-06T21:45:34 #rust-sci <Ploppz> so I now take `x: Array1<f64>, y: Array1<f64>`
+2019-03-06T21:45:54 #rust-sci <Ploppz> idk if I can make a generally useful `experiment` crate, but I started it for what I'm working on right now
+2019-03-06T21:46:01 #rust-sci <sebk> ah
+2019-03-06T21:46:27 #rust-sci <Ploppz> The intention is to make it deal with saving different experiments in different directories, and plotting stuff
+2019-03-06T21:47:24 #rust-sci * sebk notes that it would not work with a semi-infinite series of points
+2019-03-06T21:47:30 #rust-sci <sebk> … nor would SVG
+2019-03-06T21:56:57 #rust-sci <Ploppz> yeah you will always want to only plot a finite amount of points :P
+2019-03-06T21:59:08 #rust-sci * sebk has plotted a polygon with 10^9 points…
+2019-03-06T21:59:50 #rust-sci <sebk> or rather a integration from t=0 to t=1e^7 with dt=1e^-2
+2019-03-06T22:00:35 #rust-sci <sebk> oh there is one with 10^10
+2019-03-06T22:03:04 #rust-sci <sebk> hm… looking at that, I need some way of having one data source emitting different streams…
+2019-03-06T22:03:14 #rust-sci <sebk> iterator doesn't work
+2019-03-06T22:13:14 #rust-sci <sebk> and when you get live data in… 1MB/s is not a lot
+2019-03-06T22:13:33 #rust-sci <sebk> err. 10⁶ points/s
+2019-03-06T22:40:41 #rust-sci <Ploppz> why would you possibly need that many points though?
+2019-03-06T22:40:50 #rust-sci <Ploppz> that must be way more points than your resolution supports anyway
+2019-03-06T23:06:41 #rust-sci <sebk> they are stacked on top anyway
+2019-03-06T23:06:46 #rust-sci * sebk grabs picture
+2019-03-06T23:17:57 #rust-sci * sebk uploads 40MB file…
+2019-03-06T23:18:19 #rust-sci <sebk> resolution: 16k x 8
+2019-03-06T23:18:22 #rust-sci <sebk> resolution: 16k x 8k
+2019-03-06T23:29:05 #rust-sci <sebk> https://imgur.com/L7b4wnD
+2019-03-06T23:35:20 #rust-sci <sebk> https://rynx.org/sebk/comp/duffing_phasespace_02_772.png
+2019-03-06T23:36:14 #rust-sci <est31> sebk: wow
+2019-03-06T23:36:17 #rust-sci <est31> what'S that
+2019-03-06T23:36:30 #rust-sci <sebk> stuff I did… years ago
+2019-03-06T23:36:32 #rust-sci <sebk> and still like a lot
+2019-03-06T23:36:41 #rust-sci <sebk> "duffing equation"
+2019-03-06T23:37:16 #rust-sci <sebk>     # d²x/dt² x + lambda dx/dt + beta x³ = epsilon cos( Omega t )
+2019-03-06T23:37:25 #rust-sci <sebk>     epsilon = 9
+2019-03-06T23:37:30 #rust-sci <sebk> lambda = 0.08
+2019-03-06T23:37:30 #rust-sci <sebk>     alpha = 0.0
+2019-03-06T23:37:30 #rust-sci <sebk>     beta = 1.0
+2019-03-06T23:37:30 #rust-sci <sebk>     Omega = 1.0
+2019-03-06T23:37:38 #rust-sci <sebk> start values: 
+2019-03-06T23:37:38 #rust-sci <sebk>     x0 = 3
+2019-03-06T23:37:38 #rust-sci <sebk>     y0 = 4
+2019-03-07T00:12:45 #rust-sci <sebk> actual measurement: https://rynx.org/sebk/comp/el-bifurk.png
+2019-03-07T00:23:59 #rust-sci <est31> sebk: looks liek https://xkcd.com/702/
+2019-03-07T00:24:01 #rust-sci <est31> like*
+2019-03-07T01:36:09 #rust-sci <jturner314> sebk (IRC): Which parameter did you sweep? Excitation frequency? And the plot was generated by stroboscopically sampling the response at the excitation frequency?
+2019-03-07T01:36:36 #rust-sci <jturner314> How did you find all the branches for each parameter value?
+2019-03-07T08:44:37 #rust-sci <Ploppz> :O
+2019-03-07T08:46:14 #rust-sci <Ploppz> https://rynx.org/sebk/comp/duffing_phasespace_02_772.png with some different coloring, it could make a nice wallpaper!
+2019-03-07T08:46:23 #rust-sci <Ploppz> I love the symmetry
+2019-03-07T08:46:57 #rust-sci <Ploppz> a diff equation you say? Reminds me of fractal flamse
+2019-03-07T08:46:59 #rust-sci <Ploppz> flames
+2019-03-07T08:47:21 #rust-sci <Ploppz> It doesn't look like something you would need a plotting lib for though
+2019-03-07T08:48:08 #rust-sci <Ploppz> do you actually draw line segments? Or pixels
+2019-03-07T10:13:11 #rust-sci <sebk> jturner314: yes, frequency
+2019-03-07T10:13:24 #rust-sci <sebk> it was samples at the zero crossing
+2019-03-07T10:13:30 #rust-sci <sebk> *sampled
+2019-03-07T10:13:58 #rust-sci <sebk> Ploppz: yea. it is drawn with line segments
+2019-03-07T10:14:17 #rust-sci <sebk> well. it would be nice to have a plotting lib for that
+2019-03-07T10:15:16 #rust-sci <sebk> line segments rendered into a map of f64, which is then colormapped
+2019-03-07T10:18:07 #rust-sci <sebk> jturner314: I guess sweeping the frequency in both directions and hoping to catch all branches
+2019-03-07T10:18:19 #rust-sci * sebk doesn't remember the details anymore
+2019-03-07T10:18:45 #rust-sci <sebk> I do remember the nightmare of getting the data out of the scope…
+2019-03-07T10:27:17 #rust-sci <Ploppz> With 'plotting' I think more of graphing and conveying information. Maybe that use case needs a _drawing_ library?
+2019-03-07T10:27:49 #rust-sci <sebk> the drawing library exists in rust already
+2019-03-07T10:27:54 #rust-sci <Ploppz> which one?
+2019-03-07T10:28:01 #rust-sci <sebk> (not as clear as I would like…)
+2019-03-07T10:28:03 #rust-sci <sebk> canvass
+2019-03-07T10:28:11 #rust-sci <sebk> *canvas
+2019-03-07T10:28:11 #rust-sci <Ploppz> oh, the one you wrote
+2019-03-07T10:28:37 #rust-sci <sebk> but I don't see why it should not be possible to use that in a plotting lib
+2019-03-07T10:28:45 #rust-sci <sebk> and also get labels and stuff
+2019-03-07T10:29:41 #rust-sci <Ploppz> hm, sure
+2019-03-07T10:30:01 #rust-sci <Ploppz> it's not unreasonable
+2019-03-07T10:30:15 #rust-sci <Ploppz> just seemed like a better fit for maybe gpu-assisted drawing
+2019-03-07T10:30:15 #rust-sci <sebk> and fundamentally it is not different from plotting a curve or a scatter plot
+2019-03-07T10:30:34 #rust-sci <sebk> hm…
+2019-03-07T10:30:37 #rust-sci <sebk> probably, yes
+2019-03-07T10:30:46 #rust-sci <Ploppz> well... maybe we can make plotlib use gpu :o
+2019-03-07T10:31:10 #rust-sci <Ploppz> well then you won't get svg
+2019-03-07T10:31:27 #rust-sci <sebk> it just has to render into an image
+2019-03-07T10:32:22 #rust-sci <Ploppz> let's say we add an "image" target to plotlib. That one can use gpu
+2019-03-07T10:32:54 #rust-sci <Ploppz> then I wonder how to specify layout and everything so that it appears the same on svg and image targets...
+2019-03-07T11:03:25 #rust-sci <sebk> the plotlib determines the size and resolution of the image
+2019-03-07T11:04:04 #rust-sci <sebk> the renderer can then produce the image given the axis range and image size (and thing to plot)
+2019-03-07T11:04:27 #rust-sci <sebk> the output image is transfered back to the plotlib which can embedd or save the image to a file
+2019-03-07T11:04:48 #rust-sci <sebk> it is then linked into the svg
+2019-03-07T11:12:21 #rust-sci <SuperFluffy> plotlib? https://github.com/milliams/plotlib ?
+2019-03-07T11:12:30 #rust-sci <SuperFluffy> sebk: ^
+2019-03-07T11:13:52 #rust-sci <sebk> SuperFluffy: yes.
+2019-03-07T11:14:12 #rust-sci <sebk> or … any plotlib
+2019-03-07T11:14:52 #rust-sci * sebk wants one that can challenge pgfplots
+2019-03-07T11:15:37 #rust-sci <SuperFluffy> pgfplots? in what sense? In quality or as a replacement within latex? :D
+2019-03-07T11:16:02 #rust-sci <sebk> both?
+2019-03-07T11:16:23 #rust-sci <sebk> meh
+2019-03-07T11:16:33 #rust-sci * sebk uploads the pdf he made with a friend
+2019-03-07T11:17:37 #rust-sci <sebk> the ability to combine plot markers and stuff with a good rendering is really useful
+2019-03-07T11:19:02 #rust-sci <sebk> the downside is… the file sizes get massive
+2019-03-07T11:19:47 #rust-sci <Ploppz> yeah sebk that seems like a good pipeline
+2019-03-07T11:19:49 #rust-sci <SuperFluffy> And it takes 5 years to render
+2019-03-07T11:19:56 #rust-sci <SuperFluffy> pgfplots, that is
+2019-03-07T11:20:00 #rust-sci <sebk> yea
+2019-03-07T11:20:07 #rust-sci <SuperFluffy> I want a modern version of gnuplot
+2019-03-07T11:20:15 #rust-sci <sebk> and a prettier one
+2019-03-07T11:20:33 #rust-sci <SuperFluffy> Right now I am using RustGnuplot to control gnuplot and plot 1000+ files
+2019-03-07T11:20:43 #rust-sci <SuperFluffy> together with gnu parallel
+2019-03-07T11:20:45 #rust-sci <SuperFluffy> That works quite nicely
+2019-03-07T11:21:08 #rust-sci <Ploppz> what do you think about f64 vs f32? Precision vs speed
+2019-03-07T11:21:09 #rust-sci <sebk> I didn't fine gnuplot produce nice enough output…
+2019-03-07T11:21:12 #rust-sci <sebk> f64.
+2019-03-07T11:21:13 #rust-sci <Ploppz> most libraries I use use f64
+2019-03-07T11:21:21 #rust-sci <SuperFluffy> sebk: It can, but takes some work to configure it
+2019-03-07T11:21:31 #rust-sci <sebk> unless you are doing hard realtime stuff, there is no reason to use f32
+2019-03-07T11:21:45 #rust-sci <Ploppz> what about doing computations that take a long time?
+2019-03-07T11:22:03 #rust-sci <sebk> they are usually also affected by poor resolution
+2019-03-07T11:22:17 #rust-sci <SuperFluffy> Ploppz: What do you mean by f64 vs f32?
+2019-03-07T11:22:19 #rust-sci <SuperFluffy> For plotting?
+2019-03-07T11:22:26 #rust-sci <SuperFluffy> For certain scientific code you need f64
+2019-03-07T11:22:27 #rust-sci <Ploppz> no, sorry different subject
+2019-03-07T11:22:42 #rust-sci <Ploppz> just thinking about how to speed up mycomputations
+2019-03-07T11:22:48 #rust-sci <SuperFluffy> All depends on the problem
+2019-03-07T11:22:50 #rust-sci <SuperFluffy> What do you do?
+2019-03-07T11:23:19 #rust-sci <Ploppz> Neuroevolution of agents (in control problems like acrobot)
+2019-03-07T11:23:24 #rust-sci <sebk> oh
+2019-03-07T11:23:26 #rust-sci <sebk> f32.
+2019-03-07T11:23:44 #rust-sci <SuperFluffy> Ploppz: Still don't exactly know what you are doing. :D
+2019-03-07T11:23:54 #rust-sci <SuperFluffy> But that sounds like controlling real life objects?
+2019-03-07T11:23:57 #rust-sci <sebk> I thin neural networks are totally fine with f32
+2019-03-07T11:24:02 #rust-sci <sebk> if not f16
+2019-03-07T11:24:29 #rust-sci <Ploppz> Oh, for the neural networks part that is certainly possible to change. For the RL part though: https://docs.rs/rsrl/0.6.0/rsrl/domains/trait.Domain.html#tymethod.step
+2019-03-07T11:24:42 #rust-sci <SuperFluffy> Ploppz: All boils down to: do you have VERY VERY large values, and VERY VERY small value? Then use f64
+2019-03-07T11:24:42 #rust-sci <Ploppz> umm that doesn't say a lot
+2019-03-07T11:24:49 #rust-sci <Ploppz> look at `step` here https://docs.rs/rsrl/0.6.0/rsrl/domains/struct.Acrobat.html
+2019-03-07T11:24:59 #rust-sci <SuperFluffy> If you only have VERY VERY large _or_ VERY VERY small values, you might be fine with f64
+2019-03-07T11:25:10 #rust-sci <SuperFluffy> err
+2019-03-07T11:25:12 #rust-sci <SuperFluffy> fine with f32*
+2019-03-07T11:25:22 #rust-sci <Ploppz> I guess I can convert f64 -> f32. Hm wish there was a way to tell each library what precision to use
+2019-03-07T11:25:34 #rust-sci <sebk> hm…
+2019-03-07T11:25:59 #rust-sci <sebk> if the algorithm is written properly (numerically stable) f32 should totally work
+2019-03-07T11:26:35 #rust-sci <SuperFluffy> Yeah, and that. If you do matrix decompositions you might run into issues with f32 vs f64
+2019-03-07T11:27:21 #rust-sci <sebk> I prefer f64 with the extra margin against errors
+2019-03-07T11:27:32 #rust-sci <SuperFluffy> same
+2019-03-07T11:27:37 #rust-sci <sebk> especially on long integrations
+2019-03-07T11:28:24 #rust-sci <Ploppz> ok thanks! Might try to change some to f32
+2019-03-07T11:28:36 #rust-sci <sebk> I think the question is: how important is an accurate result?
+2019-03-07T11:28:46 #rust-sci <sebk> or does an approximation suffice?
+2019-03-07T11:30:06 #rust-sci <Ploppz> I think indeed accuracy isn't that important, both in neural network, and in state space
+2019-03-07T11:31:50 #rust-sci <sebk> https://rynx.org/sebk/comp/main.pdf
+2019-03-07T11:31:55 #rust-sci <sebk> sorry for the size…
+2019-03-07T11:32:24 #rust-sci <sebk> but it contains a few examples of using pgfplots and pixel based renderer
+2019-03-07T11:32:37 #rust-sci <sebk> (and the ability to plot over the rendering!)
+2019-03-07T11:37:59 #rust-sci <SuperFluffy> Ploppz: This rsrl you linked does fourier projection. That's the kind of thing I'd have a closer look at to be sure f32 doesn't blow up
+2019-03-07T11:38:13 #rust-sci <SuperFluffy> Ploppz: Also, pub coefficients: Vec<Vec<f64>>,
+2019-03-07T11:38:19 #rust-sci <SuperFluffy> This is not good design
+2019-03-07T11:38:26 #rust-sci <SuperFluffy> Is that your lib?
+2019-03-07T11:38:37 #rust-sci <Ploppz> it's not. Agreed, I guess it should use ndarray
+2019-03-07T11:39:09 #rust-sci <Ploppz> Also, yeah I'll let it use f64 internally. But I think I will convert to f32 at the interface between this lib and my experiment.
+2019-03-07T11:39:22 #rust-sci <SuperFluffy> Looks like code written by a Physicist
+2019-03-07T11:39:24 #rust-sci <SuperFluffy> :D
+2019-03-07T11:39:31 #rust-sci <Ploppz> (I do some heavy computation on the states)
+2019-03-07T11:39:49 #rust-sci <Ploppz> hm.. well works a lot better (faster) than the Python counterpart, which is in fact OpenAI Gym
+2019-03-07T11:39:59 #rust-sci <Ploppz> I meant 'equivalent' not 'counterpart'
+2019-03-07T11:40:10 #rust-sci <SuperFluffy> well, python has attrocious performance
+2019-03-07T11:40:26 #rust-sci <SuperFluffy> So I am not surprised that unoptimized rust code runs laps around it
+2019-03-07T11:40:45 #rust-sci <SuperFluffy> Ploppz: Do you have a paper or something for what you are doing? Sounds interesting
+2019-03-07T11:42:38 #rust-sci <SuperFluffy> bluss getting out of rust dev? :(
+2019-03-07T11:42:54 #rust-sci <SuperFluffy> Looks for new maintainers of itertools and ndarray
+2019-03-07T11:43:08 #rust-sci <Ploppz> For the neuroevolution we follow the paper of the NEAT algorithm, and I'm working on (rewriting) the `rustneat` crate. I use neuroevolution to evolve an agent, trying to optimize for "exploration" in state space. So I measure the "unanchored L2 discrepancy" of states visited to get an idea of how much it has explored. This approach is new I think. I will have my master thesis ready in june or
+2019-03-07T11:43:10 #rust-sci <Ploppz> so if you wanna read more about what I have done :P
+2019-03-07T11:43:13 #rust-sci <Ploppz> oh no D:
+2019-03-07T14:10:19 #rust-sci <Andlon> SuperFluffy, if that's the case, he will be sorely missed :(
+2019-03-07T14:15:04 #rust-sci <SuperFluffy> Andlon: Indeed :( I don't know any specifics, just going off of his increasing inactivity and attempts to find maintainers
+2019-03-07T14:19:47 #rust-sci <Andlon> where did he reach out for this..?
+2019-03-07T14:22:45 #rust-sci <SuperFluffy> Andlon: https://github.com/bluss/rust-itertools/pull/331
+2019-03-07T14:23:05 #rust-sci <SuperFluffy> https://github.com/rust-ndarray/ndarray/pull/591
+2019-03-07T15:26:31 #rust-sci <Ploppz> in my neural network implementation, f64 is more than twice as fast as f32 ._.
+2019-03-07T15:30:31 #rust-sci <SuperFluffy> Hahaha
+2019-03-07T15:30:38 #rust-sci <SuperFluffy> Probably because some of the f32 is not properly optimized
+2019-03-07T15:30:45 #rust-sci <SuperFluffy> But usually that shouldn't happen
+2019-03-07T15:31:04 #rust-sci <SuperFluffy> _unless_ there are some checks for stability which force some optimization method to run for much longer
+2019-03-07T15:31:11 #rust-sci <SuperFluffy> (but that's probably not the acse)
+2019-03-07T15:31:40 #rust-sci <Ploppz> any idea how to fix that?
+2019-03-07T15:32:38 #rust-sci <SuperFluffy> Wellll, I don't know your code :P
+2019-03-07T15:33:14 #rust-sci <SuperFluffy> I mean, if it's literally the same code but with s/f64/f32/g, then I'd be really really surprsied
+2019-03-07T15:33:31 #rust-sci <SuperFluffy> The various avx intrinsics process twice as many f32 as f64
+2019-03-07T15:37:20 #rust-sci <sebk> I think i can look for itertools
+2019-03-07T15:38:53 #rust-sci <SuperFluffy> sebk: You left github, didn't you? :D
+2019-03-07T15:39:30 #rust-sci <sebk> yea...
+2019-03-07T15:40:18 #rust-sci <sebk> I may have to reopen the account…
+2019-03-07T15:40:56 #rust-sci <SuperFluffy> It's for the greater good! :D
+2019-03-07T15:41:03 #rust-sci <SuperFluffy> See it this way, google is funding gitlab
+2019-03-07T18:21:17 #rust-sci <sebk> okay. I have a github account again
+2019-03-07T18:21:19 #rust-sci <sebk> same name
+2019-03-07T22:10:42 #rust-sci <SuperFluffy> Awesome, we have bindings for sleef!
+2019-03-07T22:10:48 #rust-sci <SuperFluffy> https://github.com/gnzlbg/sleef-sys
+2019-03-07T22:11:28 #rust-sci <SuperFluffy> In case somebody was wondering how to do very quick elementary operations
+2019-03-07T22:24:34 #rust-sci <sebk> niiiiiiiiiiiiiiiiiiice
+2019-03-07T22:24:48 #rust-sci <sebk> wait. bindings
+2019-03-07T22:24:54 #rust-sci <sebk> I don't want bindings
+2019-03-07T22:26:05 #rust-sci <SuperFluffy> Yeah, I know
+2019-03-07T22:26:26 #rust-sci <SuperFluffy> Figuring out myself right now that this is less useful than I initially thought
+2019-03-07T22:26:41 #rust-sci <SuperFluffy> Looks like packed_simd is using sleef-sys
+2019-03-07T22:26:50 #rust-sci <SuperFluffy> Not sure how to apply it to a slice right now
+2019-03-07T22:28:35 #rust-sci * sebk can't find the simd part…
+2019-03-07T22:29:26 #rust-sci <SuperFluffy> Yeah, it doesn't expose tanh :(
+2019-03-07T22:29:28 #rust-sci <SuperFluffy> Ah shit
+2019-03-07T22:29:45 #rust-sci <SuperFluffy> sorry
+2019-03-07T22:37:18 #rust-sci <SuperFluffy> https://github.com/gnzlbg/sleef-sys/blob/master/build.rs
+2019-03-07T22:37:22 #rust-sci <SuperFluffy> Actually, they might be exposed
+2019-03-07T22:37:25 #rust-sci <SuperFluffy> I am a bit confused
+2019-03-07T22:42:24 #rust-sci <sebk> maybe compile it and run cargo docs?
+2019-03-07T22:49:44 #rust-sci <SuperFluffy> Ok, so I would warrant the guess thet sleef-sys might indeed bind those functions.
+2019-03-07T22:49:52 #rust-sci <SuperFluffy> However, packed-simd doesn't yet provide an interface
+2019-03-10T19:16:44 #rust-sci <Ploppz> in ndarray, is there a way to convert eg Vec<Array2> to Array3?
+2019-03-10T19:17:04 #rust-sci <sebk> lol
+2019-03-10T19:17:10 #rust-sci <sebk> apart from copying? no
+2019-03-10T19:17:28 #rust-sci <sebk> ndarray keeps the data in a continuous buffer
+2019-03-10T19:17:32 #rust-sci <sebk> hm
+2019-03-10T19:17:36 #rust-sci * sebk stupid
+2019-03-10T19:17:44 #rust-sci <sebk> hmmm
+2019-03-10T19:18:11 #rust-sci <sebk> I don't think so, as Array2 itself contains a pointer
+2019-03-10T19:18:19 #rust-sci <sebk> so you have an array of pointers instead an array of arrays
+2019-03-10T19:19:35 #rust-sci <sebk> so Vec<[u8; 32]> would work
+2019-03-10T19:20:03 #rust-sci <sebk> hm…
+2019-03-10T19:20:55 #rust-sci <Ploppz> Yeah. I don't care so much about having to copy the elements. I wonder if there is some convenience function on the ArrayBase type
+2019-03-10T19:21:11 #rust-sci <Ploppz> also wondering now if it's possible to append data to an existing Array2
+2019-03-10T19:21:22 #rust-sci <sebk>  see From<Vec<_>>, but thats not helping…
+2019-03-10T19:21:45 #rust-sci <Ploppz> I would append rows, so it's not strided
+2019-03-10T19:21:50 #rust-sci <sebk> there is from_iter
+2019-03-10T19:22:19 #rust-sci <Ploppz> from_iter doesn't help, since it creats a 1D array
+2019-03-10T19:22:29 #rust-sci <sebk> well. you can reshape it afterwards
+2019-03-10T19:23:19 #rust-sci <sebk> https://docs.rs/ndarray/0.12.1/ndarray/struct.ArrayBase.html#method.from_shape_vec
+2019-03-10T19:23:24 #rust-sci <sebk> that looks interesting…
+2019-03-10T19:23:40 #rust-sci <sebk> ah… no
+2019-03-10T19:24:17 #rust-sci <Ploppz> why not?
+2019-03-10T19:24:32 #rust-sci <sebk> it takes Vec<A>
+2019-03-10T19:24:42 #rust-sci <sebk> but… you have Vec<Array2>
+2019-03-10T19:24:44 #rust-sci <Ploppz> I would have to flatten the Vec<Array2>, then it might work
+2019-03-10T19:25:16 #rust-sci <Ploppz> I mean something like iter().flat_map()
+2019-03-10T19:25:23 #rust-sci <Ploppz> .flatten()*
+2019-03-10T19:25:25 #rust-sci <sebk> yea. with from_iter that would work
+2019-03-10T19:25:51 #rust-sci <Ploppz> Thanks for the help, I think that's a good solution
+2019-03-10T19:26:08 #rust-sci <Ploppz> now to the next problem: appending rows to `Array2`. I don't know the number of rows in advance
+2019-03-10T19:26:59 #rust-sci <Ploppz> well, I could manage to tell it the size upfront but... I feel like this should be possible
+2019-03-10T19:27:02 #rust-sci <sebk> hmmmmm
+2019-03-10T19:27:16 #rust-sci <sebk> I kinda doubt that is possible
+2019-03-10T19:27:52 #rust-sci <Ploppz> do you think it's technically infeasible or just a design choice?
+2019-03-10T19:27:57 #rust-sci <Ploppz> maybe I should make an issue
+2019-03-10T19:28:11 #rust-sci <sebk> it is potentially quite a costly operation
+2019-03-10T19:28:23 #rust-sci <sebk> (complete reallocation + copy)
+2019-03-10T19:28:32 #rust-sci <Ploppz> What I want would only have to append like Vec::push would
+2019-03-10T19:28:40 #rust-sci <sebk> hmm
+2019-03-10T19:28:43 #rust-sci <sebk> what are you doing?
+2019-03-10T19:28:51 #rust-sci * sebk wonders if ndarray is the right tool
+2019-03-10T19:29:29 #rust-sci <Ploppz> Collecting states (Array1) from some generator. So in my `states: Array2`, each row is a state
+2019-03-10T19:29:42 #rust-sci <Ploppz> After that I do some processing on this
+2019-03-10T19:30:40 #rust-sci <Ploppz> Actually I also have several experiments, so I could potentially put them all in an `Array3`... or `Vec<Array2>`
+2019-03-10T19:31:02 #rust-sci <Ploppz> Originally, I had `Vec<Vec<Array1>>`, then I thought about a previous discussion here, and wanted to change it to `Array3`
+2019-03-10T19:31:59 #rust-sci <Ploppz> no I would maybeb do `Vec<Array2>`, because the list of states is what needs to be processed
+2019-03-10T19:32:39 #rust-sci <sebk> hmhmhmhm
+2019-03-10T19:33:21 #rust-sci <sebk> if you have several experiments, then they might have different sizes?
+2019-03-10T19:33:36 #rust-sci <sebk> so Vec<Vec<_>> may not be that bad
+2019-03-10T19:33:48 #rust-sci <sebk> it is terrible for storing small Vec<u8>
+2019-03-10T19:35:08 #rust-sci <Ploppz> this is how I process the list of states (Array2 or Vec<Array1>) https://bpaste.net/show/65c320bc1d65
+2019-03-10T19:35:23 #rust-sci <Ploppz> it does O(n^2) accesses to the array, so maybe for performance it's best with Array2?
+2019-03-10T19:36:17 #rust-sci <Ploppz> I think I'll just change my code so that it always knows the amount of steps and thus can construct an Array2 in advance
+2019-03-10T19:36:45 #rust-sci <Ploppz> In any case: Do you think ndarray should have possibility to append rows (slowest-changing axis)? 
+2019-03-10T19:37:00 #rust-sci <Ploppz> I would be interested in maintaining ndarray if I had time...
+2019-03-10T19:37:15 #rust-sci <sebk> so far ndarray looks to be for fixed size stuff
+2019-03-10T19:37:33 #rust-sci <sebk> and I don't think changing that helps
+2019-03-10T19:39:20 #rust-sci <sebk> the Array2 looks justified
+2019-03-10T20:45:44 #rust-sci <Ploppz> ok, thanks for the reassurance ^^
+2019-03-11T15:13:45 #rust-sci <sebk> Ploppz: hm………
+2019-03-11T15:13:57 #rust-sci <sebk> sounds like you do need a proper data format
+2019-03-11T15:15:45 #rust-sci <Ploppz> proper in what way?
+2019-03-11T15:16:31 #rust-sci <sebk> one that can store complex objects and large data efficient
+2019-03-11T15:16:52 #rust-sci <sebk> https://github.com/aldanor/hdf5-rust ?
+2019-03-11T15:17:41 #rust-sci * sebk thought npy could store complex stuff…
+2019-03-11T15:17:52 #rust-sci <sebk> maybe it isn't implemented in the crate
+2019-03-11T15:22:53 #rust-sci <Ploppz> at least I can't figure out how to do that in npy-rs
+2019-03-11T15:23:03 #rust-sci <Ploppz> thanks, I might check out hdf5 then
+2019-03-11T15:24:22 #rust-sci <Ploppz> or -- what do you think about RON?
+2019-03-11T15:24:40 #rust-sci <Ploppz> it's a human friendly format, so I guess not super efficient
+2019-03-11T15:27:38 #rust-sci <Ploppz> hdf5 looks nice, it's just that I have to change from using `Serialize` etc to hdf5 traits in my code.
+2019-03-11T15:27:46 #rust-sci <sebk> yea…
+2019-03-11T15:28:12 #rust-sci * sebk should try barn again
+2019-03-11T15:28:33 #rust-sci <sebk> (like hdf, but in rust and memorymapped)
+2019-03-11T15:29:05 #rust-sci <Ploppz> interesting
+2019-03-11T15:29:17 #rust-sci <Ploppz> well I'll try hdf5
+2019-03-11T15:31:45 #rust-sci <Ploppz> any idea why I had the problem with ndarray + bincode? (wrong array version on deser)
+2019-03-11T15:32:09 #rust-sci <sebk> no… I have to look at that…
+2019-03-11T15:33:01 #rust-sci <Ploppz> I'm not even sure how to reproduce it
+2019-03-11T15:33:09 #rust-sci <Ploppz> to make some minimal test case
+2019-03-11T15:34:22 #rust-sci <sebk> https://github.com/rust-ndarray/ndarray/blob/master/src/array_serde.rs#L23
+2019-03-11T15:35:26 #rust-sci <sebk> pub const ARRAY_FORMAT_VERSION: u8 = 1u8;
+2019-03-11T15:35:29 #rust-sci <sebk> errrrrrrrrrrrrrrrrrrrrrrrrrrrrrr
+2019-03-11T15:35:52 #rust-sci <sebk> https://github.com/rust-ndarray/ndarray/blob/master/src/arraytraits.rs#L213
+2019-03-11T15:36:02 #rust-sci <sebk> Ploppz: that sounds like a bug
+2019-03-11T15:37:52 #rust-sci <Ploppz> but ah, if I were to use hdf5 I don't think ndarray supports that..
+2019-03-11T15:38:35 #rust-sci <sebk> yet
+2019-03-11T15:39:17 #rust-sci <sebk> well. hdf supports more than ndarray, so… that might be tricky
+2019-03-11T15:40:02 #rust-sci <Ploppz> what do you mean?
+2019-03-11T15:40:18 #rust-sci <sebk> ndarray is just for n-dim arrays
+2019-03-11T15:40:29 #rust-sci <sebk> hdf can store basically… anything
+2019-03-11T15:41:18 #rust-sci <Ploppz> yeah but I mean ndarray support serde through feature "serde-1" by implementing Serialize etc. To use hdf5 I would need ndarray to impl hdf5::H5Type on arrays
+2019-03-11T15:41:55 #rust-sci <sebk> ah… that could work
+2019-03-11T15:52:15 #rust-sci <Ploppz> ugh I'm stupid. I think my issue was really just that I tried to deserialize the wrong struct :(
+2019-03-11T15:52:19 #rust-sci <Ploppz> sorry
+2019-03-11T15:52:23 #rust-sci <sebk> :D
+2019-03-11T15:52:37 #rust-sci <Ploppz> so the error message was just because it read 'garbage'
+2019-03-11T15:53:06 #rust-sci <sebk> sounds like it could use a magic header…
+2019-03-11T15:53:18 #rust-sci <sebk> and tell you, "THIS IS NOT NDARRAY DATA"
+2019-03-11T15:55:06 #rust-sci <Ploppz> Yeah
+2019-03-11T15:55:15 #rust-sci <Ploppz> issue-worthy?
+2019-03-11T15:55:44 #rust-sci <Ploppz> idk if it's something that should be changed in ndarray or serde
+2019-03-11T15:56:08 #rust-sci <sebk> I think issue-worthy
+2019-03-11T15:56:47 #rust-sci <sebk> thats a 1/256 chance to have it parse the wrong data into an array
+2019-03-12T17:52:46 #rust-sci <Ploppz> sebk: https://github.com/rust-ndarray/ndarray/issues/595#issuecomment-471767792
+2019-03-12T17:57:34 #rust-sci <sebk> hm
+2019-03-12T17:59:03 #rust-sci <sebk> true
+2019-03-12T17:59:21 #rust-sci <sebk> so it is essentially the formats responsibility
+2019-03-12T18:02:24 #rust-sci <jturner314> One option to add a magic header without putting that in `ndarray` would be to handle it in whatever struct contains the `Vec<Array1<f64>>`.
+2019-03-12T18:02:27 #rust-sci <jturner314> (In other words, handle it in a wrapper type instead of `ndarray` itself.)
+2019-03-12T18:02:38 #rust-sci <sebk> yea
+2019-03-12T18:02:59 #rust-sci <Ploppz> yeah
+2019-03-12T18:03:15 #rust-sci <sebk> and have the wrapper encode the type as well
+2019-03-12T18:04:25 #rust-sci <Ploppz> well I wound CBOR to work well for me
+2019-03-12T18:07:09 #rust-sci <Ploppz> found
+2019-03-12T18:07:28 #rust-sci <sebk> I wonder if there are good ways to build large parabolic mirrors…
+2019-03-12T18:07:38 #rust-sci <sebk> > 1m diameter
+2019-03-12T18:09:09 #rust-sci <sarnold> newton did, right? :)
+2019-03-12T18:09:26 #rust-sci <sarnold> and he spent half his life trying to turn lead into gold..
+2019-03-12T18:10:50 #rust-sci <jturner314> sebk (IRC): I think this is a pretty clever DIY solution: https://youtu.be/sn89Zg0k19U
+2019-03-12T18:11:20 #rust-sci * sebk just wants to focus  1kW to a small point
+2019-03-12T18:11:23 #rust-sci <jturner314> I've seen people with larger TV satellite dishes (I assume older technology?) if you want to go bigger.
+2019-03-12T18:11:43 #rust-sci <sebk> if I can find large dishes, perfect
+2019-03-12T18:12:27 #rust-sci <jturner314> Another option is to use the Fresnel lens from one of those old rear projection TVs.
+2019-03-12T18:12:47 #rust-sci <jturner314> Probably not much bigger than 1m, though.
+2019-03-12T18:13:16 #rust-sci <jturner314> https://www.instructables.com/id/Solar-Death-Ray-TV-Fresnel-Lens/
+2019-03-12T18:13:42 #rust-sci <sebk> I suppose making it out of small hexagonal flat mirrors might work
+2019-03-12T18:13:57 #rust-sci <sebk> … and adjusting each one with a laser pointer
+2019-03-12T18:14:33 #rust-sci <sebk> another option I am considering, is a way too large container with water
+2019-03-12T18:14:44 #rust-sci <sebk> and then putting wax on it
+2019-03-12T18:15:10 #rust-sci <sebk> (while spinning it)
+2019-03-12T18:15:42 #rust-sci <jturner314> I've heard that one way to make an approximately parabolic shape is to put a sheet of rubber over a circular opening and then pull a vacuum behind it.
+2019-03-12T18:15:43 #rust-sci <sebk> but getting a 2m diameter dish to spin with a constant speed…
+2019-03-12T18:17:45 #rust-sci <jturner314> Another option, although you'd probably have trouble scaling it up: https://youtu.be/HCyHC7lnMyQ?t=74
+2019-03-12T18:20:07 #rust-sci <sebk> hmmm
+2019-03-12T18:20:16 #rust-sci <sebk> I can 2.4m wide foil fairly easy
+2019-03-12T18:21:21 #rust-sci <sebk> and I could put epoxy/glass fiber below the water
+2019-03-12T18:21:40 #rust-sci <sebk> so the water makes the shape, the epoxy cures and I can rotate the thing as I want
+2019-03-12T18:22:09 #rust-sci <jturner314> Another option would be to cut and stack layers of wood/acrylic (and then fill in the crevices with putty or something): https://www.instructables.com/id/Stacked-Laser-Cut-Bowls/
+2019-03-12T18:22:14 #rust-sci <jturner314> Then, cover with foil
+2019-03-12T18:22:51 #rust-sci <sebk> sure. it can be made of cob
+2019-03-12T18:23:14 #rust-sci <sebk> with a way to rotate a 2d pattern around
+2019-03-12T18:24:06 #rust-sci <sebk> my problem is… I somehow need to move the damm thing
+2019-03-12T18:24:25 #rust-sci <sebk> if it weights 2T, thats not going to happen
+2019-03-12T18:25:03 #rust-sci <sebk> and the cob needs a support structure below…
+2019-03-12T18:25:20 #rust-sci <sebk> hmmmmm
+2019-03-12T18:25:29 #rust-sci <sebk> I could use the riverbed
+2019-03-12T18:25:37 #rust-sci <sebk> lots and lots of find sand
+2019-03-12T18:25:48 #rust-sci <sebk> deep enough to make the shape
+2019-03-12T18:29:59 #rust-sci <jturner314> You could use multiple Fresnel lenses angled at the same point, combined with large flat mirrors to get the light going the correct direction through the lenses.
+2019-03-12T18:30:43 #rust-sci <sebk> true… but not really practical
+2019-03-12T18:33:18 #rust-sci <sebk> https://www.youtube.com/watch?v=zbKz77LcijA
+2019-03-12T18:33:19 #rust-sci <sebk> heh
+2019-03-12T18:33:32 #rust-sci <sebk> the finish could be improved…
+2019-03-12T18:34:08 #rust-sci <jturner314> Woah, nice!
+2019-03-12T19:58:12 #rust-sci <jturner314> sebk I just realized something: as you get farther away from the center, the shape becomes increasingly similar to a cone (i.e. the curvature is relatively low in the radial direction), and cones are easy to make by bending a flat sheet. This suggests that you could use some method to get the center portion (or just forget the center portion), and then add a few segments of cones (i.e. frustums) made out of some thin material (e.g. poster
+2019-03-12T19:58:12 #rust-sci <jturner314> paper or thin aluminum sheeting) for the outer portion.
+2019-03-12T19:59:21 #rust-sci <sebk> hmmm
+2019-03-12T19:59:48 #rust-sci <sebk> i have played with paper shapes enough to not try that one
+2019-03-12T19:59:59 #rust-sci <sebk> it is really difficult to get in the shape you want
+2019-03-12T20:00:39 #rust-sci <sebk> and it requires to already have something to bend it along
+2019-03-12T20:03:01 #rust-sci <sebk> epoxy/glass fiber isn't tooo expensive
+2019-03-12T20:03:06 #rust-sci <sebk> (not cheap either)
+2019-03-12T20:03:31 #rust-sci <sebk> but with the doubly-curved surface it should be quite strong, even if thin
+2019-03-12T20:05:55 #rust-sci <jturner314> Yeah, fiberglass does sound like a good option.
+2019-03-12T20:16:15 #rust-sci <sebk> it also doesn't rot, corrode and is reasonably UV stable
+2019-03-12T20:19:47 #rust-sci <Ploppz> So I'm making an `experiment` crate that should help with experiments. I don't know yet if it will be generally useful, but I try first to make it useful to my project. However starting to think that trying to generalize stuff is maybe slowing me down. What it does now is create a directory for every experiment you do, with the date and time in its name, then it serializes the experiment (`T:
+2019-03-12T20:19:49 #rust-sci <Ploppz> Experiment + Serialize + Deserialize`) to a file in that directory, and makes plot in the directory (`trait Experiment` has a plot() function that types must implement, which returns plotting information).
+2019-03-12T20:21:50 #rust-sci <Ploppz> The next thing I was thinking about ... is merging experiments. But the semantics of how this is done, is not easy. In a simple case where you have an Array2<f64> that's with dimensions (n_runs, n_points), and you want to take mean along the first dimension. Then you could just concatenate two Array2<f64> (because (very likely), if you merge two such experiments, you want to take the mean of
+2019-03-12T20:21:52 #rust-sci <Ploppz> all the runs in both experiments assuming the experiments are of the same kind) 
+2019-03-12T20:22:12 #rust-sci <Ploppz> I feel like I'm rambling. It's just that I can't think of a good way to do stuff
+2019-03-12T20:27:56 #rust-sci <Ploppz> maybe it would be nice if my crate has some enum/struct to basically represent any experiment, and can merge experiments reasonably
+2019-03-12T20:29:37 #rust-sci <Ploppz> meh, I should probably not overthink it
+2019-03-12T20:32:28 #rust-sci <sebk> why not a binary per experiment
+2019-03-12T20:32:46 #rust-sci <sebk> or possibly crate -> binary -> config
+2019-03-12T20:34:02 #rust-sci <Ploppz> so a program it can run? One important thing is that running the experiment may be very time consuming.
+2019-03-12T20:34:24 #rust-sci <sebk> hm
+2019-03-12T20:34:31 #rust-sci <sebk> so you probably want  caching layer
+2019-03-12T20:34:37 #rust-sci <sebk> *want a
+2019-03-12T20:35:02 #rust-sci <sebk> I did that with a Makefile…
+2019-03-12T20:35:06 #rust-sci <sebk> not the ideal way…
+2019-03-12T20:35:26 #rust-sci <sebk> say…
+2019-03-12T20:35:32 #rust-sci <sebk> fn generate(file, function)
+2019-03-12T20:35:45 #rust-sci <sebk> file not present -> run func and safe to file
+2019-03-12T20:35:50 #rust-sci <sebk> file present -> return data
+2019-03-12T20:36:01 #rust-sci <sebk> file not present -> run func and safe to file, return data
+2019-03-12T20:36:10 #rust-sci <Ploppz> I think it can be described better with: something that helps organize data from experiments, and knows how to plot them (a lot of the time actually, I have to replot an experiment with slightly different plotting function)
+2019-03-12T20:36:20 #rust-sci <sebk> hm.
+2019-03-12T20:36:35 #rust-sci <Ploppz> what you described is quite far from what I want
+2019-03-12T20:36:41 #rust-sci <sebk> quite possible
+2019-03-12T20:36:49 #rust-sci * sebk has no idea what Ploppz is doing
+2019-03-12T20:37:17 #rust-sci <sebk> (other than number crunching)
+2019-03-12T20:38:27 #rust-sci <Ploppz> consider this. You set up an experiment to run (that impls trait Experiment). You run it. The `expepriment` framework creates a folder to put all its data in. You inspect the plots made and decide to make some adjustments. Just change a number for example, run again, the framework creates a new folder with data and plots of that experiment
+2019-03-12T20:39:22 #rust-sci <sebk> yes
+2019-03-12T20:39:35 #rust-sci <Ploppz> that's the sorta thing I do
+2019-03-12T20:39:50 #rust-sci <Ploppz> but gtg for a little while. Sorry for rambling, I should just not overthing it :P
+2019-03-12T20:40:10 #rust-sci <Ploppz> overthink
+2019-03-12T20:42:08 #rust-sci <sebk> I can show you my solution
+2019-03-12T20:42:26 #rust-sci <sebk> number crunching with large data output and a number of parameters
+2019-03-12T20:42:46 #rust-sci <Ploppz> sure!
+2019-03-12T20:43:06 #rust-sci <sebk> hm. not online
+2019-03-12T20:43:12 #rust-sci <sebk> one moment…
+2019-03-12T20:44:31 #rust-sci <sebk> https://paste.rs/RGv
+2019-03-12T20:44:35 #rust-sci <sebk> this is one config file
+2019-03-12T20:45:53 #rust-sci <sebk> it could probably write the parameters into the file as well
+2019-03-12T20:46:02 #rust-sci <sebk> but I only had ~50 of them
+2019-03-12T20:46:36 #rust-sci <sebk> [canvas] contains the information for the plot
+2019-03-12T20:48:30 #rust-sci <sebk> now I don't have the problem of merging different runs
+2019-03-12T20:48:49 #rust-sci <sebk> (except in the final print, where is done manually)
+2019-03-12T21:48:23 #rust-sci <Ploppz> Thanks. So you have a link to the result (.npy), and the used parameters. I was thinking about putting parameters into the serialized struct that also contains the results 
+2019-03-12T21:48:43 #rust-sci <sebk> sure that works.
+2019-03-12T21:49:06 #rust-sci <sebk> well. I write the npy data with C++…
+2019-03-12T21:49:15 #rust-sci <sebk> so… keeping it simple was important
+2019-03-13T10:39:17 #rust-sci <Ploppz> Today I showed my plots to my supervisor and he asked "can you quickly plot 1/n in the same plot for comparision"? I could not do that quickly.
+2019-03-13T10:39:31 #rust-sci <Ploppz> I wonder how I could make that easy
+2019-03-13T10:40:19 #rust-sci <sebk> gnuplot would allow it
+2019-03-13T10:40:56 #rust-sci <sebk> (gnuplot has $0 $2 syntax)
+2019-03-13T10:41:16 #rust-sci <sebk> referencing to input x
+2019-03-13T10:41:57 #rust-sci <Ploppz> from the command line?
+2019-03-13T10:42:04 #rust-sci <sebk> in the gnuplot command line
+2019-03-13T10:42:08 #rust-sci <Ploppz> oh ok
+2019-03-13T10:42:13 #rust-sci <sebk> see data file plotting
+2019-03-13T10:42:40 #rust-sci <sebk> that might be possible with rust too
+2019-03-13T10:43:03 #rust-sci <sebk> some Fn (column) -> value
+2019-03-13T10:44:24 #rust-sci <Ploppz> one issue with Rust is that you have to `cargo init --bin`, then specify dependencies, and then do what you want, if you just want to e.g. process a plot like that
+2019-03-13T10:44:43 #rust-sci <Ploppz> hm but there are associated scripting languages made for the purpose of gamedev
+2019-03-13T10:46:36 #rust-sci <Ploppz> https://github.com/rust-unofficial/awesome-rust#scripting
+2019-03-13T10:47:24 #rust-sci <Andlon> I don't think Rust is a good fit for data exploration, essentially
+2019-03-13T10:47:52 #rust-sci <Andlon> In that case I think rather having a simple way to output the data into something that you can use in e.g. Python or Julia is probably more appropriate
+2019-03-13T10:48:12 #rust-sci <Andlon> I think data exploration more or less calls for a REPL, doesn't it?
+2019-03-13T10:48:45 #rust-sci <Ploppz> yeah
+2019-03-13T10:48:48 #rust-sci <sebk> hmmmmm
+2019-03-13T10:48:52 #rust-sci <sebk> bullet would work
+2019-03-13T10:49:02 #rust-sci <sebk> fast, interactive
+2019-03-13T10:49:14 #rust-sci <sebk> but very limited currently
+2019-03-13T10:49:46 #rust-sci <Ploppz> What about using a scripting language like in the link I sent?
+2019-03-13T10:49:47 #rust-sci <Andlon> bullet?
+2019-03-13T10:49:56 #rust-sci <Ploppz> his crate https://gitlab.com/sebk/bullet
+2019-03-13T10:50:17 #rust-sci <Andlon> ah, cool
+2019-03-13T10:50:22 #rust-sci <sebk> j: def plot(x, y, z): x + z, y
+2019-03-13T10:50:22 #rust-sci -j- Other(InvalidToken { location: 17 })
+2019-03-13T10:50:27 #rust-sci <sebk> j: def plot(x, y, z):= x + z, y
+2019-03-13T10:50:27 #rust-sci -j- expected "+" ,"-": def plot(x, y, z):= x + z,̭ y
+2019-03-13T10:50:33 #rust-sci <sebk> j: def plot(x, y, z):= (x + z, y)
+2019-03-13T10:50:38 #rust-sci <sebk> j: plot(1, 2, 3)
+2019-03-13T10:50:38 #rust-sci -j- (4, 2)
+2019-03-13T10:50:58 #rust-sci <Andlon> Ploppz, if you need to introduce another language you might as well already use an existing language which is already well adapted to data science (Python, Julia)
+2019-03-13T10:51:29 #rust-sci <sebk> hmmmm
+2019-03-13T10:51:54 #rust-sci <sebk> putting the data into a npy array and then calling into python?
+2019-03-13T10:52:37 #rust-sci <sebk> the question is… how fast does it have to be?
+2019-03-13T10:52:57 #rust-sci <Ploppz> what language is that sebk?
+2019-03-13T10:53:09 #rust-sci <sebk> which one?
+2019-03-13T10:53:17 #rust-sci <Ploppz> after j:
+2019-03-13T10:53:27 #rust-sci <sebk> one that I thought would be intuitive
+2019-03-13T10:53:33 #rust-sci <sebk> totally made up
+2019-03-13T10:53:53 #rust-sci <Ploppz> is it bullet?
+2019-03-13T10:53:56 #rust-sci <sebk> yes
+2019-03-13T10:54:13 #rust-sci <sebk> "j: def" makes it define a functon
+2019-03-13T10:54:18 #rust-sci <Ploppz> I understood 
+2019-03-13T10:54:29 #rust-sci <sebk> as I didn't find out a better syntax so far
+2019-03-13T10:54:35 #rust-sci <Ploppz> it says it's supposed to be a CAS. Not a general-purpose lang?
+2019-03-13T10:54:57 #rust-sci <sebk> yes
+2019-03-13T10:55:11 #rust-sci <sebk> it is not a programming language
+2019-03-13T10:55:15 #rust-sci <sebk> (yet)
+2019-03-13T10:56:05 #rust-sci <Ploppz> Andlon: Those scripting language integrate well with Rust I think, so I think it should be possible to only use the repl (?) and in that case, I don't think it's a problem
+2019-03-13T10:56:44 #rust-sci <Ploppz> if it can easily import the plotting crate and interface with it..
+2019-03-13T10:57:11 #rust-sci <sebk> what is missing is a way to handle variable-length dat
+2019-03-13T10:57:13 #rust-sci <sebk> *data
+2019-03-13T10:57:34 #rust-sci <sebk> bullet will parse it and generate code just fine
+2019-03-13T10:57:49 #rust-sci <sebk> but you still need to call with the matching array at runtime
+2019-03-13T12:53:37 #rust-sci <Andlon> Ploppz, sure - but that sounds really difficult to realize, and a *lot* of work!
+2019-03-13T12:54:01 #rust-sci <Andlon> oh, sorry, I misread
+2019-03-13T12:54:23 #rust-sci <Andlon> yeah, I don't know just how well they integrate with Rust
+2019-03-13T13:24:29 #rust-sci <Ploppz> me neither, at a glance I didn't see for example that it's possible to interface a Rust crate... so I don't know. Maybe the best we can do yet is to implement a REPL of a specific scripting lang (easy) in the relevant crate, and make the crate do actions according to what the user writes in the REPL. I think I saw the possibility in one of the scripting lang.s, of defining a function in that
+2019-03-13T13:24:31 #rust-sci <Ploppz> scripting language to call a Rust function or something
+2019-03-13T13:38:37 #rust-sci <Ploppz> integrating for example ndarray (and plotlib) into a scripting language would be cool, but more work. For example arr[.., 5] = something calls ArrayBase::assign()
+2019-03-13T14:41:09 #rust-sci <sebk> I think ndarray can be converted into a numpy array without much cost
+2019-03-13T14:41:19 #rust-sci <sebk> and that has a nice interface from python
+2019-03-13T15:33:06 #rust-sci <Andlon> I think that's a more sane approach
+2019-03-13T15:33:15 #rust-sci <Andlon> I doubt you can automatically translate ndarray's API into a scripting language
+2019-03-13T15:33:23 #rust-sci <Andlon> and you definitely don't want to have to maintain double API layers everywhere
+2019-03-13T18:26:35 #rust-sci <Ploppz> Yeah. I'm not really considering numpy, because I do my plotting in Rust. For the most part there's not problem - I make it automatically write plots to disk. It's just in those few cases you want to do something special with a plot.. 
+2019-03-13T18:27:26 #rust-sci <Ploppz> well anyway I found that I could have easily achieved what I initially wanted.. by just changing the plotting routine slightly and then running my replot binary (made a binary for plotting again saved data)
+2019-03-13T19:07:58 #rust-sci <Ploppz> argh! Can't binary search a Vec<f64> because f64 is not Ord D:
+2019-03-13T19:10:28 #rust-sci <sarnold> Ploppz: https://docs.rs/ordered-float/1.0.1/ordered_float/
+2019-03-13T19:10:55 #rust-sci <Ploppz> thanks. But I just found out there is binary_search_by :D
+2019-03-14T15:40:39 #rust-sci <Ploppz> omg yes https://arxiv.org/pdf/1706.03673.pdf the question that has been bugging me since I started trying to implement bayesian optimization
+2019-03-14T15:40:56 #rust-sci <Ploppz> "since I started" I mean I read about it once, then thought about it ever since
+2019-03-17T16:21:01 #rust-sci <Ploppz> idk if you can help me but page 7 equation 8 here https://arxiv.org/pdf/1807.02811.pdf Any idea what phi (big and small) is? 
+2019-03-17T16:26:23 #rust-sci <Ploppz> oh!!! PDF and CDF of standard normal distribution
+2019-03-17T18:03:46 #rust-sci <Ploppz> hm does this really belong in an ML library? https://athemathmo.github.io/rusty-machine/doc/rusty_machine/learning/gp/index.html 
+2019-03-17T18:04:02 #rust-sci <Ploppz> gaussian processes. Imo it would be better in just some statistics/probability crate
+2019-03-17T18:04:31 #rust-sci <Ploppz> you can do much more with it. For example this implementation doesn't give the option to sample from the gaussian process.
+2019-03-17T22:17:13 #rust-sci <Ploppz> yay, at least my bayesian optimization algorithm performs better than random search
+2019-03-17T22:22:12 #rust-sci <sebk> hehe
+2019-03-19T10:47:40 #rust-sci <Ploppz> what do you use for logging?
+2019-03-19T10:48:09 #rust-sci <Ploppz> tired of commenting and uncommenting println! lines throughout my project every time I do something else
+2019-03-19T10:48:36 #rust-sci <sebk> dbg! ?
+2019-03-19T10:48:46 #rust-sci * sebk uses his own logging system…
+2019-03-19T10:49:55 #rust-sci <sebk> https://gitlab.com/sebk/wheel/blob/master/src/log.rs
+2019-03-19T10:50:36 #rust-sci <Ploppz> for example I print some useful stuff when running an experiment. And then I have my hyperoptimization algorithm that also prints some stuff. Then I use hyperoptimization that runs many of those experiments... I would like to have the option of disabling the "inner" logging (that is, per experiment) to leave only that of the outer loop (hyperparameter optimization), or somehow at least nest
+2019-03-19T10:50:38 #rust-sci <Ploppz> the logging.
+2019-03-19T10:50:47 #rust-sci <Ploppz> like maybe somehow a hierarchical logging
+2019-03-19T10:50:57 #rust-sci <sebk> https://gitlab.com/sebk/wheel/blob/master/src/linux/src/log.rs
+2019-03-19T10:51:20 #rust-sci <sebk> yea. thats hierachical logging
+2019-03-19T10:52:01 #rust-sci <Andlon> Ploppz, I've never used it, but have you taken a look at slog?
+2019-03-19T10:52:11 #rust-sci <Ploppz> I should maybe try that
+2019-03-19T10:52:18 #rust-sci <sebk> my idea is: logging only uses a usize with null-optimization
+2019-03-19T10:52:33 #rust-sci <Ploppz> can you elaborate sebk?
+2019-03-19T10:52:37 #rust-sci <sebk> and when you branch, that gets logged too
+2019-03-19T10:52:43 #rust-sci <sebk> https://gitlab.com/sebk/wheel/blob/master/src/linux/src/log.rs#L18
+2019-03-19T10:52:44 #rust-sci <sebk> the root
+2019-03-19T10:52:51 #rust-sci <sebk> if you want a new branch, you call branch
+2019-03-19T10:53:05 #rust-sci <sebk> that method would also log that the branch was created
+2019-03-19T10:53:09 #rust-sci <sebk> and write that somewhere
+2019-03-19T10:53:25 #rust-sci <sebk> so when you analyze the log, you get a tree of log ids
+2019-03-19T10:53:33 #rust-sci <sebk> and a stream of (id, message)
+2019-03-19T10:54:39 #rust-sci <sebk> unless root was 0, then nothing is logged ever
+2019-03-19T10:54:49 #rust-sci <sebk> (in this case None)
+2019-03-19T10:56:10 #rust-sci <Ploppz> that definitely looks much simpler than slog
+2019-03-19T11:01:25 #rust-sci <Ploppz> I wish the terminal had a GUI so that you could plot hierarchically, and then click small `+` buttons to expand sections
+2019-03-19T11:02:12 #rust-sci <sebk> I am fine with just having the data
+2019-03-19T11:02:31 #rust-sci <sebk> writing a processor for that to output some html, isn't that tricky
+2019-03-19T11:02:54 #rust-sci <sebk> curses would probably work too.
+2019-03-19T11:03:23 #rust-sci <Ploppz> the thing is, I would like to print a lot of stuff , so that I won't have to rerun and plot different things if I need to know something else. Would be nice if I could print all the details, but leave terminal minimally cluttered. And only look at things I need 
+2019-03-19T11:04:11 #rust-sci <Ploppz> in general I find OSes and tools of today so limited
+2019-03-19T11:04:13 #rust-sci <sebk> hm. maybe like wireshark?
+2019-03-19T11:04:26 #rust-sci <Ploppz> yeah something like that
+2019-03-19T11:04:29 #rust-sci <sebk> that does a good job displayng filtered data
+2019-03-19T11:04:46 #rust-sci <Ploppz> but the UI should be simpler. And not necessarily have several windows
+2019-03-19T11:04:55 #rust-sci <Ploppz> maybe I should just write the next-gen terminal
+2019-03-19T11:08:18 #rust-sci <sebk> sounds to me like scanning the log would work for you
+2019-03-19T11:09:04 #rust-sci <sebk> as in… if your logger only prints ids
+2019-03-19T11:09:22 #rust-sci <sebk> then even rg "^id: " would work
+2019-03-19T11:10:13 #rust-sci <sebk> but if you start generating GB of logs… it will get slow
+2019-03-19T11:18:32 #rust-sci <Ploppz> hm maybe
+2019-03-19T11:21:00 #rust-sci <Ploppz> what about this problem. You have a module X that prints some useful stuff. Then you have a module Y that repeatedly calls X. When running X alone you might want to log everything. But when running module Y, maybe you want to silence X, and just print for example the number of runs remaining. (and in the end print some results)
+2019-03-19T11:21:21 #rust-sci <Ploppz> I think this is my core problem
+2019-03-19T11:22:25 #rust-sci <sebk> pass log: None
+2019-03-19T11:22:51 #rust-sci <sebk> (yes, you have to pass the log around everywher…)
+2019-03-19T11:26:26 #rust-sci <Ploppz> yeah that is kinda annoying
+2019-03-19T11:29:06 #rust-sci <sebk> but… honestly… I already have to pass a context struct around
+2019-03-19T11:29:19 #rust-sci <sebk> so adding a log field is not much additional work
+2019-03-19T11:29:43 #rust-sci <sebk> (loom uses 3 context stucts!)
+2019-03-19T11:30:05 #rust-sci <sebk> immutable shared, mutable owned, output
+2019-03-19T11:30:13 #rust-sci <Ploppz> if I did this with hierarchical logging maybe I could specify max depth to display
+2019-03-19T11:30:38 #rust-sci <Ploppz> and if I made my own terminal with little "+" and "-"es I could inspect closer if I wanted
+2019-03-19T11:32:48 #rust-sci <sebk> hm. so I am using io: Io Rc-thingy
+2019-03-19T11:33:01 #rust-sci <sebk> env: GraphChain (stores call context)
+2019-03-19T11:33:10 #rust-sci <sebk> and environment variables
+2019-03-19T11:33:18 #rust-sci <sebk> + output
+2019-03-19T11:33:26 #rust-sci <sebk> log is part of Io
+2019-03-19T11:33:37 #rust-sci <sebk> (but it could also be part of env…)
+2019-03-19T11:33:53 #rust-sci <sebk> Ploppz: hm
+2019-03-19T11:34:18 #rust-sci <sebk> i'd prefer something where you can write a filter expr
+2019-03-19T11:34:26 #rust-sci <sebk> like 3…, 5
+2019-03-19T11:34:40 #rust-sci <sebk> that would display 3 and childs, as well as 5
+2019-03-19T11:34:53 #rust-sci <sebk> or 3+, 5
+2019-03-19T11:35:17 #rust-sci <sebk> since you may want to keep them ordered
+2019-03-19T11:35:35 #rust-sci <sebk> oh. my logger was written with the possibility of concurrency in mind
+2019-03-19T11:36:02 #rust-sci <sebk> which… makes the whole "expand this" a bit not helpful
+2019-03-19T11:36:07 #rust-sci <Ploppz> the "id" is unique to the specific message, or to the place in the code that the message is created?
+2019-03-19T11:36:18 #rust-sci <sebk> to the place where it was created
+2019-03-19T11:36:28 #rust-sci <sebk> actually to a specific call
+2019-03-19T11:36:39 #rust-sci <sebk> a call to branch() gives you a new id
+2019-03-19T11:36:42 #rust-sci <sebk> every time
+2019-03-19T11:37:06 #rust-sci <sebk> so my idea was to pass log ids to a future chain
+2019-03-19T11:37:16 #rust-sci <sebk> and be abled to reconstruct what happend in that future
+2019-03-19T11:37:32 #rust-sci <sebk> despite other log messages from other futures that happend meanwhile
+2019-03-19T11:39:56 #rust-sci <sebk> ugh
+2019-03-19T11:40:01 #rust-sci <sebk> soo many stuff to write down
+2019-03-19T11:40:11 #rust-sci <sebk> *much
+2019-03-19T11:41:19 #rust-sci <sebk> you can probably add a location info if you want
+2019-03-19T11:41:26 #rust-sci <sebk> without taking up much ressources
+2019-03-19T11:41:52 #rust-sci <Ploppz> maybe we could make a proper crate some time. But I don't have enough time now, I think I might try out slog
+2019-03-19T11:42:11 #rust-sci <sebk> heck, if you split the usize into {id: u32, file: u16 line: u16} it uses the same space
+2019-03-19T11:42:27 #rust-sci <sebk> yea… same
+2019-03-19T11:43:21 #rust-sci * sebk dislikes slog… too much clutter
+2019-03-19T11:43:35 #rust-sci <Ploppz> clutter you mean in the API?
+2019-03-19T11:43:36 #rust-sci <sebk> every output like contains the full context
+2019-03-19T11:43:43 #rust-sci <sebk> every output line contains the full context
+2019-03-19T11:44:00 #rust-sci <sebk> in the api as well
+2019-03-19T11:44:06 #rust-sci <Ploppz> oh. Can't you configure it?
+2019-03-19T11:44:16 #rust-sci <sebk> probably…
+2019-03-19T11:44:20 #rust-sci <Ploppz> it feels like it should be possible, especially because it is "structured"
+2019-03-19T11:44:31 #rust-sci <Ploppz> since it has all this extra information, I imagine you could do all kind of things with it
+2019-03-19T11:44:42 #rust-sci <Ploppz> hm, maybe process it before displaying it
+2019-03-19T11:44:44 #rust-sci <Ploppz> that might be useful
+2019-03-19T11:47:46 #rust-sci <SuperFluffy> Has anyone explored if async code is useful for scientific computation?
+2019-03-19T11:51:00 #rust-sci <sebk> SuperFluffy: I would not expect it
+2019-03-19T11:51:14 #rust-sci <sebk> since… it is bounded by computation
+2019-03-19T11:54:56 #rust-sci <SuperFluffy> https://arxiv.org/abs/1609.02053
+2019-03-19T11:55:02 #rust-sci <SuperFluffy> I was thinking of something like that
+2019-03-19T11:56:39 #rust-sci <sebk> hm…
+2019-03-19T11:56:46 #rust-sci <sebk> event driven might work
+2019-03-19T11:59:02 #rust-sci <sebk> but then you'd need to store a huge amout of them, and their connections…
+2019-03-19T12:34:54 #rust-sci <Andlon> SuperFluffy, I'm sure can be, but it sounds very niche. Usually your input is available up front and so you can just directly process it
+2019-03-19T12:35:01 #rust-sci <Andlon> SuperFluffy, for distributed computing you often use async operations though
+2019-03-19T12:35:15 #rust-sci <Andlon> MPI for example has lots of async functionality (that naturally is mainly a pain to use)
+2019-03-19T12:35:41 #rust-sci <Andlon> although in those cases your entire code is not typically async
+2019-03-19T12:35:52 #rust-sci <Andlon> rather, you do this for a small portion solving some particular subproblem
+2019-03-19T12:36:14 #rust-sci <Andlon> depends what exactly you mean by "async" I guess
+2019-03-19T17:41:53 #rust-sci <sebk> I am not quite sure how to implement the data driven thing… efficient
+2019-03-19T17:42:20 #rust-sci <sebk> with simd, I can process … 8 ops/clock=
+2019-03-19T17:42:26 #rust-sci <sebk> far more on a gpu
+2019-03-19T17:45:33 #rust-sci <sebk> I suppose… if one event can be processe in 4 clock cycles…
+2019-03-19T17:45:52 #rust-sci <sebk> then you gain something if only 1/16 is used
+2019-03-19T17:46:06 #rust-sci <sebk> which might be realistic
+2019-03-19T19:09:20 #rust-sci <sarnold> SuperFluffy: <~sebk> I am not quite sure how to implement the data driven thing… efficient <~sebk> with simd, I can process … 8 ops/clock= <~sebk> far more on a gpu
+2019-03-19T19:09:36 #rust-sci <sarnold> SuperFluffy: <~sebk> I suppose… if one event can be processe in 4 clock cycles… <~sebk> then you gain something if only 1/16 is used <~sebk> which might be realistic
+2019-03-19T19:10:01 #rust-sci <sarnold> SuperFluffy: this isn't async, but I thought of this when reading the abstract you referenced https://github.com/TimelyDataflow/timely-dataflow
+2019-03-19T20:24:35 #rust-sci <SuperFluffy> I am confused who you are talking to :D
+2019-03-19T20:24:47 #rust-sci <SuperFluffy> sarnold: ^
+2019-03-19T20:25:28 #rust-sci <SuperFluffy> Thanks for reminding me of timely dataflow
+2019-03-19T20:25:41 #rust-sci <SuperFluffy> I feel like it might be interesting, but I somehow don't really know how to use it
+2019-03-19T20:26:17 #rust-sci <SuperFluffy> What about the talk about the “data driven thing”
+2019-03-19T20:33:37 #rust-sci <sebk> uhh
+2019-03-19T20:33:51 #rust-sci <sebk> if a neuron fires, then the outputs have some processing to do
+2019-03-19T20:39:45 #rust-sci <SuperFluffy> Ah, right
+2019-03-19T21:03:11 #rust-sci <sarnold> yah :)
+2019-03-19T21:03:56 #rust-sci <SuperFluffy> I'd really love to see a dataflow example for a sciency crowd
+2019-03-19T21:04:03 #rust-sci <SuperFluffy> non-computer-sciency, taht is
+2019-03-19T21:14:50 #rust-sci <sarnold> me too
+2019-03-19T21:14:56 #rust-sci <sarnold> frank's blog posts are great reading
+2019-03-19T21:15:03 #rust-sci <sarnold> a problem a bit outside the usual would be nice
+2019-03-19T21:20:26 #rust-sci <SuperFluffy> Yeah, very in depth, very detailed. I guess if I have some kind of graph computation problem, this stuff would be great. :D
+2019-03-19T22:15:33 #rust-sci <Ploppz> sebk: maybe some inspiration for drawing library. This is from OpenAI Gym. In Rust we have RSRL which is supposed to offer the same as OpenAI Gym. Except that it doesn't have rendering yet. Here is an example of rendering in OpenAI Gym: https://github.com/openai/gym/blob/master/gym/envs/classic_control/acrobot.py#L176 You can see result in this gif https://gym.openai.com/envs/Acrobot-v1/ 
+2019-03-19T22:16:14 #rust-sci <Ploppz> shared because I think you have been pondering about a general drawing library. This is one use case.
+2019-03-19T22:16:30 #rust-sci <sebk> thanks!
+2019-03-21T10:58:29 #rust-sci <Ploppz> sebk: do you have any wip drawing libs? Can't find any good ones for Rust. Need really simple 2d drawing
+2019-03-21T18:26:15 #rust-sci <sebk> Ploppz: not really
+2019-03-21T18:27:55 #rust-sci <sebk> ggez maybe
+2019-03-21T18:28:19 #rust-sci <Ploppz> yeah I found that it's the best
+2019-03-21T20:04:40 #rust-sci <SuperFluffy> So what are you guys using for serialization/deserialization these days?
+2019-03-21T20:04:47 #rust-sci <SuperFluffy> Anyone playing with hdf5?
+2019-03-21T20:48:25 #rust-sci <sebk> not quite sure about hdf
+2019-03-21T20:48:41 #rust-sci * sebk has no time at the moment anyway
+2019-03-21T20:49:23 #rust-sci <sebk> what I would find interesting, is some way to encode the types used to serialize the data
+2019-03-21T20:49:27 #rust-sci <sebk> separately from the data
+2019-03-21T20:49:45 #rust-sci <sebk> so some sanit checks can run automotically
+2019-03-21T20:50:00 #rust-sci <sebk> so some sanity checks can run automatically
+2019-03-21T20:50:57 #rust-sci <sebk> and the ability to deserialize into a slightly different struct
+2019-03-21T21:40:32 #rust-sci <Ploppz> I second that, sebk 
+2019-03-21T21:40:59 #rust-sci <Ploppz> I use CBOR. It's a compact format but it also has enough information for the deserializer to see if there is a missing field and fill in the default
+2019-03-21T21:41:21 #rust-sci <Ploppz> hdf5 looks interesting though
+2019-03-21T21:42:08 #rust-sci <SuperFluffy> Ploppz: Can you serialize the same struct twice to one file using cbor?
+2019-03-21T21:42:36 #rust-sci <SuperFluffy> I currently use bincode, writing out my simulation's state after a set number of steps.
+2019-03-21T21:43:01 #rust-sci <SuperFluffy> So I have |..state..||..state..||..state..|.... in a file
+2019-03-21T21:43:14 #rust-sci <SuperFluffy> And I can just deserialize one state after the other
+2019-03-21T21:43:52 #rust-sci <Ploppz> by same struct you mean different structs of the same type?
+2019-03-21T21:43:58 #rust-sci <SuperFluffy> Tried to do that once with msgpack, but I don't know if it was its self-describing nature or the rust implementation itself, I wasn't able to do the same thing
+2019-03-21T21:44:03 #rust-sci <SuperFluffy> Ploppz: Yes
+2019-03-21T21:44:12 #rust-sci <Ploppz> hm, one moment
+2019-03-21T21:44:16 #rust-sci <SuperFluffy> Ploppz: Say an Array2 with updated info
+2019-03-21T21:44:50 #rust-sci <sebk> worst case: wrap it
+2019-03-21T21:45:30 #rust-sci <sebk> (skip 8 bytes, write data, write length to skipped bytes)
+2019-03-21T21:46:51 #rust-sci <Ploppz> hm idk, I think you have to test it yourself
+2019-03-21T21:47:47 #rust-sci <Ploppz> what I was thinking for a moment: I implemented a network layer using bincode, and I wonder how I knew the lengths of the serialized structs upfront. But can't find it
+2019-03-21T21:48:14 #rust-sci <sebk> if it contains a Vec, you can't
+2019-03-21T21:48:29 #rust-sci <Ploppz> it was variable size indeed because it was an enum
+2019-03-21T21:48:43 #rust-sci <Ploppz> but I wonder if I actually sent each struct in its own package
+2019-03-21T21:48:47 #rust-sci <Ploppz> packet*
+2019-03-21T21:49:00 #rust-sci <Ploppz> yeah probably, it was based on UDP
+2019-03-21T21:55:28 #rust-sci <sebk> actually you can… by serializing it
+2019-03-21T21:55:38 #rust-sci <sebk> if you send it, it needs to go into a buffer first anywaay
+2019-03-21T22:13:16 #rust-sci <Ploppz> in TCP you still can't
+2019-03-21T22:13:28 #rust-sci <Ploppz> you don't have packets, you just have a stream
+2019-03-21T22:13:31 #rust-sci <Ploppz> iirc
+2019-03-21T22:15:25 #rust-sci <sarnold> I've heard good things about https://github.com/farsightsec/fstrm for layering frames on top of streams
+2019-03-22T10:24:48 #rust-sci <sebk> sarnold: does that require to know the framesize? (I assume?)
+2019-03-22T10:30:20 #rust-sci <sebk> it does.
+2019-03-22T10:46:50 #rust-sci <sebk> Ploppz, SuperFluffy, sarnold: https://docs.rs/framed/0.4.1/framed/typed/index.html
+2019-03-22T10:52:11 #rust-sci <SuperFluffy> sebk: awesome
+2019-03-22T10:52:14 #rust-sci <SuperFluffy> What am I looking at? :D
+2019-03-22T10:53:40 #rust-sci <sebk> something to send frames over a stream
+2019-03-22T10:54:44 #rust-sci <sebk> https://docs.rs/framed/0.4.1/framed/bytes/struct.Config.html
+2019-03-22T10:56:48 #rust-sci <sebk> I am not really convinced by the details… but it looks like it would work
+2019-03-22T17:36:28 #rust-sci <sarnold> nice
+2019-03-25T17:25:23 #rust-sci <sebk> j: 3^3
+2019-03-25T17:25:24 #rust-sci -j- 81
+2019-03-30T18:30:41 #rust-sci <castilho> Are there any established plotting libraries in Rust? I'm thinking of trying my hand at implementing the Grammar of Graphics in Rust (most famously implemented by ggplot) but if there are already established libraries I'd rather contribute to those
+2019-03-30T18:31:46 #rust-sci <castilho> Also, hi, I'm new.
+2019-03-30T19:15:36 #rust-sci <Ploppz> nooo why did he leave. plotlib
+2019-03-30T19:48:10 #rust-sci <castilho> Ploppz: got disconnected here, but I checked the logs when I came back :)
+2019-03-30T19:48:37 #rust-sci <castilho> plotlib seems unstable though?
+2019-03-30T19:55:41 #rust-sci <sebk> there is certainly nothing polished yet
+2019-03-30T19:56:01 #rust-sci <sebk> and I think the biggest problem is the lack of a good 2d graphics lib
+2019-03-30T19:56:14 #rust-sci <sebk> so you have to write SVGs
+2019-03-30T19:56:55 #rust-sci <sebk> could you say what you would like from a plot lib?
+2019-03-30T19:58:14 #rust-sci <Ploppz> castilho: yeah, plotlib is under construction. I chose it for my work because I am up to contributing to it. I want something purely Rust rather than for example bindings to gnuplot. I mentioned it because you said you might want to contribute
+2019-03-30T19:59:06 #rust-sci <Ploppz> in any case, yeah, curious what you want from a plot lib.
+2019-04-01T18:38:19 #rust-sci <sebk> guys…
+2019-04-01T18:38:31 #rust-sci <sebk> how do I stitch images that are far too big?
+2019-04-01T18:38:34 #rust-sci <jturner314> What's up?
+2019-04-01T18:38:40 #rust-sci <sebk> 8x120MP
+2019-04-01T18:39:00 #rust-sci <sebk> I want to make a satellite image of Abkhazi to print
+2019-04-01T18:39:05 #rust-sci <sebk> 10m/pixel
+2019-04-01T18:39:10 #rust-sci <sebk> *Abkhazia
+2019-04-01T18:39:21 #rust-sci <sebk> my laptop takes 30s to load one image…
+2019-04-01T18:41:28 #rust-sci <sebk> example: https://i.imgur.com/fjnKYlB.png
+2019-04-01T18:42:12 #rust-sci <jturner314> What if you resize all the input images, and then combine them?
+2019-04-01T18:42:34 #rust-sci <jturner314> imagemagick works well for scripting manipulation of many images.
+2019-04-01T18:42:55 #rust-sci <sebk> I have to see if gimp can handle two images… so I can figure out where to overlap
+2019-04-01T18:43:13 #rust-sci <jturner314> Oh, you need to identify overlaps?
+2019-04-01T18:43:28 #rust-sci <sebk> hopefully not, but I have to check that…
+2019-04-01T18:43:32 #rust-sci <sarnold> sebk: I've used hugin to stitch panoramas before
+2019-04-01T18:43:38 #rust-sci <sebk> 700MB/tile
+2019-04-01T18:43:42 #rust-sci <sarnold> wow
+2019-04-01T18:43:46 #rust-sci <est31> why not slippy maps?
+2019-04-01T18:44:12 #rust-sci * sebk is still downloading the data…
+2019-04-01T18:44:26 #rust-sci <jturner314> There was a post on the front page of Reddit not too long ago with someone who overlaid and stitched together thousands of images of the moon to generate a really high resolution image. Let me see if I can find it...
+2019-04-01T18:44:40 #rust-sci <sarnold> wasn't that just 8k?
+2019-04-01T18:45:54 #rust-sci <jturner314> Yeah, it looks like that's the case. Quote from their post: "It took two full days before my computer finished stacking everything and I could finish assembling the composition in photoshop... (actually 2 computers were working non-stop on this) ... The photoshop file reached a peak of 24GB while working on this, despite constantly flattening/ trimming as I went."
+2019-04-01T18:46:26 #rust-sci <sebk> yeaa… I may delay that for my faster laptop
+2019-04-01T18:46:48 #rust-sci <est31> I just know about minetest where game maps previously were big images that didn't load on my computer
+2019-04-01T18:46:54 #rust-sci <sarnold> these guys have some crazy density, http://bigpixel.cn/ but they all appear to be photosphere kinds of things
+2019-04-01T18:47:07 #rust-sci <est31> so I made tiled/sloppy maps out of them :)
+2019-04-01T18:47:50 #rust-sci <est31> but it would be an interesting task to work on pngs without keeping the entire image in memory
+2019-04-01T18:48:29 #rust-sci <sebk> first it needs a different encoding…
+2019-04-01T18:48:34 #rust-sci <sebk> lines just don't work anymore
+2019-04-01T18:48:49 #rust-sci <sebk> I guess 200px tiles would work, year
+2019-04-01T18:48:51 #rust-sci <sebk> -r
+2019-04-01T18:49:03 #rust-sci <jturner314> I'm seeing a few references to http://www.autostakkert.com/ but I can't get their website to load on my computer.
+2019-04-01T18:49:10 #rust-sci <sebk> https://vastphotos.com/prints/
+2019-04-01T18:50:15 #rust-sci <sarnold> http://www.autostakkert.com/ loaded for me but it took four or five seconds before going
+2019-04-01T18:56:21 #rust-sci <sebk> so………
+2019-04-01T18:56:46 #rust-sci <sebk> 44k pixel width…
+2019-04-01T18:56:59 #rust-sci <sarnold> sebk: how many images are we talking here?
+2019-04-01T18:57:05 #rust-sci <sebk> 8
+2019-04-01T18:57:14 #rust-sci <sarnold> and total size?
+2019-04-01T18:57:32 #rust-sci <sebk> 43920 x 21960
+2019-04-01T18:58:05 #rust-sci <sebk> ~3GB memory
+2019-04-01T18:58:26 #rust-sci <sebk> 2.7 GP
+2019-04-01T18:58:31 #rust-sci <sebk> err
+2019-04-01T18:58:38 #rust-sci <sebk> no
+2019-04-01T18:58:48 #rust-sci <sebk> 920MP
+2019-04-01T18:58:54 #rust-sci <sarnold> my back-of-the-envelope guessing was ~4gigs..
+2019-04-01T18:59:12 #rust-sci <sebk> with RGBA, yes
+2019-04-01T18:59:34 #rust-sci <sarnold> I don't know how much working space hugin requires, but it feels like something that might fit in my laptop if I close firefox and chrome.. and if it doesn't, I could try ssh -X from a bigger machine
+2019-04-01T18:59:54 #rust-sci <sebk> memory isn't really the problem…
+2019-04-01T18:59:58 #rust-sci <sebk> GPU memory might be
+2019-04-01T19:00:11 #rust-sci <sebk> "just 4GB"
+2019-04-01T19:00:26 #rust-sci * sebk wonders if he missed a zero somewhere…
+2019-04-01T19:00:38 #rust-sci <sebk> n
+2019-04-01T19:00:39 #rust-sci <sebk> no
+2019-04-01T19:00:41 #rust-sci <sebk> one is 120MP
+2019-04-01T19:00:57 #rust-sci <sebk> the thing is… I would like it printed…
+2019-04-01T19:01:10 #rust-sci <sebk> but I don't think thats happening any time soon…
+2019-04-01T19:04:29 #rust-sci <sebk> hmm
+2019-04-01T19:04:41 #rust-sci <sebk> 100mm x 100mm costs 0,2€
+2019-04-01T19:04:56 #rust-sci <sarnold> I can't imagine that prices scale linearly :)
+2019-04-01T19:05:41 #rust-sci <sebk> well. I can sitch them manually
+2019-04-01T19:05:55 #rust-sci <sebk> print many many images and glue them together
+2019-04-01T19:05:58 #rust-sci <sarnold> oh, with glue and a foamcore backing.. :)
+2019-04-01T19:06:07 #rust-sci <sarnold> the possibility didn't cross my mind :)
+2019-04-01T19:06:18 #rust-sci <sebk> 500px/100mm might be a reasonable resolution
+2019-04-01T19:07:00 #rust-sci <sebk> ~125dpi
+2019-04-01T19:08:26 #rust-sci <sebk> still… 640€ for the entire thing
+2019-04-01T19:09:00 #rust-sci <sarnold> ow
+2019-04-01T19:09:13 #rust-sci <sebk> 20 * 20 per tile
+2019-04-01T19:09:16 #rust-sci <sebk> 8 tiles
+2019-04-01T19:09:22 #rust-sci <sebk> 3200 images
+2019-04-01T19:09:47 #rust-sci <sebk> buuut
+2019-04-01T19:09:55 #rust-sci <sebk> the height can't be > 2m
+2019-04-01T19:10:00 #rust-sci <sarnold> what would you do with an image 8 meters long?
+2019-04-01T19:10:19 #rust-sci <sebk> width is the smaller concern…
+2019-04-01T19:10:44 #rust-sci <sebk> so the width would be 4m
+2019-04-01T19:10:59 #rust-sci <sebk> reducing the cost to 150€
+2019-04-01T19:11:16 #rust-sci <sebk> with a better format maybe 100€
+2019-04-01T19:15:37 #rust-sci * sebk is totally going to do that
+2019-04-01T19:24:59 #rust-sci <sebk> 10€/m²
+2019-04-01T19:25:00 #rust-sci <sebk> lol
+2019-04-01T19:25:19 #rust-sci <sebk> so 80€
+2019-04-01T19:25:42 #rust-sci <sarnold> that's way more reaonable
+2019-04-01T19:26:07 #rust-sci <sebk> having an entire country on a map
+2019-04-01T19:26:13 #rust-sci <sebk> with 10m resolution
+2019-04-01T19:26:24 #rust-sci <sebk> that would be amazing
+2019-04-01T19:29:30 #rust-sci <sebk> hmmm
+2019-04-01T19:29:38 #rust-sci <sebk> maybe I can get the entire thing printed for 50€
+2019-04-01T19:29:56 #rust-sci <sebk> and avoid gluing 800 pictures, lol
+2019-04-01T19:30:46 #rust-sci <sarnold> eight would surely be more fun than 800
+2019-04-01T20:32:26 #rust-sci <sebk> hmmm
+2019-04-01T20:38:39 #rust-sci <sebk> https://s3view.oceandatalab.com/
+2019-04-01T20:38:45 #rust-sci <sebk> great tool!
+2019-04-01T20:43:12 #rust-sci <sebk> also https://earthexplorer.usgs.gov/
+2019-04-10T12:31:49 #rust-sci <sebk> https://www.youtube.com/channel/UC3iPHLGE9w0U4pVtmtmayzQ
+2019-04-10T13:00:47 #rust-sci <est31> https://www.youtube.com/watch?v=lnJi0Jy692w
+2019-04-19T08:13:21 #rust-sci <lukemathwalker-M> It took me a while to figure out how to join from riot.im, but it seems I made it 😅
+2019-04-19T16:00:18 #rust-sci <jturner314> Hi lukemathwalker! Yeah, bridged rooms (e.g. IRC and Gitter) are non-obvious because they require a prefix. Mozilla IRC channels are of the form #mozilla_#channel:matrix.org, Freenode IRC channels are of the form #freenode_#channel:matrix.org, and Gitter rooms are of the form #gitter_room:matrix.org.
+2019-04-19T16:33:40 #rust-sci <jturner314> lukemathwalker: I found a guide for using Matrix with IRC at https://github.com/matrix-org/matrix-appservice-irc/wiki/Guide:-How-to-use-Matrix-to-participate-in-IRC-rooms
+2019-04-19T16:38:11 #rust-sci <jblondin-M> oooh, thanks...that explains the problems I was having with the appservice earlier, I was using the wrong appservice user
+2019-04-19T16:39:08 #rust-sci <jturner314> jblondin: For Mozilla IRC, the appservice user is @mozilla-irc:matrix.org (full list at https://github.com/matrix-org/matrix-appservice-irc/wiki/Bridged-IRC-networks)
+2019-04-19T16:41:44 #rust-sci <jturner314> (The guide uses Freenode as an example.)
+2019-04-19T16:42:15 #rust-sci <jturner314> instead of Mozilla
+2019-04-19T16:46:21 #rust-sci <jblondin> jturner314: great, thanks! now I can get the nickserv stuff situated. I'm liking this client...it seems to handle my concerns with needing to be always-online to avoid missing messages
+2019-04-19T16:53:00 #rust-sci <jturner314> jblondin: You're welcome, happy to help! Logs are also available at https://mozilla.logbot.info/rust-sci but yeah it's convenient for Matrix to be always connected so that you don't have to read the logs separately.
+2019-04-19T17:02:14 #rust-sci <lukemathwalker-M> Thanks for the guide @jturner314:matrix.org!
+2019-04-23T13:38:39 #rust-sci <SuperFluffy> ArrayView and ArrayViewMut are defined as “type ArrayView<'a, A, D> = ...”, but I frequently see the 'a omitted, as in the case of t(): https://docs.rs/ndarray/*/ndarray/struct.ArrayBase.html#method.t
+2019-04-23T13:38:42 #rust-sci <SuperFluffy> Any idea what's up with that?
+2019-04-23T13:38:52 #rust-sci <SuperFluffy> I can't find an alternative definition that simply omits the 'a
+2019-04-23T13:43:06 #rust-sci <lukemathwalker-M> Could that have anything to do with an implied lifetime?
+2019-04-23T13:43:15 #rust-sci <lukemathwalker-M> Lifetime elision, that's the word - https://doc.rust-lang.org/nomicon/lifetime-elision.html
+2019-04-23T13:43:54 #rust-sci <jblondin> It appears to just be elision
+2019-04-23T13:44:05 #rust-sci <jblondin> yeah, what Luca said :)
+2019-04-23T13:44:50 #rust-sci <SuperFluffy> Just asked the same thing in #rust
+2019-04-23T13:44:55 #rust-sci <SuperFluffy> lifetime ellision it is
+2019-04-23T13:45:11 #rust-sci <SuperFluffy> Wasn't aware that it could be skipped in type parameter position.
+2019-04-23T13:47:31 #rust-sci <jblondin> yup: https://play.rust-lang.org/?version=stable&mode=debug&edition=2018&gist=7e0a50b37e37980e6af4d13770212daa
+2019-04-23T13:49:12 #rust-sci <SuperFluffy> Crazy :D
+2019-04-25T18:17:55 #rust-sci <sebk> anyone with experience in OpenStreetMap ?
+2019-04-25T18:18:16 #rust-sci * sebk wonders how to process the data into a space ordered data format
+2019-04-25T18:18:45 #rust-sci <sebk> (a naive approach would require > 80GB of NodeId -> Node) map
+2019-04-25T18:19:18 #rust-sci <sebk> (yes, I could just rent a server with 256GB of memory and run it there)
+2019-04-27T12:45:26 #rust-sci <sebk> I have created #rust-sci on oftc.net
+2019-04-27T13:05:56 #rust-sci <lukemathwalker-M> I was trying to get a sense of the progress on consts generic, but I haven't been very successful. Does anyone here have more insights on that stream of language work?
+2019-04-27T13:06:49 #rust-sci <sebk> did you find out who is working on it?
+2019-04-27T13:07:28 #rust-sci <lukemathwalker-M> Nope, consider it part of the question :P
+2019-04-27T13:07:47 #rust-sci <Andlon> lukemathwalker-M, I think it's blocked on chalk integration
+2019-04-27T13:07:58 #rust-sci <Andlon> let me look this up, I had the same question not so long ago
+2019-04-27T13:09:02 #rust-sci <lukemathwalker-M> Thanks a lot Andlon !
+2019-04-27T13:10:34 #rust-sci <Andlon> lukemathwalker-M, hmm, I think I've confused this with specialization or GATs. I can't find any trail leading to chalk with respect to const generics
+2019-04-27T13:10:47 #rust-sci <Andlon> so I guess I don't have an answer for you after all, sorry!
+2019-04-27T13:11:08 #rust-sci <Andlon> btw, everybody: you may have seen/heard that Mozilla will be closing their IRC servers
+2019-04-27T13:12:16 #rust-sci <Andlon> There's a good amount of people over on the rustsim discord. It's principally devoted mostly to the nalgebra/nphysics/ncollide/alga libraries, but I think sebcrozet would be happy to have more people interested in scientific computing in Rust over there
+2019-04-27T13:12:25 #rust-sci <Andlon> ah, right, there's something in the topic about this already
+2019-04-27T13:21:40 #rust-sci * sebk can't even find rustsim
+2019-04-27T13:27:25 #rust-sci <sebk> found it
+2019-04-27T15:21:21 #rust-sci <jturner314> I haven't had any success creating a usable Discord account. (Discord keeps blocking me as being suspicious, even though I've never even used Discord before.)
+2019-04-27T15:21:42 #rust-sci <sebk> hah
+2019-04-27T15:21:53 #rust-sci <sebk> yea…
+2019-04-27T15:21:53 #rust-sci <jturner314> I don't really want to be stuck with a single proprietary chat client, either.
+2019-04-27T15:21:58 #rust-sci <jturner314> So, I'll be on the OFTC IRC channel.
+2019-04-27T15:22:13 #rust-sci <sebk> I … didn't have a particular good experience with their client
+2019-04-27T15:22:17 #rust-sci <sebk> sooo laggy
+2019-04-27T15:23:14 #rust-sci <sebk> I will try to see if we can get a brige to tho the discord channel (to be created)
+2019-04-27T15:23:16 #rust-sci <jturner314> I hope Mozilla will choose an open platform for their chat (maybe set up a Matrix server or something).
+2019-04-27T15:23:41 #rust-sci <sebk> but for me IRC is still far better
+2019-04-27T15:23:52 #rust-sci <jturner314> That would be awesome. Would I have to have a usable Discord account to use an IRC bridge?
+2019-04-27T15:23:59 #rust-sci <sebk> no
+2019-04-27T15:23:59 #rust-sci <jturner314> or could I just use IRC like normal?
+2019-04-27T15:24:11 #rust-sci <sebk> like normal
+2019-04-27T15:24:22 #rust-sci <jturner314> That would work well for me.
+2019-04-27T15:24:42 #rust-sci <sebk> but afaik only one channel can be bridged to one channel
+2019-04-27T15:24:44 #rust-sci <jturner314> (Any platform that can be bridged to Matrix is fine with me.)
+2019-04-27T15:25:05 #rust-sci <sebk> until matrix has good clients… nope
+2019-04-27T15:25:05 #rust-sci <jturner314> IRC is fine too
+2019-04-27T15:25:52 #rust-sci <jturner314> I've been happy with Riot, but I understand objections to it. (It's fairly heavy for a chat client.)
+2019-04-27T15:46:40 #rust-sci <est31> jturner314: discord allowed me to create an account at least
+2019-04-27T15:46:51 #rust-sci <est31> but I have to fill out captchas regularly
+2019-04-27T15:46:59 #rust-sci <est31> probably because I regularly clear my cookies
+2019-04-27T15:47:10 #rust-sci <est31> rofl discord is so much against the values that I hold
+2019-04-27T15:47:49 #rust-sci <sebk> especially value 1: usability
+2019-04-27T15:48:18 #rust-sci <jturner314> est31 (IRC): Yeah, I created an account, but every time I log in, it wants me to "verify" my account with a phone number, even though I've filled out CAPTCHAs and stuff. I can't use my office phone because they only allow numbers that support SMS, and it says my Google Voice number is "invalid".
+2019-04-27T15:48:56 #rust-sci <est31> yup, conflicts my personal values of anonymity, pseudonymity, privacy, and separation of interests
+2019-04-27T15:49:10 #rust-sci <est31> phone numbers are universal tracking IDs
+2019-04-27T15:49:13 #rust-sci <jturner314> I suppose I could buy a burner phone, but that's an expensive way just to join a chat network.
+2019-04-27T15:49:20 #rust-sci <est31> yeah.
+2019-04-27T15:50:12 #rust-sci <est31> also discord is proprietary, conflicting another one of my values
+2019-04-27T15:50:23 #rust-sci <est31> jturner314: didn't know that discord actually requires phone numbers of users
+2019-04-27T15:50:29 #rust-sci <est31> maybe they do on my account now as well
+2019-04-27T15:50:31 #rust-sci <est31> possibly
+2019-04-27T15:50:40 #rust-sci <est31> but then I just won't log in haha
+2019-04-27T15:51:21 #rust-sci <jturner314> It requires phone numbers if you look suspicious, I guess.
+2019-04-27T15:51:50 #rust-sci <est31> let me try it right now
+2019-04-27T15:52:12 #rust-sci <est31> so I can enter password & username
+2019-04-27T15:52:19 #rust-sci <est31> now I have to enter a captcha
+2019-04-27T15:52:19 #rust-sci <jturner314> Just make sure you don't try logging in over a VPN...
+2019-04-27T15:52:48 #rust-sci <est31> after entering the captcha they now sent me an e-mail
+2019-04-27T15:52:52 #rust-sci <est31> lemme check my inbox
+2019-04-27T15:53:35 #rust-sci <est31> now I click the link in the inbox
+2019-04-27T15:53:38 #rust-sci <est31> and can log in finally
+2019-04-27T15:53:40 #rust-sci <est31> yeey!
+2019-04-27T15:53:47 #rust-sci <est31> totally usable platform
+2019-04-27T15:53:51 #rust-sci <est31> compare that to quassel
+2019-04-27T15:54:00 #rust-sci <est31> I click on the start menu icon for quassel
+2019-04-27T15:54:03 #rust-sci <est31> DONE
+2019-04-27T15:55:05 #rust-sci <jturner314> Well, I'm glad you were able to log in successfully at least.
+2019-04-27T15:55:50 #rust-sci <est31> so I should consider myself lucky now?
+2019-04-27T15:55:51 #rust-sci <est31> lol
+2019-04-27T15:55:59 #rust-sci <est31> I guess compared to you I am indeed
+2019-04-27T15:56:33 #rust-sci <jturner314> Yeah, now just be sure not to do anything in the future to trigger their "validation" page...
+2019-04-27T15:56:50 #rust-sci <est31> jturner314: you know it can just be that people in your city have been banned from quite many discord channels already so everyone in the same ip range now has to give their phone numbers because some fortnite kids couldnt stop harassing other fortnite kids
+2019-04-27T16:00:17 #rust-sci <jturner314> est31 (IRC): My guess is that I'm suspicious-looking because I initially tried creating my account over a VPN. It's a VPN I control, though, and I've controlled the IP address for over a year. When I tried disconnecting from the VPN and logging in again, Discord still rejected me. :(
+2019-04-27T16:00:52 #rust-sci <jturner314> They're probably blocking the entire IP range of my VPS provider, and if you get rejected once, it probably doesn't matter even if you connect from a "normal" IP.
+2019-04-27T16:01:52 #rust-sci <est31> yeah that could be it
+2019-04-27T16:02:02 #rust-sci <jturner314> Even if I delete my account, re-create it from a "normal" IP, and then try to start using my VPN again, I expect they'll block me again.
+2019-04-27T16:02:14 #rust-sci <jturner314> hi bluss (IRC) 
+2019-04-27T16:05:03 #rust-sci <est31> jturner314: yeah, that's clearly a zero sum game here between anonymity and spam protection
+2019-04-27T16:06:11 #rust-sci <est31> and now I gotta do other stuff
+2019-04-27T16:06:22 #rust-sci <jturner314> est31 (IRC): Yeah, I understand the desire to protect against spam, but I wish they'd just use CAPTCHAs and block users who have *actually done* something malicious instead of considering people guilty before proven innocent.
+2019-04-27T16:06:36 #rust-sci <jturner314> Okay, see you est31 (IRC) 
+2019-04-27T22:52:34 #rust-sci <kwerl> I have a question about nalgebra, I was wondering if there was an easy way to get the xy translation and z rotation components from a Matrix4 for use with an Isometry2 (without reading values directly, preferably)
+2019-05-04T12:16:46 #rust-sci <lukemathwalker-M> I just realized I didn't post it there - a quite interesting discussion has started on what do to kick-start a machine learning ecosystem in Rust.
+2019-05-04T12:16:47 #rust-sci <lukemathwalker-M> If you are interested or curious, have a look: https://github.com/rust-ml/discussion/issues/1
+2019-05-04T13:37:37 #rust-sci <sebk> indeed!
+2019-05-04T13:38:01 #rust-sci <sebk> Ploppz: ^
+2019-05-04T16:21:43 #rust-sci <jblondin> Thanks, Luca -- I hadn't seen that yet and definitely should read through it!
+2019-05-04T16:53:40 #rust-sci <Ploppz> thanks
+2019-05-10T14:14:56 #rust-sci <SuperFluffy> So what's the status?
+2019-05-10T14:15:13 #rust-sci <SuperFluffy> Discussions, however rare, still happening here? Or have we moved someplace else already?
+2019-05-10T16:08:44 #rust-sci <sebk> SuperFluffy: probably here and on OFTC.net
+2019-05-10T16:08:49 #rust-sci <sebk> until this is dead
+2019-05-15T21:03:54 #rust-sci <SuperFluffy> Man, bluss even deleted his reddit account.
+2019-05-15T21:04:06 #rust-sci <SuperFluffy> Looks like he cut all his open source activity
+2019-05-15T21:04:10 #rust-sci <SuperFluffy> Sad
+2019-05-16T15:08:33 #rust-sci <Ploppz> could this easily be made possible in ndarray? https://play.rust-lang.org/?version=stable&mode=debug&edition=2018&gist=af2569090feca9ab1a8e7bf12ed2d6d0
+2019-05-16T15:10:02 #rust-sci <Ploppz> I'm wondering whether it is possible to convert a Map where the closure returns an Array1, to an Array2..
+2019-05-16T16:21:20 #rust-sci <sebk> Ploppz: probably
+2019-05-16T16:21:21 #rust-sci <sebk> the fastest way would be to pass a &mut slice to to the closure
+2019-05-16T16:21:47 #rust-sci <sebk> otherwise it needs to allocate and copy each array1
+2019-06-08T15:09:11 #rust-sci <oezgurmakkurt> hi, I am working on a BLAS implementation on rust, code is here: https://github.com/oezgurmakkurt/blasoxide, gemm implementations are on par with OpenBLAS on my 4 core ryzen cpu, I am looking for contributors who will optimize kernels for their cpus. Please contact me if you want to contribute
+2019-06-13T10:52:59 #rust-sci <sebk> bluss!!
+2019-06-13T10:53:03 #rust-sci <sebk> where is he
+2019-06-13T10:53:17 #rust-sci <sebk> can anyone here merge PRs into ndarray?
+2019-06-13T10:55:15 #rust-sci <sebk> nevermind. jturner314 you can merge, right?
+2019-06-13T10:59:13 #rust-sci <lukemathwalker-M> Hey sebk! What do you need?
+2019-06-13T10:59:38 #rust-sci <sebk> more coffee apparently
+2019-06-13T10:59:51 #rust-sci * sebk confused ndarray and nalgebra
+2019-06-13T11:00:38 #rust-sci <sebk> > <voker57> yeah I wonder why nalgebra::geometry::Point does not have Ord in the first place
+2019-06-13T11:01:16 #rust-sci <sebk> I guess it could implement Ord wheere N: Ord
+2019-06-13T11:02:08 #rust-sci <sebk> lukemathwalker-M: ^
+2019-06-13T13:46:44 #rust-sci <jturner314> sebk (IRC): Fwiw, yes I can merge PRs into ndarray. (lukemathwalker and I are both maintainers.)
+2019-08-04T16:54:38 #rust-sci <charlotte> Looking for a PHP job? Want to telework? We are hiring and open minded! Look, we're running this unusual campaign. contact us! c o n t a c t @ b e l e n v o l .lu
+2019-08-04T16:55:04 #rust-sci <sebk> ffffs.
+2019-08-04T16:55:15 #rust-sci * sebk adds to blacklist
+2019-08-06T13:35:39 #rust-sci <SuperFluffy> If I have a ShapeBuilder or a Shape, is there any way to get a T: Dimension from that?
+2019-08-06T13:35:48 #rust-sci <SuperFluffy> I am not seeing any...
+2019-08-06T13:37:51 #rust-sci <SuperFluffy> Reason I am asking: I have a constructor method that takes a T: ShapeBuilder<Dim = Dim<[Ix; 2]>> (so that I can create a row- or column-major matrix), but I also need to have access to the number of columns and rows.
+2019-08-06T13:39:54 #rust-sci <SuperFluffy> I think I am not getting around setting T: IntoDimension<Dim = Dim<[Ix; 2]>> + ShapeBuilder<Dim = Dim<[Ix; 2]>>
+2019-08-07T04:44:08 #rust-sci <jturner314> SuperFluffy (IRC): I don't know if you'll see this since you aren't online, but I'll reply anyway. I don't see any way to do what you're asking. I wouldn't mind adding the necessary API to do so, though. Please feel free to create an issue.
+2019-08-27T09:43:23 #rust-sci <sebk> does anyone have the link to the other rust-sci on discord?
+2019-08-27T13:26:05 #rust-sci <Plippz> sebk: #science-and-ai on https://discordapp.com/invite/aVESxV8 perhaps?
+2019-08-27T13:26:19 #rust-sci <sebk> there was another one…
+2019-08-27T13:26:52 #rust-sci <Plippz> hm, dunno sorry
+2019-09-18T17:02:02 #rust-sci <sebk> how did I miss weld ???
+2019-09-18T17:02:39 #rust-sci <sebk> https://github.com/weld-project/weld
+2019-09-18T17:03:58 #rust-sci <sebk> ugh. google groups
+2019-09-18T17:04:57 #rust-sci <bluss> I didn't know it either, until seeing the video from rustconf
+2019-09-18T17:06:12 #rust-sci <sebk> exactly.
+2019-09-18T17:06:18 #rust-sci <sebk> watching it right now
+2019-09-18T17:21:56 #rust-sci * sebk goes and writes them a email to join this channel
+2019-09-20T15:40:29 #rust-sci <sebk> does anyone know a good r-tree impl?
+2019-09-20T15:41:20 #rust-sci <sebk> rstar looks good
+2019-09-25T08:43:38 #rust-sci <SuperFluffy> bluss: Have you seen niko's recent work regarding rayon and not spinning on idle cores?
+2019-09-25T08:43:58 #rust-sci <SuperFluffy> bluss: https://github.com/rayon-rs/rfcs/pull/5
+2019-09-25T08:58:53 #rust-sci <bluss> SuperFluffy: nope, thanks :)
+2019-09-25T09:09:33 #rust-sci <SuperFluffy> bluss: Cool. I was reminded of your issue and prototype a few months back
+2019-09-25T09:15:03 #rust-sci <bluss> yeah exactly, would be cool if I could just use rayon with this fix. Does cargo use rayon?
+2019-09-25T09:15:26 #rust-sci <bluss> Saturating the CPU and only getting marginal returns in speedups reminds me of other Rust tools
+2019-09-25T09:17:23 #rust-sci <SuperFluffy> doesn't seem like it
+2019-09-25T09:17:25 #rust-sci <SuperFluffy> no dependency
+2019-09-25T09:36:14 #rust-sci <SuperFluffy> You should propose it :D
+2019-11-27T10:39:39 #rust-sci <SuperFluffy> For ML, most crates/efforts I have found so far are concerned with training models. It seems there is very little on running models.
+2019-11-27T10:40:01 #rust-sci <SuperFluffy> So let's say I have a pre-trained model, which is just a bunch of matrices.
+2019-11-27T10:40:39 #rust-sci <SuperFluffy> It seems no one is concerned with loading protobuf or hdf5 data and just executing the trained model.
+2019-11-27T10:40:43 #rust-sci <SuperFluffy> Have I overlooked something?
+2019-11-27T10:56:03 #rust-sci <lukemathwalker-M> I have been working on this for the past two weeks - I am finishing a write up.
+2019-11-27T10:56:20 #rust-sci <lukemathwalker-M> You can see an example of gRPC microservice to serve an ML model in Rust here: https://github.com/LukeMathWalker/clustering-benchmarks
+2019-11-27T11:11:17 #rust-sci <SuperFluffy> Hm, tell me if I am mistaken: you have `linfa` and `scikit-learn`. You use both to train a model. If I understand things correctly, you now have 2 differently trained models?
+2019-11-27T11:12:03 #rust-sci <SuperFluffy> lukemathwalker-M: Maybe that's crazy, but what about running the trained linfa-model on scikit-learn, and the trained scikit-learn model on rust/linfa?
+2019-11-27T11:32:30 #rust-sci <lukemathwalker-M> Yeah, that repository is for benchmarking purposes, so I have a bunch of different combinations there.
+2019-11-27T11:32:53 #rust-sci <lukemathwalker-M> What do you mean by running linfa on scikit-learn?
+2019-11-27T11:42:07 #rust-sci <SuperFluffy> What I am thinking about is: you have a pre-trained model, trained using some other framework, for example tensorflow.
+2019-11-27T11:42:25 #rust-sci <SuperFluffy> You parse its output into some rust representation.
+2019-11-27T11:42:31 #rust-sci <SuperFluffy> And then you execute it.
+2019-11-27T12:05:01 #rust-sci <lukemathwalker-M> That's possible, yes. Not what I am focused on though - you end up depending on the internal implementation details of scikit-learn to pull off something like that, there is no standard representation format (like ONNX for neural networks)
+2019-11-27T12:34:47 #rust-sci <SuperFluffy> Ah yeah, that was what I was thinking of. ONNX or TensorFlow or something like that
+2019-11-27T12:35:32 #rust-sci <SuperFluffy> Looks like the only one considering that was tract by snips, actually
+2019-11-27T12:42:18 #rust-sci <lukemathwalker-M> ONNX is amazing, but you can do it because all Deep Learning architecture are fundamentally the same model, a neural network. Stuff like Scikit-learn would have to come up with a specification for every single algorithm
+2019-11-27T12:44:59 #rust-sci <SuperFluffy> Yeah, I see.
+2019-11-27T12:45:14 #rust-sci <SuperFluffy> Going to investigate what different deep learning architectures there are
+2019-11-27T12:45:49 #rust-sci <SuperFluffy> I am still stuck at the level of “bunch of linear operators mapping data between an input and an output dimension”
+2019-11-27T12:46:17 #rust-sci <SuperFluffy> So -> give data as input, multiypl by a bunch of matrices one after the other, collect your output
+2019-11-27T12:46:30 #rust-sci <SuperFluffy> It's probably a bit more complicated these days :D
+2019-11-27T13:11:52 #rust-sci <lukemathwalker-M> Mostly topology evolution, not much more
+2020-02-10T09:32:56 #rust-sci <sebk> what do you think about moving to zulip?
+2020-02-10T09:33:24 #rust-sci <sebk> either under https://rust-lang.zulipchat.com/ or an own org
+2020-02-10T18:18:42 #rust-sci <jturner314> sebk (IRC): Personally, I prefer anything that can bridge easily to Matrix. (IRC, Gitter, and Matrix work well.) Are you aware if that Zulip instance is bridged to Matrix? (It looks like that's possible: https://zulip.com/integrations/doc/matrix) Fwiw, OFTC is fine with me, although it's pretty quiet right now.
+2020-02-10T18:21:58 #rust-sci <sebk> jturner314: mh. I personally don't like matrix too much… but IRC requires a reliable connection… not something I have (or many people)
+2020-02-10T18:22:14 #rust-sci <sebk> so matrix/zulip could be a lower barrier to use it
+2020-02-10T18:28:26 #rust-sci <jturner314> My motivation is that I already use Matrix, and I'd prefer to minimize the number of messaging things I need. (I already have email, Matrix, and Signal; I'd prefer to avoid adding a fourth.) It looks like it's also possible to bridge IRC to Zulip (https://zulip.com/integrations/doc/irc), so if we can't get Zulip bridged directly to Matrix, maybe we could have IRC bridged to Zulip and Matrix? Fwiw, Mozilla is switching to Matrix
+2020-02-10T18:28:26 #rust-sci <jturner314> (https://discourse.mozilla.org/t/synchronous-messaging-at-mozilla-the-decision/50620).
+2020-02-10T18:32:33 #rust-sci <sebk> I mean… I am not opposed to matrix
+2020-02-10T18:32:41 #rust-sci <sebk> I am using it already for glutin/winit
+2020-02-10T18:33:07 #rust-sci <sebk> and for small things I don't see why it would not work
+2020-02-10T18:35:23 #rust-sci <sebk> jturner314: what client do you use?
+2020-02-10T18:35:32 #rust-sci <jturner314> Riot
+2020-02-10T18:35:34 #rust-sci <sebk> preferably one that doesn't crash all the time…
+2020-02-10T18:35:43 #rust-sci <sebk> mh
+2020-02-10T18:36:06 #rust-sci <jturner314> I'm not a huge fan of Riot. (It's pretty heavy and somewhat slow.) But, it works well enough for my use-case.
+2020-02-10T18:36:52 #rust-sci <jturner314> I think it's gotten better over time.
+2020-02-10T18:38:08 #rust-sci <jturner314> I haven't tried any of the others.
+2020-02-10T18:42:07 #rust-sci <jturner314> sebk (IRC): Out of curiosity, which clients have you tried?
+2020-02-10T18:42:33 #rust-sci <sebk> quaternion
+2020-02-10T18:42:39 #rust-sci <sebk> crashed on startup
+2020-02-10T18:43:18 #rust-sci <sebk> also one for console…
+2020-02-10T18:43:28 #rust-sci <sebk> that worked, but lacked too much
+2020-02-10T18:43:43 #rust-sci <sebk> plus I prefer actual text rendering
+2020-02-10T18:44:39 #rust-sci <sebk> Riot is slow and uses a lot of screen space (not efficient)
+2020-02-10T18:45:37 #rust-sci <jturner314> yeah
+2020-02-10T18:47:15 #rust-sci <jturner314> Let's see... The other beta-maturity GUI clients for Linux according to matrix.org are nheko Reborn and Fractal. Fractal is in the Arch Linux repositories, so I may give it a shot.
+2020-02-10T18:53:32 #rust-sci <sebk> I tried to  build fractal… needs a newer version of cairo…
+2020-02-10T18:53:37 #rust-sci <sebk> when there is pathfinder
+2020-02-10T18:53:39 #rust-sci <sebk> …
+2020-02-10T18:56:19 #rust-sci <jturner314> I haven't used Flatpak, but it looks like that may be an easy way to try Fractal and nheko Reborn without building anything.
+2020-02-10T18:56:28 #rust-sci <jturner314> (and without matching versions of external dependencies)
+2020-02-10T18:57:12 #rust-sci <sebk> I have a slow and limited connection… flatpack is out of the question
+2020-02-10T18:58:43 #rust-sci <jturner314> Is the problem that the Flatpak images are too large to download?
+2020-02-10T18:59:21 #rust-sci <sebk> yes
+2020-02-10T18:59:26 #rust-sci <jturner314> I guess I'm spoiled by my pretty fast internet connection.
+2020-02-12T09:12:44 #rust-sci <sebk> jturner314: I am trying flatpak now…
+2020-02-12T09:12:56 #rust-sci <sebk> it doesn't even tell you how much it needs to download!
+2020-02-12T09:13:46 #rust-sci <sebk> looks like > 100MB
+2020-02-12T16:47:01 #rust-sci <jturner314> sebk (IRC): Wow, that's much larger than I would have guessed. I guess including all the dependencies in the image takes up a lot of space.
+2020-02-12T16:47:34 #rust-sci <jturner314> It reminds me of this article: https://wiki.alopex.li/LetsBeRealAboutDependencies
+2020-02-12T16:57:45 #rust-sci <sebk> well…
+2020-02-12T16:58:01 #rust-sci <sebk> for me it is usually faster to run cargo install…
+2020-02-12T16:58:12 #rust-sci <sebk> than fetching a binary
+2020-02-12T16:58:36 #rust-sci <sebk> mosty because most crates are already cached
+2020-02-12T16:59:15 #rust-sci <sebk> if just the crates.io registry was more efficient…
+2020-02-12T17:01:24 #rust-sci <sebk> but I also have a powerful computer… so compilation times don't really matter
+2020-02-12T17:01:55 #rust-sci <sebk> anyway… I am going to fetch the flatpak in the night…
+2020-02-12T17:18:00 #rust-sci <jturner314> I'll be interested to hear the outcome.
+2020-02-12T20:28:02 #rust-sci <sebk> jturner314: it doesn't even resume the partial download…
+2020-02-12T20:29:03 #rust-sci <jturner314> That's disappointing.
+2020-02-12T20:31:36 #rust-sci <jturner314> Maybe the messages are misleading? https://github.com/flatpak/flatpak/issues/679
+2020-02-12T21:32:27 #rust-sci <sebk> jturner314: appears to work
+2020-02-12T21:32:48 #rust-sci <jturner314> Nice!
+2020-02-12T21:33:11 #rust-sci <sebk> … now if it would allow me to set the font…
+2020-02-12T21:33:26 #rust-sci <jturner314> Does it seem faster than Riot?
+2020-02-12T21:33:33 #rust-sci <sebk> YES
+2020-02-12T21:34:09 #rust-sci <sebk> I can switch rooms in what feels like on frame
+2020-02-12T21:34:20 #rust-sci <sebk> actually more
+2020-02-12T21:34:24 #rust-sci <sebk> maybe 50ms
+2020-02-12T21:34:32 #rust-sci <jturner314> What about memory usage?
+2020-02-12T21:34:56 #rust-sci <sebk> 130M
+2020-02-12T21:35:29 #rust-sci <jturner314> More than I would hope, but not too bad, I guess.
+2020-02-12T21:35:58 #rust-sci <sebk> riot uses 80M
+2020-02-12T21:36:06 #rust-sci <jturner314> oh
+2020-02-12T21:36:30 #rust-sci <sebk> now 130
+2020-02-12T21:36:37 #rust-sci <sebk> with a bit of scrolling
+2020-02-12T21:36:48 #rust-sci <jturner314> I wonder if part of the memory usage is shared libraries in the flatpak that would ordinarily be shared with other applications.
+2020-02-12T21:37:07 #rust-sci <sebk> fractal is still below 130
+2020-02-12T21:37:15 #rust-sci <sebk> with scrolling
+2020-02-12T21:37:29 #rust-sci <sebk> I don't care about 130M
+2020-02-12T21:37:52 #rust-sci * sebk has tons of memory
+2020-02-12T21:38:05 #rust-sci <jturner314> :)
+2020-02-12T21:38:18 #rust-sci <jturner314> How much, if you don't mind me asking?
+2020-02-12T21:38:26 #rust-sci <sebk> 32G
+2020-02-12T21:38:40 #rust-sci <sebk> I rarely use half of it
+2020-02-12T21:39:02 #rust-sci <jturner314> Wow, nice! Here I am on a laptop with 8GB.
+2020-02-12T21:39:13 #rust-sci <jturner314> You could run lots of VMs with that much memory.
+2020-02-12T21:39:24 #rust-sci <sebk> even my old laptop has been updated to 16GB
+2020-02-12T21:41:09 #rust-sci <sebk> the FS cache makes a huge difference for compiling
+2020-02-12T21:41:31 #rust-sci <sebk> its like having a SSD for all the hot data
+2020-02-12T21:41:34 #rust-sci <jturner314> Oh, I didn't think about that.
+2020-02-12T21:41:40 #rust-sci <jturner314> That's a good point.
+2020-02-12T21:41:50 #rust-sci <jturner314> I'll have to reconsider getting more RAM.
+2020-02-12T21:42:03 #rust-sci <sebk> get as much as it can fit
+2020-02-12T21:42:10 #rust-sci <jturner314> I have a 9750H (6-core) processor but 8GB RAM.
+2020-02-12T21:42:16 #rust-sci <jturner314> lol
+2020-02-12T21:42:22 #rust-sci <sebk> seriously
+2020-02-12T21:42:32 #rust-sci <sebk> I have both maxed out
+2020-02-12T21:42:40 #rust-sci <jturner314> Yeah, thanks for the suggestion. I hadn't considered caching.
+2020-02-12T21:43:36 #rust-sci <sebk> I guess 64G would be a bit of overkill in my case…
+2020-02-12T21:44:01 #rust-sci <sebk> but for the next one, definitly (or more)
+2020-02-12T21:44:05 #rust-sci <jturner314> This laptop can support 128GB of RAM. I could fit my entire home directory in RAM. :)
+2020-02-12T21:44:30 #rust-sci <sebk> just never reboot
+2020-02-12T21:44:35 #rust-sci <jturner314> lol
+2020-02-12T22:00:17 #rust-sci <sebk>  now I get it…
+2020-02-12T22:00:22 #rust-sci <sebk> flatpack isolates everything
+2020-02-12T22:00:27 #rust-sci <sebk> so all my settings don't apply
+2020-02-12T22:00:30 #rust-sci <sebk> …
+2020-02-12T22:00:33 #rust-sci <jturner314> right
+2020-02-12T22:00:59 #rust-sci <sebk> this is actually pretty terrible
+2020-02-12T22:01:45 #rust-sci <jturner314> It looks like it may be possible to install different GTK themes: https://blog.tingping.se/2017/05/11/flatpak-theming.html
+2020-02-12T22:02:16 #rust-sci <jturner314> Maybe one of the other themes will be better?
+2020-02-12T22:02:36 #rust-sci <jturner314> another article: https://www.linuxuprising.com/2018/05/how-to-get-flatpak-apps-to-use-correct.html
+2020-02-12T22:03:40 #rust-sci <sebk> no no no no
+2020-02-12T22:03:54 #rust-sci * sebk reverts back to good old apt-get
+2020-02-12T22:03:55 #rust-sci <jturner314> It does seem pretty hacky.
+2020-02-12T22:04:06 #rust-sci <jturner314> Like a VM just for an app.
+2020-02-12T22:04:10 #rust-sci <sebk> flatpak might work for containers
+2020-02-12T22:04:19 #rust-sci <sebk> but not for this
+2020-02-12T22:05:54 #rust-sci <jturner314> It looks like the latest version of [Nheko Reborn](https://github.com/Nheko-Reborn/nheko) is available in Ubuntu repositories. (package `nheko`)
+2020-02-12T22:06:32 #rust-sci <jturner314> Maybe that would be worth trying instead?
+2020-02-12T22:07:03 #rust-sci <sebk> ah
+2020-02-12T22:07:09 #rust-sci <sebk> I had that installed
+2020-02-12T22:07:09 #rust-sci <sebk> crashes
+2020-02-12T22:07:15 #rust-sci <jturner314> oh
+2020-02-12T22:08:34 #rust-sci <jturner314> You said you tried Quaternion too, right? It appears to be in the repos.
+2020-02-12T22:09:16 #rust-sci <sebk> maybe. installing
+2020-02-12T22:10:48 #rust-sci <sebk> didn
+2020-02-12T22:10:53 #rust-sci <sebk> didn't crash yet
+2020-02-12T22:11:13 #rust-sci <sebk> oh that is muuch better
+2020-02-12T22:11:46 #rust-sci <jturner314> faster?
+2020-02-12T22:11:50 #rust-sci <jturner314> better font?
+2020-02-12T22:12:04 #rust-sci <sebk> better font
+2020-02-12T22:13:10 #rust-sci <sebk> < 100M
+2020-02-12T22:13:25 #rust-sci <jturner314> nice
+2020-02-12T22:13:35 #rust-sci <jturner314> A chat client shouldn't take more than 100M, IMO.
+2020-02-12T22:13:56 #rust-sci <sebk> yea…
+2020-02-12T22:14:07 #rust-sci <sebk> let see how much my editor uses
+2020-02-12T22:14:29 #rust-sci <sebk> 20M
+2020-02-12T22:15:11 #rust-sci <jturner314> vim?
+2020-02-12T22:17:41 #rust-sci <sebk> no
+2020-02-12T22:17:41 #rust-sci <sebk> grafeia
+2020-02-12T22:17:49 #rust-sci <sebk> 60MB in chrome
+2020-02-12T22:17:53 #rust-sci <sebk> and 2MB in firefox
+2020-02-12T22:17:54 #rust-sci <sebk> lol
+2020-02-12T22:18:08 #rust-sci <sebk> https://grafeia.github.io/grafeia-wasm/
+2020-02-12T22:18:22 #rust-sci <sebk> (also avaible as a native binary)
+2020-02-12T22:18:27 #rust-sci <jturner314> I'm running Riot in a Chromium instance, so it's a little difficult to figure out the total memory usage because Chromium spawns so many processes, but it appears to be 246M.
+2020-02-12T22:18:44 #rust-sci <jturner314> I've never heard of grafeia before.
+2020-02-12T22:19:04 #rust-sci <sebk> well. I only picked the name a few weeks back
+2020-02-12T22:19:17 #rust-sci <jturner314> Oh, it's you'r own editor?
+2020-02-12T22:19:20 #rust-sci <sebk> yes
+2020-02-12T22:19:28 #rust-sci <jturner314> cool
+2020-02-12T22:19:41 #rust-sci <sebk> pathfinder + webgl + wasm + rust
+2020-02-12T22:20:13 #rust-sci <jturner314> It doesn't seem to be working for me.
+2020-02-12T22:20:19 #rust-sci <sebk> tss
+2020-02-12T22:20:24 #rust-sci <jturner314> (It's stuck at Loading...)
+2020-02-12T22:20:43 #rust-sci <sebk> https://s3bk.github.io/webgl-diag
+2020-02-12T22:20:55 #rust-sci <jturner314> Tried in my normal Firefox instance, a Firefox instance with a fresh profile, and a Chromium instance with a fresh profile.
+2020-02-12T22:20:56 #rust-sci <jturner314> Nvm
+2020-02-12T22:20:58 #rust-sci <jturner314> It just took a long time to load.
+2020-02-12T22:20:58 #rust-sci <sebk> you need webgl2 + EXT_color_buffer_float
+2020-02-12T22:21:05 #rust-sci <sebk> oh
+2020-02-12T22:21:16 #rust-sci <sebk> yea. I want a load progress bar eventually
+2020-02-12T22:21:36 #rust-sci <jturner314> Looks fancy.
+2020-02-12T22:21:51 #rust-sci <jturner314> The page is centered horizontally in Firefox but not in Chromium.
+2020-02-12T22:21:56 #rust-sci <sebk> currently rewriting it to add collaborative editing
+2020-02-12T22:22:31 #rust-sci <jturner314> The ligature support is impressive.
+2020-02-12T22:23:28 #rust-sci <sebk> I want to add fine ligature control to the dictionary that also controls hyphenation
+2020-02-12T22:24:00 #rust-sci <sebk> In german word boundaries (even if written as one word) should not get ligatures
+2020-02-12T22:24:38 #rust-sci <jturner314> So, language-specific ligatures? That's cool.
+2020-02-12T22:24:50 #rust-sci <jturner314> Is the intent to be a word-processing type thing?
+2020-02-12T22:24:51 #rust-sci <sebk> well
+2020-02-12T22:25:02 #rust-sci <sebk> technically they are language specific
+2020-02-12T22:25:26 #rust-sci <sebk> each script/language has a set of ligatures that is enabled by default as per OpenType
+2020-02-12T22:25:37 #rust-sci <sebk> my font parser just enables all of them right now
+2020-02-12T22:25:42 #rust-sci <jturner314> Oh, I didn't realize that.
+2020-02-12T22:26:18 #rust-sci <sebk> The intend is for it to replace LaTeX for the common case
+2020-02-12T22:26:20 #rust-sci <jturner314> The oo ligature is neat.
+2020-02-12T22:26:55 #rust-sci <jturner314> That's pretty ambitious. Math support too?
+2020-02-12T22:27:30 #rust-sci <sebk> https://fonts.google.com/specimen/Cormorant+Garamond
+2020-02-12T22:27:33 #rust-sci <jturner314> It would be nice to have a fast web-based editor for collaborative projects.
+2020-02-12T22:27:56 #rust-sci <sebk> Math support is actually already written: https://github.com/ReTeX/ReX
+2020-02-12T22:28:06 #rust-sci <sebk> just need to plug it in
+2020-02-12T22:28:37 #rust-sci <sebk> I just wanted to get collab working before continuing there
+2020-02-12T22:29:36 #rust-sci <jturner314> The math samples look really good.
+2020-02-12T22:31:04 #rust-sci <jturner314> Good luck with the project!
+2020-02-12T22:31:19 #rust-sci <sebk> thanks
+2020-02-12T22:39:15 #rust-sci <jturner314> sebk (IRC): FYI, if you'd like to try using IRC through Matrix, the docs are here: https://github.com/matrix-org/matrix-appservice-irc/wiki
+2020-02-12T22:39:34 #rust-sci <jturner314> (It took me a while to find those docs.)
+2020-02-13T08:45:51 #rust-sci <sebk> #rust-sci:matrix.org
+2020-02-29T16:12:36 #rust-sci <sebk> albel727 brendanzab emerent erin Hummer12007 Jackneill jaster lukemathwalker-M magnus Meow-M PeterRabbit PyroLagus tk_: please join #rust-sci:matrix.org or #rust-sci on oftc.net
+2020-02-29T16:12:53 #rust-sci <sebk> as … tomorrow this room will be no more
+2020-02-29T16:13:19 #rust-sci <Jackneill> will this be available on the official zulip server?
+2020-02-29T16:14:26 #rust-sci <sebk> good point.
+2020-02-29T16:14:30 #rust-sci <sebk> Jackneill: I don't know
+2020-02-29T16:14:35 #rust-sci <sebk> need to test
+2020-02-29T16:14:54 #rust-sci <sebk> and forgot about zulip, lol
+2020-02-29T16:15:33 #rust-sci <sebk> Jackneill: this one? https://rust-lang.zulipchat.com/
+2020-02-29T16:16:26 #rust-sci <Jackneill> yes
+2020-02-29T16:16:40 #rust-sci <Jackneill> i have more than 74k messages lol
+2020-02-29T16:16:48 #rust-sci * Jackneill will catch up sometime
+2020-02-29T16:19:13 #rust-sci <sebk> Jackneill: running a zulip–matrix bridge requires running it yourself
+2020-02-29T16:19:20 #rust-sci <sebk> and I don't have a server at the moment
+2020-02-29T16:19:55 #rust-sci <Jackneill> i thought its simple as creating a #rust-sci channel in the server
+2020-02-29T16:20:02 #rust-sci <Jackneill> or asking a server admin to do so.
+2020-02-29T16:20:14 #rust-sci <Jackneill> but its not bridged
+2020-02-29T16:20:29 #rust-sci <sebk> yea.
+2020-02-29T16:20:45 #rust-sci <Jackneill> i think its better to have one even if its a bit separate of irc+matrix.
