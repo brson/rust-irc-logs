@@ -10,3 +10,7 @@ From April 2013 until 2018 #rust and #rust-internals were logged by [botbot.me].
 I am still trying to obtain an archive of these logs.
 
 [botbot.me]: https://botbot.me
+
+If you have Rust IRC logs I am missing,
+particularly prior to April 2013,
+please contact me.
