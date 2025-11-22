@@ -4,7 +4,7 @@ There are two directories here:
 
 - [logbot] - from November 2017 until March 2020, [logbot.info] logged many Rust channels.
   Obtained from the logbot.info [archive page].
-- [emberian] - personal logs from emberian/cmr of public Rust channels from 2013-2015,
+- [emberian] - personal logs from emberian of public Rust channels from 2013-2015,
   in ZNC format.
 
 [logbot]: ./logbot
