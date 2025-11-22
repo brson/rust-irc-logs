@@ -1,0 +1,2198 @@
+[00:00:01] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[00:00:32] <carter> though i think in the atomics case, a trait parameterized by the consistency model would also work because theres more of a closed world assumption
+[00:00:50] <carter> i need to write up that rfc, but i wanna write a wee bit more rust before i do any propose
+[00:00:54] <carter> *proposal
+[00:01:05] *** Joins: Sgeo (quassel@moz-4E71E7BB.dyn.optonline.net)
+[00:01:42] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Ping timeout)
+[00:02:56] *** Quits: sigma1 (sigma@C91C7F36.70518F41.9D18269F.IP) (Ping timeout)
+[00:04:06] <carter> acrichto: pcwalton  actually, how on earth is this code correct? http://static.rust-lang.org/doc/master/std/sync/atomics/fn.atomic_compare_and_swap.html
+[00:04:15] <carter> pub unsafe fn atomic_compare_and_swap<T>(dst: &mut T, old: T, new: T, order: Ordering) -> T
+[00:04:24] <strcat> pcwalton: pthread mutexes aren't very efficient either, apparently
+[00:04:24] <carter> i know LLVM needs the ordering arg fixed at compile time...
+[00:04:35] <cmr> carter: look at the impl: http://static.rust-lang.org/doc/master/src/std/home/rustbuild/src/rust-buildbot/slave/doc/build/src/libstd/sync/atomics.rs.html#423-435
+[00:04:45] <cmr> it calls the correct intrinsic based on the ordering
+[00:04:48] <strcat> pcwalton: too many features ;p
+[00:04:50] <carter> ohh ok
+[00:04:53] <pcwalton> hmm
+[00:04:53] <carter> cmr: gotcha
+[00:05:07] <carter> so it has to runtime case unless it gets inlined properly
+[00:05:08] <carter> blah
+[00:05:30] <cmr> well it's essentially always going to be inlined
+[00:05:47] <carter> ok fine
+[00:05:51] <strcat> carter: inlining is completely deterministic/predictable
+[00:05:55] <carter> it is?
+[00:05:57] <strcat> yes
+[00:06:03] <carter> whats the rule for inlining to fire in rust?
+[00:06:08] <strcat> carter: it's LLVM
+[00:06:12] <carter> i know its llvm
+[00:06:26] <carter> what the rule for inlining for rust?
+[00:06:28] <strcat> if it's a static call below the inlining cost threshold, it gets inlined
+[00:06:32] <carter> ok
+[00:06:41] <strcat> if it ends up recursing too far it can back out
+[00:06:44] <carter> ok
+[00:06:45] <strcat> if functions mutually recurse
+[00:06:58] <strcat> carter: it just counts the cost of instructions and decides if it should inline
+[00:07:05] <carter> ok)
+[00:07:07] <strcat> and it's iterative, it won't leave any below the threshold by the end :)
+[00:07:12] <cmr> with #[inline] we force its hand a little bit.
+[00:07:21] <carter> ok
+[00:07:26] <strcat> I think it doesn't know how to inline varargs but there aren't other exceptions
+[00:07:46] <carter> well, the atomic intrinsics are an example that fits the "static args" case
+[00:07:56] <carter> at least following the llvm data model
+[00:08:17] <carter> 'cause they're both ops that require the param fixed at compile time at the llvm level
+[00:08:22] <strcat> tbh I don't really see why the ordering should be a parameter
+[00:08:25] <carter> yeah
+[00:08:28] <strcat> I know C++11 does it that way
+[00:08:30] <carter> it should be a static thing
+[00:08:39] <strcat> yeah, I can't see any time you'd choose at runtime
+[00:08:44] <carter> exactly
+[00:08:45] <strcat> just seems weird to me
+[00:08:53] <carter> strcat: thats why i want to work out a static args thing for rust
+[00:08:59] <carter> 'cause i need it for simd
+[00:09:01] <carter> if i want sane typing
+[00:09:07] <carter> for shuffles
+[00:09:16] <carter> i'll add that to my docket :)
+[00:09:19] <strcat> carter: well... just make more functions ;p
+[00:09:22] <cmr> wherein the argument needs to be a constexpr?
+[00:09:36] <strcat> in C++ what you do is move the parameter to a template parameter, as long as it's a simple integer
+[00:09:44] <strcat> foo(2) -> foo<2>()
+[00:10:13] <carter> well, i'd want something that works for supporting http://llvm.org/docs/LangRef.html#shufflevector-instruction
+[00:10:22] *** Quits: echristo (echristo@moz-1892C634.hsd1.ca.comcast.net) (Quit: echristo)
+[00:10:53] *** Quits: threecreepio (Adium@moz-9DA6CBAC.bredband.comhem.se) (Quit: Leaving.)
+[00:10:59] <carter> the "mask" arg to llvm's shuffle vector has to be fixed at compile time
+[00:11:14] <carter> and i can't think of a "write down all the versions" hack that would be sane :)
+[00:11:16] <carter> unlike atomics
+[00:11:32] <carter> and unlike prefetch
+[00:11:54] <carter> am i making sense?
+[00:12:17] *** Joins: alan_andrade (alan_andra@94147F3C.3C8440C4.B7838CA6.IP)
+[00:12:19] *** Quits: engla_ (engla@moz-F64E1B0F.cust.bredbandsbolaget.se) (Ping timeout)
+[00:12:22] *** Quits: alan_andrade (alan_andra@94147F3C.3C8440C4.B7838CA6.IP) (Quit: Leaving...)
+[00:13:38] <strcat> carter: maybe ;p, I haven't used a language exposing SIMD in a flexible way
+[00:13:58] <carter> strcat: well, i want nice things
+[00:14:05] <carter> i've a plan laid out for haskell roughly
+[00:14:12] <carter> and rust should get something too
+[00:14:15] <strcat> D just has the types you can do with SSE ;s
+[00:14:36] <carter> you still need certain compile time fixed args for SSE / AVX shuffles
+[00:15:01] <carter> and i don't want a solution that isn't easy to extend to new ops
+[00:15:53] <carter> idk
+[00:16:01] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Connection reset by peer)
+[00:18:13] *** Joins: tikue_ (tkuehn@moz-C55F9DFF.hsd1.pa.comcast.net)
+[00:18:14] *** Quits: santiago (santiago@moz-8ADE82B4.socal.res.rr.com) (Ping timeout)
+[00:20:24] <pcwalton> there is the JS/Dart SIMD stuff
+[00:20:27] <pcwalton> the API sounds nice
+[00:21:32] <carter> i'm trying to google it now
+[00:22:14] *** Joins: santiago (santiago@moz-8ADE82B4.socal.res.rr.com)
+[00:22:24] <carter> urk, 
+[00:22:53] <carter> hrmmm
+[00:23:27] <carter> https://api.dartlang.org/docs/channels/stable/latest/dart_typed_data/Float32x4.html seems like its kinda a clone of ideas from opencl
+[00:24:17] <carter> the issue i have with stuff liek that is it doesn't give you a way of handling stuff like 4xDoubles on AVX, or the 8xDoubles on Avx3 in knights landing coming out in another year or so
+[00:24:38] *** Quits: tikue_ (tkuehn@moz-C55F9DFF.hsd1.pa.comcast.net) (Quit: tikue_)
+[00:25:13] <carter> and even then, while i may (when possible)  default to using something like LLVM's shuffle vector, theres going to be cases where for a tight inner loop, selecting the intrinsics by hand will win the day
+[00:26:17] <carter> pcwalton: ok, https://api.dartlang.org/docs/channels/stable/latest/dart_typed_data/Float32x4.html#shuffle 
+[00:26:25] <carter> doesn't look like they handle the shuffle stuff sanely
+[00:26:31] <pcwalton> hmm
+[00:26:32] <carter> that won't scale to 512bit simd
+[00:27:02] <carter> 16xFloat shuffles with pregenerated masks you pick ?
+[00:27:17] <carter> they have "256 shuffle constants." as is
+[00:27:25] <carter> that'd blow up a  a wee bit 
+[00:27:28] <carter> :)
+[00:28:03] <carter> they're kinda doing the "pre write all the possible literalls" appraoch in that api
+[00:28:18] <carter> which kinda smells bad :)
+[00:29:11] <carter> idk
+[00:29:17] <carter> i g2g
+[00:29:23] <carter> but happy new years all
+[00:29:30] <brson> acrichto: which macro do I use to get an Arguments?
+[00:29:44] *** Joins: eholk (eholk@moz-58C5EE6F.wavecable.com)
+[00:30:19] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[00:31:31] <cmr> brson: format_args! iirc
+[00:31:55] *** Joins: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl)
+[00:31:58] <brson> cmr: I don't think so. format_args appears to write it's arguments to another function, not return an Arguments
+[00:32:01] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[00:32:07] <cmr> hm
+[00:32:16] <brson> well, I can probably organize this code so format_args works
+[00:32:40] <cmr> the only thing that constructs an Arguments is format_args
+[00:33:27] *** Joins: brianm (brianm@moz-8161EF8D.hsd1.ca.comcast.net)
+[00:33:57] *** Quits: jackneill (jackneill@moz-CFDD7A9B.pool.digikabel.hu) (Ping timeout)
+[00:34:13] <dbaupp> format_args passes an &Arguments to the closure/function that's it's first arg
+[00:36:29] *** Quits: brianm (brianm@moz-8161EF8D.hsd1.ca.comcast.net) (Ping timeout)
+[00:36:30] *** Joins: brianm (brianm@moz-8161EF8D.hsd1.ca.comcast.net)
+[00:37:44] *** Quits: brianm (brianm@moz-8161EF8D.hsd1.ca.comcast.net) (Connection reset by peer)
+[00:37:48] *** Joins: brianm (brianm@moz-8161EF8D.hsd1.ca.comcast.net)
+[00:38:01] *** Quits: DAddYE (DAddYE@moz-61EB081B.hfc.comcastbusiness.net) (Client exited)
+[00:38:22] *** Joins: DAddYE (DAddYE@moz-61EB081B.hfc.comcastbusiness.net)
+[00:39:04] *** Joins: echristo (echristo@moz-1892C634.hsd1.ca.comcast.net)
+[00:40:03] *** Quits: DAddYE (DAddYE@moz-61EB081B.hfc.comcastbusiness.net) (Ping timeout)
+[00:44:53] <carter> pcwalton: so yeah, the darlang shuffle api needs 4^4 magic constants for 4xFloat
+[00:44:56] <carter> for 16x
+[00:45:01] <carter> it'd be 16^16 :/
+[00:45:02] <pcwalton> hmm
+[00:45:08] <pcwalton> yeah, that's not great
+[00:45:19] <carter> which brings us backto why static data args
+[00:45:40] <carter> is a design point i'm advocating (though still trying to figure out the details of)
+[00:45:53] <pcwalton> how about associated constants?
+[00:45:56] <pcwalton> that's basically the same
+[00:46:03] <pcwalton> and are on the roadmap
+[00:46:08] <carter> whats an example?
+[00:46:36] <carter> like a stick figure
+[00:46:42] <strcat> trait Foo { static bar: int; }
+[00:46:53] <carter> ok
+[00:46:54] <strcat> impl Foo for Bar { static bar: int = 5; }
+[00:47:08] <carter> then 5 would induce Bar?
+[00:47:11] <pcwalton> trait Trait { static VALUE: int; } struct One; impl One : Trait { static VALUE: int = 1; } fn whatever<T: Trait>(T::VALUE)
+[00:47:41] <pcwalton> err
+[00:47:49] <carter> sounds like the same thing as Dart's ...
+[00:47:51] <pcwalton> trait Trait { static VALUE: int; } struct One; impl One : Trait { static VALUE: int = 1; } fn whatever<T: Trait>() { T::VALUE }
+[00:48:08] <carter> g2g
+[00:48:24] *** Quits: echristo (echristo@moz-1892C634.hsd1.ca.comcast.net) (Quit: echristo)
+[00:48:28] <pcwalton> then if we needed we could allow GHC-like integer literals in type parameters
+[00:48:34] <carter> erm
+[00:48:39] <pcwalton> as sugar
+[00:48:45] <carter> but how would you have various "type level vectors of integers"?
+[00:48:46] *** Quits: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net) (Quit: ziad)
+[00:48:52] <carter> ghc type level lits have lots of problems though
+[00:48:56] <carter> i've tried to use them
+[00:48:58] <carter> g2g now
+[00:49:02] <carter> but i'll be around to pester later
+[00:49:04] <pcwalton> ok
+[00:49:09] <pcwalton> I'm opposed to anything more complex most likely though
+[00:49:11] <carter> ok
+[00:49:17] <carter> i'm in favore of anything simple
+[00:49:21] <carter> and usable
+[00:49:24] <strcat> carter: build in something like [T, ..n] 
+[00:49:32] <carter> yeah
+[00:49:36] <carter> g2g though
+[00:49:57] <strcat> in fact why can't we just use fixed-size arrays?
+[00:50:07] * strcat shrugs
+[00:50:42] <strcat> I guess due to alignment
+[00:51:37] *** Joins: alisdair (textual@moz-278C43C2.blockc-85.stargate.ca)
+[00:57:28] *** Quits: spider-mario (spidermari@moz-81131DB6.fbx.proxad.net) (Input/output error)
+[01:00:45] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[01:02:26] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Ping timeout)
+[01:03:30] *** Joins: nkoep (nik@moz-F424EA91.pool.mediaways.net)
+[01:03:39] *** Quits: hacker_sam (hacker_sam@C0FE520A.661C02A7.B0CE379A.IP) (Client exited)
+[01:03:53] *** Joins: ziad (ziad@B20586FB.BDB3D91.6E370BFC.IP)
+[01:04:00] *** Joins: hacker_sam (hacker_sam@C0FE520A.661C02A7.B0CE379A.IP)
+[01:04:56] *** Joins: maikklein (maik@moz-E748EB1A.dip0.t-ipconnect.de)
+[01:06:44] *** Quits: ziad (ziad@B20586FB.BDB3D91.6E370BFC.IP) (Quit: ziad)
+[01:06:46] *** Quits: heftig (heftig@moz-65B20D7C.dip0.t-ipconnect.de) (Ping timeout)
+[01:07:26] *** Joins: heftig (heftig@moz-A10B924.dip0.t-ipconnect.de)
+[01:08:32] *** Quits: brianm (brianm@moz-8161EF8D.hsd1.ca.comcast.net) (Quit: Leaving...)
+[01:08:44] *** Quits: tiffany (kawaii@moz-FC0DB29D.dhcp.embarqhsd.net) (Input/output error)
+[01:10:17] *** Joins: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com)
+[01:17:29] *** Quits: nfroidure (nfroidure@moz-B747FB5E.w90-18.abo.wanadoo.fr) (Connection reset by peer)
+[01:18:38] *** Joins: gwty (gwtypc@45FAED15.3D6E65B3.27560D6E.IP)
+[01:21:37] *** Quits: gwty (gwtypc@45FAED15.3D6E65B3.27560D6E.IP) (Ping timeout)
+[01:23:25] *** Quits: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com) (Ping timeout)
+[01:26:20] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: pcwalton)
+[01:28:43] *** Joins: gwty (gwtypc@45FAED15.3D6E65B3.27560D6E.IP)
+[01:30:50] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[01:32:32] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[01:34:05] <acrichto> brson: format_args!() can't return an Arguments with some lifetime sadly, I think it can be fixed with niko's lifetime changes to rvalues
+[01:34:54] *** Joins: brianm (brianm@moz-8161EF8D.hsd1.ca.comcast.net)
+[01:35:32] *** Joins: samx (sami@moz-D9DA5773.dyn.optonline.net)
+[01:35:36] *** Quits: pyon (user@BCC41BDF.6C782DF8.1C8C8CE9.IP) (Ping timeout)
+[01:36:14] *** Quits: Ferreus (ferreus@moz-9ADFC210.pools.arcor-ip.net) (Ping timeout)
+[01:41:51] <tomdale> what's the -Z flag to make gdb work sanely?
+[01:41:57] <tomdale> -Z extra-debug-info?
+[01:42:00] <tomdale> somethinglike that?
+[01:42:23] *** Joins: lenstr (lenstr@CD7D5ABA.83A99F98.85938D85.IP)
+[01:42:32] *** Quits: lenstr (lenstr@CD7D5ABA.83A99F98.85938D85.IP) (Quit: Leaving...)
+[01:42:36] <cmr> exactly that
+[01:42:59] <tomdale> hm... it seems to be making it worse
+[01:44:33] <tomdale> when I add -Z extra-debug-info it removes many stack frames
+[01:44:57] <tomdale> we're trying to debug this:
+[01:45:02] <tomdale> https://www.irccloud.com/pastebin/NHSZDv8G
+[01:45:18] <tomdale> keep in mind that this is interaction with C code so it's not a Rust bug (almost certainly)
+[01:45:36] <tomdale> skylight_trace_get_name is a extern "C" no_mangled function
+[01:45:41] *** Quits: santiago (santiago@moz-8ADE82B4.socal.res.rr.com) (Ping timeout)
+[01:46:10] <tomdale> the signature is (trace: &'a Trace)
+[01:46:20] <tomdale> and the line it's failing on is trace.started_at
+[01:46:50] <tomdale> we're trying to drill down more and identify whether trace is actually a trace or whether something is busted with started_at
+[01:46:57] <tomdale> (the first struct field, which is a u32)
+[01:48:38] *** Quits: nkoep (nik@moz-F424EA91.pool.mediaways.net) (Quit: Leaving)
+[01:48:42] *** Quits: bheylin (brianheyli@moz-8255E94E.adsl.online.nl) (Quit: bheylin)
+[01:50:00] <brson> tomdale: seems like your &Trace might be a null pointer
+[01:50:12] *** Joins: santiago (santiago@moz-8ADE82B4.socal.res.rr.com)
+[01:50:22] *** Quits: maikklein (maik@moz-E748EB1A.dip0.t-ipconnect.de) (Ping timeout)
+[01:50:53] <tomdale> brson: it's not
+[01:50:59] <tomdale> we cast it to int in C and printf
+[01:51:22] <tomdale> it also doesn't segv on trace.started_at
+[01:51:27] <tomdale> which is a u32 field
+[01:52:03] <tomdale> is there a better way to verify if it's a null pointer?
+[01:53:22] <brson> in Rust you can probably `let p: *Trace = trace;` then print that with println. I assume println will print pointer addresses and not try to reflect through them
+[01:53:25] <brson> acrichto would know better
+[01:53:38] <brson> (coerce the & to *)
+[01:53:39] <cmr> println!("{:p}", p);
+[01:53:47] <ecl3ctic> so what's the difference between println!("{}", t) and println!("{:?}", t)
+[01:53:48] <dbaupp> rusti: println!("{}", 1 as *int) 
+[01:53:52] <cmr> don't use :? if you want understandable stack traces.
+[01:53:53] -rusti- 0x1
+[01:53:53] -rusti- ()
+[01:53:55] <cmr> it's reflection.
+[01:54:01] <ecl3ctic> the first one fails if I want to print a tuple
+[01:54:11] <eddyb> oh wow, kdevelop completion is useful for Rust code
+[01:54:15] <brson> tomdale: it *could* be a bug in the polymorphic logger, which it looks like you are using {:?}
+[01:54:24] <eddyb> foobarbaz will match foo_bar_baz :D
+[01:54:38] <eddyb> so you don't need to reach for _
+[01:54:51] <dbaupp> ecl3ctic: the full docs are http://static.rust-lang.org/doc/master/std/fmt/index.html
+[01:55:11] *** Quits: samx (sami@moz-D9DA5773.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[01:55:13] <dbaupp> ecl3ctic: basically {} is trait-based, so certain types implement the std::fmt::Default trait, which dictates how they're printed
+[01:55:31] <dbaupp> (e.g. strings, numbers, the return type of Path.display())
+[01:55:59] <dbaupp> but {:?} is purely reflection, so no customisation at all
+[01:56:20] *** Joins: Ferreus (ferreus@moz-9ADFC210.pools.arcor-ip.net)
+[01:56:54] <tomdale> it's printing the number 12
+[01:57:01] <tomdale> which must mean that we are passing an int
+[01:57:03] <tomdale> instead of a pointer
+[01:57:05] <tomdale> seems bad bro
+[01:57:06] *** Quits: geoffhill (geoffhill@moz-738DC0DB.org) (Quit: )
+[01:57:13] <cmr> aka 0xc
+[01:57:13] *** Quits: eholk (eholk@moz-58C5EE6F.wavecable.com) (Quit: eholk)
+[01:57:25] <cmr> as seen in the segfault
+[01:58:42] <ecl3ctic> dbaupp: the docs also say that ? corresponds to the Poly trait. Does it use reflection as a fallback then? I don't see it mentioned anywhere
+[01:58:57] <dbaupp> ecl3ctic: that's no true
+[01:59:11] <cmr> ecl3ctic: Poly is implemented for everything and is the described reflection
+[01:59:12] <dbaupp> *not
+[01:59:20] <cmr> it's never a fallback, only used with :?
+[01:59:25] <dbaupp> (oh, I see how it works.)
+[01:59:51] <eddyb> hmm, what does actually use the visit_glue? only Poly?
+[01:59:57] <dbaupp> no one can ever implement Poly by hand, to override the reflection based version
+[02:00:01] <cmr> eddyb: repr in general.
+[02:00:07] <tomdale> this is weird
+[02:00:08] <eddyb> but what uses repr :)?
+[02:00:09] <dbaupp> eddyb: I think the only user is repr, yes
+[02:00:18] <tomdale> we did printf("%p", pointer) in C
+[02:00:25] <FreeFull> rusti: *(0 as *int)
+[02:00:33] -rusti- pastebinned 7 lines of output: http://ix.io/9Bi
+[02:00:35] <tomdale> and got a different value from println!("{:p}", trace) in Rust
+[02:00:43] <tomdale> and the only code in between is the call from C to rust
+[02:00:45] <cmr> tomdale: what do each of the signatures look like?
+[02:01:00] <dbaupp> rusti: unsafe {*(0 as *int)}
+[02:01:02] -rusti- application terminated abnormally with signal 11 (Segmentation fault)
+[02:01:02] <FreeFull> rusti: if true { unsafe { *(0 as *int); }; }
+[02:01:03] -rusti- ()
+[02:01:14] <FreeFull> rusti: if true { unsafe { *(0 as *int) } }
+[02:01:17] -rusti- pastebinned 7 lines of output: http://ix.io/9Bj
+[02:01:21] <eddyb> haha
+[02:01:30] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[02:01:37] <eddyb> rusti: 0 as *int
+[02:01:38] -rusti- (0x0 as *())
+[02:01:41] <FreeFull> rusti: do { unsafe { *(0 as *int) } } while false;
+[02:01:43] -rusti- pastebinned 6 lines of output: http://ix.io/9Bk
+[02:01:53] <cmr> FreeFull: that's not even valid rust :p
+[02:01:59] <FreeFull> Damn =P
+[02:02:00] <tomdale> are we maybe doing something wrong... are we not supposed to be able to take a pointer C got as a ~Trace from Rust and pass it back as a &Trace?
+[02:02:07] *** Joins: z0w0 (zack@moz-356923D4.lnse4.woo.bigpond.net.au)
+[02:02:19] <eddyb> tomdale: you're not supposed to touch traits in C
+[02:02:28] <tomdale> traits?
+[02:02:30] <eddyb> tomdale: ~Trait is a fat pointer, larger than ~T
+[02:02:31] <dbaupp> FreeFull: is there are reason you're not writing just `unsafe { *(0 as *int) }` with no adornment?
+[02:02:40] <eddyb> tomdale: nvm, I'm tired, I read Trace as Trait
+[02:02:42] <tomdale> ah
+[02:02:52] <tomdale> skylight_trace_get_name(trace) // trace is something we got from Rust as ~Trace
+[02:03:10] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Ping timeout)
+[02:03:10] <FreeFull> dbaupp: I think that doesn't work with rusti for some reason
+[02:03:12] <strcat> tomdale: so where are you freeing it?
+[02:03:20] <tomdale> and then #[no_mangle] pub extern "C" fn skyliht_trace_get_name<'a>(trace: &'a Trace) -> Option<&'a str>
+[02:03:25] <FreeFull> rusti: unsafe { *(0 as *int) }
+[02:03:25] -rusti- application terminated abnormally with signal 11 (Segmentation fault)
+[02:03:29] <tomdale> strcat: we eventually free it later when we serialize
+[02:03:30] <FreeFull> Oh, it works now
+[02:03:37] <dbaupp> FreeFull: you must've missed my invocation :)
+[02:03:40] <dbaupp> FreeFull: fail!() doesn't
+[02:03:48] <tomdale> pub extern "C" fn skylight_trace_serialize(trace: ~Trace) -> ~[u8]
+[02:03:57] <dbaupp> but *(*int) does, because it has a well defined type (int)
+[02:03:58] <tomdale> but I have a macro in C to make sure I don't try to use it again after that
+[02:04:26] <tomdale> otherwise all the functions that take traces take &Trace
+[02:05:36] <dbaupp> tomdale: so in C, you basically do: `Trace* ptr = get_trace(); use_trace(ptr); use_trace_again(ptr); serialize_trace(ptr); /* no use of ptr again */`?
+[02:06:16] *** Quits: brianm (brianm@moz-8161EF8D.hsd1.ca.comcast.net) (Quit: Linkinus - http://linkinus.com)
+[02:06:46] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[02:06:46] *** ChanServ sets mode: +ao pcwalton pcwalton
+[02:06:53] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[02:09:26] <tomdale> I believe we have identified an issue
+[02:09:32] <tomdale> when we remove the lifetime generic param
+[02:09:36] <tomdale> the pointers line up
+[02:09:41] <tomdale> when we add the lifetime generic param
+[02:09:45] <cmr> yeck, that's scary.
+[02:09:57] <tomdale> it seems that the param list in the externed function maybe has some extra space in it?
+[02:09:59] <tomdale> for the lifetime?
+[02:10:12] <cmr> nah that wouldn't be it
+[02:10:17] <cmr> lifetimes are ephemeral, they don't exist.
+[02:10:27] <cmr> probably taking a different path down trans and picking up an env ptr.
+[02:10:29] * cmr takes a look
+[02:10:31] <FreeFull> They are compile-time only
+[02:10:38] <tomdale> trans?
+[02:10:46] <cmr> translation, a stage of the compiler
+[02:10:51] *** Quits: Jesin (Jesin@moz-4B662E55.washdc.fios.verizon.net) (Quit: Leaving)
+[02:10:53] <tomdale> ah
+[02:11:09] <tomdale> so what I'm seeing is: if I take a &Trace, and print out {:p}, I get the same pointer value I see in C
+[02:11:15] <tomdale> If I take a &'a Trace
+[02:11:21] <tomdale> I see a different value
+[02:11:35] <tomdale> https://www.irccloud.com/pastebin/xHZU5fgk
+[02:11:41] <tomdale> that's what I see with the lifetime
+[02:11:50] <tomdale> the Rust pointer looks oddly symmetrical
+[02:12:16] <brson> strange bug
+[02:12:24] <tomdale> it looks like a bitmask or something
+[02:12:39] <tomdale> this is its representation in binary:
+[02:12:40] <tomdale> 100000000000000000000000000000001000000000
+[02:13:18] <cmr> hm, can't reproduce with https://github.com/mozilla/rust/pull/11250
+[02:13:38] <cmr> they have the same signature in the LLVM IR
+[02:13:45] <brson> wasn't it 0xc before though?
+[02:13:48] <cmr> erm, https://gist.github.com/cmr/8204232
+[02:13:50] <brson> is it garbage?
+[02:14:24] <tomdale> it looks like it's these bits twice in a row:
+[02:14:26] <tomdale> 00000000000000000000001000000000
+[02:15:03] <tomdale> brson: I think the 0xc was a red herring
+[02:15:10] <tomdale> I don't remember precisely how we were seeing it
+[02:15:18] <tomdale> but probably just a bad casting job somewhere
+[02:15:46] <brson> you could --emit-llvm and see what the ll definition of that function is in each version. they should be identical
+[02:16:13] *** Joins: pyon (user@BCC41BDF.6C782DF8.1C8C8CE9.IP)
+[02:16:56] <dbaupp> cmr: what about if you return something with a lifetime?
+[02:16:58] <cmr> --emit-llvm -S -o - | grep skylight_trace
+[02:17:03] <tomdale> hm --emit-llvm doesn't do anything
+[02:17:16] *** Joins: samx (sami@moz-D9DA5773.dyn.optonline.net)
+[02:17:16] <cmr> tomdale: it will spit out a somenamehere.bc file
+[02:17:27] <tomdale> ah got it
+[02:17:27] *** Quits: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl) (Client exited)
+[02:18:09] <brson> yeah, you want the -S too to get a .ll file. can't do much with .bc
+[02:20:05] *** Quits: Axord (xord@moz-C0D5F15A.lsanca.dsl-w.verizon.net) (Quit: I'm sure it's perfectly safe)
+[02:20:06] <cmr> dbaupp: nah that doesn't look like it affects anything
+[02:21:42] *** Quits: bytbox (s@moz-54E13927.washdc.fios.verizon.net) (Client exited)
+[02:22:35] *** Joins: jmgrosen (jmgrosen@moz-848F6087.sb.sd.cox.net)
+[02:22:58] <wycats_> Hm the lifetime may also have been a red herring
+[02:23:08] *** Joins: bytbox (s@moz-54E13927.washdc.fios.verizon.net)
+[02:23:12] *** Quits: bytbox (s@moz-54E13927.washdc.fios.verizon.net) (Client exited)
+[02:23:19] <wycats_> I'm heading home but will keep investigating
+[02:23:29] *** Quits: speckle (speckle@moz-AD109A29.hsd1.md.comcast.net) (Ping timeout)
+[02:23:30] *** Joins: bytbox (s@moz-54E13927.washdc.fios.verizon.net)
+[02:23:44] <wycats_> Getting that weird pointer on the other side of a direct call to a no munged extern C function is crazy
+[02:23:56] *** Quits: derby (dirby@9901445D.8128FD8D.337D5089.IP) (Quit: Leaving)
+[02:25:05] <wycats_> I would almost have thought that it would be impossible
+[02:25:13] <dbaupp> magic!
+[02:25:16] <wycats_> magic!
+[02:25:50] <wycats_> no_munged functions are just wrappers right?
+[02:25:52] <mpiechotka> Hi. Sorry for possibly basic question - setting aside ownership is &* the same as in C? I.e. is it correct way of converting from unsafe pointer (*) to a borrowed one?
+[02:26:03] <wycats_> so maybe the wrapper is passing some random value in
+[02:26:14] <wycats_> 2 32-bit 512s glued together
+[02:26:49] <dbaupp> mpiechotka: yes
+[02:26:50] <cmr> wycats_: #[no_mangled] is just a symbol name thing, extern "C" is the ABI
+[02:27:00] <mpiechotka> dbaupp: Thanks
+[02:27:07] <wycats_> cmr: ah so extern "C" creates the wrapper?
+[02:27:07] <cmr> wycats_: it shouldn't be doing any weirdness, but you would need to look at the def'n in the LLVM IR to be 100% positive.
+[02:27:15] <cmr> wycats_: well it's not a wrapper, that *is* the function.
+[02:27:26] <wycats_> so how could that be then?
+[02:27:30] <wycats_> if it's literally the function
+[02:27:35] <wycats_> and I'm passing a pointer through
+[02:27:38] <wycats_> it seems impossibru!
+[02:27:47] <cmr> it changes its calling convention
+[02:27:52] <wycats_> right
+[02:28:01] <cmr> it is quite strange, likely a bug somewhere, probably in your code ;0
+[02:28:06] <wycats_> I'm sure it is
+[02:28:11] <wycats_> but I've narrowed it down to this call
+[02:28:13] <wycats_> O_O
+[02:28:14] <dbaupp> cmr: I thought it did generate a wrapper?
+[02:28:20] <dbaupp> cmr: or is that just for extern { fn ... }'s
+[02:28:21] <dbaupp> ?
+[02:28:28] <benh> We still have wrappers?
+[02:28:39] <wycats_> trace is for sure a ~Trace I got from a different function
+[02:28:42] <cmr> dbaupp: for the rust side of things, though. the no_mangle name is the functino, there's an extra __rust_abi wrapper thing.
+[02:28:43] <wycats_> I'm 99.9% sure of that
+[02:29:09] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[02:29:33] <wycats_> and &'a Trace is just supposed to take a pointer
+[02:29:35] <wycats_> O_O
+[02:29:36] *** Joins: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net)
+[02:29:38] * wycats_ furrows brow
+[02:29:46] <cmr> wycats_: are you still at the computer?
+[02:30:06] <wycats_> cmr: not at that same one
+[02:30:30] <wycats_> I'm heading home and then I'm going to be staring at this again
+[02:30:34] <wycats_> if I can repro on my laptop
+[02:30:38] <cmr> rustc ... --emit-llvm -S -o - | grep skylight_trace_get_name, paste the line.
+[02:31:23] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[02:31:40] *** Quits: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[02:32:31] <wycats_> cmr: I'll be home in about 30 I think
+[02:32:59] *** Quits: jmgrosen (jmgrosen@moz-848F6087.sb.sd.cox.net) (Quit: jmgrosen)
+[02:33:04] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[02:34:18] *** Joins: stomper (Mibbit@moz-A06909E4.glbb.ne.jp)
+[02:34:26] *** Quits: jlong (jlong@moz-6DFDE846.socal.res.rr.com) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[02:35:07] <stomper> Is there something in rust analogous to weak references?
+[02:35:20] <stomper> to use with gc::Gc or rc::Rc
+[02:35:51] <dbaupp> stomper: almost, it's not landed yet: https://github.com/mozilla/rust/pull/10926
+[02:38:36] <stomper> dbaupp: thanks
+[02:39:12] *** Quits: Guest_ (textual@moz-30B6C3D1.lightspeed.rsbgtx.sbcglobal.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[02:42:21] <whitequark> is there a convention for a method pair, one with options and the other assuming default ones?
+[02:42:56] <whitequark> fn to_int_opt(base: int); fn to_int() { self.to_int_opt(10) }
+[02:43:09] <whitequark> naming convention*
+[02:45:10] <benh> not just one! <:)
+[02:45:57] <whitequark> benh: so what are those?
+[02:46:55] <benh> foo and foo_opt are probably the most common right now, but there's the odd try_foo, and foo -> option<> with no non-opt flavor is also popular
+[02:47:14] <cmr> benh: that's for return value, not arguments.
+[02:47:36] <benh> oh dear i didn't read that closely enough
+[02:47:46] <benh> Still have #11129 all over my mind 
+[02:47:51] *** Joins: Guest_ (textual@moz-30B6C3D1.lightspeed.rsbgtx.sbcglobal.net)
+[02:48:32] *** Joins: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net)
+[02:48:51] <benh> I can't think of any examples of a convention for this
+[02:48:57] <cmr> neither can I
+[02:49:09] <benh> but in any case please don't use _opt or I'll get confused!
+[02:49:29] <whitequark> I guess _with would work
+[02:50:08] <whitequark> several boolean arguments for one function call without keyword args make me sad
+[02:50:13] *** Quits: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net) (Ping timeout)
+[02:50:43] <benh> Might be an option to create some custom enums for that
+[02:51:04] <whitequark> that just makes it more contrived; a structure would work better
+[02:51:14] <benh> or even a struct for foo(FooOpts { opt1: true, opt2: ... })
+[02:51:14] <whitequark> but I really wish there were keyword args.
+[02:51:25] <cmr> Ah yes that's the patern
+[02:51:31] <cmr> fn foo(Options)
+[02:51:43] <cmr> and then impl Default for Options and foo(Options { .. default() })
+[02:51:50] <benh> so do the people at https://github.com/mozilla/rust/issues/6973 but alas
+[02:52:37] *** Quits: mpiechotka (mpiechotka@moz-FF5F76BA.adsl.inetia.pl) (Ping timeout)
+[02:54:22] <benh> cmr: can't that just be foo(default())?
+[02:54:36] <cmr> ah, yes, it can be.
+[02:55:01] <benh> foo(Options { some: but, not: all, field: ..., .. default() }) is cute though
+[02:55:03] *** Quits: a__ (a__@moz-56DB9895.nycmny.fios.verizon.net) (Ping timeout)
+[02:55:03] <whitequark> hm, that's actually very neat
+[02:55:11] <benh> fields*
+[03:01:07] *** Quits: discomfitor (asdf@moz-975BC507.hsd1.ct.comcast.net) (Ping timeout)
+[03:01:21] *** Joins: discomfitor (asdf@moz-975BC507.hsd1.ct.comcast.net)
+[03:02:14] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[03:03:56] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Ping timeout)
+[03:04:38] *** Quits: Guest_ (textual@moz-30B6C3D1.lightspeed.rsbgtx.sbcglobal.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[03:12:37] *** Joins: earlzlap (earlz@moz-483E1E31.neo.res.rr.com)
+[03:17:05] <eddyb> lol, facebook, 1 January 2013?
+[03:17:18] <eddyb> newyears overflow
+[03:18:33] *** Quits: jdavis (jdavis@moz-1BE8A6A1.hsd1.ca.comcast.net) (Ping timeout)
+[03:18:47] <whitequark> hm, what do I need to "use" in order to use default() ?
+[03:18:53] <whitequark> I did use std::default::Default;, but:
+[03:18:57] <whitequark> src/blinky/main.rs:35:27: 35:34 error: unresolved name `default`.
+[03:18:58] <whitequark> src/blinky/main.rs:35         GPIOA.as_output(5, default());
+[03:19:07] <cmr> whitequark: fn default<T: Default>() -> T { Default::default() }
+[03:19:29] <whitequark> that's not in stdlib?
+[03:19:33] *** Joins: MrFahrenheit (RageOfThou@3FEF494C.29C984D5.783DEDCA.IP)
+[03:19:34] <cmr> no
+[03:19:51] <whitequark> it should be...
+[03:20:11] <benh> Maybe use std::default::Default::default should be made to work ;)
+[03:20:55] <cmr> it really shouldn't be, since it's a hack around unpleasant associated functions.
+[03:21:33] *** Joins: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net)
+[03:25:36] *** Quits: dkeenaghan (dkeenaghan@A9F153F4.DDE28F19.986A907C.IP) (Connection reset by peer)
+[03:26:07] * geomyidae_ spent 10 minutes inserting print statements to find an expect(errmsg) he'd written and forgotten about :/
+[03:29:27] *** Quits: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net) (Client exited)
+[03:29:41] *** Joins: jlong (jlong@moz-6DFDE846.socal.res.rr.com)
+[03:29:48] *** Joins: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net)
+[03:31:08] <stomper> How do you disable a warning?
+[03:31:16] <whitequark> #[allow(...)];
+[03:31:29] *** Quits: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net) (Ping timeout)
+[03:31:57] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[03:32:10] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[03:32:21] <cmr> or -A ... to rustc
+[03:33:39] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[03:33:51] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Ping timeout)
+[03:34:06] *** Quits: jlong (jlong@moz-6DFDE846.socal.res.rr.com) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[03:35:46] *** Joins: jdavis (jdavis@moz-1BE8A6A1.hsd1.ca.comcast.net)
+[03:37:17] <wycats_> ok I'm home!
+[03:37:23] <wycats_> time to try and repo
+[03:37:24] <wycats_> repor
+[03:37:29] <wycats_> repro goddammit
+[03:37:32] *** Joins: ekwan (ekwan@moz-6635E2EF.hsd1.ca.comcast.net)
+[03:37:35] *** Joins: pongad (Mibbit@moz-831734D6.revip2.asianet.co.th)
+[03:37:44] <geomyidae_> whatcha reproing? Looking at my PR?
+[03:38:35] *** Quits: moostik (Icedove@moz-5956E11F.w92-135.abo.wanadoo.fr) (Ping timeout)
+[03:38:56] <geomyidae_> rusti: let t : &[u8] = [ 0x00, 0x77 ]; std::u16::parse_bytes(t, 10).expect("fail");
+[03:38:57] -rusti- task '<unnamed>' failed at 'fail', /build/rust-git/src/rust/src/libstd/option.rs:317
+[03:38:57] -rusti- application terminated with error code 101
+[03:39:02] *** Joins: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com)
+[03:40:07] *** Quits: kimundi (kimundi@moz-B14500D7.dip0.t-ipconnect.de) (Ping timeout)
+[03:41:08] <dbaupp> rusti: 0x77u8 as char
+[03:41:09] -rusti- 'w'
+[03:41:41] *** Joins: a__ (a__@moz-56DB9895.nycmny.fios.verizon.net)
+[03:42:06] <geomyidae_> Hm, I'm slicing my way through a packet header and calling parse_bytes with the slices for the sizes from wikipedia. Not sure how to do that
+[03:42:51] <geomyidae_> is that supposed to be calling into strconvert?
+[03:42:57] <geomyidae_> It's what the source seems to say
+[03:43:04] *** Joins: zz_kimundi (kimundi@moz-AA8877D1.dip0.t-ipconnect.de)
+[03:43:29] *** Quits: Earnestly (earnest@88884C6.A3735F9C.39C00A7A.IP) (Ping timeout)
+[03:43:32] *** zz_kimundi is now known as kimundi
+[03:45:16] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[03:45:16] *** ChanServ sets mode: +ao pcwalton pcwalton
+[03:45:53] <pcwalton> acrichto: how do I statically link against libstd?
+[03:46:13] <cmr> pcwalton: it's the default.
+[03:46:17] <dbaupp> pcwalton: I think it happens by default unless you pass -Z prefer-dynamic
+[03:46:29] *** Quits: MrFahrenheit (RageOfThou@3FEF494C.29C984D5.783DEDCA.IP) (Ping timeout)
+[03:46:39] <pcwalton> for some reason I see lots of "U __ZN3str15from_utf8_owned67h4bab30d0f0b71dee2d85379f71eb06bb25bd371c47f3fbad959090f7bd4e2ec0ah8v0.9"
+[03:46:39] <pcwalton> in nm
+[03:46:50] <pcwalton> is it only default on linux or something?
+[03:47:26] <cmr> are you building a library or a binary?
+[03:47:29] <pcwalton> binary
+[03:47:42] <dbaupp> are you linking against anything else?
+[03:47:51] <pcwalton> I was linking against libsdl
+[03:47:55] <pcwalton> which I also built as static
+[03:47:58] <dbaupp> which is dynamic?
+[03:47:59] <dbaupp> oh
+[03:48:12] <cmr> do you have the rlibs installed? try throwing in a -Z lto ...
+[03:48:42] <pcwalton> but I don't want LTO
+[03:48:43] <dbaupp> I believe we only do static linking if all rust dependencies are found in .rlib format, so if you only have a .so (or .dylib or whatever)...
+[03:48:44] <pcwalton> I just want static linking
+[03:48:45] * dbaupp shrugs
+[03:49:05] <dbaupp> pcwalton: I think cmr's just saying that will throw an error if it can't find the rlibs
+[03:49:38] <cmr> it *should*, if I remember that PR correctly.
+[03:49:46] <cmr> that might actualy have only been against prefer-dynamic.
+[03:49:59] <cmr> pcwalton: ldd shows a libstd dep too?
+[03:50:25] <pcwalton> there is no libsdl dep
+[03:50:26] <dbaupp> cmr: will we be seeing a TYIR? :P
+[03:50:27] <pcwalton> just a libstd dep
+[03:50:33] <pcwalton> oh wait
+[03:50:35] <pcwalton> there is a libsdl del too
+[03:50:39] <pcwalton> there is a libsdl dep* too
+[03:50:46] *** Joins: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net)
+[03:50:48] <pcwalton> why did it do that? I wanted a static link and there is a .a
+[03:51:02] *** Quits: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net) (Client exited)
+[03:51:02] *** Joins: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net)
+[03:51:25] <wycats_> fuuuu tomdale never pushed the libbuffoon changes we were working against
+[03:51:26] <wycats_> :(
+[03:51:28] <wycats_> so I cannot repro
+[03:51:32] <cmr> oh hm that's nasty
+[03:51:46] <cmr> It seems the "all static or all dynamic" also applies to binaries :(
+[03:52:01] <pcwalton> wait, does crate_type = "lib" imply *dynamic* lib?
+[03:52:04] <cmr> yes
+[03:52:06] <cmr> rlib is static lib
+[03:52:08] <pcwalton> grrrrr
+[03:52:08] <pcwalton> ok
+[03:52:11] <pcwalton> that was the problem
+[03:52:15] <cmr> ok
+[03:52:21] <pcwalton> we MUST fix that before 1.0
+[03:52:32] *** Quits: alisdair (textual@moz-278C43C2.blockc-85.stargate.ca) (Quit: Textual IRC Client: www.textualapp.com)
+[03:52:36] <acrichto> pcwalton: yeah #[crate_type = "lib"] is right now a dylib and we only statically link if all deps are rlibs
+[03:52:45] <dbaupp> I think acrichto had a bug or two to fix before using static by default?
+[03:52:45] <pcwalton> is there an issue on fixing that?
+[03:53:02] <acrichto> rlibs weren't ready as the default when I first implemented it
+[03:53:04] <wycats_> it's pretty complicated to support mixing no?
+[03:53:16] <acrichto> compile times are way down though so it may be possible to switch the default
+[03:53:21] <wycats_> :shipit:
+[03:53:31] <pcwalton> filed #11253
+[03:53:34] <wycats_> I've been using rlibs since literally the moment they landed and have been ecstatic
+[03:53:43] <dbaupp> acrichto: did you see the massive drop in memory use, btw?
+[03:53:54] <acrichto> dbaupp: oh wow really?
+[03:53:57] <dbaupp> acrichto: due to the metadata reading changes, iirc
+[03:54:04] <acrichto> that's awesome!
+[03:54:09] <acrichto> go mmap
+[03:54:36] <dbaupp> yeah, removing @ from EBML and "rustc: Optimize reading metadata by 4x"
+[03:54:36] <cmr> dbaupp: speaking of, can you remove your local cache of benches on IRSY? I re-benched a bunch of things, and it looks  like it never updated.
+[03:54:56] <dbaupp> 200 MB
+[03:55:02] <dbaupp> cmr: oh, yeah
+[03:55:09] <dbaupp> cmr: do you happen to ahave a list of the things you rebenched?
+[03:55:20] <cmr> I don't think I do, sorry :(
+[03:55:37] <cmr> It was the last 70 after LTO landed.
+[03:55:49] <dbaupp> ok
+[03:55:53] <cmr> basically the mountain that happened two weeks ago :p
+[03:55:55] <dbaupp> that's good enough
+[03:56:08] <dbaupp> um, did you clear out all the others, or just replace those ones?
+[03:56:13] <cmr> replace
+[03:56:16] <dbaupp> ok
+[03:56:17] <pcwalton> running `strings` against a rust binary is very sad
+[03:56:21] <dbaupp> i'll do that now
+[03:56:32] <pcwalton> lots of type names showing up for some reason (tydescs)?
+[03:56:39] <pcwalton> file and line numbers...
+[03:56:42] <pcwalton> lovecraft quotes...
+[03:56:59] <cmr> that reminds me, we really need to resolve the copyright status on those.
+[03:57:11] <dbaupp> 'strings `which rustc`' just gives me a few symbol names?
+[03:57:21] <pcwalton> dbaupp: is it LTO'd?
+[03:57:26] <pcwalton> LTO might remove them.
+[03:57:28] <dbaupp> pcwalton: don't know
+[03:57:47] <cmr> pcwalton: it's surely the tydescs, as well as line numbers from any fail!()..
+[03:57:55] <pcwalton> also lots of debug!
+[03:58:06] <pcwalton> we need to have some sort of solution for not having debug! in production
+[03:58:14] <cmr> --cfg ndebug
+[03:58:50] <dbaupp> oh, there we go, running it on libstd*.so gives me all the junk
+[04:00:31] <acrichto> pcwalton: for 11167 was there something you specifically wanted me to look at?
+[04:00:33] <acrichto> in the tests that is
+[04:00:51] <pcwalton> acrichto: uh, just make sure I didn't remove tests that were important
+[04:01:00] <pcwalton> I did a quick run through and it seemed like every test I removed was superfluous
+[04:01:05] *** Quits: JamesNZ (james@moz-264643C7.bitstream.orcon.net.nz) (Quit: Busying myself...)
+[04:01:07] <pcwalton> but I don't want to be the destroyer of tests
+[04:01:15] <wycats_> pcwalton: destroyer of tests
+[04:01:22] <pcwalton> i am become death, destroyer of tests
+[04:01:49] <acrichto> the resource-cycle tests were all deleted?
+[04:01:53] <acrichto> sounds important
+[04:01:59] *** Quits: maxli (maxli@moz-4D28BA20.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[04:02:29] <pcwalton> we had a ton of tests that were just testing whether trivial @mut cycles worked
+[04:02:38] <acrichto> oh ok
+[04:02:40] <pcwalton> and I deleted them after asking in here after I got sick of updating the 10th one
+[04:04:03] <acrichto> pcwalton: did you delete all of borrowck-wg*
+[04:04:07] <pcwalton> yeah
+[04:04:11] <pcwalton> write guards are dead in the next PR
+[04:04:13] <acrichto> looks like some of them weren't even using @mut boxes
+[04:04:21] <pcwalton> oh really
+[04:04:26] <pcwalton> I should restore those, thanks
+[04:04:29] <acrichto> borrowck-wg-borrow-mut-to-imm.rs
+[04:04:36] <acrichto> couple others
+[04:04:43] *** Quits: lerc (quassel@moz-289EFA2.telstraclear.net) (Ping timeout)
+[04:05:03] <pcwalton> it means they were not, after all, testing write guards
+[04:05:05] <pcwalton> which is weird but ok
+[04:05:35] <acrichto> does this also remove the stuff in std::borrow?
+[04:05:43] <acrichto> for failed borrows
+[04:06:37] <pcwalton> it will after snapshot
+[04:06:39] <pcwalton> yes
+[04:06:40] <wycats_> ugh looks like we forgot to push the buffoon changes, so I'll have to continue debugging tomorrow
+[04:06:41] <acrichto> pcwalton: r=me, I trust you judgement in the compiler and I don't think you killed too many tests
+[04:06:42] <pcwalton> all of that is gone
+[04:06:48] <acrichto> \o/
+[04:07:05] <pcwalton> oh wow, Ppu::render_scanline is now beautiful asm
+[04:07:07] <pcwalton> and extremely fast
+[04:07:13] <acrichto> what changed?
+[04:07:15] <pcwalton> so fast that all the time is now spent in SDL :(
+[04:07:26] <pcwalton> I think it was probably strcat's changes to make bounds checks branch predict properly
+[04:07:50] *** Quits: ekwan (ekwan@moz-6635E2EF.hsd1.ca.comcast.net) (Connection reset by peer)
+[04:08:06] <bjz> pcwalton: time to rewrite it in Rust!
+[04:08:11] <pcwalton> :)
+[04:08:59] *** Joins: ekwan (ekwan@moz-6635E2EF.hsd1.ca.comcast.net)
+[04:10:36] *** Quits: pongad (Mibbit@moz-831734D6.revip2.asianet.co.th) (Quit: http://www.mibbit.com ajax IRC Client)
+[04:11:06] <whitequark> huh, I crashed LLVM
+[04:11:12] <whitequark> with rust's output
+[04:15:19] * geomyidae_ realized that bitshifting was the right answer, not parse_bytes
+[04:19:21] <whitequark> nevermind that, mismatched versions of LLVM
+[04:19:28] *** Quits: hacker_sam (hacker_sam@C0FE520A.661C02A7.B0CE379A.IP) (Client exited)
+[04:19:29] *** Joins: hacker_sam (hacker_sam@C0FE520A.661C02A7.B0CE379A.IP)
+[04:20:10] *** Joins: pongad (Mibbit@moz-831734D6.revip2.asianet.co.th)
+[04:26:56] *** Quits: pongad (Mibbit@moz-831734D6.revip2.asianet.co.th) (Quit: http://www.mibbit.com ajax IRC Client)
+[04:28:21] *** Joins: lerc (quassel@moz-289EFA2.telstraclear.net)
+[04:29:02] *** Quits: ecl3ctic (Mibbit@578C64B6.F0F44EFA.76AE55C1.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[04:29:06] *** Quits: earlzlap (earlz@moz-483E1E31.neo.res.rr.com) (Ping timeout)
+[04:29:47] *** Quits: pcdummy (pcdummy@moz-CF4CA865.page4me.ch) (Ping timeout)
+[04:30:51] *** Joins: pcdummy (pcdummy@moz-CF4CA865.page4me.ch)
+[04:30:52] *** Quits: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[04:32:29] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[04:32:57] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[04:33:43] *** Joins: ecl3ctic (Mibbit@moz-E1FAD64C.wzfv1.vic.bigpond.net.au)
+[04:34:13] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[04:34:37] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Ping timeout)
+[04:34:42] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[04:47:03] *** Quits: pyon (user@BCC41BDF.6C782DF8.1C8C8CE9.IP) (Client exited)
+[04:47:19] *** Joins: pyon (user@BCC41BDF.6C782DF8.1C8C8CE9.IP)
+[04:47:34] *** Parts: ekwan (ekwan@moz-6635E2EF.hsd1.ca.comcast.net) ()
+[04:48:07] *** Quits: pyon (user@BCC41BDF.6C782DF8.1C8C8CE9.IP) (Quit: restart)
+[04:49:35] *** Joins: pyon (user@BCC41BDF.6C782DF8.1C8C8CE9.IP)
+[04:51:06] *** Quits: Houm (Houm@moz-25669AA8.fbx.proxad.net) (Ping timeout)
+[04:56:46] <stomper> Can I have std::ops::Mul<TypeA, TypeB> for TypeC and another std::ops::Mul<TypeX, TypeY> for TypeC ?
+[04:57:34] <carter> probably not in the same moduel
+[04:57:37] <carter> *module
+[04:57:54] <stomper> bummer
+[04:59:27] <carter> stomper: what would that mean?
+[05:00:06] <dbaupp> stomper: no, but you can do a double dispatch hack to work around it, for now.
+[05:00:17] *** Joins: maikklein (maik@moz-E748EB1A.dip0.t-ipconnect.de)
+[05:00:33] <carter> hrm,
+[05:00:41] <carter> i'm looking at http://static.rust-lang.org/doc/master/std/ops/trait.Mul.html
+[05:01:02] <carter> so you're asking about   having
+[05:01:23] <carter> impl Mul<TA,TB> for TC  
+[05:01:42] <carter> and impl Mul <TX,TY> for TC
+[05:01:45] <carter> so 
+[05:02:29] <carter> mul1 :: TC -> TA -> TB and mul2 :: TC -> TX -> TY ?
+[05:02:31] <carter> huh
+[05:02:38] <carter> when I write it out that way, sounds doable
+[05:02:45] <dbaupp> stomper: http://smallcultfollowing.com/babysteps/blog/2012/10/04/refining-traits-slash-impls/ "What if I want overloading?"
+[05:05:47] <carter> ok,
+[05:05:48] <carter> hrm
+[05:06:06] <carter> so bascially "no constraint solving at the type level for trait resolution"
+[05:07:11] *** Joins: engla (engla@moz-F64E1B0F.cust.bredbandsbolaget.se)
+[05:07:33] <dbaupp> I believe niko wants to allow it
+[05:07:45] *** Joins: speckle (Mibbit@moz-AD109A29.hsd1.md.comcast.net)
+[05:08:13] <carter> yay
+[05:08:16] <carter> :)
+[05:08:35] <carter> i agree that stuff like Oleg's HList stuff is a bit bonkers
+[05:08:36] *** Joins: jmgrosen (jmgrosen@moz-848F6087.sb.sd.cox.net)
+[05:08:41] <carter> but some simpler things are definitelyw orth it
+[05:08:53] <carter> but its not there yet?
+[05:10:04] <speckle> hello, I have a newbie question: what are the Windows text editors with Rust indentation/highlighting support?
+[05:10:13] <carter> sublime test
+[05:10:15] <carter> *text
+[05:10:28] <speckle> ah, so just the expensive one? Hmm..
+[05:10:33] <carter> its free
+[05:10:39] <carter> it jsut asks you to buy it
+[05:10:42] <carter> every once in a while
+[05:10:50] <carter> (i'm sure theres emacs for windows too)
+[05:11:20] <carter> (admittedly i did buy a license)
+[05:11:38] <cmr> speckle: also vim, emacs, kate, etc.
+[05:11:46] <cmr> they all run on windows.
+[05:11:47] <carter> kate's on windows?
+[05:11:56] <cmr> sure, all of KDE is.
+[05:12:03] <carter> really?!
+[05:12:05] <carter> when was that?
+[05:12:06] <speckle> thing is, I'm not sure plugins would work on Windows, though I guess I could just try each one
+[05:12:06] <cmr> yeah
+[05:12:09] <cmr> for a while.
+[05:12:11] <eddyb> http://windows.kde.org
+[05:12:22] <eddyb> a while as in 5 years of kde4 or something :P
+[05:12:26] <speckle> gedit has a Rust plugin and works on Windows, but both of those things at the same time might be trickier
+[05:12:46] <carter> does that super windows text editor work?
+[05:12:58] <carter> notepadd++?
+[05:13:03] <cmr> speckle: almost every editors' plugin are some high-level scriping lang, like elisp or viml or in gedit's case, python.
+[05:13:32] <eddyb> notepad++ sucks a lot IMO, it has the notepad feel to it, paradoxically
+[05:13:38] <speckle> I couldn't find a Rust plugin for Notepad++, but I could look harder - so it seems like you are all either on Sublime or on Linux
+[05:13:39] <eddyb> (or not, depending on your view)
+[05:13:58] <cmr> I use gvim in windows too :p
+[05:14:13] * ofeldt too
+[05:16:13] *** Quits: maikklein (maik@moz-E748EB1A.dip0.t-ipconnect.de) (Ping timeout)
+[05:16:52] *** Quits: Ferreus (ferreus@moz-9ADFC210.pools.arcor-ip.net) (Quit: WeeChat 0.4.2)
+[05:17:30] <ecl3ctic> speckle: have you seen this page? https://github.com/mozilla/rust/wiki/Doc-packages,-editors,-and-other-tools
+[05:17:55] <speckle> hah, no Windows section
+[05:18:10] <cmr> it's a wiki, add it.
+[05:18:14] <ecl3ctic> there's no linux section either...
+[05:18:21] <cmr> https://github.com/pfalabella/Rust-notepadplusplus
+[05:18:41] <speckle> Nice!
+[05:20:13] <speckle> thanks everyone!
+[05:22:59] *** Joins: derek_c (derek@EFF793C6.D556260E.AA745434.IP)
+[05:23:40] <derek_c> Given an index, how do you split an owned vector to two owned vectors?
+[05:23:50] <dbaupp> derek_c: you can't
+[05:23:59] <dbaupp> well, not directly
+[05:24:05] <cmr> derek_c: that'd require reallocating each half
+[05:24:22] *** Quits: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net) (Client exited)
+[05:24:25] <derek_c> hmm
+[05:24:36] <dbaupp> cmr: not each half
+[05:24:39] <derek_c> so I have to copy?
+[05:24:46] *** Joins: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net)
+[05:24:46] <cmr> dbaupp: no?
+[05:24:48] <dbaupp> you can reuse the allocation for the first half of the vector
+[05:24:48] <cmr> well
+[05:24:56] <cmr> yeah
+[05:25:05] <dbaupp> you can do it with unsafe code easily enough
+[05:25:06] <carter> could you write an unsafe stanza to be a "primop" for it?
+[05:25:12] <dbaupp> yes
+[05:25:15] <carter> cool
+[05:25:36] <carter> i've some ideas for doing that for matrix algebra codes
+[05:25:37] <carter> :)
+[05:25:55] <carter> for parallel recursive decompositions
+[05:26:26] *** Quits: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net) (Ping timeout)
+[05:26:41] <derek_c> can I at least truncate an owned vector?
+[05:27:04] <derek_c> ah yes
+[05:28:11] <derek_c> what's the cost of shift()?
+[05:28:17] *** Joins: jcmoyer (apocalypse@moz-40035C19.sta.embarqhsd.net)
+[05:28:21] <cmr> O(n)
+[05:28:37] <dbaupp> https://gist.github.com/huonw/83b816089600102207f8
+[05:28:39] <cmr> v.slice_from(n).to_owned() will get you the second half of it.
+[05:28:48] <dbaupp> with Clone, though
+[05:28:52] <derek_c> what's the best way to truncate the front of an vector?
+[05:29:15] <dbaupp> derek_c: I think my gist will be the most efficient and most sensible way, even though it uses a bit of unsafe.
+[05:29:34] <derek_c> dbaupp: thanks a lot!  That looks very useful
+[05:29:53] <dbaupp> (I haven't tested it...)
+[05:30:53] <derek_c> dbaupp: I guess the problem is that, in my use case, the index will be very small comparing to the length of the vector
+[05:31:07] <derek_c> so I'm not sure if copying everything after the index is a sensible option
+[05:31:16] <cmr> derek_c: if you can use slices, it will be faster.
+[05:31:39] <derek_c> I want an owned vector of everything after the index, and a whatever for everything before the index
+[05:31:52] <derek_c> ideally without copying things after the index
+[05:32:05] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[05:33:01] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[05:33:26] <derek_c> I guess I can write some unsafe code to truncate the front of a vector
+[05:33:36] <derek_c> gotta go, thanks all for help!
+[05:33:56] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[05:34:42] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[05:35:15] *** Quits: derek_c (derek@EFF793C6.D556260E.AA745434.IP) (Ping timeout)
+[05:35:24] <dbaupp> derek_c: you can't truncate the front of a vector without some extremely unsafe code
+[05:35:28] <dbaupp> ... oh :(
+[05:35:37] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Ping timeout)
+[05:35:52] *** Joins: Kxepal (Miranda@moz-B7DB05D8.pppoe.mtu-net.ru)
+[05:36:01] <cmr> I think we could have an shift_many(n: uint) that destructs n elements from the front and then does a single memcpy.
+[05:36:13] <cmr> becomes O(n) instead of O(n^2)
+[05:38:29] <dbaupp> cmr: O(length of vec + num destructed) vs. O(length of vec * num destructed), right?
+[05:38:41] *** Quits: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net) (Ping timeout)
+[05:38:57] <cmr> length of vec - num destructed
+[05:39:13] <cmr> well, that's a good enough rough approximation :p
+[05:39:19] <cmr> need some summations in there to be exact.
+[05:39:53] *** Joins: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net)
+[05:45:37] *** Quits: luz (lucy@moz-CD18B14B.customer.cdi.no) (Ping timeout)
+[05:47:10] *** Joins: luz (lucy@moz-CD18B14B.customer.cdi.no)
+[05:54:18] *** Quits: pyon (user@BCC41BDF.6C782DF8.1C8C8CE9.IP) (Ping timeout)
+[05:56:09] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[05:56:22] *** Quits: samx (sami@moz-D9DA5773.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[05:59:48] *** Joins: pyon (user@BCC41BDF.6C782DF8.1C8C8CE9.IP)
+[06:06:28] *** Joins: pongad (Mibbit@moz-831734D6.revip2.asianet.co.th)
+[06:09:29] *** Quits: ecl3ctic (Mibbit@moz-E1FAD64C.wzfv1.vic.bigpond.net.au) (Quit: http://www.mibbit.com ajax IRC Client)
+[06:10:32] *** Joins: ecl3ctic (Mibbit@moz-E1FAD64C.wzfv1.vic.bigpond.net.au)
+[06:20:06] *** Quits: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net) (Ping timeout)
+[06:21:04] *** Joins: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net)
+[06:21:45] <stomper> How can I disable the dead code warning?
+[06:21:50] *** Quits: kvanb (kvanb@moz-B19851B6.lnse7.lon.bigpond.net.au) (Quit: kvanb)
+[06:22:26] *** Quits: pongad (Mibbit@moz-831734D6.revip2.asianet.co.th) (Quit: http://www.mibbit.com ajax IRC Client)
+[06:22:52] <brson> stomper: put #[allow(dead_code)] somewhere
+[06:23:06] <brson> either on the crate, a module, or function
+[06:24:37] <stomper> brson: thanks
+[06:25:16] *** Quits: bytbox (s@moz-54E13927.washdc.fios.verizon.net) (Ping timeout)
+[06:26:11] <bjz> brson: I wonder if those lints should say how to disable them
+[06:26:56] *** Quits: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net) (Ping timeout)
+[06:27:31] <brson> bjz: seems reasonable. maybe the first time they're emitted
+[06:27:58] *** Joins: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net)
+[06:28:28] <bjz> brson: both the #[allow(..)] and #[ignore(..)] ones maybe
+[06:28:39] <ChrisMorgan> What we need is dedicated documentation for all compiler errors, warnings, &c.
+[06:29:06] <bjz> ChrisMorgan: that too
+[06:29:35] <dbaupp> bjz: ignore doesn't exist :)
+[06:29:42] <bjz> oh
+[06:29:46] <bjz> hm
+[06:30:07] <bjz> just shows ChrisMorgan is right
+[06:30:08] <dbaupp> stomper: do you need to disable it because you've got a work-in-progress that doesn't use all the functions?
+[06:32:26] <bjz> stomper: it's sometimes just better to leave those warnings even if you're doing wip stuff
+[06:32:32] <bjz> brson: we should have #[allow(allow)]
+[06:32:46] <bjz> :D
+[06:33:21] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[06:34:26] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[06:35:03] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[06:35:19] *** Joins: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net)
+[06:36:06] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Ping timeout)
+[06:37:00] *** Quits: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net) (Ping timeout)
+[06:38:14] *** Joins: tsvia (tsvia@moz-DDA0CF97.red.bezeqint.net)
+[06:41:34] *** Joins: eholk (eholk@moz-58C5EE6F.wavecable.com)
+[06:42:46] <stomper> bjz: With your glfw bindings on linux, is glfw supposed to be a static or shared lib?
+[06:43:13] <bjz> stomper: shared
+[06:45:45] *** Quits: eholk (eholk@moz-58C5EE6F.wavecable.com) (Quit: eholk)
+[06:45:54] *** Quits: rsaarelm (rsaarelm@moz-D1CB7158.dhcp.inet.fi) (Ping timeout)
+[06:46:31] <bjz> stomper: also, glfw-rs questions are probably better asked on #rust-gamedev
+[06:47:42] <stomper> Roger.  "Support  Contact bjz on irc.mozilla.org #rust" <- saw that, and I was already in this channel so I asked.  But I'll mosey on over
+[06:48:01] *** Joins: zmthy (Tim@moz-56779DBC.dsl.dyn.ihug.co.nz)
+[06:48:12] <bjz> oh ok
+[06:48:26] <bjz> should probably change that
+[06:50:18] *** Joins: rsaarelm (rsaarelm@moz-D1CB7158.dhcp.inet.fi)
+[06:52:42] *** Joins: kvanb (kvanb@moz-B19851B6.lnse7.lon.bigpond.net.au)
+[07:02:50] *** Joins: earlzlap (earlz@moz-483E1E31.neo.res.rr.com)
+[07:07:29] *** Quits: zmthy (Tim@moz-56779DBC.dsl.dyn.ihug.co.nz) (Ping timeout)
+[07:09:24] *** Joins: zmthy (Tim@moz-56779DBC.dsl.dyn.ihug.co.nz)
+[07:11:17] *** Joins: eholk (eholk@moz-58C5EE6F.wavecable.com)
+[07:13:18] *** Quits: stomper (Mibbit@moz-A06909E4.glbb.ne.jp) (Quit: http://www.mibbit.com ajax IRC Client)
+[07:25:28] *** Joins: Guest_ (textual@moz-30B6C3D1.lightspeed.rsbgtx.sbcglobal.net)
+[07:27:28] *** Quits: zmthy (Tim@moz-56779DBC.dsl.dyn.ihug.co.nz) (Ping timeout)
+[07:31:07] *** Joins: jlong (jlong@moz-6DFDE846.socal.res.rr.com)
+[07:33:55] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[07:35:11] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[07:35:37] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[07:36:51] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Ping timeout)
+[07:40:46] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Quit: Leaving.)
+[07:41:40] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: leaving)
+[07:42:59] *** Joins: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net)
+[07:45:43] *** Joins: zmthy (Tim@moz-56779DBC.dsl.dyn.ihug.co.nz)
+[07:46:31] *** Quits: jlong (jlong@moz-6DFDE846.socal.res.rr.com) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[07:53:11] *** Quits: james4k (james@moz-E7990244.consolidated.net) (Ping timeout)
+[07:56:13] *** Quits: eholk (eholk@moz-58C5EE6F.wavecable.com) (Quit: eholk)
+[08:03:58] *** Quits: zmthy (Tim@moz-56779DBC.dsl.dyn.ihug.co.nz) (Ping timeout)
+[08:06:39] *** Quits: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net) (Ping timeout)
+[08:08:43] *** Joins: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net)
+[08:11:42] *** Joins: dwrensha (chatzilla@moz-DE44EA45.hsd1.pa.comcast.net)
+[08:16:50] *** Quits: jmgrosen (jmgrosen@moz-848F6087.sb.sd.cox.net) (Quit: jmgrosen)
+[08:22:57] *** Joins: mark_edward (quassel@moz-E0F1AB04.hsd1.in.comcast.net)
+[08:30:40] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[08:31:30] *** Quits: alexanderkyte (alexanderk@moz-95DBFBC5.csh.rit.edu) (Ping timeout)
+[08:31:42] *** Quits: dbussink (dbussink@moz-E0A5568C.bussink.me) (Ping timeout)
+[08:32:03] *** Quits: ptrr (ptrr@48799E9.1D1EB2D6.85889BB1.IP) (Ping timeout)
+[08:33:04] *** Quits: oal (oal@26029749.1D466084.2CFD4520.IP) (Ping timeout)
+[08:33:44] *** Joins: oal (oal@26029749.1D466084.2CFD4520.IP)
+[08:34:13] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[08:34:17] *** Quits: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net) (Ping timeout)
+[08:34:47] *** Joins: alexanderkyte (alexanderk@moz-95DBFBC5.csh.rit.edu)
+[08:35:03] *** Joins: dbussink (dbussink@moz-E0A5568C.bussink.me)
+[08:35:23] *** Joins: ptrr (ptrr@48799E9.1D1EB2D6.85889BB1.IP)
+[08:35:26] *** Joins: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net)
+[08:35:56] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[08:35:59] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[08:37:42] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Ping timeout)
+[08:38:50] *** Quits: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net) (Ping timeout)
+[08:40:04] *** Joins: pongad (Mibbit@moz-831734D6.revip2.asianet.co.th)
+[08:41:00] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[08:41:32] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[08:43:22] *** Joins: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net)
+[08:44:29] *** Joins: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net)
+[08:45:02] *** Quits: kmapped2 (kmapped2@A35331CF.60E9685E.20F09BA6.IP) (Ping timeout)
+[08:45:32] *** Quits: earlzlap (earlz@moz-483E1E31.neo.res.rr.com) (Ping timeout)
+[08:47:22] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[08:48:18] *** Quits: hacker_sam (hacker_sam@C0FE520A.661C02A7.B0CE379A.IP) (Client exited)
+[08:48:39] *** Joins: hacker_sam (hacker_sam@C0FE520A.661C02A7.B0CE379A.IP)
+[08:52:22] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[08:53:58] *** Joins: stomper (Mibbit@moz-A06909E4.glbb.ne.jp)
+[08:54:09] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[08:55:41] *** Quits: pongad (Mibbit@moz-831734D6.revip2.asianet.co.th) (Quit: http://www.mibbit.com ajax IRC Client)
+[08:56:06] *** Quits: dwrensha (chatzilla@moz-DE44EA45.hsd1.pa.comcast.net) (Ping timeout)
+[09:04:02] *** Joins: derby (dirby@moz-773B6878.torservers.net)
+[09:07:03] *** Joins: james4k (james@moz-E7990244.consolidated.net)
+[09:08:48] *** Quits: james4k (james@moz-E7990244.consolidated.net) (Ping timeout)
+[09:13:37] *** Quits: stomper (Mibbit@moz-A06909E4.glbb.ne.jp) (Quit: http://www.mibbit.com ajax IRC Client)
+[09:20:15] *** Quits: gwty (gwtypc@45FAED15.3D6E65B3.27560D6E.IP) (Ping timeout)
+[09:26:32] *** Quits: rsaarelm (rsaarelm@moz-D1CB7158.dhcp.inet.fi) (Client exited)
+[09:27:58] *** Quits: santiago (santiago@moz-8ADE82B4.socal.res.rr.com) (Ping timeout)
+[09:28:32] *** Joins: santiago (santiago@moz-8ADE82B4.socal.res.rr.com)
+[09:28:33] *** Joins: mpiechotka (mpiechotka@moz-FF5F76BA.adsl.inetia.pl)
+[09:34:44] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[09:34:51] *** Quits: santiago (santiago@moz-8ADE82B4.socal.res.rr.com) (Quit: Textual IRC Client: http://www.textualapp.com/)
+[09:36:34] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[09:36:45] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[09:38:31] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Ping timeout)
+[09:44:49] *** Joins: santiago (santiago@moz-8ADE82B4.socal.res.rr.com)
+[09:45:55] *** Joins: awidegreen (awidegreen@moz-726821A2.pppoe.wtnet.de)
+[09:46:49] <ecl3ctic> wait... there's no increment operator?
+[09:47:42] <ecl3ctic> what madness is this?
+[09:47:47] *** Joins: moostik (Icedove@moz-5956E11F.w92-135.abo.wanadoo.fr)
+[09:48:53] *** Joins: gwty (gwtypc@199540EF.6E448401.27560D6E.IP)
+[09:49:37] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[09:50:01] *** Joins: alonlevy (alon@moz-EB7C9CF3.telavivmakers.org)
+[09:51:49] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[09:57:35] <bjz> ecl3ctic: well, raw incrementation is not reccomended
+[09:58:38] <ecl3ctic> I'm not that deep into idiomatic rust yet, but surely that operator still has it's uses?
+[09:58:50] <ecl3ctic> its*
+[09:58:53] <bjz> there is: x += 1
+[09:58:59] <ecl3ctic> well yeah
+[09:59:01] <ecl3ctic> but still
+[09:59:05] <ecl3ctic> I miss my ++x
+[09:59:13] <bjz> :P
+[09:59:27] <ecl3ctic> :'(
+[09:59:49] *** Quits: awidegreen (awidegreen@moz-726821A2.pppoe.wtnet.de) (Ping timeout)
+[10:00:15] <bjz> what is the code in question?
+[10:00:43] <phil_> happy new year rusty ppl
+[10:00:51] <eddyb> thoughts about the first day of 2014: I shouldn't have went to sleep at 6 am
+[10:00:55] <ecl3ctic> the code I was writing when I realised the operator didn't exist certainly didn't need the operator
+[10:01:01] <eddyb> I shouldn't have eaten all the food last year
+[10:01:04] <eddyb> and meth sucks
+[10:01:12] <ecl3ctic> so, I actually haven't found any use cases yet per se
+[10:01:53] <bjz> ecl3ctic: ok
+[10:02:29] *** Quits: Excureo (c@moz-EB93D257.static.knwc.wa.charter.com) (Ping timeout)
+[10:03:05] <bjz> ecl3ctic: yeah, graydon (original designer of the language) did muse that not having ++ might be a little mean
+[10:03:24] <bjz> but yeah, I don't think there's been much drive to add it
+[10:03:34] *** Joins: threecreepio (Adium@moz-9DA6CBAC.bredband.comhem.se)
+[10:04:09] *** Quits: Liam` (quassel@6265EFB3.B1CCF5AA.217C7FCC.IP) (Ping timeout)
+[10:04:21] <ecl3ctic> in C/C++ 99% of occurrences are probably in for loops anyway
+[10:04:22] *** Joins: Excureo (c@moz-EB93D257.static.knwc.wa.charter.com)
+[10:04:25] <bjz> the difference between ++x and x++ adds more complexity - it would be nice to avoid that
+[10:04:34] <bjz> yeah, we have nice iterators
+[10:04:46] <ecl3ctic> x++ is evil, I never use that
+[10:05:32] <bjz> iterators are higher level, composable, and generate nice asm
+[10:06:07] <bjz> plus dealing with low level housekeeping like incrementation leads to bugs
+[10:07:00] <bjz> phil_: happy new year - been the new year for 21 hrs here :)
+[10:07:00] <ecl3ctic> absolutely, and I suppose that its non-existence is a trigger for programmers to actually think whether they want to be using it at all
+[10:07:21] <ecl3ctic> like me, 10 minutes ago, when I instinctively reached for it
+[10:07:24] <bjz> yeah, same with having immutability as the default
+[10:08:10] <bjz> it's about ergonomically discouraging unsafe things, whilst not completely getting rid of them
+[10:08:41] *** Quits: klaus (koz@moz-E49E7C4B.hsd1.wa.comcast.net) (Quit: klaus)
+[10:08:59] <phil_> 2 hrs here
+[10:08:59] <phil_> were the last to get it
+[10:09:08] *** Joins: Liam` (quassel@6265EFB3.B1CCF5AA.217C7FCC.IP)
+[10:09:26] <ecl3ctic> bjz: 21 hours? Are you Aussie like me? :P
+[10:09:29] <bjz> America is sooo behind the times. :D
+[10:09:37] <bjz> ecl3ctic: indeed - Melbourne
+[10:09:41] <ecl3ctic> same
+[10:09:55] <bjz> yay!
+[10:11:00] <bjz> dbaupp and ChrisMorgan are from Australia too
+[10:14:28] <ecl3ctic> awesome
+[10:15:07] <bjz> yay for aussie rustians
+[10:15:33] <bjz> ecl3ctic: why are you interested in Rust?
+[10:16:23] *** Joins: Axord (xord@moz-C0D5F15A.lsanca.dsl-w.verizon.net)
+[10:16:33] <ecl3ctic> I want a systems-level language that isn't horrible to use :)
+[10:16:38] <bjz> heh
+[10:16:40] <ecl3ctic> C++ gives me nightmares
+[10:16:51] <bjz> what languages do you normally use?
+[10:17:47] <ecl3ctic> I've done C++, some D, C#, Java and JavaScript
+[10:17:53] <ecl3ctic> been using C++ and JS recently
+[10:18:00] <bjz> ah nice
+[10:18:08] <bjz> any C++11?
+[10:18:23] <ecl3ctic> briefly
+[10:18:45] <bjz> D is nice
+[10:19:46] <ecl3ctic> it is, but I've found that Rust is willing to deviate more from the C/C++ formula
+[10:19:52] <ecl3ctic> in good ways
+[10:19:54] <bjz> yeah, same
+[10:20:20] <ecl3ctic> like removing traditional OO with class hierarchies
+[10:20:30] <bjz> towards the end of my D use I was got fed up with `const`-ing all my parameters
+[10:21:12] <ecl3ctic> yeah, Rust's safety is amazing
+[10:21:31] <bjz> it's not perfect
+[10:21:49] <ecl3ctic> nothing is ever perfect :)
+[10:21:50] <bjz> but it's much better than whats out there at the moment in systems land
+[10:22:06] *** Quits: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net) (Quit: Leaving...)
+[10:22:46] <bjz> but yeah, C++ has good stuff, which Rust tries to draw from. particularly in terms of zero cost abstraction - although we don't have the power of templates (double edged sword)
+[10:23:22] <ecl3ctic> absolutely
+[10:23:30] <bjz> zero cost abstraction is the thing that most langs don't seem to tackle
+[10:23:35] <ecl3ctic> that's where D confuses me a little
+[10:23:59] <bjz> yeah?
+[10:24:42] <ecl3ctic> well, it claims to compete with C++ but they've made a few choices that sacrifice performance to the level of something like Java
+[10:24:51] <ecl3ctic> from what I gather anyway
+[10:24:53] <bjz> yeah, it's sad
+[10:25:46] <bjz> it has some great qualities, but it will be ever hobbled by the fact that GC is the default
+[10:26:03] <bjz> even though you can use it without GC
+[10:26:04] <ecl3ctic> and that it pervades through the standard library
+[10:26:14] <bjz> it is getting better apparently
+[10:26:31] <bjz> they are rewriting more and more of it
+[10:26:41] <ecl3ctic> I've heard
+[10:26:47] *** Quits: KindOne (KindOne@moz-540ACFC6.dynamic.ip.windstream.net) (Ping timeout)
+[10:26:52] <ecl3ctic> GC isn't the biggest deal anyway, it just seems to be poorly thought out
+[10:26:59] <bjz> but it doesn't have the same momentum as Rust
+[10:27:47] <ecl3ctic> well, it's all volunteer work
+[10:28:05] <ecl3ctic> with a few minor exceptions
+[10:28:30] *** Joins: Earnestly (earnest@88884C6.A3735F9C.39C00A7A.IP)
+[10:28:33] <ecl3ctic> if Rust didn't have Mozilla things would probably be the same pace over here
+[10:28:34] <bjz> Rust is mostly volunteer work, but luckily we also have more than a couple paid devs
+[10:28:56] <bjz> who can keep up the pace, and direction
+[10:29:11] <ecl3ctic> and they seem to be doing a damn fine job
+[10:29:28] <nielsle> Has rus surpassed D in terms for features/completeness?
+[10:29:46] <nielsle> (just curious)
+[10:29:57] <ecl3ctic> nielsle: is surpassing in features a goal worth having?
+[10:30:15] <nielsle> Hehe
+[10:30:32] <ecl3ctic> I would say D has too many features
+[10:30:36] <bjz> nielsle: depends. D is still much more mature
+[10:30:43] <ecl3ctic> D is ready for production today, and has been for years
+[10:30:52] <bjz> nielsle: especially when it comes to libraries
+[10:31:04] <nielsle> Ah.
+[10:31:05] *** Joins: KindOne (KindOne@moz-61DE83A6.dynamic.ip.windstream.net)
+[10:31:49] <bjz> nielsle: but as ecl3ctic points out, having the most features is not necessarily a good thing.
+[10:32:24] <bjz> nielsle: we do have more people in our IRC channel though :D
+[10:33:05] <ecl3ctic> most D discussion seems to happen on their newsgroup though
+[10:33:11] <nielsle> Hehe, that is also a win :)
+[10:33:15] <bjz> ecl3ctic: ah ok
+[10:33:38] <bjz> ecl3ctic: how does it compare with rust-dev?
+[10:33:40] <bjz> :P
+[10:34:39] <ecl3ctic> well everyone on the D newsgroup seems to be in constant battle about features
+[10:35:15] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[10:35:17] <ecl3ctic> I haven't read too much of rust-dev though
+[10:36:00] <ecl3ctic> nor have I counted posts :P
+[10:37:01] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[10:37:26] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[10:37:37] <ChrisMorgan> rust-dev is far too busy at present. It's been getting significantly out of hand in these past few months.
+[10:38:18] *** Quits: alonlevy (alon@moz-EB7C9CF3.telavivmakers.org) (Ping timeout)
+[10:39:15] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Ping timeout)
+[10:39:56] <bjz> heh
+[10:43:57] *** Joins: nfroidure (nfroidure@moz-B747FB5E.w90-18.abo.wanadoo.fr)
+[10:44:39] *** Quits: twi (Adium@moz-174339A4.cust.dsl.vodafone.it) (Quit: Leaving.)
+[10:45:51] *** Joins: kngl (Adium@E5907D90.770DEA4D.7C797F8E.IP)
+[10:46:08] <ecl3ctic> ChrisMorgan: we need something like forum.dlang.org
+[10:46:54] *** Quits: voxpopuli (fanservice@moz-CEF3689A.hsd1.pa.comcast.net) (Ping timeout)
+[10:46:56] <ecl3ctic> that's just a fancy interface for their mailing list
+[10:49:52] <skrylar> meep
+[10:50:11] <skrylar> ecl3ctic: technically the D forum is a web interface to their newsgroup server
+[10:50:23] *** Joins: JamesNZ (james@moz-264643C7.bitstream.orcon.net.nz)
+[10:50:45] <skrylar> at least under walter they used an NNTP-based news server instead of a mailing list
+[10:52:40] *** Joins: zmthy (Tim@moz-56779DBC.dsl.dyn.ihug.co.nz)
+[10:53:43] *** Joins: nkoep (nik@moz-A39EE525.pool.mediaways.net)
+[10:54:27] *** Joins: Soft (soft@moz-EC8D39F.yok.fi)
+[10:55:21] *** Joins: james4k (james@moz-E7990244.consolidated.net)
+[10:56:02] <ecl3ctic> skrylar: yeah I know nothing about newsgroups and mailing lists
+[10:56:39] <ecl3ctic> skrylar: me being 20, this is all 'old' tech, IRC included
+[10:57:04] *** Quits: james4k (james@moz-E7990244.consolidated.net) (Ping timeout)
+[10:57:18] <ecl3ctic> we should all move to Facebook ;)
+[11:06:43] *** Quits: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net) (Ping timeout)
+[11:07:21] *** Joins: Ms2ger (Ms2ger@EA658558.EACB0161.3773EA9F.IP)
+[11:10:33] <skrylar> lol
+[11:11:11] <skrylar> sure, lets just hand everything over to a company we don't have any control over and gets to change all the features of at a moments notice, that will never end poorly :sarcasm:
+[11:13:50] <bjz> <3 <3 IRC
+[11:14:08] <nielsle> Maybe we can redesign www.gmane.org  to make it look more like facebook :-)
+[11:14:35] <bjz> older than the WWW
+[11:14:57] *** Joins: twi (Adium@moz-174339A4.cust.dsl.vodafone.it)
+[11:16:25] <Ms2ger> Happy arbitrary Gregorian boundary, folks
+[11:16:44] *** Quits: twi (Adium@moz-174339A4.cust.dsl.vodafone.it) (Ping timeout)
+[11:17:34] *** Joins: jackneill (jackneill@moz-D87DF7.pool.digikabel.hu)
+[11:18:14] *** Joins: alonlevy (alon@moz-61A0AD83.red.bezeqint.net)
+[11:19:33] *** Quits: JamesNZ (james@moz-264643C7.bitstream.orcon.net.nz) (Quit: Busying myself...)
+[11:20:43] <skrylar> its supposed to be a solar revolution or something like that
+[11:20:47] <skrylar> not exactly arbitrary
+[11:21:10] <skrylar> all though it is quite funny when you see people talk about 'uneducated heathens' and then realize their calendars are based on orbital mathematics
+[11:21:32] <ecl3ctic> well it's an arbitrary point in the cycle
+[11:21:43] <bjz> yup
+[11:22:12] <skrylar> ok i'll concede that part
+[11:22:51] <ecl3ctic> I'd love if time was just measured as one big number
+[11:23:08] <ecl3ctic> preferably in hexadecimal
+[11:23:44] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[11:23:55] <ecl3ctic> 0x1A81CCD0189AECDF189F81BB180
+[11:24:04] <ecl3ctic> that can be the value of this moment
+[11:24:38] <skrylar> time since epoch
+[11:32:04] *** Joins: bheylin (brianheyli@moz-8255E94E.adsl.online.nl)
+[11:32:13] *** Joins: ofeldt- (ofeldt@moz-3736EFF2.dip0.t-ipconnect.de)
+[11:32:41] *** Joins: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net)
+[11:32:46] *** Quits: DAddYE (DAddYE@moz-98D3933F.hsd1.ca.comcast.net) (Quit: DAddYE)
+[11:33:07] *** Quits: ofeldt (ofeldt@moz-A3FD068B.dip0.t-ipconnect.de) (Ping timeout)
+[11:35:07] <skrylar> i have a newfound liking for SDL again
+[11:35:32] * skrylar got to learn about converting a buffer of UTF-8 from C to Rust when dealing with the IME support from sdl
+[11:35:53] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[11:37:25] <skrylar> I also found out that there doesn't appear to be a standard method for "utf-8 encoded, null terminated C string" despite a lot of libraries having those
+[11:37:40] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[11:38:12] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[11:38:34] <dbaupp> in Rust?
+[11:39:15] <skrylar> dbaupp: yeah.
+[11:39:27] <dbaupp> I thought there was something in std::str::raw
+[11:39:31] *** Joins: tiffany (kawaii@moz-FC0DB29D.dhcp.embarqhsd.net)
+[11:39:44] <skrylar> dbaupp: i went with x.iter().position(|&x| { x == 0 }) for the length, then x.slice(0, length), and finally from_utf_str
+[11:39:52] <dbaupp> http://static.rust-lang.org/doc/master/std/str/raw/fn.from_c_str.html
+[11:39:58] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Ping timeout)
+[11:40:08] <skrylar> dbaupp: thats not how SDL2/Allegro4+ do strings
+[11:40:12] <dbaupp> .slice(0, x) == .slice_to(x)
+[11:40:23] <dbaupp> what do you mean?
+[11:40:47] <skrylar> dbaupp: SDL2 gives you input from the OS as the form of a [u8, ..32]
+[11:40:51] *** Joins: io2 (io2@moz-34E8FDD4.home.otenet.gr)
+[11:41:27] <skrylar> Allegro also has many cases of using unsigned char + nul-terminated unicode
+[11:41:34] <dbaupp> oh, I see; it's a Rust library.
+[11:41:50] <skrylar> yeah, i was writing a wrapper
+[11:42:04] <skrylar> its up on github but i'm still cleaning it up
+[11:42:36] *** Joins: twi (Adium@moz-174339A4.cust.dsl.vodafone.it)
+[11:42:37] <dbaupp> yeah, `from_utf8(vec.slice_to(vec.iter().position(|&x| x == 0).unwrap_or(32)))` sounds reasonable
+[11:43:48] <ChrisMorgan> skrylar: do note that—where you had `.position(|&x| { x == 0 })`, dbaupp removed the braces, leaving `.position(|&x| x == 0)`. The braces are indeed optional and for such cases it tends to be desirable to remove them.
+[11:44:10] * dbaupp crowns ChrisMorgan style-master
+[11:44:18] *** Joins: adridu59 (Mibbit@moz-E1FF077C.rev.numericable.fr)
+[11:44:27] * ChrisMorgan starts making arbitrary style decisions
+[11:44:36] <dbaupp> best kind of style decisions :)
+[11:44:57] <skrylar> i used an expect instead of unwrap
+[11:45:15] <skrylar> SDL wouldn't have given me the event if there was no value, so that is an error
+[11:45:23] <dbaupp> skrylar: I used .unwrap_or
+[11:45:30] <dbaupp> for the case that the whole buffer is filled
+[11:45:37] <dbaupp> i.e. no null terminator
+[11:45:47] <dbaupp> (on the off chance that can happen.)
+[11:45:59] <skrylar> i can go add a .max() for that
+[11:46:11] <skrylar> it should be an error that there is no terminator though :/ SDL shouldn't be doing that
+[11:46:29] <dbaupp> can the outptu ever be 32 bytes long?
+[11:46:34] <skrylar> no
+[11:46:44] <skrylar> it says by the spec sheet, the string is NULL terminated
+[11:46:56] <skrylar> (therefore, no NULL is an invalid event)
+[11:47:35] *** Quits: ecl3ctic (Mibbit@moz-E1FAD64C.wzfv1.vic.bigpond.net.au) (Quit: http://www.mibbit.com ajax IRC Client)
+[11:48:07] <dbaupp> sounds good
+[11:48:35] <dbaupp> (in any case, using methods that don't fail!() is better for performance: the possibility of unwinding gets in the way of the optimiser)
+[11:50:18] *** Joins: spider-mario (spidermari@moz-81131DB6.fbx.proxad.net)
+[11:51:23] <skrylar> i wrote that down but i'll worry about optimizing it later
+[11:53:52] <skrylar> there's already a little bit of performance loss just reboxing the events :(
+[11:54:38] <skrylar> it takes them out of the C union with the native FFI types and re-boxes them over to Rust structs/an enum with the appropriate local types
+[11:57:23] <adridu59> what comes after 0.9? 1.0-pre?
+[11:57:48] <dbaupp> 0.10
+[11:57:58] <dbaupp> well, 0.10-pre
+[11:58:05] <adridu59> is there a sort of roadmap?
+[11:58:19] <adridu59> I mean is there a deadline for the core team to release 1.0?
+[11:58:32] <dbaupp> https://github.com/mozilla/rust/issues/milestones
+[11:58:36] *** Joins: Blei (Philipp@moz-BEF792F4.dynamic.hispeed.ch)
+[11:58:39] <adridu59> not that I want to see things rushed
+[11:59:01] <adridu59> ah 23% sounds far away
+[11:59:02] <dbaupp> https://github.com/mozilla/rust/issues?milestone=20&state=open is the list of bugs that are currently categorised as blocking 1.0
+[11:59:10] <dbaupp> there may be more
+[11:59:27] <dbaupp> but, aiui, 1.0 will come when there are no bugs blocking it; not some fixed date
+[11:59:44] <adridu59> milestone says 23% done but this is inaccurate since there aren't the old bugs
+[12:00:04] <adridu59> that's good
+[12:00:06] <dbaupp> yeah, and each bug has a different level of difficulty
+[12:00:34] <adridu59> yea
+[12:00:35] *** Joins: mib_62nh53 (Mibbit@B9BBA2B7.E0D718C1.BDAE6B1E.IP)
+[12:00:42] <dbaupp> i.e. I believe the devs are working hard to get the major ones fixed, so, in theory, fixing blocking bugs will get faster... in theory :P
+[12:00:51] <skrylar> i seem to recall the last word on 1.0 is that the language is "mostly done" and its just a tooling issue now
+[12:01:38] <dbaupp> and a library issue
+[12:01:45] <mib_62nh53> wow hello guys. i didn't know this place
+[12:02:11] <skrylar> i pondered if there'd be any value in writing a pure-rust asciidoc transformer
+[12:02:18] <dbaupp> 1.0 will, for the most part, be just stabilising the language (i.e. syntax and semantics of borrowed pointers, etc etc), not entirely stabilising the libs
+[12:02:19] <skrylar> i think the community mostly settled on sphinx though
+[12:02:24] <dbaupp> skrylar: it might be fun?
+[12:02:28] <dbaupp> mib_62nh53: hi! :)
+[12:02:35] <skrylar> dbaupp: well, i'd use it. :X
+[12:02:46] <skrylar> all though i'd also use asciidoctor.rb
+[12:02:54] <mib_62nh53> wow... is there anyone using x64? 
+[12:03:05] * skrylar does still need to add `.as_bytes` to the tip gist though
+[12:03:36] *** Quits: kvanb (kvanb@moz-B19851B6.lnse7.lon.bigpond.net.au) (Quit: kvanb)
+[12:03:40] <adridu59> mib_62nh53: do you mean a 64-bit OS? well, this is the 21st century
+[12:03:52] <adridu59> :p
+[12:04:06] <adridu59> I exaggerate since widespread adoption must be something like 2008
+[12:04:48] * skrylar 's linux box is 32-bit
+[12:04:57] <skrylar> I still run in to problem city trying to use 64-bit linux
+[12:05:16] <adridu59> skrylar: how so?
+[12:05:21] <mib_62nh53> i couldn't execute rust at my computer..
+[12:05:30] <mib_62nh53> oh you doesnt get error from libgcc_s....lib?
+[12:05:30] <mib_62nh53> It makes me crazy for several days :(
+[12:05:45] <adridu59> if you have used XP x64, that was the real pain
+[12:05:48] <skrylar> adridu59: one game client I use is only provided for 32-bit, which means on the 64-bit Ubuntu I had to try to install multiarch libs that were notoriously buggy
+[12:06:02] <skrylar> .. and then Wings3D is only provided 64-bit, so I can't win them all. *sighs*
+[12:06:03] <mib_62nh53> actually im using 64bit windows 8.. 
+[12:06:18] <adridu59> ahah Linux is a mess
+[12:06:21] <mib_62nh53> I think i need to change it to 32bit
+[12:06:33] <adridu59> don't get me wrong, I use it everyday but
+[12:06:38] <dbaupp> mib_62nh53: I think Rust should run on 64-bit windows
+[12:06:38] <mib_62nh53> not just for rust... python makes error too..
+[12:06:45] <dbaupp> oh
+[12:06:48] *** Quits: bheylin (brianheyli@moz-8255E94E.adsl.online.nl) (Quit: bheylin)
+[12:06:49] <skrylar> no its bad, everything else just gets worse every revision. haha
+[12:06:58] <mib_62nh53> but no official support in rust for 64bit
+[12:07:02] <adridu59> really lacks the centralization for a proper development model
+[12:07:12] <skrylar> i think rust does support 64-bit
+[12:07:20] <skrylar> but you have to build it 
+[12:07:23] * ChrisMorgan thinks he's going to need to use `abbr fn def` when he's working in python in vim.
+[12:07:26] <adridu59> rust supports 64-bit
+[12:07:38] <adridu59> but if you are using release 0.7 it is quite crappy on Windows
+[12:07:50] <adridu59> since then tons of improvements have been made for Windows support
+[12:07:57] * skrylar throws the superior version of abbrev at ChrisMorgan: https://github.com/tpope/vim-abolish
+[12:08:05] <mib_62nh53> oh why 0.7 not 0.8?
+[12:08:21] <adridu59> oops I meant 0.8 sry
+[12:08:27] *** Quits: alonlevy (alon@moz-61A0AD83.red.bezeqint.net) (Ping timeout)
+[12:09:08] <adridu59> mib_62nh53: nightlies for windows https://www.nuget.org/packages/Rust/
+[12:09:10] <mib_62nh53> ah.. i installed debian wheezy but it doesnt boot :(
+[12:09:26] <adridu59> mib_62nh53: what's wrong with it?
+[12:09:32] <dbaupp> ChrisMorgan++
+[12:10:01] *** Quits: engla (engla@moz-F64E1B0F.cust.bredbandsbolaget.se) (Ping timeout)
+[12:10:03] *** Joins: engla (engla@moz-F64E1B0F.cust.bredbandsbolaget.se)
+[12:10:12] * dbaupp needs his fn's and u64's in every other language he uses
+[12:10:15] <mib_62nh53> i think this error from BIOS but I dont have any idea 
+[12:10:22] <mib_62nh53> so i think i should clean my pc up 
+[12:11:35] <skrylar> i also found that running rustc --no-trans is worth doing
+[12:12:04] <skrylar> it takes 50%+ less time to check for failed syntax, since there's still a weirdly long warm-up time for a failed commpile
+[12:13:32] <mib_62nh53> nice tips
+[12:15:15] <dbaupp> that sounds peculiar
+[12:15:17] * dbaupp tries
+[12:15:38] <mib_62nh53> what ide do you use?
+[12:15:56] <adridu59> mib_62nh53: text editor
+[12:16:27] <skrylar> dbaupp: i tested on windows/mingw; a syntax check is 0.5sec, full build is up to 2.6sec
+[12:16:33] <adridu59> text editor + compiler + online documentation, can't really think of a better ide
+[12:16:38] <skrylar> on this linux machine, a syntax check is 0.25sec
+[12:17:35] * skrylar contemplates whether or not to do wrappers for sdl_surface right now...
+[12:18:06] *** Quits: Blei (Philipp@moz-BEF792F4.dynamic.hispeed.ch) (Quit: Blei)
+[12:18:17] *** Joins: Blei (Philipp@moz-BEF792F4.dynamic.hispeed.ch)
+[12:18:57] <dbaupp> skrylar: oh, I see, you were 50% less time if the build is successful?
+[12:19:13] <dbaupp> because I see no difference between --no-trans and not for a build that fails
+[12:19:38] <skrylar> i'll run the windows test again when i'm on it later
+[12:19:45] <skrylar> but a failed compile was faster with --no-trans for me
+[12:20:35] *** Quits: Blei (Philipp@moz-BEF792F4.dynamic.hispeed.ch) (Quit: Blei)
+[12:20:48] <dbaupp> that's very peculiar
+[12:20:51] <mib_62nh53> i think i should go
+[12:20:55] <mib_62nh53> thanks you guys!
+[12:21:02] * dbaupp consults the source
+[12:21:08] *** Quits: mib_62nh53 (Mibbit@B9BBA2B7.E0D718C1.BDAE6B1E.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[12:22:18] <dbaupp> hm, I see no reason why --no-trans would make a failing build faster
+[12:22:51] *** Quits: Guest_ (textual@moz-30B6C3D1.lightspeed.rsbgtx.sbcglobal.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[12:23:00] <skrylar> my suspicion is something to do with whether llvm gets fired up or not
+[12:23:08] <dbaupp> it doesn't change that
+[12:23:12] <skrylar> i remember some distinct issues where llvm/clang were slower on windows by quite a lot
+[12:23:26] *** Quits: zmthy (Tim@moz-56779DBC.dsl.dyn.ihug.co.nz) (Quit: leaving)
+[12:24:25] <dbaupp> but "it doesn't change that" I --no-trans is checked before any LLVM interactions occur
+[12:24:29] *** Quits: johns (johns@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[12:24:31] <dbaupp> *I mean
+[12:24:43] <skrylar> i'll have to re-test it when i'm on that machine
+[12:25:04] *** Joins: johns (johns@moz-BBE3ABD.mv.mozilla.com)
+[12:30:04] <skrylar> bleh, i'll poke around with surface rendering later
+[12:31:00] *** Quits: derby (dirby@moz-773B6878.torservers.net) (Quit: Leaving)
+[12:35:03] *** Joins: rca (rcatolino@moz-11D6C67F.adsl.proxad.net)
+[12:35:54] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[12:37:42] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[12:38:58] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[12:40:47] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Ping timeout)
+[12:43:38] *** Joins: james4k (james@moz-E7990244.consolidated.net)
+[12:45:26] *** Quits: james4k (james@moz-E7990244.consolidated.net) (Ping timeout)
+[12:47:09] *** Joins: TeXitoi (texitoi@moz-EA958D66.texitoi.eu)
+[12:47:16] <TeXitoi> hi
+[12:49:21] *** Joins: lenstr (lenstr@CD7D5ABA.83A99F98.85938D85.IP)
+[12:51:49] *** Joins: bheylin (brianheyli@moz-8255E94E.adsl.online.nl)
+[12:51:51] *** Quits: bheylin (brianheyli@moz-8255E94E.adsl.online.nl) (Quit: bheylin)
+[12:56:03] *** Quits: Sorella (quildreen@9D963F5D.DF5D8AE7.54BCAB54.IP) (Client exited)
+[12:56:11] *** Joins: Sorella (queen@9D963F5D.DF5D8AE7.54BCAB54.IP)
+[12:57:41] *** Quits: moostik (Icedove@moz-5956E11F.w92-135.abo.wanadoo.fr) (Ping timeout)
+[13:01:20] *** Joins: moostik (Icedove@moz-F54A819A.w92-135.abo.wanadoo.fr)
+[13:03:10] *** Joins: tupshin_ (quassel@moz-54DE2E9C.du.xdsl.is)
+[13:08:24] <skrylar> dbaupp: i came up with an interesting idea for a doctool earlier
+[13:08:34] <skrylar> you know how people like to change methods without changing external docs?
+[13:09:07] *** Joins: derby (dirby@moz-847CCBB4.rs.hosteurope.de)
+[13:09:21] *** Quits: Blub\1 (wry@620605B3.71150E1A.237AE2BA.IP) (Ping timeout)
+[13:09:29] <skrylar> I was thinking of something that did a checksum of the local AST for specific items, and then out output a report on those; so you could put an annotation tag from that report in your external docs
+[13:09:33] *** Joins: Blub\1 (wry@620605B3.71150E1A.237AE2BA.IP)
+[13:09:46] <skrylar> and then you could use a driver to generate the report and scan docfiles for errors
+[13:09:54] <skrylar> (or at the very least, docs that need to be reviewed)
+[13:10:04] *** Joins: maxli (maxli@moz-4D28BA20.student.cs.uwaterloo.ca)
+[13:11:57] *** Joins: maikklein (maik@moz-BA027A7B.dip0.t-ipconnect.de)
+[13:13:03] <tupshin_> I just came across j2objc (http://google-opensource.blogspot.com/2012/09/j2objc-java-to-ios-objective-c.html), and was thinking it could be adapted to generate managed rust code with similar capabilities and restrictions. Anybody have any thoughts on the feasibility/utility of such a project?
+[13:18:07] *** Quits: tiffany (kawaii@moz-FC0DB29D.dhcp.embarqhsd.net) (Ping timeout)
+[13:20:37] *** Joins: tiffany (kawaii@moz-FC0DB29D.dhcp.embarqhsd.net)
+[13:22:42] *** Joins: bheylin (brianheyli@moz-8255E94E.adsl.online.nl)
+[13:23:55] <ChrisMorgan> tupshin_: source compilers targeting Rust have a task which is basically impossible, because Rust's safety is so much stricter than most languages. Merely using garbage collected types everywhere isn't likely to be enough to cut it—and such code would be so thoroughly unrustic that you wouldn't want to use it.
+[13:25:45] <FreeFull> It would be possible
+[13:25:59] <FreeFull> You would have to code all of rust's restrictions in
+[13:26:09] <FreeFull> Or do it unrustically and use unsafe blocks
+[13:27:14] <tupshin_> FreeFull: seems you are almost saying what ChrisMorgan is saying. difficult, but possible to generate runnable code, but if the source java was inherently not as safe as rust, then ugly and hard to maintain unsafe blocks
+[13:27:23] <tupshin_> so it seem that at best, this might help to bootstrap a conversion, but would require lots of hand-massaging afterwards.
+[13:27:53] <ChrisMorgan> I'd go beyond saying just unsafe—I'd say that very frequently it will not be possible to do it without basically removing everything that makes Rust worth using.
+[13:28:17] *** Quits: bheylin (brianheyli@moz-8255E94E.adsl.online.nl) (Quit: bheylin)
+[13:30:04] <FreeFull> You'd definitely be better off writing the rust code from stratch rather than trying to convert a java codebase
+[13:31:53] <ChrisMorgan> Well, it's quite possible that a source translator could do some of it.
+[13:34:02] <FreeFull> No matter how well you translate Java code, it will still be javaey rather than rusty
+[13:34:54] <dbaupp> skrylar: I don't quite understand? Do you mean use the hashes to work out which methods changed?
+[13:35:21] <dbaupp> fwiw, I think one of the servo team is writing/wrote a (limited) Java -> Rust translator to get a html parser
+[13:35:34] <dbaupp> don't know if it is open source yet
+[13:36:27] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[13:36:33] <Ms2ger> It is open source, but not finished
+[13:36:39] <tupshin_> I would personally find it interesting even if only as a learning tool. Good excercise to take well understood java code, convert to rust, and refactor until nicely rustish.
+[13:36:49] <Ms2ger> https://hg.mozilla.org/projects/htmlparser/file/tip/translator-src/nu/validator/htmlparser/rusttranslate
+[13:37:03] <tupshin_> cool, thanks for the link
+[13:38:08] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[13:38:24] <ChrisMorgan> tupshin_: the accepted term for idiomatic Rust code is "rustic"
+[13:38:51] <tupshin_> yeah, sorry. :) knew that and not awake yet
+[13:38:59] <dbaupp> \o/
+[13:39:05] <adridu59> gah mercurial
+[13:39:06] <tupshin_> and love the term, btw
+[13:39:07] * dbaupp has the Boehm GC working in Rust
+[13:39:12] <adridu59> it's a chance that rust is on github
+[13:39:15] * ChrisMorgan loves Mercurial
+[13:39:26] * ChrisMorgan mostly wishes Rust were on hg.mozilla.org
+[13:39:41] <adridu59> its like I have a teacher that uses svn
+[13:39:43] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[13:40:08] <adridu59> I try to explain him why git is the next big thing sometimes
+[13:41:25] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Ping timeout)
+[13:43:56] <ChrisMorgan> adridu59: complaining about using Subversion I can understand, but Mercurial? It's a perfectly good version control system.
+[13:47:16] <Ms2ger> What ChrisMorgan says
+[13:47:52] <adridu59> honestly git is faster, more popular and has more control over resets
+[13:48:15] <adridu59> anyways I admittedly don't know a lot about it
+[13:48:27] <adridu59> I was essentially complaining because it's just not git :p
+[13:48:48] <adridu59> but its syntax resembles a lot
+[13:49:08] <FreeFull> Both git and mercurial are much better than most other options
+[13:50:29] <ChrisMorgan> adridu59: git being faster is more or less myth now—the two are mostly on par, with one winning some benchmarks and the other others. As for "more control over resets"—I haven't got a clue what you mean.
+[13:50:54] <ChrisMorgan> But anyway, this is #rust, not #vc-argumentation
+[13:51:05] <ChrisMorgan> Or #argument-clinic
+[13:51:48] <Ms2ger> ChrisMorgan, no it isn't
+[13:52:08] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[13:52:52] *** Quits: maikklein (maik@moz-BA027A7B.dip0.t-ipconnect.de) (Ping timeout)
+[13:53:32] <adridu59> they are very similar anyways
+[13:56:41] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[13:57:04] <bvssvni> what is the recommended way of using rustdoc in a rustpkg project?
+[14:00:01] <ChrisMorgan> bvssvni: what precisely do you mean?
+[14:00:18] <ChrisMorgan> You'd just invoke rustdoc on the lib.rs.
+[14:00:44] <bvssvni> ChrisMorgan: so the doc folder should be located in the src for the rustpkg workspace?
+[14:01:34] <ChrisMorgan> Ah, that's what you mean. For the moment, I'd suggest doing approximately what Rust does—src/*/lib.rs and doc/*/index.html et al.
+[14:02:18] <bvssvni> ChrisMorgan: it works, thanks
+[14:08:28] *** Quits: wilkie (wilkie@moz-A19F104D.pitbpa.fios.verizon.net) (Ping timeout)
+[14:09:33] *** Joins: alonlevy (alon@moz-EFB2FE99.red.bezeqint.net)
+[14:12:35] *** Quits: klutzy (th@BA61F396.8E859986.ECA1BB11.IP) (Ping timeout)
+[14:16:20] *** Joins: derek_c (derek@3C19195B.BDDB420A.DD630FEE.IP)
+[14:16:38] <derek_c> how do you declare a variable as mutable owned?
+[14:16:46] <derek_c> ~mut [T] doesn't seem to work
+[14:17:01] <derek_c> I mean, a mutable owned vector
+[14:17:23] <bvssvni> derek_c: let mut a = ~[T];
+[14:17:47] <derek_c> bvssvni: how about a function parameter
+[14:18:17] *** Joins: nrc (ncameron@moz-A76F1825.cable.virginm.net)
+[14:18:25] *** Joins: pongad (Mibbit@moz-7E3233EF.revip5.asianet.co.th)
+[14:18:30] <bvssvni> derek_c: hmm, have not used mut function parameters yet
+[14:20:07] <rca> mut a: ~[T]
+[14:22:30] *** Joins: klutzy (th@BA61F396.8E859986.ECA1BB11.IP)
+[14:23:21] <derek_c> rca: that works, thanks!
+[14:23:43] <derek_c> given a pointer and a length, how do I create a vector?
+[14:24:08] <derek_c> the pointer would point to the first element of the vector and the vector would have the given length
+[14:24:19] <pongad> derek_c: I don't think you can do that in safe rust
+[14:24:27] <derek_c> pongad: unsafe is fine
+[14:24:49] <pongad> derek_c: Hmm, I can't seem to remember. Let me look xD
+[14:25:03] <derek_c> many thanks!
+[14:26:49] <rca> there's a from_buf_raw in std::vec::raw that might do what you want.
+[14:27:08] *** Quits: adridu59 (Mibbit@moz-E1FF077C.rev.numericable.fr) (Quit: http://www.mibbit.com ajax IRC Client)
+[14:27:21] <derek_c> rca: ah! that seems like exactly what I want
+[14:28:30] *** Joins: dwrensha (chatzilla@moz-DE44EA45.hsd1.pa.comcast.net)
+[14:29:36] <pyon> Does Rust align struct members just like C and C++?
+[14:31:04] <pyon> Or, is the compiler allowed to reorder struct members to make the memory layout more efficient (e.g., "struct Foo { a: u32, b: u64, c: u32 }" could be reordered to "struct Foo { b: u64, a: u32, c: u32 }".)
+[14:31:38] <eddyb> pyon: nope, they're fully C-compatible
+[14:32:19] <pyon> Ah, okay, so I have to be careful to align them properly myself. :-)
+[14:34:07] <eddyb> pyon: I mean, it does align, not reorder
+[14:34:25] <eddyb> thus being C-compatible
+[14:34:35] *** Quits: pongad (Mibbit@moz-7E3233EF.revip5.asianet.co.th) (Ping timeout)
+[14:34:43] <eddyb> (as long as you don't use #[packed])
+[14:36:45] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[14:37:31] <FreeFull> Isn't how C aligns structs compiler-specific?
+[14:38:30] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[14:38:46] <dbaupp> derek_c, rca: from_buf_raw will copy, you can use buf_as_slice (iirc) to get a &[T] without copying
+[14:40:05] *** Quits: lenstr (lenstr@CD7D5ABA.83A99F98.85938D85.IP) (Client exited)
+[14:41:10] *** Quits: mpiechotka (mpiechotka@moz-FF5F76BA.adsl.inetia.pl) (Ping timeout)
+[14:41:18] *** Joins: Guest_ (textual@moz-30B6C3D1.lightspeed.rsbgtx.sbcglobal.net)
+[14:42:52] *** Quits: twi (Adium@moz-174339A4.cust.dsl.vodafone.it) (No route to host)
+[14:42:57] <pyon> eddyb: Sorry, I should have said "I have to be careful to order them properly, so as to not waste space due to alignment issues".
+[14:43:18] <pyon> (basically, just like in C)
+[14:43:20] <eddyb> pyon: ah, yeah. that is nasty
+[14:43:26] *** Joins: twi (Adium@moz-174339A4.cust.dsl.vodafone.it)
+[14:45:17] <rca> dbaup: i just took a look at the doc, buf_as_slice works if you just need a slice. So there's no way to get an owned vector without copy?
+[14:45:18] *** Joins: sankha94 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[14:45:32] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Ping timeout)
+[14:47:01] *** Joins: fabiand (fabiand@moz-D63DFD61.adsl.alicedsl.de)
+[14:48:01] <derek_c> dbaupp: ^
+[14:49:34] <dbaupp> rca: yes, there's no way to get a ~[] without a copy
+[14:51:02] <eddyb> rca: do you want ~[T] from C code? you could pass it a ~[T] constructed on the Rust side (maybe as a slice, if you don't need dynamic length/capacity)
+[14:51:44] <rca> i don't want anything, that was derek_c :) I am just curious.
+[14:51:47] <derek_c> dbaupp: is it because the way Rust computes lifetime?  If you create a ~[] without a copy, then when the original vector goes deallocated, there is no way for Rust to know that there is another vector pointing to part of it?
+[14:52:11] <eddyb> rca: oh, my bad, didn't notice the earlier conversation
+[14:52:26] <eddyb> derek_c: no, slices aren't dynamic
+[14:52:44] <derek_c> eddyb: excuse me?
+[14:53:06] <eddyb> derek_c: they can never outlive their original container and that's statically checked
+[14:53:12] *** Joins: wilsonk-xserve (kvirc@4DFD0DC.D4D0D202.F97ED6F2.IP)
+[14:54:18] <eddyb> derek_c: though we could have ref-counted slices pointing to the same box as a ref-counted ~[T]. that would be interesting
+[14:55:32] <dbaupp> derek_c: no, it's because a ~[] is actually represented as `*{ length, capacity, data... }`, that is, the pointer needs two words of header data
+[14:55:32] <derek_c> eddyb: not sure if I made myself clear.  What I meant was that, the reason you can't create an owned vector that points to another owned vector is that, when the pointed owned vector dies, Rust will deallocate its memory, thus the created owned vector will point to invalid memory
+[14:56:00] <derek_c> dbaupp: oh, that makes sense too
+[14:56:07] <dbaupp> the plan is to change ~[] to be { length, capacity, *data }, in which case it would actually work
+[14:56:27] <derek_c> dbaupp: I see
+[14:56:32] <eddyb> now I don't understand what derek_c is talking about :/
+[14:56:42] <derek_c> eddyb: never mind :)
+[14:56:54] <dbaupp> eddyb: converting a *T + length to a ~[T]
+[14:57:09] <eddyb> dbaupp: ah. that's unsafe allocator-wise
+[14:57:28] <dbaupp> eddyb: yes, and also completely impossible right now
+[14:57:29] <eddyb> dbaupp: similar to malloc/free vs new/delete in C++
+[14:59:47] *** Quits: derek_c (derek@3C19195B.BDDB420A.DD630FEE.IP) (Quit: Leaving)
+[15:02:37] *** Joins: c-a (c-a@380CCB84.6116A87C.3B6D96BA.IP)
+[15:03:53] *** Quits: moostik (Icedove@moz-F54A819A.w92-135.abo.wanadoo.fr) (Ping timeout)
+[15:04:55] *** Quits: tsvia (tsvia@moz-DDA0CF97.red.bezeqint.net) (Ping timeout)
+[15:04:56] *** Quits: hacker_sam (hacker_sam@C0FE520A.661C02A7.B0CE379A.IP) (Connection reset by peer)
+[15:05:12] *** Joins: hacker_sam (hacker_sam@C0FE520A.661C02A7.B0CE379A.IP)
+[15:05:41] *** Quits: Guest_ (textual@moz-30B6C3D1.lightspeed.rsbgtx.sbcglobal.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[15:06:46] *** Joins: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net)
+[15:07:38] *** Joins: mpiechotka (mpiechotka@moz-FF5F76BA.adsl.inetia.pl)
+[15:08:23] *** Quits: fabiand (fabiand@moz-D63DFD61.adsl.alicedsl.de) (Quit: Verlassend)
+[15:08:34] *** Quits: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net) (Ping timeout)
+[15:10:08] *** Joins: Ferreus (ferreus@moz-A4A53361.pools.arcor-ip.net)
+[15:21:04] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Input/output error)
+[15:21:13] *** Joins: rca_ (rcatolino@2245D013.CC72BB30.520D6FA6.IP)
+[15:21:26] <speckle> The thing that bothers me the most about Rust is that every corner case like "converting a *T + length to a ~[T]" will have be handled by the language - if only we could find a more generic way for safe memory without relying on GC
+[15:21:45] <cmr> speckle: what?
+[15:21:53] *** Quits: rca (rcatolino@moz-11D6C67F.adsl.proxad.net) (Ping timeout)
+[15:22:06] <cmr> what do you meanit has to be handled by the language
+[15:22:11] <speckle> sorry, I mean, either it's handled by the language or in an unsafe block - would be neat if the safe mechanics of the language were more powerful
+[15:24:46] * ChrisMorgan doesn't see how it could be usefully improved upon, or why you'd want to be doing such a thing in the first place
+[15:24:50] <cmr> Do you have any ideas on how to do that?
+[15:24:55] <FreeFull> *T + length to ~[T] is unsafe
+[15:25:23] <speckle> Not yet, but I'm thinking about it
+[15:26:22] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[15:26:42] *** Joins: gwty_ (gwtypc@199540EF.6E448401.27560D6E.IP)
+[15:27:14] <rca_> there was a discussion earlier on how to do that. Apparently right now you can't since the ~[T] is represented in memory as a pointer to {length,capacity,data}, so converting *T to ~[T] without copy would mean using the first 2 words of the buffer for length and capacity.
+[15:28:19] <cmr> well that's not really relevant, the relevant part is getting a pointer that the type system can ensure was allocated with the correct allocator and points to at least length memory.
+[15:28:55] <cmr> Which is crazy to the point of futility
+[15:29:44] <speckle> and what worries me either 1) people will just add unsafe blocks to work around corner cases like that, or 2) the compiler will get more complicated as more and more corner cases are checked to allow people to do it without unsafe blocks
+[15:29:58] <ChrisMorgan> Why do you *want* to do it?
+[15:30:05] <cmr> speckle: we're not going to extend the type system to allow for that.
+[15:30:16] <cmr> Unsafe blocks aren't a bad thing!
+[15:30:34] <cmr> And converting *T + length is an inherently unsafe operatino, as with any raw pointer.
+[15:30:57] <speckle> I suppose Rust's strength is still making safety the default - even if a lot of code ends up being unsafe, hopefully it will be more isolated and clear than C++
+[15:31:06] *** Joins: bytbox (s@moz-54E13927.washdc.fios.verizon.net)
+[15:31:24] <cmr> What makes you think a lot of code is going to be unsafe?
+[15:31:34] <ChrisMorgan> speckle: you still haven't come up with a case where you would *want* to do this.
+[15:31:59] *** Quits: c-a (c-a@380CCB84.6116A87C.3B6D96BA.IP) (Ping timeout)
+[15:32:08] <speckle> ChrisMorgan: it was needed by someone else, not me
+[15:32:10] *** kimundi is now known as zz_kimundi
+[15:32:13] <cmr> On last census, less than 1% of the compiler was unsafe, and now I can only think of one place unsafe code is used.
+[15:32:18] <speckle> Oh wow
+[15:32:29] <rca_> i'd say ffi, i don't really see anythin else.
+[15:32:36] <dbaupp> most of that unsafe is to call LLVM functions, I'd guess
+[15:33:01] * cmr is ignoring the llvm bindings :p
+[15:33:01] <speckle> yeah, cmr, if you need to make a lot of calls to C, mostly. I also hear some data structures like Linked Lists are way faster with unsafe code
+[15:33:29] <cmr> speckle: You don't need to expose an unsafe interface to use safe code.
+[15:33:34] <cmr> erm, unsafe code
+[15:33:45] *** Quits: rca_ (rcatolino@2245D013.CC72BB30.520D6FA6.IP) (Quit: leaving)
+[15:33:48] *** Joins: rca (rcatolino@2245D013.CC72BB30.520D6FA6.IP)
+[15:33:55] <cmr> DList is safe, yet uses unsafe code in its implementation.
+[15:34:39] <speckle> yeah, so it's very nice how at least the unsafe code is in isolated blocks, unlike C++ :)
+[15:34:41] <dbaupp> https://github.com/huonw/boehm-rs
+[15:35:01] <eddyb> dbaupp: hah, surprise pcwalton :P
+[15:35:01] <dbaupp> (random, unrelated link :) )
+[15:35:15] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[15:35:17] <cmr> "Good morning! Have a GC"
+[15:35:34] <dbaupp> it's wrong; but yeah, good enough :P
+[15:36:06] *** Joins: samx (sami@moz-D9DA5773.dyn.optonline.net)
+[15:37:16] <ChrisMorgan> dbaupp: when you say "no pun intended"—did you intend the pun?
+[15:37:19] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[15:38:07] * ChrisMorgan has seen people developing the bad habit of saying "no pun intended" as a way of directing attention to the intentional pun; puns should be there only for the observant; it’s so much more enjoyable that way
+[15:38:29] <ChrisMorgan> Anyway, bed time. Two or three hours ago.
+[15:38:33] <dbaupp> I wrote the sentence, and then noticed the pun
+[15:38:40] <dbaupp> so it wasn't intended to begin with :P
+[15:39:00] <ChrisMorgan> Your subconscious may have intended it.
+[15:39:05] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[15:39:10] *** Quits: victorporof (victorporo@773D35C8.FAB6DAB7.79933D60.IP) (Quit: victorporof)
+[15:40:07] <eddyb> dbaupp: can you use Encoder to trace Rust types? (including ~[T])
+[15:40:15] *** Joins: fabiand (fabiand@moz-D63DFD61.adsl.alicedsl.de)
+[15:40:48] *** Quits: samx (sami@moz-D9DA5773.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[15:41:05] <dbaupp> eddyb: haven't thought about it enough; it seems feasible, but the details could be tricky
+[15:41:08] <eddyb> after I'm done with this trans(mogrifying) madness, I'll try to remove more things from the tydesc. I mean, who needs a type name?
+[15:41:56] <ChrisMorgan> Whoa, I just crashed ag in attempting to do a simple unsafe block line count.
+[15:42:11] <cmr> ChrisMorgan: that is hilarious
+[15:42:28] <ChrisMorgan> Ah, if only it had been written in Rust it wouldn't have crashed. Not SIGSEGV, anyway.
+[15:42:36] *** Joins: nif (nif@moz-8181E2AC.oberlin.net)
+[15:42:44] <cmr> rusti: struct Foo<T> { x: T  } let f = Foo { x: 42u8 }; f
+[15:42:47] -rusti- main::Foo<u8>{x: 42u8}
+[15:42:52] <cmr> eddyb: the typename was added for useful repr + reflection.
+[15:43:00] <cmr> for the love of god don't remove it
+[15:43:19] <ChrisMorgan> Crashed inside libpcre.so. Now I just need to figure out if that's an exploitable security vulnerability and claim bug bounties from everywhere.
+[15:43:36] <dbaupp> cmr: he's allowed to remove it if he keeps the nice repr
+[15:44:05] <eddyb> I was considering the trick Any uses, but I'm not sure if it will work or not
+[15:45:11] <eddyb> the repr visitor could get &Traits where Trait implements get_type_name, for example
+[15:45:20] <ChrisMorgan> All I was doing was ``ag '\bunsafe\s*{.+}|^(\s+)unsafe\s*{\n(.|\n)*\1}' -G '\.rs$'``, the latest change being the (.|\n) part (trying to achieve the equivalent of Vim's \_. which is "absolutely any character") and what does it do? It crashes. Bah. I'll never trust libpcre again.
+[15:45:41] <eddyb> cmr: don't worry, I won't do anything to break {:?}
+[15:45:53] <cmr> :)
+[15:46:13] <cmr> as long as it's still possible to get a typename I suppose I don't care what it hangs off of
+[15:46:27] * ChrisMorgan wonders if there's a better way of counting unsafe code blocks—we need a tool for interactively playing around with the AST for such analysis.
+[15:47:16] <cmr> ChrisMorgan: I've toyed around with the idea of serializing the AST to s-exprs to make it easier to analyze
+[15:47:40] <eddyb> with all the ADTs, it shouldn't be that hard
+[15:48:05] <eddyb> hmm, is Encodable more limited compared to the repr visitor?
+[15:48:28] <cmr> eddyb: well it needs to be implemented, it's not magic.
+[15:48:45] <eddyb> as in, there's no way for the former to go through non-Encodable trait pointers
+[15:49:06] <eddyb> which you need for {:?} and Traceable
+[15:49:38] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[15:49:38] *** ChanServ sets mode: +ao dherman dherman
+[15:49:48] <ChrisMorgan> Whoa, (.|\n)* is enough to crash libpcre?
+[15:50:03] *** Quits: z0w0 (zack@moz-356923D4.lnse4.woo.bigpond.net.au) (Client exited)
+[15:50:09] <eddyb> [\s\S] is how I do it
+[15:51:53] *** Quits: kngl (Adium@E5907D90.770DEA4D.7C797F8E.IP) (Quit: Leaving.)
+[15:52:46] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[15:54:40] *** Quits: speckle (Mibbit@moz-AD109A29.hsd1.md.comcast.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:55:03] *** Joins: kngl (Adium@E5907D90.770DEA4D.7C797F8E.IP)
+[15:55:13] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[15:59:09] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Ping timeout)
+[16:01:04] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[16:05:48] *** Joins: samx (sami@moz-D9DA5773.dyn.optonline.net)
+[16:07:26] *** Joins: dogurness (dogurness@moz-1BF32EBD.pitbpa.fios.verizon.net)
+[16:07:30] *** Joins: Blei (Philipp@moz-B2F9E4BD.cust.bluewin.ch)
+[16:09:32] *** Joins: c-a (c-a@380CCB84.6116A87C.3B6D96BA.IP)
+[16:11:44] *** Quits: sankha94 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Ping timeout)
+[16:12:13] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[16:14:52] *** Joins: jlong (jlong@moz-6DFDE846.socal.res.rr.com)
+[16:19:00] *** Joins: nano (nano@moz-ED77243C.superkabel.de)
+[16:19:35] *** Joins: james4k (james@moz-E7990244.consolidated.net)
+[16:20:49] *** Joins: vmx (vmx@moz-C6F3FF7E.pools.arcor-ip.net)
+[16:21:18] *** Quits: james4k (james@moz-E7990244.consolidated.net) (Ping timeout)
+[16:21:58] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[16:22:33] *** Quits: samx (sami@moz-D9DA5773.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[16:22:47] *** Joins: tsvia (tsvia@moz-DDA0CF97.red.bezeqint.net)
+[16:23:10] *** Joins: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com)
+[16:27:10] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[16:27:10] *** ChanServ sets mode: +ao dherman dherman
+[16:27:26] *** Quits: jlong (jlong@moz-6DFDE846.socal.res.rr.com) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[16:27:31] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[16:28:12] *** Joins: voxpopuli (fanservice@moz-CEF3689A.hsd1.pa.comcast.net)
+[16:29:28] *** Joins: jlong (jlong@moz-6DFDE846.socal.res.rr.com)
+[16:33:45] *** Quits: Kxepal (Miranda@moz-B7DB05D8.pppoe.mtu-net.ru) (Ping timeout)
+[16:35:32] *** Quits: fabiand (fabiand@moz-D63DFD61.adsl.alicedsl.de) (Quit: Verlassend)
+[16:36:36] *** Joins: Kxepal (Miranda@moz-937849DD.pppoe.mtu-net.ru)
+[16:37:23] *** Joins: MrFahrenheit (RageOfThou@3FEF494C.29C984D5.783DEDCA.IP)
+[16:37:53] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[16:38:29] *** Quits: bytbox (s@moz-54E13927.washdc.fios.verizon.net) (Client exited)
+[16:39:38] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[16:40:48] *** Quits: jlong (jlong@moz-6DFDE846.socal.res.rr.com) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[16:41:22] *** Joins: samx (sami@moz-D9DA5773.dyn.optonline.net)
+[16:42:06] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[16:47:55] *** Quits: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[16:53:23] *** Quits: tupshin_ (quassel@moz-54DE2E9C.du.xdsl.is) (Client exited)
+[16:53:29] *** Joins: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com)
+[16:55:56] *** Quits: c-a (c-a@380CCB84.6116A87C.3B6D96BA.IP) (Ping timeout)
+[16:58:32] *** Joins: c-a (c-a@380CCB84.6116A87C.3B6D96BA.IP)
+[17:01:39] *** Joins: bytbox (s@moz-54E13927.washdc.fios.verizon.net)
+[17:01:47] *** Quits: bytbox (s@moz-54E13927.washdc.fios.verizon.net) (Input/output error)
+[17:11:20] *** Joins: moostik (Icedove@moz-F54A819A.w92-135.abo.wanadoo.fr)
+[17:18:24] *** Joins: bytbox (s@moz-54E13927.washdc.fios.verizon.net)
+[17:20:10] *** Joins: Sindwiller (quassel@moz-743130B2.dynamic.hispeed.ch)
+[17:20:21] *** Quits: Sindwiller (quassel@moz-743130B2.dynamic.hispeed.ch) (Client exited)
+[17:20:54] *** Quits: alonlevy (alon@moz-EFB2FE99.red.bezeqint.net) (Ping timeout)
+[17:24:04] *** Quits: derby (dirby@moz-847CCBB4.rs.hosteurope.de) (Input/output error)
+[17:24:40] *** Joins: awidegreen (awidegreen@moz-3FE0A1F.a357.priv.bahnhof.se)
+[17:26:21] *** Joins: steven_is_false (user@4728DAC8.6ECAE21.F39A8AA1.IP)
+[17:26:25] *** Parts: steven_is_false (user@4728DAC8.6ECAE21.F39A8AA1.IP) (ERC Version 5.3 (IRC client for Emacs))
+[17:26:35] *** Joins: steven_is_false (user@4728DAC8.6ECAE21.F39A8AA1.IP)
+[17:26:44] *** Parts: steven_is_false (user@4728DAC8.6ECAE21.F39A8AA1.IP) (ERC Version 5.3 (IRC client for Emacs))
+[17:28:20] *** Joins: tupshin_ (quassel@moz-54DE2E9C.du.xdsl.is)
+[17:28:33] *** Quits: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net) (Ping timeout)
+[17:29:14] *** Joins: steven_is_false (user@4728DAC8.6ECAE21.F39A8AA1.IP)
+[17:29:54] <steven_is_false> Hello.
+[17:30:08] <Yurume> hi
+[17:30:45] *** Joins: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net)
+[17:32:51] <steven_is_false> Is there a channel for IRC help?
+[17:32:53] *** Joins: eholk (eholk@moz-58C5EE6F.wavecable.com)
+[17:33:07] <steven_is_false> I'm asking here because I'm most familiar with this channel.
+[17:34:42] <tiffany> there's this: http://www.irchelp.org/
+[17:35:02] <steven_is_false> tiffany: Thank you but I think I need an admin. I need to reset my password.
+[17:35:29] <steven_is_false> I tried messaging NickServ with sendpass but that was disabled.
+[17:35:39] <tiffany> oh
+[17:36:01] <Yurume> I think I have a working version of Angolmois for master (0.9-pre), converted from 0.8
+[17:36:23] <Yurume> as expected, the removal of @/@mut was a big issue
+[17:36:40] <Yurume> (and do notation for closures)
+[17:37:01] <steven_is_false> I'll try #introduction.
+[17:37:04] *** Parts: steven_is_false (user@4728DAC8.6ECAE21.F39A8AA1.IP) (ERC Version 5.3 (IRC client for Emacs))
+[17:37:10] <Yurume> but the conversion was not quite hard
+[17:38:21] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[17:39:03] <tiffany> howcome servo seems to use both skia and azure?
+[17:40:06] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[17:40:34] <benh> There's #servo, btw
+[17:43:24] <geomyidae_> Does GitHub give a repo owner a notification when someone sends them a PR?
+[17:43:52] *** Quits: awidegreen (awidegreen@moz-3FE0A1F.a357.priv.bahnhof.se) (Ping timeout)
+[17:44:47] *** Joins: steven_is_false (user@4728DAC8.6ECAE21.F39A8AA1.IP)
+[17:44:55] <eddyb> geomyidae_: yupp
+[17:45:13] <eddyb> geomyidae_: actually, anyone watching the repo
+[17:45:21] <nrc> tiffany: Skia is one possible backend for Azure. Azure is kind of a wrapper for multiple possible backends
+[17:46:15] <sfackler> wasn't there a recent PR to enable extra-debug-info for rustc with --enable-debug?
+[17:46:22] <sfackler> I can't seem to find it
+[17:46:24] <steven_is_false> Hi so I'm working on the bug where a test case for testing dynamic libraries doesn't work. In this code http://pastebin.mozilla.org/3913531 how can I get rust_func_with_unlikely_name_Fg1uraCzB to be exported as a visible symbol?
+[17:46:58] <sfackler> "pub fn rust_func..."
+[17:47:45] <sfackler> not sure how it'll work if you're compiling a test binary though
+[17:48:43] <steven_is_false> sfackler: Weird it has to be pub extern fn.
+[17:48:49] <steven_is_false> Not extern pub fn
+[17:49:03] <steven_is_false> Anywho I'm trying it.
+[17:49:44] *** Quits: gwty (gwtypc@199540EF.6E448401.27560D6E.IP) (Ping timeout)
+[17:49:46] *** Quits: gwty_ (gwtypc@199540EF.6E448401.27560D6E.IP) (Ping timeout)
+[17:51:27] *** Joins: gwty (gwtypc@F97FFBA9.3803318B.25B273F5.IP)
+[17:51:48] *** Joins: gwty_ (gwtypc@F97FFBA9.3803318B.25B273F5.IP)
+[17:52:03] *** Parts: steven_is_false (user@4728DAC8.6ECAE21.F39A8AA1.IP) (ERC Version 5.3 (IRC client for Emacs))
+[17:52:06] *** Quits: bytbox (s@moz-54E13927.washdc.fios.verizon.net) (Ping timeout)
+[17:52:17] <eddyb> steven_is_false: that's because "pub" comes before the item, which is a function declaration, with "extern" as a specifier to "fn"
+[17:53:25] *** Joins: eliovir (Mibbit@moz-2811C56F.fbx.proxad.net)
+[17:53:41] <eliovir> Hi!
+[17:53:44] <sfackler> what does "extern fn foo() {}" do anyways?
+[17:54:03] <sfackler> compared to "fn foo() {}"
+[17:55:19] *** Quits: moostik (Icedove@moz-F54A819A.w92-135.abo.wanadoo.fr) (Quit: moostik)
+[17:55:51] <eddyb> sfackler: ABI switches to "C"
+[17:56:08] <eddyb> which means a wrapper is created
+[17:56:39] <sfackler> oh, I've always done "extern "C" fn foo() {}"
+[17:57:33] <eddyb> Rust ABI should actually be compatible with C/C++, it isn't because of the stupid env pointer. I might try to fix that later, it's hard enough trying to fix methods to use the right type for the "env" (self) slot
+[17:59:31] *** Quits: kngl (Adium@E5907D90.770DEA4D.7C797F8E.IP) (Quit: Leaving.)
+[18:00:10] <whitequark> I've always wondered why extern "C" does not imply #[no_mangle]
+[18:00:23] <whitequark> does it ever make sense to have a Rust-mangled C-ABI symbol?
+[18:01:44] *** Parts: celeron55 (perttu@moz-D552F2C7.netplaza.fi) ()
+[18:03:33] <eddyb> whitequark: callbacks to C
+[18:04:16] *** Quits: hacker_sam (hacker_sam@C0FE520A.661C02A7.B0CE379A.IP) (Client exited)
+[18:06:40] <eliovir> I need some explanation on `do` syntax. I've read the tutorial at http://static.rust-lang.org/doc/master/tutorial.html#do-syntax, and tried to write the `do` equivalent of "each", but I did not succeed. Can someone help me? Code is at  https://github.com/eliovir/rust-examples/blob/master/tutorial-15_3-do.rs Thanks
+[18:07:14] <klutzy> eliovir: `do` only works with `proc`s
+[18:07:35] <klutzy> not |closure|s
+[18:09:10] <klutzy> |v: &int| is stack closure, not procedure: procedure is allocated at heap, and you can call it only once
+[18:13:24] <bblum> do only works with procs???
+[18:14:58] <whitequark> after some recent changes, it does
+[18:16:55] *** Joins: paylad (Mibbit@moz-4DA0B54B.dynamic.primacom.net)
+[18:16:59] *** Quits: paylad (Mibbit@moz-4DA0B54B.dynamic.primacom.net) (Quit: paylad)
+[18:17:01] *** Quits: Ms2ger (Ms2ger@EA658558.EACB0161.3773EA9F.IP) (Ping timeout)
+[18:17:05] *** Joins: payload (Mibbit@moz-4DA0B54B.dynamic.primacom.net)
+[18:17:39] *** Joins: jviereck (Adium@moz-4E567DEF.dip0.t-ipconnect.de)
+[18:18:06] *** Joins: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net)
+[18:20:19] <eliovir> klutzy: thanks!
+[18:21:19] *** Quits: jviereck (Adium@moz-4E567DEF.dip0.t-ipconnect.de) (Quit: Leaving.)
+[18:23:10] <SiegeLord> Where does one announce Rust projects? Is the mailing list an okay place?
+[18:23:22] <SiegeLord> It'd be easiest if there was a rust-announce list...
+[18:24:04] <sfackler>  /r/rust is the other place
+[18:24:17] <SiegeLord> I'd have to get a Reddit account, no?
+[18:24:47] <sfackler> yeah
+[18:25:03] <SiegeLord> That's just embarassing
+[18:25:11] <sfackler> haha
+[18:25:26] *** Joins: Jesin (Jesin@moz-4B662E55.washdc.fios.verizon.net)
+[18:26:28] *** Joins: jviereck (Adium@moz-4E567DEF.dip0.t-ipconnect.de)
+[18:26:33] <whitequark> SiegeLord: what are you working on?
+[18:29:21] <SiegeLord> Just a few CMake macros for building Rust with it
+[18:30:05] *** Joins: creationix (creationix@moz-2FD6AA77.cpe.cableone.net)
+[18:31:23] <whitequark> SiegeLord: interesting, can you post a link?
+[18:31:35] *** Joins: Ms2ger (Ms2ger@7AE7573F.9612FC09.3773EA9F.IP)
+[18:31:40] *** Quits: samx (sami@moz-D9DA5773.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[18:31:40] <SiegeLord> https://github.com/SiegeLord/RustCMake
+[18:31:45] <whitequark> I'm not very happy with my current Makefile setup
+[18:32:20] <Ms2ger> Who is? :)
+[18:32:39] <whitequark> hehe
+[18:33:24] *** Joins: jmgrosen (jmgrosen@moz-848F6087.sb.sd.cox.net)
+[18:34:45] <eliovir> whitequark: maybe you can find some idea for Makefile at https://github.com/eliovir/rust-examples/blob/master/Makefile
+[18:35:56] <eliovir> whitequark: a blog is also interesting:: http://metajack.im/2013/12/12/building-rust-code--using-make/
+[18:37:28] <whitequark> eliovir: I'll look, thanks
+[18:38:15] *** Joins: lenstr (lenstr@E724F85B.C66E72B1.B69CD7C4.IP)
+[18:39:16] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[18:39:48] <eliovir> whitequark: you're welcome
+[18:40:06] *** Quits: lenstr (lenstr@E724F85B.C66E72B1.B69CD7C4.IP) (Ping timeout)
+[18:41:03] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[18:41:14] *** Quits: jmgrosen (jmgrosen@moz-848F6087.sb.sd.cox.net) (Ping timeout)
+[18:42:27] *** Joins: jmgrosen (jmgrosen@moz-848F6087.sb.sd.cox.net)
+[18:45:02] *** Quits: payload (Mibbit@moz-4DA0B54B.dynamic.primacom.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[18:46:01] *** Joins: hays (quassel@moz-F21A68D1.washdc.east.verizon.net)
+[18:46:25] *** Quits: kini (kini@moz-92AA953A.members.linode.com) (Client exited)
+[18:51:09] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[18:51:10] *** ChanServ sets mode: +ao dherman dherman
+[18:51:27] *** Joins: csherratt (csherratt@moz-CAF331EA.cable.teksavvy.com)
+[18:52:07] *** Quits: eholk (eholk@moz-58C5EE6F.wavecable.com) (Ping timeout)
+[18:52:29] *** Joins: eholk (eholk@moz-58C5EE6F.wavecable.com)
+[18:54:13] *** Joins: samx (sami@moz-D9DA5773.dyn.optonline.net)
+[18:57:40] *** Quits: samx (sami@moz-D9DA5773.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[18:59:25] *** Joins: derby (dirby@moz-F41958.noisetor.net)
+[19:01:37] *** Quits: csherratt (csherratt@moz-CAF331EA.cable.teksavvy.com) (Quit: csherratt)
+[19:04:25] *** Quits: threecreepio (Adium@moz-9DA6CBAC.bredband.comhem.se) (Quit: Leaving.)
+[19:04:28] *** Quits: io2 (io2@moz-34E8FDD4.home.otenet.gr) (Quit: )
+[19:05:34] *** Joins: fabiand (fabiand@moz-D63DFD61.adsl.alicedsl.de)
+[19:07:47] *** Quits: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net) (Ping timeout)
+[19:11:55] *** Joins: hacker_sam (hacker_sam@C0FE520A.661C02A7.B0CE379A.IP)
+[19:12:04] *** Joins: nical (nico@moz-FE0AE368.w2-3.abo.wanadoo.fr)
+[19:13:31] <nical> hi, where can I see which is the latest working revision of the rust repo?
+[19:14:00] *** Quits: nrc (ncameron@moz-A76F1825.cable.virginm.net) (Ping timeout)
+[19:14:47] <nical> I am looking at http://www.rust-ci.org/ but there's a lot of projects there
+[19:16:27] *** Joins: wilkie (wilkie@moz-A19F104D.pitbpa.fios.verizon.net)
+[19:16:51] <strcat> nical: master always works
+[19:16:53] <eliovir> Rust-CI is a list of repository with Rust source codes. They are not the source codes of Rust.
+[19:16:59] <strcat> nical: pull requests are tested before landing on master
+[19:17:13] <strcat> they're reviewed and then a bot tests + merges if they pass on each supported platform
+[19:17:41] <strcat> nical: http://buildbot.rust-lang.org/bors/bors.html http://buildbot.rust-lang.org/console?branch=auto&refresh=15
+[19:17:52] <nical> strcat: interesting. I pulled built and reinstalled rust and now link fails with the simplest programs
+[19:18:03] <strcat> nical: probably not installed right then
+[19:18:21] <nical> is there something I should have done like make sure to uninstall before installing again ?
+[19:18:51] <strcat> there's make uninstall but it won't necessarily remove everything
+[19:19:03] <strcat> you'd need to run the same version you ran to install, and hope it was complete then ;p
+[19:19:16] <strcat> I wouldn't install it globally at all without a package
+[19:19:19] *** Quits: dew (Instantbir@moz-9D36B7B6.static.stls.mo.charter.com) (Ping timeout)
+[19:19:20] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[19:19:21] <strcat> just run it out of the build dir
+[19:19:50] *** Quits: derby (dirby@moz-F41958.noisetor.net) (Input/output error)
+[19:20:55] *** Joins: derby (dirby@moz-286ED1A3.tor.leo-unglaub.net)
+[19:22:01] *** Joins: dew (Instantbir@moz-9D36B7B6.static.stls.mo.charter.com)
+[19:22:20] *** Joins: jlong (jlong@moz-6DFDE846.socal.res.rr.com)
+[19:22:35] *** Quits: jlong (jlong@moz-6DFDE846.socal.res.rr.com) (Quit: Textual IRC Client: www.textualapp.com)
+[19:22:56] *** Joins: csherratt (csherratt@moz-CAF331EA.cable.teksavvy.com)
+[19:24:36] *** Quits: tupshin_ (quassel@moz-54DE2E9C.du.xdsl.is) (Ping timeout)
+[19:24:51] *** Quits: StarLight (StarLight@moz-941BC59B.dynamic.avangarddsl.ru) (Ping timeout)
+[19:26:45] *** Joins: MrByte (Dartakio@moz-81792842.chy-wy.client.bresnan.net)
+[19:27:08] *** Joins: jdm (jdm@moz-3FFA85CA.dsl.teksavvy.com)
+[19:27:08] *** ChanServ sets mode: +o jdm
+[19:28:31] *** Joins: mohawk (Mibbit@moz-16ADEBD8.cable.dyn.petrus.com.pl)
+[19:28:54] *** Joins: StarLight (StarLight@moz-50479A70.dynamic.avangarddsl.ru)
+[19:32:05] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Quit: Gone to save the world!)
+[19:32:11] *** Joins: lenstr (lenstr@E724F85B.C66E72B1.B69CD7C4.IP)
+[19:33:55] *** Quits: lenstr (lenstr@E724F85B.C66E72B1.B69CD7C4.IP) (Ping timeout)
+[19:39:30] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[19:41:09] *** Quits: indirect (indirect@moz-3589B90B.c.ircrelay.com) (Ping timeout)
+[19:41:12] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[19:41:49] *** Joins: bytbox (s@moz-54E13927.washdc.fios.verizon.net)
+[19:42:35] <geomyidae_> seems weird that rust-ci relies on a non-free product
+[19:42:48] <geomyidae_> Or am I missing something. maybe I should run jenkins myself
+[19:43:26] <whitequark> travis is FOSS, I think
+[19:43:32] * geomyidae_ oh
+[19:43:38] <whitequark> I'm not sure really
+[19:44:08] <whitequark> https://github.com/travis-ci <- looks like it is
+[19:44:14] *** Joins: indirect (indirect@moz-3589B90B.c.ircrelay.com)
+[19:44:17] <whitequark> but it would be an immense pain to set all that up
+[19:44:30] *** Joins: jhasse (jhasse@moz-39E0351E.ewe-ip-backbone.de)
+[19:44:41] *** Quits: dogurness (dogurness@moz-1BF32EBD.pitbpa.fios.verizon.net) (Quit: dogurness)
+[19:44:53] <geomyidae_> yeah, I'll go pester people in more on topic forums. I'd like to have CI going but would rather admin it myself because I'm weird like that. Need to compare travis/jenkins I guess. thanks
+[19:45:01] <jdavis> trying to work with extra::time. How do I get a Timespec from a Tm?
+[19:45:07] <whitequark> geomyidae_: I recommend buildbot
+[19:45:33] <whitequark> it's simple to set up and overall rather nice
+[19:46:57] *** Quits: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[19:47:49] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[19:47:49] *** ChanServ sets mode: +ao brson brson
+[19:49:19] *** Quits: creationix (creationix@moz-2FD6AA77.cpe.cableone.net) (Ping timeout)
+[19:49:28] *** Quits: jmgrosen (jmgrosen@moz-848F6087.sb.sd.cox.net) (Quit: jmgrosen)
+[19:51:05] *** Quits: mohawk (Mibbit@moz-16ADEBD8.cable.dyn.petrus.com.pl) (Quit: http://www.mibbit.com ajax IRC Client)
+[19:53:49] *** Joins: themgt (themgt@moz-83F07CDA.cm.vtr.net)
+[19:55:16] *** Joins: JamesNZ (james@moz-264643C7.bitstream.orcon.net.nz)
+[19:56:11] *** Joins: james4k (james@moz-E7990244.consolidated.net)
+[19:57:43] *** zz_kimundi is now known as kimundi
+[19:57:54] *** Quits: james4k (james@moz-E7990244.consolidated.net) (Ping timeout)
+[20:00:07] <jhasse> Can someone help me out? I'm reading the rust makefiles and really don't understand this line: $$(Q)cp $$< $$@
+[20:00:26] *** Joins: bleibig (bleibig@moz-B4D9C5AF.hsd1.ca.comcast.net)
+[20:00:41] <jdavis> I have a "use postgres::types::range" at the top of my file, but it still can't find the constructor "postgres::types::range::Range::new" unless I fully qualify it. What am I doing wrong?
+[20:01:23] <jhasse> jdavis: have you tried use postgres::types::range::Range?
+[20:02:15] <jdavis> wait, I think I was doing something dumb. I was having the problem with RangeBound, not Range.
+[20:02:24] <Ms2ger> foo: bar
+[20:02:31] <Ms2ger> 	cp $$< $$@
+[20:02:35] *** Joins: victorporof (victorporo@773D35C8.FAB6DAB7.79933D60.IP)
+[20:02:38] <Ms2ger> Means "cp foo bar"
+[20:02:50] <Ms2ger> Not sure what $$(Q) means
+[20:02:51] <brson> Ms2ger: maybe the other way?
+[20:02:58] <Ms2ger> Mm
+[20:03:00] <Ms2ger> Yes
+[20:03:00] <brson> oh nvm
+[20:03:06] <brson> oh, yeah
+[20:03:11] <brson> bar becomes foo
+[20:03:20] <Ms2ger> Copy prerequisite to target
+[20:03:32] <brson> $$(Q) is the 'quiet' macro, controlled by VERBOSE
+[20:03:54] <jhasse> ahh
+[20:03:57] <jhasse> thanks!
+[20:11:58] *** Parts: davebettin (davebettin@DB5B55EA.1A386E97.94FF2961.IP) ()
+[20:13:56] *** Joins: a_m0d|home (a_m0d@moz-322A4DE4.acanac.net)
+[20:15:54] *** Joins: kvark (Mibbit@moz-F30E0473.cpe.net.cable.rogers.com)
+[20:17:00] <kvark> Hi
+[20:18:41] <jdm> if I have a fixed-size owned vector
+[20:18:49] <jdm> and an owned vector that is the same size and type
+[20:19:03] <jdm> can I copy the data from the second to the first in one easy step?
+[20:19:13] * jdm longs for something like memcpy
+[20:19:35] <jdm> same size and inner type, but not fixed-size, obviously
+[20:19:42] *** Quits: eliovir (Mibbit@moz-2811C56F.fbx.proxad.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[20:19:59] <kvark> I got a new crash in glue_take. Has anything like that been fixed in the past 2-3 months? Github search shows a bunch of PR but I see no crash issues related to that. Please see https://gist.github.com/kvark/8211167 for the stack trace.
+[20:20:11] <dwrensha> jdm: std::vec::bytes::copy_memory()?
+[20:20:17] <jdm> thanks
+[20:21:19] <strcat> jdm: there are other copying methods for non-byte stuff too
+[20:21:33] *** Quits: nical (nico@moz-FE0AE368.w2-3.abo.wanadoo.fr) (Ping timeout)
+[20:23:03] *** Joins: dogurness (dogurness@moz-1BF32EBD.pitbpa.fios.verizon.net)
+[20:23:08] *** Quits: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net) (Ping timeout)
+[20:23:40] *** Joins: ziad (ziad@moz-5729CEA7.hsd1.ca.comcast.net)
+[20:26:10] *** Joins: james4k (james@moz-E7990244.consolidated.net)
+[20:26:26] *** Joins: lenstr (lenstr@E724F85B.C66E72B1.B69CD7C4.IP)
+[20:28:11] *** Quits: lenstr (lenstr@E724F85B.C66E72B1.B69CD7C4.IP) (Ping timeout)
+[20:31:03] *** Quits: fabiand (fabiand@moz-D63DFD61.adsl.alicedsl.de) (Quit: Verlassend)
+[20:34:09] *** Joins: sellout (Adium@moz-2ECB0660.hlrn.qwest.net)
+[20:36:46] * Ms2ger wonders what jdm is doing
+[20:37:09] <jdm> Ms2ger: writing an ANSI blitter for SDL in rust
+[20:37:56] * Ms2ger gives jdm an empty stare
+[20:38:15] <jdm> think dwarf fortress graphics
+[20:38:31] <Ms2ger> I see
+[20:38:55] *** Joins: photex (photex@399640B9.24E301D6.9510F13D.IP)
+[20:39:48] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[20:41:34] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[20:42:45] *** Quits: c-a (c-a@380CCB84.6116A87C.3B6D96BA.IP) (Ping timeout)
+[20:44:59] *** Quits: jhasse (jhasse@moz-39E0351E.ewe-ip-backbone.de) (Quit: Verlassend)
+[20:45:27] <mpiechotka> Hi. I'm a bit confused - I'm trying to write a library and I'm not sure a) where to put test.rs and b) how to run the tests. What's a proper way of doing it (I tried to look at few packages on github but most did not have any tests)? How should the libabc look like for rust?
+[20:45:42] *** Quits: maxli (maxli@moz-4D28BA20.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[20:49:17] <jdm> how do I get an iterator from one numeric value to another?
+[20:49:53] <strcat> range(a, b)
+[20:50:25] <strcat> there's also range_inclusive (to avoid overflow issues) and _step variants
+[20:50:44] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[20:50:46] *** Joins: elux (peter@moz-6B45ADE5.dsl.bell.ca)
+[20:53:30] *** Joins: espadrine (Thunderbir@moz-BA7B4434.w90-2.abo.wanadoo.fr)
+[20:55:24] <jdm> thanks
+[20:55:39] *** Joins: erickt1 (Adium@moz-4B000CB7.dyn.optonline.net)
+[21:00:26] *** Joins: earlzlap (earlz@moz-483E1E31.neo.res.rr.com)
+[21:02:19] *** Quits: dogurness (dogurness@moz-1BF32EBD.pitbpa.fios.verizon.net) (Quit: dogurness)
+[21:03:12] *** Quits: hacker_sam (hacker_sam@C0FE520A.661C02A7.B0CE379A.IP) (Connection reset by peer)
+[21:06:17] <jdm> how do I modify the linker args these days?
+[21:06:56] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[21:07:10] *** Quits: shammancer (shammancer@389973A5.EBE303D0.DC8692D8.IP) (Quit: Leaving.)
+[21:07:46] <Luqman> jdm: link_args is still around, just behind a feature toggle. The preferred way now to link to libraries is with #[link(..)]
+[21:08:15] *** Joins: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com)
+[21:09:38] *** Joins: hacker_sam (hacker_sam@C0FE520A.661C02A7.B0CE379A.IP)
+[21:10:28] *** Quits: csherratt (csherratt@moz-CAF331EA.cable.teksavvy.com) (Connection reset by peer)
+[21:11:45] *** Joins: csherratt (csherratt@moz-CAF331EA.cable.teksavvy.com)
+[21:13:38] <jdavis> How come "extra::time::get_time()" works, but "use extra::time;" and then "get_time()" doesn't work?
+[21:14:07] *** Joins: kvanb (kvanb@moz-C4940225.lnse5.lon.bigpond.net.au)
+[21:14:44] <kvark> jdavis: time enters the scope. If you want sub-elements in scope, you can "use extra::time::get_time" or even "use extra::time::*"
+[21:14:53] <Ms2ger> Don't use "use extra::time::*"
+[21:14:57] <jdavis> OK
+[21:15:13] <Ms2ger> "use extra::time; time::get_time()" should work, fwiw
+[21:15:18] *** Joins: moostik (Icedove@moz-75F6D558.w92-135.abo.wanadoo.fr)
+[21:15:23] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[21:15:53] <strcat> jdavis: use statements aren't required to call functions, they're just to import names into the current scope to make the calls less verbose
+[21:16:06] *** Quits: moostik (Icedove@moz-75F6D558.w92-135.abo.wanadoo.fr) (Quit: moostik)
+[21:16:08] <jdavis> OK, thank you. That works.
+[21:16:27] *** Joins: moostik (Icedove@moz-75F6D558.w92-135.abo.wanadoo.fr)
+[21:16:48] <sfackler> mpiechotka: do you want to use "rustpkg test" or are you going to be building the tests with rustc?
+[21:16:51] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[21:18:10] <mpiechotka> sfackler: rustpkg I presume (whatever is recommended). I managed to put everything in top directory and it seems to work.
+[21:18:41] <mpiechotka> But I'm not sure if it is the recommended way.
+[21:19:02] *** Joins: tcsc (tcsc@moz-ADC0ED45.hsd1.ct.comcast.net)
+[21:20:20] <jdavis> If I call "Foo::f()", what is it that puts "f" in the namespace of "Foo"? Is is the implementation of a trait including function "f" for Foo?
+[21:20:28] *** Joins: lenstr (lenstr@E724F85B.C66E72B1.B69CD7C4.IP)
+[21:21:50] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[21:22:08] <jdavis> And a related question: what does it mean to do "impl<...> Foo<...> { ... }" without a "...SomeTrait for..."?
+[21:22:23] *** Quits: lenstr (lenstr@E724F85B.C66E72B1.B69CD7C4.IP) (Ping timeout)
+[21:22:33] <jdavis> Is that kind of like giving Foo some static methods?
+[21:22:48] <mpiechotka> jdavis: It's a list of methods AFAIU - both static and normal
+[21:23:19] <mpiechotka> so impl Foo { fn test(&self) {}} allows to do let x : Foo = ...; x.test()
+[21:24:10] <jdavis> OK, so "impl" is how you define everything, and some happen to be for specific traits?
+[21:24:13] <mpiechotka> (I use rust for whole 24h now so please have limited trust in what I'm writing)
+[21:24:26] <jdavis> That makes sense to me, so I think you're right.
+[21:24:49] <mpiechotka> jdavis: I believe so
+[21:25:51] <sfackler> yep, that's right
+[21:27:16] *** Quits: sellout (Adium@moz-2ECB0660.hlrn.qwest.net) (Quit: Leaving.)
+[21:29:51] *** Joins: kngl (Adium@E5907D90.770DEA4D.7C797F8E.IP)
+[21:33:38] *** Joins: sellout (Adium@moz-2ECB0660.hlrn.qwest.net)
+[21:34:14] *** Quits: jackneill (jackneill@moz-D87DF7.pool.digikabel.hu) (Ping timeout)
+[21:34:59] *** Quits: Jesin (Jesin@moz-4B662E55.washdc.fios.verizon.net) (Quit: Leaving)
+[21:35:29] *** Joins: samx (sami@moz-D9DA5773.dyn.optonline.net)
+[21:37:06] <jdavis> Why do type errors say the fully qualified name starts with "rust-postgres" but all of the "use" statements just say "postgres"?
+[21:37:20] <bjz> jdavis: do you want a statick function on a trait? ie. Trait::f()?
+[21:37:53] <jdavis> Yes, or at least that's what I was trying to understand.
+[21:38:46] <bjz> just omit the `self` parameter
+[21:38:51] *** Quits: kvark (Mibbit@moz-F30E0473.cpe.net.cable.rogers.com) (Ping timeout)
+[21:38:58] <bjz> in the trait declaration
+[21:39:01] <jdavis> I'm also trying to figure out how get enum values into my namespace.
+[21:39:06] <sfackler> jdavis: I think it's that the crate calls itself rust-postgres but your program aliases it to just postgres
+[21:39:06] <jdavis> OK, thank you.
+[21:39:34] <sfackler> "use rust-postgres;" doesn't compile because '-' isn't a legal part of an ident
+[21:39:54] *** Quits: samx (sami@moz-D9DA5773.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[21:39:58] <jdavis> Oh, I see. So it's the "extern mod postgres =" that does it?
+[21:40:13] <sfackler> yep
+[21:40:16] <jdavis> OK.
+[21:40:21] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[21:40:30] <bjz> jdavis: one limitation though: it has to have Self type somewhere in there - either the return type or a parameter
+[21:40:58] *** Quits: nif (nif@moz-8181E2AC.oberlin.net) (Quit: Konversation terminated!)
+[21:41:24] <bjz> jdavis: otherwise there is no way to infer what static function is being asked for
+[21:41:36] <jdavis> sfackler, I'm trying to figure out how to properly get enum values into my namespace, specifically BoundType. It says it can't find "Inclusive" if I just do "use postgres::types::range::BoundType"
+[21:41:49] <jdavis> bjz, oh, that makes sense.
+[21:41:54] <bjz> eventually we will have Trait::<for T>::f() which will aleviate that problem
+[21:42:15] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[21:42:54] <bjz> jdavis: do you mean 'enum varients'?
+[21:42:58] <jdavis> yes
+[21:43:08] <bjz> you have to do them individually
+[21:43:13] <sfackler> jdavis: try "use postgres::types::range::{BoundType, Inclusive};"
+[21:43:20] <bjz> use path::Variant;
+[21:44:43] *** Quits: hacker_sam (hacker_sam@C0FE520A.661C02A7.B0CE379A.IP) (Connection reset by peer)
+[21:45:01] <jdavis> I see. That's a little inconvenient for large enums though, right?
+[21:45:17] *** Joins: hacker_sam (hacker_sam@C0FE520A.661C02A7.B0CE379A.IP)
+[21:45:25] <jdavis> Like PostgresType
+[21:45:26] <jdavis> ?
+[21:46:33] <sfackler> yep, it's a huge pain: https://github.com/sfackler/rust-postgres/blob/master/lib.rs#L94
+[21:46:57] <sfackler> though you can just import the containing module and reference them by range::Inclusive
+[21:47:42] <bjz> you could also use glob imports
+[21:47:59] <bjz> they are behind a feature flag though, and can be unweildy
+[21:48:07] <sfackler> bjz: I'm not a huge fan of that because you lose out on knowing where something came from
+[21:48:17] <bjz> agreed
+[21:48:19] <sfackler> since you can normally just search for the "use" statement that declares it
+[21:48:28] *** Joins: ecl3ctic (Mibbit@moz-E1FAD64C.wzfv1.vic.bigpond.net.au)
+[21:48:31] <bjz> there was a proposal for `enum mod`, but that was shot down
+[21:48:32] <jdavis> OK, using range::Inclusive seems like a reasonable compromise.
+[21:48:38] <sfackler> I'm a bit sad that enum mod isn't happening :(
+[21:48:57] <bjz> https://github.com/mozilla/rust/issues/10090
+[21:49:21] <bjz> sfackler: aye
+[21:49:44] <sfackler> it could be done with a macro, but you'd probably also need to give rustdoc some knowledge of the pattern as well or the docs would be horrible
+[21:50:41] <bjz> I definitely think a case could be for large enums
+[21:51:05] <jdavis> There was also another change supposedly coming that would avoid the need for "&x as &ToSql" all over. Is that going to make it?
+[21:51:23] <bjz> I think it has already landed
+[21:51:33] <sfackler> jdavis: it's already in, but there's some type inference issues that make it not work through vectors :(
+[21:51:52] <sfackler> https://github.com/mozilla/rust/issues/11205
+[21:51:54] <jdavis> Any chance of those issues being solved, or are we stuck?
+[21:52:27] <sfackler> I assume they'll be solved at some point I guess it depends on how much we bug pcwalton and Luqman :P
+[21:52:44] *** Quits: Ms2ger (Ms2ger@7AE7573F.9612FC09.3773EA9F.IP) (Quit: nn)
+[21:52:48] <jdavis> OK, so it's not a fundamental flaw as far as you know then. That's good.
+[21:52:53] <sfackler> yeah
+[21:54:34] <jdavis> I see that rust-postgres uses references almost everywhere. Did you do that for performance in case the value is large, or is there a reason to do it for small values as well?
+[21:55:51] <sfackler> what cases are you talking about specifically?
+[21:56:04] <jdavis> Passing parameters to a query.
+[21:56:09] <sfackler> ah
+[21:56:21] <jdavis> conn.execute(ins, [&tr as &ToSql]);
+[21:56:27] <sfackler> yeah
+[21:56:31] <sfackler> it's a couple of reasons
+[21:56:33] *** Quits: Yurumechan (23f9939a@B2F514.E4420F21.EEF52F3A.IP) (Ping timeout)
+[21:56:47] <sfackler> 1: &[ToSql] isn't a type so you can't actually pass by value there
+[21:57:07] <sfackler> 2: if you pass by value, you move the value into the query so it will not be usable again outside of it for some types
+[21:57:10] <sfackler> which is a bummer
+[21:57:51] *** Joins: maxli (maxli@moz-4D28BA20.student.cs.uwaterloo.ca)
+[21:58:04] <jdavis> I don't quite understand #2.
+[21:58:05] <sfackler> but passing by reference vs value is generally a division of whether or not you're transferring ownership
+[21:58:23] <bjz> references will also (eventually) allow the client to choose their own allocation method
+[21:58:38] *** Quits: jviereck (Adium@moz-4E567DEF.dip0.t-ipconnect.de) (Quit: Leaving.)
+[21:58:48] <sfackler> If I do something like "let a: ~str = ~"hi"; fn foo(a: ~str) {}; foo(a);"
+[21:59:01] <sfackler> I can't use 'a' again after calling "foo(a)"
+[21:59:09] <sfackler> since ownership of that string has been transferred to foo
+[21:59:10] *** Quits: sellout (Adium@moz-2ECB0660.hlrn.qwest.net) (Quit: Leaving.)
+[21:59:57] <jdavis> Oh, I see. I was thinking about "pass by value" as copying, but then the caller would need to clone it explicitly I guess, right?
+[21:59:59] <bjz> rusti: let a: ~str = ~"hi"; fn foo(_: ~str) {}; foo(a); a
+[22:00:04] -rusti- pastebinned 10 lines of output: http://ix.io/9BU
+[22:00:11] <ChrisMorgan> sfackler: if you use generic constraints, <T: ToSql>, you could have &[T] and use the values by reference
+[22:00:47] *** Joins: mib_pgzer3 (Mibbit@moz-A14EC896.nycmny.fios.verizon.net)
+[22:00:55] <sfackler> ChrisMorgan: but then i couldn't do "s.execute([&1, & &"hi"])
+[22:01:16] *** Quits: mib_pgzer3 (Mibbit@moz-A14EC896.nycmny.fios.verizon.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[22:01:35] <ChrisMorgan> Good, that's what I guessed was the situation.
+[22:02:13] <sfackler> jdavis: by the way, if there's any missing functionality on Range that's bugging you, feel free to file an issue. I haven't spent a ton of time fleshing it out
+[22:02:54] <jdavis> I'm trying to work through it now while bootstrapping my knowledge of rust. I've been a little slow, but I'm getting there.
+[22:03:12] <sfackler> cool :)
+[22:04:32] *** Joins: sellout (Adium@moz-2ECB0660.hlrn.qwest.net)
+[22:07:25] *** Joins: Yurumechan (23f9939a@B2F514.E4420F21.EEF52F3A.IP)
+[22:08:15] *** Joins: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com)
+[22:08:19] <jdavis> I was thinking that it might be nice to have a macro to more easily specify range bounds, or even an entire range. I haven't thought through it yet; perhaps just a utility function could do the trick without a macro.
+[22:08:51] <jdavis> Maybe just a few more versions of the "new" function.
+[22:11:34] <sfackler> yeah, it is a bit verbose currently
+[22:12:23] <sfackler> I'd really like to do something like range!(0, 10] range![1, 5), etc but () and [] have to be matched in macro definitions :(
+[22:13:43] <jdavis> Yeah, I had the same problem in postgres, it still needs to be parsed normally. We did it with constructors like: tstzrange(now(), NULL, '()')
+[22:13:45] <benh> range!( |0, 10> )... range!( >=0, <10 )... range!( 0 <= x < 10 )...
+[22:14:14] <jdavis> benh: do you think we can make that work? How would that work?
+[22:14:19] <sfackler> that could be doable
+[22:14:39] <benh> not really sure about the last one
+[22:14:39] <sfackler> it'd have to wait for my externally loadable macro PR to to through though :)
+[22:14:39] *** Joins: lenstr (lenstr@E724F85B.C66E72B1.B69CD7C4.IP)
+[22:15:05] *** Quits: hacker_sam (hacker_sam@C0FE520A.661C02A7.B0CE379A.IP) (Connection reset by peer)
+[22:15:18] <jdavis> Are those postfix operators or something? I tried to do that in postgres but it got pretty challenging.
+[22:15:20] *** Quits: tsvia (tsvia@moz-DDA0CF97.red.bezeqint.net) (Ping timeout)
+[22:15:43] <jdavis> We could have the unary operators return a RangeBound.
+[22:15:47] <sfackler> macros can contain freeform syntax to an extent
+[22:16:03] <sfackler> they aren't even operators
+[22:16:07] *** Joins: hacker_sam (hacker_sam@C0FE520A.661C02A7.B0CE379A.IP)
+[22:16:11] <benh> macros can match token by token, the limit is more that if you slurp a whole expression you can't say "but only up to a <="
+[22:16:17] <benh> (afaiui)
+[22:16:21] <bjz> jdavis: "I was thinking about "pass by value" as copying" In Rust, values with destructors move by default
+[22:16:26] *** Quits: lenstr (lenstr@E724F85B.C66E72B1.B69CD7C4.IP) (Ping timeout)
+[22:16:43] <benh> Of course you could make it a syntax extension in the compiler and just do your completely manual parsing
+[22:17:03] <jdavis> bjz: oh, interesting. Where can I read more about that?
+[22:17:03] <bjz> jdavis: owned pointers technically have a destructor, even though they do not implement Drop yet
+[22:17:27] <bjz> (they will eventually)
+[22:17:43] <sfackler> benh: it should be implementable as a normal macro_rules! macro with a bunch of different cases for all of the bound types
+[22:18:11] <bjz> jdavis: not sure there is any yet
+[22:18:24] <jdavis> sfackler, That would be pretty awesome if we could make that work.
+[22:18:36] <benh> for range!( 0 <= x < 10 ) how are you gonna wildcard the numbers?
+[22:18:53] <sfackler> I'll play around with it. You'd have to just copy/paste the macro definition into your code for now though
+[22:19:05] <jdavis> I was planning to give a presentation to a postgres user group in a couple months, and that would add a nice punch.
+[22:19:22] <sfackler> benh: I think the |0, 10> syntax has a better chance of working
+[22:19:30] <benh> but it's kinda gross :))
+[22:19:52] <sfackler> pat might work for the 0 <= x < 10 case?
+[22:19:55] <bjz> jdavis: I had an old one: https://gist.github.com/bjz/5992668
+[22:20:05] <bjz> jdavis: could be improved though
+[22:21:10] <bjz> oh wait, that should be for sfackler 
+[22:21:22] <jdavis> I assume the reason |0, 10> is easier is because of the comma, right?
+[22:22:12] <sfackler> yeah
+[22:22:34] <sfackler> I think it should be parsable as "| followed by an expression followed by a comma followed by a >"
+[22:22:40] <sfackler> I'm checking now
+[22:23:06] <benh> isn't there a 'followed by an expression' missing?
+[22:23:21] <sfackler> er, yeah
+[22:23:27] <benh> and i'm afraid that one is gonna try to parse the > and then choke because there's no second operand
+[22:23:28] *** Joins: Guest_ (textual@moz-30B6C3D1.lightspeed.rsbgtx.sbcglobal.net)
+[22:23:33] <benh> but you tell me :))
+[22:23:40] <jdavis> Although the expressions should be optional, if possible, to allow unbounded ranges.
+[22:23:42] <sfackler> "|$low:expr, $high:expr>" is hopefully the argument pattern
+[22:23:57] <FreeFull> |0, 10> looks neat, like a rocket
+[22:23:58] <sfackler> jdavis: yeah
+[22:24:14] <sfackler> it might have to be a procedural macro if the macro_rules parser is too dumb for it
+[22:24:18] <bjz> sfackler: not sure if > at the end would be parsable
+[22:25:37] <jdavis> An alternate idea is to have default inclusive and an operator to make the bound exclusive, or vice-versa.
+[22:25:39] <bjz> it would continue trying to consume an expr
+[22:25:59] <sfackler> hmm, yeah
+[22:26:13] <sfackler> maybe |$low:expr;, $high:expr;> though that's even uglier
+[22:26:22] <sfackler> range(|0;, 1;>)
+[22:26:29] <benh> boo :(
+[22:27:02] *** Joins: creationix (creationix@moz-2FD6AA77.cpe.cableone.net)
+[22:27:05] <sfackler> the hacky thing postgres does with range(0, 1, '[)') is definitely doable
+[22:27:18] <sfackler> but not great
+[22:27:21] <jdavis> that could be done without a macro even.
+[22:27:30] <sfackler> yeah
+[22:27:44] *** Quits: nano (nano@moz-ED77243C.superkabel.de) (Connection reset by peer)
+[22:27:50] <sfackler> though I'd prefer to do it in a macro so that the string at the end is checked at compile time
+[22:28:10] <jdavis> The only real advantage that would have is that it doesn't need different constructors for each range type -- tstzrange, int8range, etc.
+[22:28:17] *** Quits: sellout (Adium@moz-2ECB0660.hlrn.qwest.net) (Quit: Leaving.)
+[22:28:28] <jdavis> That, too.
+[22:30:32] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[22:30:44] <jdavis> I wonder if "+" and "-" might make good tokens if that's easier somehow.
+[22:31:14] <sfackler> they'd still get sucked into the expression
+[22:31:33] <sfackler> I think it'd really have to be done as a full procedural macro so you'd have more control over the parse
+[22:31:50] *** Quits: rca (rcatolino@2245D013.CC72BB30.520D6FA6.IP) (Ping timeout)
+[22:32:06] *** Quits: erickt1 (Adium@moz-4B000CB7.dyn.optonline.net) (Quit: Leaving.)
+[22:32:29] <o11c> is there any ambiguity in [1..10) [1..10] (1..10] (1..10) ?
+[22:33:05] <o11c> I don't remember expr..expr ...
+[22:33:28] <sfackler> o11c: I believe that () and [] have to be correctly paired inside of macro_rules
+[22:36:06] <o11c> I"m not talking about a macro
+[22:37:58] *** Quits: creationix (creationix@moz-2FD6AA77.cpe.cableone.net) (Ping timeout)
+[22:38:20] *** Quits: Blei (Philipp@moz-B2F9E4BD.cust.bluewin.ch) (Quit: Blei)
+[22:38:44] <jdavis> I don't think there's any ambiguity there... what did you have in mind?
+[22:39:10] <ChrisMorgan> Still, it needs to be able to be parsed everywhere—at best it would require significant rewriting of the parsing logic and the breaking of certain very convenient invariants (that [], () and {} match)
+[22:40:08] <jdavis> Maybe it's best not to make it so clever, and just match what postgres does, except with compile-time checking.
+[22:40:18] <sfackler> this'd be totally doable: range!(10, <= x <, 15)
+[22:40:29] <jdavis> so range(a, b) or range(a, b, "()"), etc.
+[22:40:38] <sfackler> yeah
+[22:40:41] <ChrisMorgan> sfackler: why the commas?
+[22:40:49] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[22:40:59] <sfackler> ChrisMorgan: so the whole thing doesn't get slurped up into the lower bound expression
+[22:41:23] <sfackler> I think $l:expr <= x < $h:expr would be ambiguous
+[22:41:32] <sfackler> or at least require backtracking
+[22:41:34] <ChrisMorgan> Handle it as a procedural macro and interpret it carefully yourself and you don't have a problem. But that would require quite a lot more work.
+[22:41:38] <sfackler> yeah
+[22:42:05] <sfackler> If it ends up being procedural I'd probably go for |10, 15> over that
+[22:42:24] <benh> I hope procedural macros become less fiddly ;(
+[22:42:34] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[22:42:55] *** Quits: bytbox (s@moz-54E13927.washdc.fios.verizon.net) (Input/output error)
+[22:43:00] *** Joins: bytbox (s@moz-54E13927.washdc.fios.verizon.net)
+[22:43:04] <sfackler> once they can be defined outside of the compiler there'll probably be a bigger push for better tooling around them
+[22:43:07] *** Quits: bytbox (s@moz-54E13927.washdc.fios.verizon.net) (Connection reset by peer)
+[22:43:15] <sfackler> output is already not too bad with the quasiquoter
+[22:43:36] *** Joins: bytbox (s@moz-54E13927.washdc.fios.verizon.net)
+[22:43:52] *** Quits: bytbox (s@moz-54E13927.washdc.fios.verizon.net) (Connection reset by peer)
+[22:44:08] <sfackler> It'd be pretty cool on the input side to se the parsing machinery of macro_rules to crate parsers for procedural macros
+[22:44:12] <sfackler> *use
+[22:44:48] *** Joins: bytbox (s@moz-54E13927.washdc.fios.verizon.net)
+[22:45:04] *** Quits: bytbox (s@moz-54E13927.washdc.fios.verizon.net) (Connection reset by peer)
+[22:45:42] <jdavis> At this point I'm leaning toward just using range!(a, b, "()") with the 3rd parameter defaulting to "[)" just like in postgres.
+[22:46:25] *** Joins: bytbox (s@moz-54E13927.washdc.fios.verizon.net)
+[22:46:33] *** Quits: bytbox (s@moz-54E13927.washdc.fios.verizon.net) (Input/output error)
+[22:46:39] <sfackler> the last bit may have to be |> instad of [) to get it to work
+[22:46:52] <rntz_> why should the specific characters matter?
+[22:47:02] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Input/output error)
+[22:47:09] <sfackler> rntz_: I don't think [) will parse since the delimiters aren't matched
+[22:47:17] <jdavis> I mean even enclosing them in quotes would be OK. At least it would match postgres.
+[22:47:17] <rntz_> ... it's a string. it doesn't have to parse.
+[22:47:35] <sfackler> I also don't know if macro_rules can branch on the value of a string literal
+[22:47:40] *** Joins: nrc (ncameron@moz-A76F1825.cable.virginm.net)
+[22:47:47] <jdavis> Oh, really?
+[22:47:48] <rntz_> ah. does rust have a printf-equivalent?
+[22:47:59] <sfackler> yep
+[22:48:06] <rntz_> yes, it does. how can that possibly work without examining the string literal?
+[22:48:14] <rntz_> or is it some special-case hack
+[22:48:28] <sfackler> it's a procedural macro as opposed to a macro_rules macro
+[22:48:52] <rntz_> "procedural macro"? how are those defined / what distinguishes them from macro_rules! macros?
+[22:49:17] <sfackler> procedural macros are functions that do arbitrary processing on a chunk of the AST
+[22:49:23] <rntz_> ah, I see.
+[22:49:26] <sfackler> they're currently all built into the compiler
+[22:49:41] <rntz_> okay, so a slight generalization of "a special case hack" :P
+[22:49:44] *** Joins: bytbox (s@moz-54E13927.washdc.fios.verizon.net)
+[22:49:46] *** Quits: bytbox (s@moz-54E13927.washdc.fios.verizon.net) (Input/output error)
+[22:49:48] <sfackler> yep
+[22:50:01] <jdavis> There's got to be some way to match on the value of a string. I'm going to see if I can make that work.
+[22:50:10] *** Quits: dwrensha (chatzilla@moz-DE44EA45.hsd1.pa.comcast.net) (Ping timeout)
+[22:50:17] <sfackler> if this goes through it'll be a bit less special-casey since anyone will be able to write them: https://github.com/mozilla/rust/pull/11151
+[22:50:25] <rntz_> jdavis: I don't think there does have to be a way - at leas, not to do it at compile-time.
+[22:50:48] <sfackler> jdavis: you can definitely do it as a normal function right now, but then you run the risk of runtime failures
+[22:50:50] *** Quits: jdm (jdm@moz-3FFA85CA.dsl.teksavvy.com) (Quit: Lost terminal)
+[22:50:52] *** Quits: elux (peter@moz-6B45ADE5.dsl.bell.ca) (Quit: Leaving...)
+[22:50:58] <sfackler> maybe I should just write that as a stopgap
+[22:51:06] *** Joins: bytbox (s@moz-54E13927.washdc.fios.verizon.net)
+[22:51:06] <SiegeLord> It's definitely branching right now
+[22:51:20] *** Quits: bytbox (s@moz-54E13927.washdc.fios.verizon.net) (Input/output error)
+[22:51:24] <rntz_> I mean, I think being able to pattern match on string-literals would be a cool feature for macro rules in general, even if you are able to write procedural macros
+[22:51:29] <sfackler> fn range<T>(low: Option<T>, high: Option<T>, type: &str) -> Range<T>
+[22:51:32] *** Joins: bytbox (s@moz-54E13927.washdc.fios.verizon.net)
+[22:51:34] <rntz_> the more stuff you can do without having to touch the internal AST representation of the rust compiler, the better
+[22:51:39] <sfackler> yeah
+[22:52:17] <SiegeLord> This works right now: http://pastebin.ca/2520966
+[22:52:25] <rntz_> sfackler: also, as a normal function it'll be rather inefficient. although optimizations might make that go away.
+[22:52:51] <rntz_> for large ranges or expensive functions the iteration will dwarf the overhead, though
+[22:53:02] <SiegeLord> (the third range! errors naturally)
+[22:53:25] <rntz_> oh, huh, you *can* pattern match on string literals. nice!
+[22:53:48] <rntz_> can you do anything other than testing for equality?
+[22:54:13] <sfackler> SiegeLord: oh, awesome!
+[22:54:17] <rntz_> or, rather, matching for a specific, complete literal. rather than, say, checking whether the string begins with a certain pattern
+[22:54:42] *** Joins: arielb1 (Mibbit@moz-DDA0CF97.red.bezeqint.net)
+[22:54:54] <arielb1> hi
+[22:54:59] <rntz_> 'lo
+[22:54:59] <sfackler> hi
+[22:55:03] *** Joins: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net)
+[22:55:05] <arielb1> how does rust handle backwards-barriers in structs?
+[22:55:25] <arielb1> I mean - like generational gc barriers
+[22:55:43] <benh> We don't exactly have a working gc right now
+[22:56:31] <a_m0d|home> acrichto: How do I find the node_id of an attribute in `collect_outputs` https://github.com/mozilla/rust/blob/master/src/librustc/driver/session.rs#L429
+[22:56:48] *** Joins: maxiepoo (Max@moz-D66F3D4E.atvci.net)
+[22:57:09] <acrichto> a_m0d|home: should be a.id
+[22:57:10] *** Joins: tikue_ (tkuehn@moz-C55F9DFF.hsd1.pa.comcast.net)
+[22:57:12] <acrichto> I think
+[22:57:19] <acrichto> maybe a.node.id
+[22:57:31] <arielb1> I mean things like http://pastebin.com/MGWiKQs0
+[22:57:41] <arielb1> is this possible in rust?
+[22:58:04] <a_m0d|home> thanks
+[22:58:17] <arielb1> [for some kind of lifetime annotations]
+[22:59:20] <pyon> arielb1: struct A<'a> { x: &'a data }
+[23:00:02] <pyon> arielb1: structs that contain borrowed pointers must be parametried over their own lifetimes
+[23:00:09] <pyon> parametrized*
+[23:00:29] <arielb1> thats a contravariant lifetime parameter
+[23:01:12] <pyon> And what exactly do you want?
+[23:01:28] <arielb1> is variance calculated automatically
+[23:01:28] <arielb1> ?
+[23:01:42] <benh> http://pastebin.com/xb0BRyHu this compiles, does that help?
+[23:02:01] <benh> sorry about the syntax highlighting, i hit R a bunch of time but rust didn't come up
+[23:02:03] <pyon> arielb1: All that says is that x's lifetime must be (at least) as long as that of the struct itself.
+[23:02:09] <a_m0d|home> acrichto: nope, it doesn't look like either of those exists.  I looked through the source, but can't find any node_id for attributes in there
+[23:02:52] <pyon> arielb1: the object "x" points to may indeed have longer life than the struct itself
+[23:03:08] <jdavis> http://pastebin.ca/2520969 that's my version, but SiegeLord beat me to it.
+[23:03:41] <SiegeLord> Heh, you version is more complete ;)
+[23:03:48] <kimundi> arielb1: I still don't entirely get the contravariant/covariant distinction - but afaik the answer is yes, it is automatically determined by the thing the lifetime parameter belongs to - in this case its contravariante because it gets used for a borrowed pointer in der struct definition
+[23:04:01] <acrichto> a_m0d|home: for now put it on the CRATE_NODE_ID because that's what it's attached to anyway
+[23:04:08] <SiegeLord> jdavis: Although it does the matching at runtime, so I guess it's inferior for a true solution
+[23:04:13] *** Joins: klaus (koz@moz-E49E7C4B.hsd1.wa.comcast.net)
+[23:04:17] <arielb1> Actually it's invariant - the struct is readable too
+[23:04:26] <kimundi> arielb1: Someone like nmatsakis could tell you more
+[23:04:30] <arielb1> if there were out parameters it would be contravariant
+[23:05:13] *** Joins: alisdair (textual@28441AAB.AC6E1995.F0AE27BD.IP)
+[23:06:32] *** Quits: jaen (jaen@moz-E0979827.copit.pl) (Ping timeout)
+[23:07:44] <sfackler> jdavis: here's something that should work, though it doesn't handle unbounded ranges yet
+[23:07:47] <sfackler> https://gist.github.com/sfackler/4c4e93f896e881fae811
+[23:08:40] *** Joins: samx (sami@moz-D9DA5773.dyn.optonline.net)
+[23:08:44] *** Joins: lenstr (lenstr@E724F85B.C66E72B1.B69CD7C4.IP)
+[23:10:28] *** Quits: lenstr (lenstr@E724F85B.C66E72B1.B69CD7C4.IP) (Ping timeout)
+[23:10:51] <ChrisMorgan> sfackler: I wonder whether I wouldn't prefer range!('[' $low:expr, $high:expr ')')
+[23:11:21] <sfackler> yeah, that's also an option
+[23:11:28] <sfackler> it's a bit harder to type I think
+[23:12:01] <arielb1> I guess that if you need to put one parametrized struct inside another you can just duplicate the parameters
+[23:14:53] <o11c> ugh ... why does rust-nightly have to be such a *huge* package to download?
+[23:16:04] *** Quits: samx (sami@moz-D9DA5773.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[23:16:39] <arielb1> If I have something like http://pastebin.com/hGBZ7ch9 - does every $h$ need 2 lifetime parameters?
+[23:17:30] <dbaupp> o11c: because we have hundreds of megabytes of metadata, and we duplicate it
+[23:17:47] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[23:18:29] <benh> h should be fine with implicit/undeclared lifetime parameters?
+[23:18:51] <benh> I dunno :(
+[23:19:21] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Connection reset by peer)
+[23:19:25] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[23:19:35] *** Quits: arielb1 (Mibbit@moz-DDA0CF97.red.bezeqint.net) (Ping timeout)
+[23:23:16] *** Joins: arielb1 (Mibbit@moz-DDA0CF97.red.bezeqint.net)
+[23:23:19] <ChrisMorgan> sfackler: re. "it's a bit harder to type I think"—do you type code or read code more frequently? If one way is more comprehensible than the other, there is a strong argument for using that way. (I have the vague feeling that '[' low, high ')' is easier to read.)
+[23:23:53] <sfackler> that's true
+[23:23:57] <arielb1> could you do something like http://pastebin.com/0Js6JX67 (the stack matches the list hierarchy)?
+[23:24:26] <arielb1> [there should be an else before another_calculation]
+[23:25:33] *** Quits: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru) (Input/output error)
+[23:25:36] *** Joins: dredozubov (dredozubov@moz-1E374954.nationalcablenetworks.ru)
+[23:25:52] *** Quits: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net) (Ping timeout)
+[23:26:02] *** Quits: engla (engla@moz-F64E1B0F.cust.bredbandsbolaget.se) (Ping timeout)
+[23:28:19] *** Quits: arielb1 (Mibbit@moz-DDA0CF97.red.bezeqint.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[23:32:10] *** Quits: valenting (Thunderbir@moz-9DFB83CF.residential.rdsnet.ro) (Ping timeout)
+[23:32:35] *** kimundi is now known as zz_kimundi
+[23:33:49] *** Quits: nrc (ncameron@moz-A76F1825.cable.virginm.net) (Ping timeout)
+[23:34:10] *** Quits: eholk (eholk@moz-58C5EE6F.wavecable.com) (Quit: eholk)
+[23:34:52] *** Joins: barosl (barosl@3DE683B6.E551553C.7544CABF.IP)
+[23:35:51] *** Quits: Guest_ (textual@moz-30B6C3D1.lightspeed.rsbgtx.sbcglobal.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[23:36:08] *** Joins: tupshin_ (quassel@moz-54DE2E9C.du.xdsl.is)
+[23:41:18] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[23:41:50] *** Quits: earlzlap (earlz@moz-483E1E31.neo.res.rr.com) (Ping timeout)
+[23:43:04] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[23:44:18] *** Quits: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[23:46:38] *** Joins: jhasse (jhasse@moz-39E0351E.ewe-ip-backbone.de)
+[23:51:28] *** Joins: Crandom (Crandom__@moz-56264BBC.sx)
+[23:51:39] <Crandom> Hi, I'm writing a kernel in rust (so no standard library) and I was wondering: is there a nice way to do unsafe pointer referencing? Currently I'm doing things like: `*((VGA_BUFFER_BASE_ADDR + (index as int) * 2) as *mut u16) = entry;` but it looks hideous. Is there another way?
+[23:52:27] *** Joins: sellout (Adium@moz-2ECB0660.hlrn.qwest.net)
+[23:56:02] <strcat> Crandom: https://github.com/thestinger/rust-core
+[23:56:09] <Crandom> thanks
+[23:56:27] <Crandom> (I just saw the #rust-osdev channel and followed the links as well :p)
+[23:56:29] <strcat> Crandom: casting as int and back isn't pointer arithmetic - it won't compile to the same code in many cases
+[23:56:54] <strcat> LLVM isn't really capable of optimizing it once you have ptr<->int casts
+[23:57:05] *** Quits: kvanb (kvanb@moz-C4940225.lnse5.lon.bigpond.net.au) (Quit: kvanb)
+[23:57:15] <Crandom> ah yes
+[23:58:07] <whitequark> grrrr, __aeabi_memset

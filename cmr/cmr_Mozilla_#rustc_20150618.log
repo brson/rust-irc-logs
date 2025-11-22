@@ -1,0 +1,187 @@
+[00:14:47] *** kimundi is now known as zz_kimundi
+[00:50:40] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[01:29:37] *** Quits: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se) (Ping timeout: 121 seconds)
+[02:46:32] *** Quits: zz_kimundi (kimundi@moz-357luu.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[02:47:57] *** Joins: zz_kimundi (kimundi@moz-or1.1hh.188.87.IP)
+[02:48:03] *** zz_kimundi is now known as kimundi
+[03:03:57] <nrc> heads up: https://internals.rust-lang.org/t/parallel-codegen-plans/2253
+[04:23:51] <eddyb> nrc: sgtm
+[04:24:52] <eddyb> nrc: maybe better partitioning heuristics could be investigated in the future
+[04:25:42] <eddyb> (most of that post seems to focus on the value of N and the infrastructure)
+[04:27:57] <nrc> yeah, we could definitely look at the partitioning. We experimented a bit when it was first implemented, but we didn't try anything very sophisticated
+[04:28:06] <eddyb> if you ignore generic items, you should be able to split the units such that they are minimally connected
+[04:28:32] <eddyb> with monomorphization, it's a more interesting problem
+[04:28:39] <nrc> we currently partition by top level module, that got better perf than random allocation to units, but not by much, iirc
+[04:28:57] <nrc> yeah, doing something like that sounds like it could make a difference
+[04:29:10] <eddyb> nrc: random thought: emit everything in one LLVM module and split it after trans
+[04:29:21] <eddyb> I wonder just how bad that would be for LLVM
+[04:29:33] <nrc> is it easy to split llvm modules?
+[04:29:55] <eddyb> I *think* you can run interprocedural passes on a subset of the module, maybe even in parallel, with a risk of race conditions
+[04:30:19] <nrc> huh, that would be worth trying
+[04:30:38] <eddyb> I have no idea whether complete splits with "guaranteed" race freedom are doable
+[04:33:10] <eddyb> nrc: that and running function passes as functions are emitted could relieve some heap stress (and speed up optimizations later, allow more inlining or prevent inlining unoptimized code, etc.), but the impact is likely minimal there
+[04:34:14] <eddyb> nrc: I may be misremembering, but I believe LLVM creates these callgraph contexts on which it runs inter-procedural optimizations
+[04:35:04] <nrc> seems reasonable
+[04:35:51] <eddyb> so you *could* work on those in a multi-threaded queue, but LLVM is not known for staying clear of global state
+[04:36:12] <eddyb> cc doener, aatch
+[04:37:53] <eddyb> nrc: also, large functions can be deemed "hopelessly uninlineable" and used to disconnect callgraphs
+[04:38:13] <eddyb> in theory
+[04:38:27] <eddyb> nrc: but it's nearly impossible to do anything like this before trans
+[04:40:28] <eddyb> nrc: oh, also, since the callgraph is directed, you could also split at any non-reentrant callsite and maybe rejoin after optimizing the subgraphs sepparately
+[04:59:54] <eddyb> error: internal compiler error: fictitious type <&'static middle::ty::BuiltinBounds as core::iter::IntoIterator>::IntoIter in sizing_type_of()
+[04:59:59] <eddyb> oh this is nice
+[05:00:14] <eddyb> that's what I get for being lazy
+[05:01:00] <aatch> eddyb, I got that from not using expr_ty,expr_ty_unadjusted from common.rs
+[05:01:52] <eddyb> aatch: I get that on the snapshot compiler
+[05:02:26] <eddyb> anyways, I know the concrete type, I used a projection because I didn't want to explicitely mention it
+[05:03:12] <aatch> In other news, I've now made `unsafe { some_call() }` translate pretty much the exact same way as `some_call()`
+[05:06:45] <eddyb> :D
+[05:07:12] <aatch> eddyb, mostly so you can do `unsafe { likely(cond) }`
+[05:36:53] <eddyb> aatch: I got bored waiting for a review and doubled the diff stat https://github.com/rust-lang/rust/pull/26351
+[05:38:37] <eddyb> I know I am going to fall asleep and I'll wake up to it being stale
+[05:44:23] *** Quits: aatch (james@moz-i1k1ks.tlms.2o1v.e006.2406.IP) (Connection closed)
+[05:44:56] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[06:25:22] <eddyb> > 1018 matches found for '.repr()'
+[06:25:23] * eddyb dies
+[06:41:07] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[07:32:44] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[07:49:34] *** Joins: doener_ (bs@moz-3ajdi1.fixip.bitel.net)
+[07:49:39] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[08:03:50] *** Quits: doener_ (bs@moz-3ajdi1.fixip.bitel.net) (Quit: leaving)
+[08:31:57] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[09:03:15] *** Joins: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se)
+[09:45:21] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Ping timeout: 121 seconds)
+[10:01:25] *** Joins: globin (globin@moz-isrgf8.de)
+[10:20:35] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[10:24:13] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Quit: Leaving)
+[10:24:21] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[11:20:21] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Connection closed)
+[11:21:38] *** Joins: laumann (thomas@moz-poa.3kq.109.2.IP)
+[11:29:09] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[11:36:45] *** kimundi is now known as zz_kimundi
+[12:04:16] *** zz_kimundi is now known as kimundi
+[12:27:41] *** Joins: manishea1th (manishearth@moz-uc30rq.anapnea.net)
+[12:28:13] *** kimundi is now known as zz_kimundi
+[12:30:24] *** Quits: Manishearth (manishearth@moz-uc30rq.anapnea.net) (NickServ (RECOVER command used by manishea1th))
+[12:30:24] *** manishea1th is now known as Manishearth
+[12:30:24] *** ChanServ sets mode: +ao Manishearth Manishearth
+[13:34:25] *** zz_kimundi is now known as kimundi
+[13:46:22] *** kimundi is now known as zz_kimundi
+[13:56:56] *** ChanServ sets mode: +o nmatsakis
+[14:11:03] *** Quits: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se) (Ping timeout: 121 seconds)
+[14:27:33] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Quit: Leaving.)
+[14:28:48] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[14:36:09] *** zz_kimundi is now known as kimundi
+[15:19:30] *** Joins: madmalik (uid13697@moz-lfin5p.brockwell.irccloud.com)
+[16:08:56] *** Quits: doener (doener@moz-eku96m.hsi08.unitymediagroup.de) (Connection closed)
+[16:13:46] *** Joins: doener (doener@moz-eku96m.hsi08.unitymediagroup.de)
+[16:32:01] *** Quits: laumann (thomas@moz-poa.3kq.109.2.IP) (Ping timeout: 121 seconds)
+[17:34:01] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Connection closed)
+[17:35:58] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[17:46:04] *** Quits: madmalik (uid13697@moz-lfin5p.brockwell.irccloud.com) (Quit: Connection closed for inactivity)
+[17:55:27] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[17:56:18] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Connection closed)
+[17:59:19] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[18:36:49] *** Quits: oli_obk (smuxi@moz-q7vqj2.clients.your-server.de) (Connection closed)
+[18:49:55] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[18:49:56] *** ChanServ sets mode: +qo brson brson
+[19:32:57] *** Joins: sigma (sigma@moz-uqk2kb.range86-146.btcentralplus.com)
+[19:47:42] *** Quits: blank_name (blank_name@moz-p4egrb.mi.frontiernet.net) (Quit: leaving)
+[19:48:53] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Connection closed)
+[19:49:30] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[19:49:30] *** ChanServ sets mode: +qo brson brson
+[19:49:38] *** Joins: blank_name (blank_name@moz-p4egrb.mi.frontiernet.net)
+[20:14:05] *** Quits: sigma (sigma@moz-uqk2kb.range86-146.btcentralplus.com) (Ping timeout: 121 seconds)
+[21:00:48] *** Joins: arielb1 (Ariel@moz-1uf694.red.bezeqint.net)
+[21:14:04] <eddyb> brson: I don't understand the motivation for not backporting gh26038 - will the large DST patch that got into 1.1 get reverted?
+[21:15:10] <brson> eddyb: nmatsakis and nrc discussed some in #rust-internals
+[21:15:12] <eddyb> there is no gating on those coercions in 1.0, so the initial custom DST implementation came with a regression
+[21:15:19] <brson> nmatsakis: ^
+[21:15:28] <eddyb> oh this is #rustc
+[21:15:31] <eddyb> oops!
+[21:15:45] <nrc> the question is whether a regression can justify the risk of a backport
+[21:15:55] <nrc> in general, I'd say no
+[21:16:07] <nrc> we want that 6 weeks baking on beta for reassurance
+[21:16:19] <nrc> regression in terms of what compiles
+[21:16:23] <nrc> not an ICE, obvs
+[21:16:29] <nrc> also, because its unstable code
+[21:16:31] <nmatsakis> the regression seems to me to be more theoretical than realistic -- I guess that's the key question
+[21:16:41] <nrc> if it were stable, then the risk would be justified
+[21:16:51] <eddyb> nrc: no part of it requires unstable code
+[21:17:51] <eddyb> RefCell<Unsized> wasn't in 1.0 so it's not that big of an issue, but anyone can create such structures in stable code
+[21:18:16] <nrc> but to be able to coerce they need to implement CoerceUnsized, which is unstable, right?
+[21:18:21] <eddyb> nrc: no
+[21:18:33] <eddyb> &Struct<T> to &Struct<Trait> is in 1.0
+[21:18:48] <eddyb> nrc: see the linked testcase https://github.com/rust-lang/rust/pull/26038#issuecomment-112977198
+[21:19:10] <eddyb> I wouldn't mind it if it was unstable-only
+[21:19:54] <nmatsakis> brson: are we testing the 1.1 beta builds regularly against crates.io etc? I know you've been doing regression reports, but is that nightly only?
+[21:19:55] <nrc> yeah, that is kinda annoying
+[21:20:07] <nrc> nmatsakis: does that ^ change you mind?
+[21:20:16] <nmatsakis> well, I was aware of it already
+[21:20:16] <nrc> or still seems theoretical?
+[21:20:26] <nmatsakis> that is, this is the case that still seems to me to be largely unused
+[21:20:30] <nmatsakis> but maybe I am wrong
+[21:20:33] <cmr> nmatsakis: he mentioned a crater test for stable vs beta with no regressions.
+[21:20:39] <cmr> the other day (possibly yesterday)
+[21:20:54] <nmatsakis> that said, the patch is not huge,
+[21:20:59] <nmatsakis> and as I said it only affects this DST path,
+[21:21:08] <eddyb> nmatsakis: it's bugging me because it was my mistake and I put it off for a few weeks thinking it was an unstable-only regression
+[21:21:14] <nmatsakis> so i'm also ok w/ backporting it
+[21:21:20] <nmatsakis> it's kind of right on the edge for me
+[21:21:39] <nrc> me too
+[21:23:03] * nmatsakis goes to re-read the patch
+[21:23:45] <nrc> I think I'd still rather pass - I can't justify to myself that the patch is definitely low risk, the path it is on *could* be hit some how and we make use of DST in the std libs
+[21:23:56] <brson> nmatsakis: i've been testing the betas. there are suspiciously no regressions vs 1.0
+[21:23:56] <nrc> the regression is annoying though
+[21:24:15] <brson> nmatsakis: i'll do another tomorrow once the new beta is out
+[21:24:55] <nmatsakis> nrc: the patch does feel slightly nontrivial to me
+[21:24:57] <eddyb> brson: do you happen to have the crates that don't compile split into "errors on unstable API" vs "special build-time needs"?
+[21:25:14] <brson> eddyb: sadly no
+[21:25:56] <nrc> nmatsakis: yeah, I'd be happy to backport half way through the cycle, but doing so now makes me a tad nervous
+[21:26:21] <nmatsakis> nrc: exactly
+[21:27:59] <eddyb> well, if anyone asks, you know who to blame :P
+[21:28:54] <nmatsakis> fair enough
+[21:29:07] <nmatsakis> brson: "suspiciously" -- are you coming not to trust crater/
+[21:30:00] <brson> nmatsakis: mostly it's just hard for me to believe *nothing* broke. i have two concerns about what we might be missing
+[21:30:13] <nmatsakis> brson: what's that?
+[21:30:26] <brson> first there are a lot of exceptional conditions that cause crates not to build
+[21:30:53] <brson> second, i only build the latest crates, so i am worried that crate authors are working around our regressions and we're not seeing it
+[21:31:04] <brson> originally i wanted to test *all revisions* of crates, but that's a lot of cpu
+[21:31:34] <brson> i still want to create a fixed test suite from existing code where the test cases never change and never break
+[21:31:46] <brson> hope to poke at that again this summer
+[21:32:01] <brson> nmatsakis: ^
+[21:32:36] <nmatsakis> brson: I see
+[21:32:38] <nmatsakis> interesting
+[21:32:43] <brson> i may start building the latest 4 revs or something
+[21:32:56] <nmatsakis> brson: you could check for revs issued since the last test?
+[21:33:37] <brson> possibly, but easier to just say 'since last month'. there's not a lot of logical continuity between test runs
+[21:33:56] <eddyb> or just try to build the last test's revisions? that seems like a fair comparison. same code, two compilers
+[21:34:09] <nmatsakis> brson: sure.
+[21:56:07] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[22:00:50] <arielb1> how do you construct a DatumBlock for an unreachable expr?
+[22:13:06] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[22:13:35] <eddyb> arielb1: I think the value can be undef
+[22:13:46] <eddyb> doener, aatch: ^^
+[22:14:13] <aatch> what?
+[22:14:53] <aatch> arielb1, I normally construct an undef value of the appropriate type.
+[22:15:04] <arielb1> aatch: thanks
+[22:15:43] <huon> acrichto: from #llvm: "What we've got in-tree [for SEH] is a dead-end"
+[22:17:36] <acrichto> huon: yeah... not the words I wanted to see
+[22:20:34] <brson> huon: is that for 64-bit seh and 32-bit or just the new 32-bit?
+[22:20:53] <doener> huon: ouch
+[22:23:21] <acrichto> brson: looked like basically everything
+[22:23:31] <acrichto> 15:17 < majnemer> We should probably just rip it out
+[22:23:31] <acrichto> 15:17 < majnemer> It's only causing pain.
+[22:25:37] * nmatsakis weeps
+[22:26:13] <nrc> :-(
+[22:39:40] <huon> brson: no idea
+[22:40:02] <huon> <majnemer> We are working on a new approach.  We need a bunch more new IR instructions.
+[22:48:56] <eddyb> rust-highfive is trying too hard :P
+[22:52:18] <eddyb> nrc: did you consider the case where a PR is created with an assignee? I've used r? @foo in the PR message in the past but now I noticed there's actually an option to pick someone when you create the PR
+[22:53:50] <nrc> yeah, highfive doesn't like that. It probably should handle that case
+[22:53:55] <nrc> s/probably//
+[23:08:45] *** Joins: geofft (geofft@moz-i01917.mit.edu)
+[23:10:01] *** Quits: arielb1 (Ariel@moz-1uf694.red.bezeqint.net) (Quit: Ex-Chat)
+[23:14:58] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[23:17:20] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[23:44:16] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Ping timeout: 121 seconds)

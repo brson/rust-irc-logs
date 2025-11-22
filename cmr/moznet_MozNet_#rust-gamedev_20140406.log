@@ -1,0 +1,736 @@
+[00:00:57] <gavinb> cool, that’s mucho importante
+[00:01:07] <bjz> now a non-sharable glfw object is returned that you call the non-threadsafe functions off
+[00:01:47] <bjz> windows are also non-sharable, but you can split off a shared context thing for multithreaded rendering
+[00:01:55] <bjz> I would check out the examples
+[00:02:33] <bjz> I think we have almost converged on an API that I am reasonably happy with
+[00:02:59] *** Joins: doomlord_ (servitor@moz-56F8DA57.range86-148.btcentralplus.com)
+[00:03:07] <bjz> I am just figuring out how to do the error and monitor callbacks better
+[00:03:53] <bjz> I think I have one that is good, but I'm perfecting it before I send the PR
+[00:06:44] <bjz> gavinb: let me know if you have any more issues with glfw-rs
+[00:08:28] <bjz> gavinb: I would also check out the PRs if you want to see the stuff that changed: https://github.com/bjz/glfw-rs/pulls?direction=desc&page=1&sort=created&state=closed
+[00:08:54] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[00:10:34] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Ping timeout)
+[00:12:56] <gavinb> Right, I was going to ask you about the error hanlding - it seems to have the previous interface style, unlike the newer I/O mechanism?
+[00:15:00] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[00:16:44] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[00:20:50] <bjz> gavinb: I'm thinking of moving back to a callback style thing again to allow for bringing down the task immediately on failure
+[00:21:14] <bjz> that was something larsberg was concerned about for servo
+[00:22:37] <bjz> something like: pub fn init<UserData: 'static>(callback: Option<(extern "Rust" fn(ErrorArgs, &UserData), UserData)>) -> Result<Glfw, InitError>
+[00:23:51] <huon> (don't need the `extern "Rust"` bit, can just write `fn(...)`, btw.)
+[00:23:59] <bjz> oh
+[00:24:13] <bjz> coolies
+[00:24:22] <gavinb> Do we still need the: glfw::start(proc() {…} startup ?
+[00:24:29] <bjz> nope
+[00:25:37] <bjz> I would have some default error handlers, so you could have: let glfw = glfw::init(glfw::FAIL_ON_ERRORS).unwrap();
+[00:45:23] <gavinb> And swap_buffers() is no longer on the window; have to create a context first?
+[00:46:31] <gavinb> Just FYI the code example at the top of lib.rs is out of date now.
+[00:47:46] <bjz> gavinb: oh, you need to import the glfw::Context trait
+[00:48:00] <bjz> hmm, really?
+[00:48:05] <bjz> what is wrong?
+[00:48:27] <gavinb> line 56 - window.swap_buffers()
+[00:49:05] <bjz> that is fine...?
+[00:49:59] <gavinb> oops no ok, with the use glfw::Context it’s ok.
+[00:59:28] <bjz> gavinb: :)
+[00:59:54] * bjz wonders if a trait is really necessary there
+[01:00:29] <bjz> can't really think of a use case for it
+[01:00:33] <bjz> hmm
+[01:00:35] <bjz> wait
+[01:01:03] <bjz> I guess if you wanted to make a polymorphic function over Contexts
+[01:02:34] <gavinb> So the move away from the static fns to methods on a glfw instance was for thread safety? It’s acting as a context?
+[01:02:42] <bjz> yes
+[01:03:14] <bjz> people could get away with murder before :P
+[01:04:26] <gavinb> Well that’s just not cricket!
+[01:06:25] <gavinb> Ok well I got it compiling now - but window creation fails...
+[01:09:43] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[01:11:03] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Connection reset by peer)
+[01:11:30] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[01:13:10] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Ping timeout)
+[01:14:35] <gavinb> glfw::get_version_string() returns a valid/correct string.
+[01:15:12] <bjz> is there an error?
+[01:15:20] *** Joins: jaras (textual@1CDC5701.A48867D7.52E4E107.IP)
+[01:15:42] <gavinb> Well just “'Failed to create GLFW window.’” from expect()
+[01:15:47] <gavinb> How do I get more info?
+[01:16:04] <bjz> glfw::fail_on_error(&errors);
+[01:16:14] <gavinb> My startup code is basically the same as examples/events.rs
+[01:16:17] <gavinb> Got that
+[01:16:31] <bjz> do that before you unwrap it
+[01:16:48] <bjz> that's why I'm thinking I'll move back to a callback approach
+[01:16:52] <gavinb> It’s way before.
+[01:17:01] <bjz> but cleaner than before
+[01:17:37] <gavinb> I mean I have fail_on_error() before create_window() which fails
+[01:17:51] <bjz> well, you need to check to see if there are any errors after you create the window
+[01:18:47] <gavinb> Oh that’s what you meant by callbacks - I thought fail_on_error() set up some kind of handler. Ok...
+[01:19:39] <bjz> maybe I should do something like:
+[01:19:41] <bjz>     let (window, events) = glfw.create_window(...).expect({
+[01:19:41] <bjz>         glfw::fail_on_error(&errors);
+[01:19:41] <bjz>         "Failed to create GLFW window."
+[01:19:41] <bjz>     })
+[01:19:44] <bjz> in the examples
+[01:20:04] <bjz> it just returns a reciever at the moment
+[01:20:12] <gavinb> Oh so errors is a persistent thing to read errors from?
+[01:20:18] <bjz> unfortunately we don't have linked task failuer :(
+[01:20:35] <bjz> yeh..
+[01:20:41] <bjz> pub fn init() -> Result<(Glfw, Receiver<Error>), InitError>
+[01:20:48] <bjz> ^ it returns a reciever
+[01:21:02] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[01:21:03] <bjz> if we had linked task failure then you could spool up a task
+[01:21:10] <bjz> that handled the errors
+[01:21:23] <bjz> but linked task failure was removed :(
+[01:21:27] *** Quits: jaras (textual@1CDC5701.A48867D7.52E4E107.IP) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[01:21:41] <bjz> larsberg says it might be restored in a limited way in the future though
+[01:21:50] <gavinb> ah ok, got the error now - yay
+[01:21:58] <gavinb> Invalid OpenGL version 2.3 requested
+[01:22:07] <bjz> what platform?
+[01:22:10] <gavinb> But - I requested 3.2, and it worked before
+[01:22:15] <gavinb> Mac OS X
+[01:22:21] <larsberg> bjz: yeah, though some of that might be wishful thinking unless I can come up with something that isn't as complicated as full linked task failure was for the runtime team :-)
+[01:22:22] <gavinb>     glfw.window_hint(glfw::ContextVersionMajor(3));
+[01:22:22] <gavinb>     glfw.window_hint(glfw::ContextVersionMinor(2));
+[01:22:32] <bjz> did you set up the forward compatible stuff first?
+[01:22:53] <bjz> I should have an example for that
+[01:22:56] <gavinb> First, before what? It’s currently after these other hints, but it is set before the window_create
+[01:23:00] <bjz> osx is pretty finicky
+[01:23:08] <bjz> you need more hints
+[01:24:10] <gavinb> Okay - can you give me a hint which other hints I need? :P
+[01:24:26] <bjz> just a sec
+[01:24:30] <bjz> getting it
+[01:24:32] <gavinb> This worked fine before with the same hints
+[01:24:57] <bjz> glfw::ContextVersion(3, 2), glfw::OpenGLProfile(glfw::OpenGlCoreProfile), glfw::OpenGlForwardCompat(true)
+[01:25:09] <bjz> should be the hints
+[01:25:32] <bjz> because OS X doesn't support the deprecated stuff between 2.3 and 3.2
+[01:27:13] <gavinb> got those
+[01:27:26] <bjz> larsberg: could you check https://github.com/bjz/glfw-rs/pull/132 ?
+[01:27:27] <gavinb> although - I have the version specifiied in separate Major/Minor
+[01:28:04] <gavinb> ok cool, that worked
+[01:28:26] <gavinb> I had to use ContextVersion() rather than separate Major/Minor hints.
+[01:28:35] <bjz> OHHHHH HAHA
+[01:29:17] <bjz> the implementation of window_hint is wrong
+[01:29:32] *** Quits: onelson (owen@18CF7301.95770028.5B6BFE7D.IP) (Ping timeout)
+[01:29:50] <gavinb> Major -> minor, Minor -> Major :)
+[01:30:07] <bjz>             ContextVersionMajor(major)      => unsafe { ffi::glfwWindowHint(ffi::CONTEXT_VERSION_MAJOR, major as c_int) },
+[01:30:07] <bjz>             ContextVersionMinor(minor)      => unsafe { ffi::glfwWindowHint(ffi::CONTEXT_VERSION_MINOR, minor as c_int) },
+[01:30:18] <larsberg> bjz: I'll have to get that either tomorrow or Monday. It's saturday night my time and I don't have much more concentration available than the tiny amount required to edit this imovie ("the dramatic retelling of ACID2: a layout love story")
+[01:30:27] <bjz> should be line 475 and 476
+[01:30:35] <bjz> larsberg: sure no
+[01:30:41] <bjz> problem
+[01:30:56] <bjz> haha
+[01:31:07] <bjz> gavinb: does that work?
+[01:31:14] <gavinb> Yup!
+[01:32:17] <bjz> gavinb: does the combined hint work too?
+[01:33:05] <bjz> https://github.com/bjz/glfw-rs/pull/133
+[01:33:13] <gavinb> testing
+[01:33:18] <bjz> gavinb: ty so much btw
+[01:33:31] <bjz> was abit stupid that one
+[01:33:51] <bjz> I'm guessing most folks would normally use the combined version hint
+[01:34:06] <gavinb> Yup both work now
+[01:34:11] *** Joins: erickt (erickt@B91004E7.345B955C.2321E71E.IP)
+[01:34:19] <bjz> yay!
+[01:35:03] <bjz> gavinb: could you paste me a copy of your current hints that work?
+[01:35:11] <gavinb> yup
+[01:35:39] <bjz> ty!
+[01:35:47] <gavinb> sure, np
+[01:36:07] <gavinb> I’m trying to get this ready to stick on github so you can have a look.
+[01:36:38] *** Quits: erickt (erickt@B91004E7.345B955C.2321E71E.IP) (Ping timeout)
+[01:37:16] <bjz> <3
+[01:39:32] *** Joins: erickt (erickt@B91004E7.345B955C.2321E71E.IP)
+[01:40:20] <bjz> gavinb: are you on mavericks?
+[01:40:24] <gavinb> yes
+[01:43:53] *** kimundi is now known as zz_kimundi
+[01:47:40] *** Quits: Tobba (Tobba@moz-462B7F7F.ias.bredband.telia.com) (Ping timeout)
+[01:54:31] <bjz> gavinb: what do you think? https://github.com/bjz/glfw-rs/pull/134/files
+[01:55:29] <gavinb> even more betterer
+[01:58:41] *** Joins: jensnockert (jensnocker@moz-33279404.customers.ownit.se)
+[02:00:26] *** Quits: jensnockert (jensnocker@moz-33279404.customers.ownit.se) (Ping timeout)
+[02:12:05] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Ping timeout)
+[02:12:12] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[02:13:54] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Ping timeout)
+[02:16:13] <gavinb> bjz: ok well here is a very rough first cut of Mandelrust - https://github.com/gavinb/mandelrust
+[02:22:24] <bjz> haha, pyramid of doom at maybe_update_display :D
+[02:23:57] <bjz> looks cool!
+[02:24:03] <bjz> :)
+[02:24:19] <bjz> you should post it to /r/rust
+[02:24:34] <bjz> (when you think it is ready)
+[02:30:34] *** Quits: zz_kimundi (kimundi@moz-79C0736A.dip0.t-ipconnect.de) (Ping timeout)
+[02:34:37] *** Joins: zz_kimundi (kimundi@moz-6DDBA147.dip0.t-ipconnect.de)
+[02:34:38] *** zz_kimundi is now known as kimundi
+[02:35:56] *** Joins: Rym (y@6DFD2870.E01BAB3.51C6DE68.IP)
+[02:36:47] *** Quits: gavinb (gavinb@moz-9EC182F0.lowrp3.vic.optusnet.com.au) (Quit: gavinb)
+[02:43:54] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[02:44:53] *** Quits: Rym (y@6DFD2870.E01BAB3.51C6DE68.IP) (Ping timeout)
+[02:46:08] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[02:47:53] *** Joins: Rym (y@6DFD2870.E01BAB3.51C6DE68.IP)
+[02:51:40] *** Quits: doomlord_ (servitor@moz-56F8DA57.range86-148.btcentralplus.com) (Ping timeout)
+[02:52:22] *** Quits: Rym (y@6DFD2870.E01BAB3.51C6DE68.IP) (Ping timeout)
+[02:58:18] *** Joins: gavinb (gavinb@moz-9EC182F0.lowrp3.vic.optusnet.com.au)
+[02:58:34] *** Joins: jaras (textual@1CDC5701.A48867D7.52E4E107.IP)
+[02:59:23] <gavinb> bjz: d’oh - disconnected while off making a cuppa joe
+[02:59:27] <gavinb> what did I miss? :)
+[03:00:59] <o11c> nothing
+[03:02:34] <gavinb> ok, cool
+[03:03:22] <gavinb> bjz: what did you mean by “pyramid of doom” ?
+[03:06:59] <gavinb> oh - I’m guessing the indendation? :-P Yeah well there’s plenty of things to tidy…
+[03:11:13] *** Quits: jaras (textual@1CDC5701.A48867D7.52E4E107.IP) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[03:11:17] *** Joins: jaras (textual@1CDC5701.A48867D7.52E4E107.IP)
+[03:12:58] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[03:13:55] *** Quits: jaras (textual@1CDC5701.A48867D7.52E4E107.IP) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[03:14:38] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Ping timeout)
+[03:22:08] *** Joins: Rym (y@6DFD2870.E01BAB3.51C6DE68.IP)
+[03:25:54] *** Quits: gavinb (gavinb@moz-9EC182F0.lowrp3.vic.optusnet.com.au) (Quit: gavinb)
+[03:27:03] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[03:28:41] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[03:38:19] *** Quits: Rym (y@6DFD2870.E01BAB3.51C6DE68.IP) (Ping timeout)
+[03:43:17] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[03:43:28] *** Quits: janra (Janus@1CDC5701.A48867D7.52E4E107.IP) (Ping timeout)
+[03:59:28] *** Joins: jensnockert (jensnocker@moz-33279404.customers.ownit.se)
+[04:01:15] *** Quits: jensnockert (jensnocker@moz-33279404.customers.ownit.se) (Ping timeout)
+[04:06:39] *** Joins: Jaipradeesh (jaipradees@57708F5B.398637DD.A76F6622.IP)
+[04:08:08] *** Joins: Rym (y@6DFD2870.E01BAB3.51C6DE68.IP)
+[04:13:43] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[04:14:21] *** Quits: Rym (y@6DFD2870.E01BAB3.51C6DE68.IP) (Ping timeout)
+[04:15:24] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Ping timeout)
+[04:16:00] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[04:17:33] *** Joins: Rym (y@6DFD2870.E01BAB3.51C6DE68.IP)
+[04:18:20] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[04:20:10] *** Quits: Jaipradeesh (jaipradees@57708F5B.398637DD.A76F6622.IP) (Connection reset by peer)
+[04:20:12] *** Joins: Jaipradeesh (jaipradees@57708F5B.398637DD.A76F6622.IP)
+[04:23:16] *** Quits: Rym (y@6DFD2870.E01BAB3.51C6DE68.IP) (Ping timeout)
+[04:23:39] *** Joins: Rym (y@6DFD2870.E01BAB3.51C6DE68.IP)
+[04:35:14] *** Quits: Rym (y@6DFD2870.E01BAB3.51C6DE68.IP) (Ping timeout)
+[04:39:04] *** Joins: Rym (y@6DFD2870.E01BAB3.51C6DE68.IP)
+[04:55:45] *** Quits: Rym (y@6DFD2870.E01BAB3.51C6DE68.IP) (Ping timeout)
+[04:56:15] *** Joins: Rym (y@6DFD2870.E01BAB3.51C6DE68.IP)
+[04:59:31] *** Quits: canhtak (canhtak@moz-641FE58F.wl.t.ulaval.ca) (Quit: canhtak)
+[05:12:31] *** Joins: whitglint (uid15486@moz-31ABA2C0.irccloud.com)
+[05:14:29] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[05:16:09] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Ping timeout)
+[05:19:23] *** Quits: Jaipradeesh (jaipradees@57708F5B.398637DD.A76F6622.IP) (Ping timeout)
+[05:25:48] *** Quits: Rym (y@6DFD2870.E01BAB3.51C6DE68.IP) (Ping timeout)
+[05:53:51] *** Quits: rusti (rusti@moz-61B073BC.cpe.net.cable.rogers.com) (Ping timeout)
+[05:53:51] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[05:54:03] *** Quits: rustilite (rustilite@moz-61B073BC.cpe.net.cable.rogers.com) (Ping timeout)
+[05:55:27] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[06:00:15] *** Joins: jensnockert (jensnocker@moz-33279404.customers.ownit.se)
+[06:01:58] *** Quits: jensnockert (jensnocker@moz-33279404.customers.ownit.se) (Ping timeout)
+[06:06:11] *** Joins: ozkriff (Mibbit@D803906A.389F1DB8.D5F347E6.IP)
+[06:15:14] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[06:16:06] *** Quits: jeaye (jeaye@moz-34FEF2BB.hsd1.ca.comcast.net) (Quit: zzz)
+[06:16:56] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Ping timeout)
+[06:32:25] *** Joins: lurk_ (chatzilla@moz-F088D030.hsd1.in.comcast.net)
+[06:43:21] *** Quits: ofeldt- (ofeldt@moz-82728033.dip0.t-ipconnect.de) (Ping timeout)
+[06:43:25] *** Joins: ofeldt (ofeldt@moz-C0C8BFC5.dip0.t-ipconnect.de)
+[06:55:20] *** Joins: Jaipradeesh (jaipradees@57708F5B.398637DD.A76F6622.IP)
+[06:55:51] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[07:12:42] *** Quits: Jaipradeesh (jaipradees@57708F5B.398637DD.A76F6622.IP) (Ping timeout)
+[07:40:41] *** Quits: luzie (lu.cy@moz-CD18B14B.customer.cdi.no) (Input/output error)
+[07:40:48] *** Joins: luzie (lu.cy@moz-CD18B14B.customer.cdi.no)
+[07:41:12] *** Joins: Jaipradeesh (jaipradees@57708F5B.398637DD.A76F6622.IP)
+[07:45:11] *** Quits: Jaipradeesh (jaipradees@57708F5B.398637DD.A76F6622.IP) (Ping timeout)
+[08:01:03] *** Joins: jensnockert (jensnocker@moz-33279404.customers.ownit.se)
+[08:02:30] *** Quits: glennsl (textual@moz-5D7B804F.getinternet.no) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[08:02:50] *** Quits: jensnockert (jensnocker@moz-33279404.customers.ownit.se) (Ping timeout)
+[08:03:33] *** Quits: lurk_ (chatzilla@moz-F088D030.hsd1.in.comcast.net) (Quit: ChatZilla 0.9.90.1-rdmsoft [XULRunner 22.0/20130619132145])
+[08:17:36] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[08:19:56] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[09:04:05] <bjz> ozkriff: ping
+[09:07:16] *** Joins: Jaipradeesh (jaipradees@C0A42666.6E5E1D58.5785B5AF.IP)
+[09:13:12] *** Quits: ozkriff (Mibbit@D803906A.389F1DB8.D5F347E6.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[09:16:22] *** Quits: erickt (erickt@B91004E7.345B955C.2321E71E.IP) (Ping timeout)
+[09:20:50] *** Quits: Jaipradeesh (jaipradees@C0A42666.6E5E1D58.5785B5AF.IP) (Ping timeout)
+[09:27:52] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[09:29:40] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[09:45:41] *** Joins: doomlord_ (servitor@moz-56F8DA57.range86-148.btcentralplus.com)
+[09:47:58] *** Joins: nielsle (nielsle@moz-C46DA772.boa.fiberby.dk)
+[09:50:24] *** Quits: doomlord_ (servitor@moz-56F8DA57.range86-148.btcentralplus.com) (Quit: Leaving)
+[09:53:47] *** Joins: Jaipradeesh (jaipradees@57708F5B.398637DD.A76F6622.IP)
+[09:59:52] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Client exited)
+[10:00:52] *** Joins: Tobba (Tobba@moz-462B7F7F.ias.bredband.telia.com)
+[10:01:50] *** Joins: jensnockert (jensnocker@moz-33279404.customers.ownit.se)
+[10:03:39] *** Quits: jensnockert (jensnocker@moz-33279404.customers.ownit.se) (Ping timeout)
+[10:04:02] *** Joins: ozkriff (Mibbit@D803906A.389F1DB8.D5F347E6.IP)
+[10:05:58] <ozkriff> bjz: Hi :)
+[10:06:26] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[10:08:19] <bjz> ozkriff: r? https://github.com/bjz/glfw-rs/pull/132
+[10:10:59] <bjz> ozkriff cmr larsberg: https://gist.github.com/bjz/3b43e7e9d5791e237351
+[10:12:00] <bjz> note that you can use any type for the user data
+[10:12:21] <bjz> pub type ErrorCallback<UserData> = Callback<fn(Error, ~str, &UserData), UserData>;
+[10:13:02] <bjz> (not just a Cell<uint>
+[10:13:04] <bjz> )
+[10:15:01] <bjz> the monitor callback will be handled the same way
+[10:19:03] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[10:20:47] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[10:24:52] <ozkriff> bjz: Hmmm, looks ok to me
+[10:30:23] *** Quits: Jaipradeesh (jaipradees@57708F5B.398637DD.A76F6622.IP) (Ping timeout)
+[10:30:29] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[10:32:09] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Ping timeout)
+[10:36:27] <bjz> ozkriff: could you acknowledge on the PR?
+[10:36:46] <bjz> I will wait for cmr and larsberg to look as well, however
+[10:39:25] *** Joins: gavinb (gavinb@moz-9EC182F0.lowrp3.vic.optusnet.com.au)
+[10:39:40] <silven> bjz: what's the state of gl-rs? I cant get the examples to work and my own code doesnt work either with it
+[10:40:10] <cmr> silven: what problems are you having?
+[10:40:59] <silven> "gl::load_with(|s| glfw.get_proc_address(s));" does nothing, everything claims it hasn't been loaded
+[10:41:12] <silven> And the examples complains about some link args attribute
+[10:41:52] *** Joins: doomlord_ (servitor@moz-56F8DA57.range86-148.btcentralplus.com)
+[10:43:50] <ozkriff> bjz: looks like I was wrong)
+[10:43:54] <bjz> silven: I'll have to update those examples
+[10:44:29] <bjz> silven: sirry - they are not currently covered by travis-ci, so they have got way behind
+[10:44:57] <bjz> silven: are you calling gl::load_with *after* you make a context current?
+[10:46:05] <ozkriff> bjz: May be examples should be added to travis.yml?
+[10:46:18] <bjz> ozkriff: yep
+[10:46:36] <bjz> ozkriff: just haven't got around to it yet :(
+[10:46:50] <bjz> horrible lazy bjz :(
+[10:47:55] <silven> bjz: I seem to have missed that
+[10:48:24] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[10:48:26] <bjz> silven: sorry for the examples being out of date :[
+[10:48:36] <silven> But the error I got said ClearColor hadn't been loaded, not that the context wasnt current so I got confused
+[10:48:44] <bjz> cmr: what do you mean by a 'global atomic'?
+[10:48:53] <silven> bjz: It's okey, thank you for the help
+[10:49:10] <bjz> silven: it's better a task failure than having a segfault xD
+[10:50:00] <cmr> bjz: `static mut INITIALIZED: AtomicBool = INIT_ATOMIC_BOOL;
+[10:50:03] <cmr> http://static.rust-lang.org/doc/master/std/sync/atomics/index.html
+[10:50:24] <huon> cmr: that'll be hard to get non-racy
+[10:50:38] <cmr> huon: well it's incorrect without it, so...
+[10:50:45] <huon> is there a problem with just using sync::one::Once
+[10:50:46] <bjz> huon: we are discussing https://github.com/bjz/glfw-rs/pull/132/files
+[10:50:57] <cmr> huon: it needs to be allowed to happen more than once
+[10:51:20] <huon> cmr: oh, because it can be deinitialized?
+[10:51:20] <bjz> cmr: unfortunately there is no way to determine if we are on the main thread
+[10:51:24] <bjz> :(
+[10:51:37] <bjz> cmr: otherwise I would use that and it would be fine
+[10:51:43] <cmr> huon: no, because initialization can fail and be retried with different options.
+[10:51:52] <huon> cmr: I see
+[10:52:05] <huon> does Once have a reset?
+[10:52:46] <bjz> doesn't seem so
+[10:53:01] <huon> look at the implementation of Once for a correct way to single time initialization, it's certainly much more complicated than a single atomic boolean
+[10:53:03] *** Joins: Jaipradeesh (jaipradees@6DC072C1.AC65468.E28C2422.IP)
+[10:53:13] <bjz> yeah, I have had a glance
+[10:53:23] <huon> since it's ensuring that two threads don't stomp on each other doing the initialization
+[10:53:26] <bjz> pretty crazy
+[10:53:37] <huon> Eridius has a PR that simplifies it
+[10:54:06] <huon> https://github.com/mozilla/rust/pull/13351
+[10:54:20] * bjz wishes there was a MainThread token that could be supplied the the function given to native::start
+[10:54:46] <huon> but you probably need/want something like that where the closure returns Result<>, and it only cleans up when the return value is Ok
+[10:54:49] <bjz> but acrichto was against it :(
+[10:55:00] <huon> (well, I guess returning bool would be fine too)
+[10:55:55] <bjz> so... what should I do in the interum? put a big warning in the comment?
+[10:55:57] <bjz> :P
+[10:57:20] * bjz hates that idea
+[10:58:52] *** Quits: doomlord_ (servitor@moz-56F8DA57.range86-148.btcentralplus.com) (Connection reset by peer)
+[11:01:17] <cmr> do nothing.
+[11:01:31] <cmr> incorrect is worse than slightly-less-useful.
+[11:02:38] <bjz> cmr: 'do nothing' meaning don't merge?
+[11:02:55] <cmr> yes.
+[11:03:01] <bjz> cool
+[11:03:06] <bjz> ty!
+[11:03:20] <cmr> some sort of resettable Once would be usefl.
+[11:04:53] <pnkfelix> so I'm pretty happy with the progress I'm making using gl-rs
+[11:05:00] <bjz> pnkfelix: awesome!
+[11:05:10] <huon> cmr, bjz: https://github.com/mozilla/rust/issues/13357
+[11:05:16] <pnkfelix> but I am curious: it is (deliberately) a raw wrapper around the C style interface
+[11:05:22] <huon> pnkfelix: out of interest, what are you working on? :)
+[11:05:30] <bjz> huon: cheers!
+[11:05:41] <pnkfelix> is there a higher level layer that tries to provide rust-ic style versions of the same fcns?
+[11:05:48] <bjz> pnkfelix: it is deliberately as raw as it gets 
+[11:05:55] <cmr> pnkfelix: I have https://github.com/cmr/hgl-rs
+[11:06:01] <pnkfelix> huon: I've always had an interest in 3d graphics, for longer than I've been programming
+[11:06:02] * cmr updates it quickly
+[11:06:21] <pnkfelix> huon: so i like to play with (re-)learning it when I have spare time
+[11:06:30] <bjz> pnkfelix: as I said before I am planning on adding some very thing wrapper functions like those included with opengles, in an optional crate
+[11:06:46] <pnkfelix> huon: e.g. when I was in high school I made animations using caligari truSpace
+[11:06:58] <bjz> pnkfelix: but only a subset of the functions, and not as high level as hgl
+[11:07:04] <pnkfelix> bjz: ah okay, I wasn't sure what sort of wrappers you were thinking
+[11:07:18] <pnkfelix> bjz: are you tqlking about putting them into gl-rs, or into a different crate ?
+[11:07:29] <huon> pnkfelix: oh, awesome
+[11:07:35] <bjz> pnkfelix: different crate I was thinking
+[11:07:52] <bjz> pnkfelix: or maybe have a cfg - I dunno
+[11:08:04] <pnkfelix> huon: by random chance, I took my first Compilers class the same semester I took my first 3d graphics class
+[11:08:17] <pnkfelix> huon: and I was instantly hooked on PL
+[11:08:29] <pnkfelix> bjz: okay.
+[11:08:42] <huon> but with Rust, you can PL while you graphics! \o/
+[11:08:51] <cmr> pnkfelix: hgl updated, works with master.
+[11:08:59] <pnkfelix> cmr: I'll have to look at hgl
+[11:09:02] <bjz> pnkfelix: but I'm trying to create a base from which many different developers can build on. including those who want to work on their own engines
+[11:09:12] <pnkfelix> cmr: does it wrap around gl-rs, or does it stand on its own ?
+[11:09:18] <cmr> pnkfelix: wraps gl-rs of course.
+[11:09:19] <pnkfelix> cmr: or neither ?
+[11:09:22] <pnkfelix> cmr: Okay
+[11:09:32] <pnkfelix> huon: yes exactly
+[11:09:36] <pnkfelix> huon: very exciting
+[11:09:42] <cmr> gl-rs is just bindings to GL, I'm opposed to it becoming anything but that.
+[11:09:52] <bjz> cmr: agreed
+[11:10:01] <pnkfelix> cmr: yes I agree with that too
+[11:10:13] <bjz> cmr: I think I need to label it more clearly though
+[11:10:25] <bjz> stating that as a goal
+[11:10:50] <bjz> huon: I was doing that, but ended up spending more time on PL stuff and libraries than actual graphics stuff x)
+[11:11:07] <huon> bjz: hahaha <3
+[11:12:14] <bjz> huon: back in 2012 I was like, wo this Rust language looks like it be cool for gamedev.... wait... no libs...  some time passes...
+[11:12:26] <huon> bjz: and now there are libs
+[11:12:32] <bjz> master yak shaver
+[11:12:38] <huon> all you had to do is write them yourself :P
+[11:12:46] <bjz> indeed
+[11:12:51] <bjz> somebody has to do it
+[11:13:15] <huon> well, you're probably the person with the most experience in writing GL libs in Rust... in the whole universe
+[11:13:26] <bjz> eh, but not actually GL
+[11:13:28] <bjz> :D
+[11:13:31] * huon gives bjz a medal
+[11:13:54] * huon is an outsider, and doesn't know all the fancy-schmancy gamedev jargon :P
+[11:15:16] *** Joins: erickt (erickt@B91004E7.345B955C.2321E71E.IP)
+[11:15:30] <bjz> cmr probably knows more about GL than me
+[11:16:18] <bjz> I just did the silly generator business (thank god for the xml spec)
+[11:26:37] <Tobba> anyone here know how to get visual styles working in windows
+[11:26:42] *** Quits: erickt (erickt@B91004E7.345B955C.2321E71E.IP) (Ping timeout)
+[11:26:43] <Tobba> I've done everything with manifests but its still screwed up
+[11:29:55] <bjz> huon: I wish doit was a once fn :(
+[11:30:08] <huon> bjz: Option dance
+[11:30:27] <bjz> I have: Option<ErrorCallback<UserData>>
+[11:30:40] <bjz> I want to do this inside doit
+[11:30:41] <bjz>         match callback {
+[11:30:41] <bjz>             Some(f) => callbacks::error::set(f),
+[11:30:42] <bjz>             None    => callbacks::error::unset(),
+[11:30:42] <bjz>         }
+[11:31:00] <huon> let mut callback = Some(callback); outside
+[11:31:06] <huon> then `match callback.take() { ... }`
+[11:31:08] <huon> inside
+[11:31:19] <bjz> ah
+[11:31:47] <huon> I guess you can 
+[11:32:18] <huon> ... also, do something like `if callback.is_some() { callbacks::error::set(callback.take()) } else { callbacks::error::unset() }`
+[11:32:36] <huon> (where `callback` is the same as you have now, i.e. just one layer of options)
+[11:33:13] <huon> there's probably a way to do it without the .is_some call
+[11:33:33] <huon> oh, wait
+[11:33:44] <huon> callback.take() is exactly what you want
+[11:33:56] * huon thought it returned T, but it actually returns Option<T>
+[11:35:00] <huon> i.e. just have a mut callback: Option<ErrorCallback> as you have now, and match on `callback.take() { Some(...) => ..., None => ... }`
+[11:44:11] <bjz> cmr: https://github.com/bjz/glfw-rs/pull/136
+[11:44:53] <bjz> huon: that's what I did: https://github.com/bjz/glfw-rs/blob/callbacks/src/lib/lib.rs#L407-L419
+[12:00:18] *** Quits: nielsle (nielsle@moz-C46DA772.boa.fiberby.dk) (Ping timeout)
+[12:00:25] <cmr> bjz: looks good
+[12:02:37] *** Joins: jensnockert (jensnocker@moz-33279404.customers.ownit.se)
+[12:04:26] *** Quits: jensnockert (jensnocker@moz-33279404.customers.ownit.se) (Ping timeout)
+[12:06:15] <Tobba> I hate windows stupid-ass dependency tracking
+[12:06:38] <Tobba> I dont want my controls to look like win95 just because its dependency resolver is flipping its shit at me for no reason
+[12:09:01] <bjz> cmr: is it... too crazy?
+[12:09:04] <cmr> bjz: no?
+[12:09:23] <bjz> :P
+[12:12:10] *** Joins: Ferreus (ferreus@moz-3C509473.lsn.wtnet.de)
+[12:13:56] <cmr> bjz: http://www.earslap.com/instruction/recreating-the-thx-deep-note
+[12:18:27] <bjz> cmr: oh goodness... gives me shivers: http://www.uspto.gov/trademarks/soundmarks/74309951.mp3
+[12:19:52] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[12:21:35] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[12:23:11] <gavinb> cmr: great article - very interesting
+[12:23:25] <cmr> the tool looks pretty neat too
+[12:24:19] <gavinb> Reminds me of CSail - used to play around with that years ago.
+[12:26:20] *** Joins: nielsle (nielsle@moz-C46DA772.boa.fiberby.dk)
+[12:29:38] <bjz> cmr: supercollider I think?
+[12:29:43] <cmr> yes
+[12:29:53] * cmr couldn't remember the name, didn't bother to go look back at the article
+[12:30:53] <bjz> photex pointed me to this one - apparently there is a C API that goes with it: http://puredata.info/
+[12:31:05] <gavinb> yes, SuperCollider
+[12:32:17] <bjz> https://www.youtube.com/watch?v=0xr4aL1C24E&feature=youtu.be
+[12:32:54] *** Joins: doomlord_ (servitor@moz-56F8DA57.range86-148.btcentralplus.com)
+[12:37:50] <cmr> dear lord
+[12:38:04] <cmr> I thought it was complex enough just at the toplevel screen
+[12:38:13] <cmr> but then he opens up the individual boxes
+[12:38:19] <cmr> and lo! more boxes!
+[12:39:33] <bjz> yep
+[12:39:38] <bjz> boxes all the way down
+[12:39:51] <bjz> but man it sounds pretty
+[12:40:24] <cmr> yeah :p
+[12:42:50] <bjz> did you see 7:35+?
+[12:43:37] <cmr> and how crazy it is? 
+[12:46:53] *** Joins: rusti (rusti@moz-61B073BC.cpe.net.cable.rogers.com)
+[12:46:57] *** Joins: rustilite (rustilite@moz-61B073BC.cpe.net.cable.rogers.com)
+[12:48:03] *** Quits: gavinb (gavinb@moz-9EC182F0.lowrp3.vic.optusnet.com.au) (Quit: gavinb)
+[12:48:12] <bjz> indeed
+[12:48:23] <cmr> what a crazy tool
+[12:48:34] <cmr> unfortunately audio is no longer my primary interest
+[12:49:07] <cmr> I hope to return to it some day, but other things have my fancy
+[12:49:14] <bjz> yeah
+[12:49:26] <bjz> not enough space in the brain
+[12:49:54] <bjz> I'm sure I could really get into it, but it is just another massive rabbit hole
+[12:50:50] <bjz> sometimes it makes more sense to collaborate on these kinds of things
+[12:50:58] *** Joins: gavinb (gavinb@moz-9EC182F0.lowrp3.vic.optusnet.com.au)
+[12:52:39] <bjz> gavinb: https://github.com/bjz/glfw-rs/pull/136
+[12:52:45] <bjz> gavinb: just fyi
+[12:53:34] <gavinb> bjz: aha - thanks
+[12:54:21] <gavinb> bjz: cool, that seems to make more sense now
+[12:54:31] <bjz> yeah, thought so
+[12:54:47] * bjz just realised that the doc comment for set_error_callback is wrong
+[12:54:55] <bjz> fixing
+[12:55:53] <gavinb> So if you pass in FAIL_ON_ERRORS, it will call fail!(…) and just abort?
+[12:56:06] <bjz> yup
+[12:56:30] <gavinb> user context - nice!
+[12:56:38] <bjz> look at examples/error.rs for a more complex example
+[12:56:52] <bjz> that has some state enclosed
+[12:58:15] *** Joins: canhtak (canhtak@moz-641FE58F.wl.t.ulaval.ca)
+[13:03:16] *** Quits: Jaipradeesh (jaipradees@6DC072C1.AC65468.E28C2422.IP) (Ping timeout)
+[13:05:53] *** Quits: nielsle (nielsle@moz-C46DA772.boa.fiberby.dk) (Ping timeout)
+[13:13:37] <bjz> pnkfelix: btw, you might find this useful: http://notes.underscorediscovery.com/shaders-a-primer/
+[13:13:49] <pnkfelix> bjz: thanks
+[13:14:16] <pnkfelix> bjz: as it turns out, I had a copy of "OpenGL Superbible" 3rd ed in my bookshelf
+[13:14:43] <bjz> does that do the programmable pipeline?
+[13:14:45] <pnkfelix> bjz: which while slightly old, does address shaders in chapters 16 and beyond
+[13:15:09] <pnkfelix> bjz: but first I'm going to finish working through the examples at open.gl
+[13:15:18] <bjz> this one is quite intense, but suposed to be good: http://www.arcsynthesis.org/gltut/
+[13:17:06] <tiffany> me learning opengl was a combination of  being frustrated, shotgun debugging, manual pages, and looking at online tutorials trying to figure out what all of these different things were for
+[13:17:16] <bjz> :)
+[13:18:57] *** Joins: nielsle (nielsle@moz-C46DA772.boa.fiberby.dk)
+[13:19:42] *** Joins: summerlight_ (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[13:19:53] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[13:24:37] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[13:25:54] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[13:30:12] *** Joins: erickt (erickt@B91004E7.345B955C.2321E71E.IP)
+[13:31:36] <cmr> I did a lot of shotgun debugging getting hgl to work
+[13:31:56] <Tobba> I've been shotgun debugging these visual styles for a while
+[13:32:00] <cmr> byte counts here, object counts there, a pointer that's actually an offset here
+[13:32:06] <Tobba> no success so far
+[13:33:02] <cmr> Tobba: is it a problem with color depth? iirc the screenshot you showed looks like what windows look like when I'm playing diablo.
+[13:33:18] <Tobba> I dont think so
+[13:33:30] <Tobba> it just doesnt get the right visual styles applied
+[13:33:34] <Tobba> unless the application freezes
+[13:33:36] <Tobba> then the windows look normal
+[13:33:51] <cmr> lol
+[13:35:41] *** Quits: erickt (erickt@B91004E7.345B955C.2321E71E.IP) (Ping timeout)
+[13:35:43] <Tobba> been trying everything with manifests etc
+[13:37:58] *** Quits: gavinb (gavinb@moz-9EC182F0.lowrp3.vic.optusnet.com.au) (Quit: gavinb)
+[13:42:36] *** Joins: jaras (textual@1CDC5701.A48867D7.52E4E107.IP)
+[14:01:01] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Ping timeout)
+[14:02:10] *** Quits: doomlord_ (servitor@moz-56F8DA57.range86-148.btcentralplus.com) (Ping timeout)
+[14:03:23] *** Joins: jensnockert (jensnocker@moz-33279404.customers.ownit.se)
+[14:05:10] *** Quits: jensnockert (jensnocker@moz-33279404.customers.ownit.se) (Ping timeout)
+[14:09:16] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[14:11:03] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[14:20:15] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[14:22:25] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[14:27:15] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[14:29:23] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[14:29:26] *** Joins: Rym (y@162AAE17.9DB74299.51C6DE68.IP)
+[14:30:48] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Ping timeout)
+[14:34:08] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[14:54:02] *** Quits: Rym (y@162AAE17.9DB74299.51C6DE68.IP) (Ping timeout)
+[14:54:32] *** Joins: Rym (y@162AAE17.9DB74299.51C6DE68.IP)
+[14:57:57] *** Quits: Rym (y@162AAE17.9DB74299.51C6DE68.IP) (Ping timeout)
+[14:58:15] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Ping timeout)
+[14:59:32] *** Joins: EastByte_ (EastByte@moz-7E8984DF.ewe-ip-backbone.de)
+[14:59:57] *** Quits: EastByte (EastByte@moz-A06235D9.ewe-ip-backbone.de) (Ping timeout)
+[15:04:33] *** Quits: jmbto (jmbto@moz-B2BEB013.net) (Quit: WeeChat 0.4.1)
+[15:08:12] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[15:19:34] *** Joins: Jaipradeesh (jaipradees@9F28EA59.F8201E96.45239719.IP)
+[15:23:25] *** Quits: MrByte (Dartakio@moz-81792842.chy-wy.client.bresnan.net) (Ping timeout)
+[15:25:37] *** Joins: MrByte (Dartakio@moz-81792842.chy-wy.client.bresnan.net)
+[15:27:42] *** Joins: Rym (y@162AAE17.9DB74299.51C6DE68.IP)
+[15:29:57] *** Joins: jmbto (jmbto@moz-B2BEB013.net)
+[15:31:14] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[15:31:51] *** Joins: FrozenCow (FrozenCow@moz-54300F7F.upc-j.chello.nl)
+[15:35:14] *** Quits: Jaipradeesh (jaipradees@9F28EA59.F8201E96.45239719.IP) (Ping timeout)
+[15:39:48] *** Joins: erickt (erickt@B91004E7.345B955C.2321E71E.IP)
+[15:41:15] *** Quits: nielsle (nielsle@moz-C46DA772.boa.fiberby.dk) (Ping timeout)
+[15:45:19] *** Quits: erickt (erickt@B91004E7.345B955C.2321E71E.IP) (Ping timeout)
+[15:49:16] *** Joins: erickt (erickt@B91004E7.345B955C.2321E71E.IP)
+[16:01:06] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Ping timeout)
+[16:04:09] *** Joins: jensnockert (jensnocker@moz-33279404.customers.ownit.se)
+[16:05:54] *** Quits: jensnockert (jensnocker@moz-33279404.customers.ownit.se) (Ping timeout)
+[16:20:45] *** Quits: jaras (textual@1CDC5701.A48867D7.52E4E107.IP) (Ping timeout)
+[16:21:11] *** Joins: nielsle (nielsle@moz-C46DA772.boa.fiberby.dk)
+[16:21:19] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Connection reset by peer)
+[16:21:37] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[16:25:25] *** Joins: IanCormac84 (User@659E65F3.64D641E5.67DFF8B4.IP)
+[16:55:47] *** Quits: summerlight_ (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[17:09:53] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[17:11:09] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[17:17:01] *** Quits: ozkriff (Mibbit@D803906A.389F1DB8.D5F347E6.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[17:24:03] *** Joins: ozkriff (Mibbit@D803906A.389F1DB8.D5F347E6.IP)
+[17:38:09] *** Joins: benny (benny@moz-4DC18C38.spamt.net)
+[17:54:32] *** Joins: doomlord_ (servitor@moz-56F8DA57.range86-148.btcentralplus.com)
+[17:59:24] *** Joins: johnwatson (johnwatson@moz-D7EA0A26.hsd1.ca.comcast.net)
+[18:04:56] *** Joins: jensnockert (jensnocker@moz-33279404.customers.ownit.se)
+[18:06:38] *** Quits: jensnockert (jensnocker@moz-33279404.customers.ownit.se) (Ping timeout)
+[18:10:39] *** Quits: Rym (y@162AAE17.9DB74299.51C6DE68.IP) (Ping timeout)
+[18:11:05] *** Joins: Rym (y@162AAE17.9DB74299.51C6DE68.IP)
+[18:11:23] *** Joins: onelson (owen@18CF7301.95770028.5B6BFE7D.IP)
+[18:13:20] *** Joins: jeaye (jeaye@moz-34FEF2BB.hsd1.ca.comcast.net)
+[18:21:39] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[18:24:00] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[18:27:46] *** Joins: glennsl (textual@moz-5D7B804F.getinternet.no)
+[18:31:46] *** Quits: Rym (y@162AAE17.9DB74299.51C6DE68.IP) (Ping timeout)
+[18:32:46] *** Joins: Rym (y@162AAE17.9DB74299.51C6DE68.IP)
+[18:35:27] *** Quits: rusti (rusti@moz-61B073BC.cpe.net.cable.rogers.com) (Ping timeout)
+[18:35:27] *** Quits: rustilite (rustilite@moz-61B073BC.cpe.net.cable.rogers.com) (Ping timeout)
+[18:39:35] *** Joins: mattymattmatt (Mibbit@moz-AC18C0A7.hsd1.mn.comcast.net)
+[18:44:24] *** Quits: Rym (y@162AAE17.9DB74299.51C6DE68.IP) (Ping timeout)
+[18:48:44] *** Quits: FrozenCow (FrozenCow@moz-54300F7F.upc-j.chello.nl) (Connection reset by peer)
+[18:48:56] *** Joins: Rym (y@162AAE17.9DB74299.51C6DE68.IP)
+[18:49:38] *** Quits: erickt (erickt@B91004E7.345B955C.2321E71E.IP) (Ping timeout)
+[18:51:32] *** Joins: jroweboy (jrowe7@moz-18814A6B.provo.static.broadweavenetworks.net)
+[18:51:47] <bjz> ohai
+[18:52:03] <jroweboy> nice place you have here :)
+[18:52:08] <bjz> yes
+[18:52:29] <bjz> see, ozkriff is here!
+[18:52:48] <bjz> he is my slave who fixes my things when they break
+[18:53:03] <bjz> ┌( ಠ_ಠ)┘
+[18:53:10] <bjz> :P
+[18:53:14] *** Joins: Havvy (Havvy@moz-4FE57F72.hsd1.wa.comcast.net)
+[18:53:32] <jroweboy> ozkriff: Sent you a PR on marauder! Feel free to tell me why my changes are terrible ;) I actually have no experience with anything glfw related
+[18:53:39] <bjz> so, still having issues with glfw?
+[18:53:57] *** Joins: rusti (rusti@moz-61B073BC.cpe.net.cable.rogers.com)
+[18:54:00] *** Joins: rustilite (rustilite@moz-61B073BC.cpe.net.cable.rogers.com)
+[18:54:11] <bjz> ah yes, that looks good
+[18:54:14] <jroweboy> bjz: Nah, figured it out. Apparently having a day old rust wasn't enough to compile it :p
+[18:54:23] <bjz> haha!
+[18:54:29] <jroweboy> updating rust solves EVERYTHING
+[18:54:29] <bjz> that's usually it
+[18:54:33] *** Quits: Rym (y@162AAE17.9DB74299.51C6DE68.IP) (Ping timeout)
+[18:54:44] <bjz> unless the lib isn't updated yet
+[18:54:47] <bjz> xD
+[18:55:06] *** Joins: Rym (y@162AAE17.9DB74299.51C6DE68.IP)
+[18:55:09] <Havvy> Rust: The only language where what you write today won't work tomorrow. ;)
+[18:55:12] <jroweboy> and then you hop on IRC and poke them until they update it (cough ChrisMorgan)
+[18:55:33] <bjz> once the nightly ticks over this PR needs to be merged: https://github.com/bjz/glfw-rs/pull/138
+[18:55:59] * bjz is dreading the river of red that will spill down rust-ci soon
+[18:56:36] <jroweboy> what is the goal behind moving libc out of std?
+[18:57:02] <jroweboy> I mean, besides the general trend of moving everything out of std
+[18:57:22] <johnwatson> jroweboy: you were able to get past the "can't find crate" errors? i'm still stuck there
+[18:57:24] <bjz> well, we are our own language, and the stuff it has isn't really essential
+[18:57:36] *** Quits: Rym (y@162AAE17.9DB74299.51C6DE68.IP) (Ping timeout)
+[18:58:17] <cmr> jroweboy: the libc bindings are crap and they're going to be generated from headers using libclang someday.
+[18:58:30] <jroweboy> johnwatson: yeah I didn't get those errors at all. So now, you are on the latest rust at least though :). Try removing the deps folder and calling make_deps again
+[18:58:43] <bjz> cmr: the type aliases are useful though
+[18:59:03] <johnwatson> jroweboy: i did that :(
+[18:59:14] * bjz goes to work on updating sax-rs
+[18:59:31] *** Joins: Rym (y@162AAE17.9DB74299.51C6DE68.IP)
+[19:00:37] <jroweboy> johnwatson: When my make_deps script finished it printed Done! I'm assuming that yours also completed correctly right?
+[19:01:50] <johnwatson> mv: rename src/lib*.so* to ../lib*.so*: No such file or directory
+[19:02:02] <johnwatson> i'm thinking i may have not built glfw itself correctly
+[19:03:35] *** Quits: Rym (y@162AAE17.9DB74299.51C6DE68.IP) (Ping timeout)
+[19:04:40] <jroweboy> johnwatson: sounds about right :) Thats why it can't find the libraries cause they aren't built. Are there any error messages in the midst of the output?
+[19:05:16] *** Quits: mattymattmatt (Mibbit@moz-AC18C0A7.hsd1.mn.comcast.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[19:05:32] <johnwatson> no, it's pretty quiet... trying again with glfw configured with option(BUILD_SHARED_LIBS "Build shared libraries" ON)
+[19:05:35] *** Joins: schnozzle (Mibbit@moz-AC18C0A7.hsd1.mn.comcast.net)
+[19:05:46] *** Quits: schnozzle (Mibbit@moz-AC18C0A7.hsd1.mn.comcast.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[19:06:16] *** Quits: mark_edward (quassel@moz-DCB0B750.lightspeed.cicril.sbcglobal.net) (Input/output error)
+[19:07:42] <jroweboy> post a pastebin/gist of the output of the make_deps script maybe?
+[19:11:04] <johnwatson> jroweboy: https://gist.github.com/anonymous/71b84c5fc97b0b922b12
+[19:12:25] <ozkriff> jroweboy: Hi! Yay! First bug report and PR for marauder)
+[19:12:29] <ozkriff> Hmmm
+[19:12:40] <jroweboy> johnwatson: oh hahaha I just remembered on mac it doesn't build a .so but it builds a .dylib
+[19:13:06] <johnwatson> ah, that'll do it :)
+[19:13:16] <jroweboy> ozkriff: johnwatson: so thats why it can't copy the files 
+[19:14:16] <ozkriff> jroweboy: Looks like that. Sorry, I have tested marauder only on ubuntu 13.10
+[19:15:10] <jroweboy> ozkriff: It works for me on ubuntu 13.10 as well, but I had the same problem when someone tried to build my project on mac as well. 
+[19:17:14] <ozkriff> Thanks)
+[19:19:45] <bjz> it also bulds a .a on osx
+[19:20:04] <johnwatson> jroweboy: yay, now i'm getting actual compile errors!
+[19:20:06] <bjz> (for the static lib)
+[19:20:57] <bjz> ozkriff: I'm wondering if we should be using subrepos for libs that depend on others :/
+[19:21:41] <jroweboy> ozkriff: I was wondering if you would be up for me to change it to use git submodules instead of the whole make_deps thing.
+[19:21:54] <bjz> ozkriff: its kind of hard to think about this stuff though seeing as cargo is around the corner
+[19:22:18] <bjz> yeah, not subrepos - submodules :p
+[19:22:23] <jroweboy> johnwatson: what are the compile errors? Something about no glfw::fail_on_error? (Thats what my pull request is supposed to fix :D)
+[19:23:54] <johnwatson> jroweboy: made changes from your pull request and now it builds clean.
+[19:24:01] <johnwatson> thanks for your help! :D
+[19:24:12] <ozkriff> jroweboy: Merged. Thanks!
+[19:24:26] <jroweboy> hurray! That was my third ever successful pull request :)
+[19:27:29] <johnwatson> oh lame, shader compilation failed
+[19:28:44] <ozkriff> bjz: I should think about git submodules for some time
+[19:29:23] <ozkriff> I don´t like this idea too much
+[19:29:31] <jroweboy> johnwatson: and that's where I can't help you lol. I know nothing about gamedev (but I would like to learn) The good news is you can asked ozkriff directly since its his project.
+[19:29:44] <ozkriff> johnwatson: what is your opengl version?
+[19:29:50] *** Joins: mib_lo7baf (Mibbit@7EEB090E.936632AF.727727B4.IP)
+[19:29:58] *** Quits: mib_lo7baf (Mibbit@7EEB090E.936632AF.727727B4.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[19:30:07] <johnwatson> ozkriff: it's 4.1
+[19:30:13] <johnwatson> it's saying "version 130 is not supported"
+[19:30:35] <jroweboy> ozkriff: Oh you work for wargaming.net? I've played a lot of world of tanks actually :D
+[19:30:38] <johnwatson> which i'm pretty sure is not true, as i've written gl core profile code on this machine before
+[19:30:41] *** Joins: erickt (erickt@B91004E7.345B955C.2321E71E.IP)
+[19:31:08] <cmr> johnwatson: is it os x? it has weird things
+[19:31:09] <johnwatson> oh, unless this app doesn't explicitly enable core profile, as is required by os x
+[19:31:15] <johnwatson> cmr: yep
+[19:31:54] <johnwatson> iirc glfw has an api for doing this
+[19:32:17] *** Quits: whitglint (uid15486@moz-31ABA2C0.irccloud.com) (Quit: Connection closed for inactivity)
+[19:32:30] <johnwatson> but my body is telling me to put food into its face before it passes out, so i'm going to do that first :)
+[19:32:34] <o11c> ozkriff: what don't you like about git submodules?
+[19:32:45] *** Joins: Rym (y@162AAE17.9DB74299.51C6DE68.IP)
+[19:32:50] <bjz> johnwatson: the os x issues are documented on the Glfw::widow_hint function
+[19:33:00] <o11c> I love submodules even if you're not using a version of git that makes them easy to use
+[19:33:56] <bjz> http://rust-ci.org/bjz/glfw-rs/doc/glfw/struct.Glfw.html#opengl-3.x-and-4.x-on-mac-os-x
+[19:34:09] <bjz> for somereason the formatting is all messed up :(
+[19:36:50] <jroweboy> bjz: I was told to ask hansjorg about that. Its just 404ing on all the css and js files
+[19:37:03] <bjz> mmk
+[19:37:08] *** Quits: ozkriff (Mibbit@D803906A.389F1DB8.D5F347E6.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[19:38:01] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[19:40:51] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[19:42:34] *** Joins: zeuxcg (zeuxcg@moz-2B528B55.mycingular.net)
+[19:45:39] <johnwatson> aw, now it's just grey screen
+[19:46:07] <johnwatson> apparently os x doesn't like version 130 shaders at all
+[19:46:34] <johnwatson> i changed the version to 150 (opengl 3.2) and now they compile, but yeah, it's all grey
+[19:52:03] <bjz> johnwatson: are you on mavericks?
+[19:52:08] <johnwatson> yep
+[19:52:37] <bjz> did you set it to ContextVersion(3, 3) or ContextVersion(4, 1)?
+[19:52:45] <johnwatson> i tried both
+[19:52:50] <bjz> :/
+[19:53:15] <johnwatson> before setting context version it would just straight-up crash, so it's an improvement i guess :)
+[19:53:24] <bjz> hahaha
+[20:01:31] *** Quits: jroweboy (jrowe7@moz-18814A6B.provo.static.broadweavenetworks.net) (Ping timeout)
+[20:05:44] *** Joins: jensnockert (jensnocker@moz-33279404.customers.ownit.se)
+[20:07:30] *** Quits: jensnockert (jensnocker@moz-33279404.customers.ownit.se) (Ping timeout)
+[20:10:35] *** Quits: erickt (erickt@B91004E7.345B955C.2321E71E.IP) (Ping timeout)
+[20:11:45] *** Quits: zeuxcg (zeuxcg@moz-2B528B55.mycingular.net) (Quit: )
+[20:11:48] *** Joins: zeuxcg (zeuxcg@moz-2B528B55.mycingular.net)
+[20:16:09] *** Quits: zeuxcg (zeuxcg@moz-2B528B55.mycingular.net) (Quit: )
+[20:16:18] *** Joins: zeuxcg (zeuxcg@moz-2B528B55.mycingular.net)
+[20:21:45] *** Quits: zeuxcg (zeuxcg@moz-2B528B55.mycingular.net) (Client exited)
+[20:22:10] *** Joins: zeuxcg (zeuxcg@moz-2B528B55.mycingular.net)
+[20:23:52] *** Quits: zeuxcg (zeuxcg@moz-2B528B55.mycingular.net) (Ping timeout)
+[20:32:30] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[20:34:20] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[20:39:44] <johnwatson> doing "make examples" on gl-rs out of the box produces an empty directory
+[20:40:11] <johnwatson> an empty examples directory
+[20:49:09] <cmr> johnwatson: yes, gl-rs's examples are broken.
+[20:49:29] <bjz> that might be my job for today
+[20:49:29] <johnwatson> aw
+[20:49:30] <bjz> ^_^
+[20:49:40] <johnwatson> :D
+[20:55:10] *** Quits: canhtak (canhtak@moz-641FE58F.wl.t.ulaval.ca) (Quit: canhtak)
+[20:58:39] *** Joins: zeuxcg (zeuxcg@moz-80D1F912.hsd1.ca.comcast.net)
+[21:07:36] *** Joins: NiccosSystem (NiccosSyst@moz-ED196BB4.customer.lyse.net)
+[21:07:57] *** Quits: Ferreus (ferreus@moz-3C509473.lsn.wtnet.de) (Quit: WeeChat 0.4.4-dev)
+[21:08:42] *** Joins: canhtak (canhtak@moz-641FE58F.wl.t.ulaval.ca)
+[21:11:41] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Client exited)
+[21:15:20] *** Joins: mib_koc8fq (Mibbit@moz-89D60A8.dyn.iinet.net.au)
+[21:15:51] *** Quits: mib_koc8fq (Mibbit@moz-89D60A8.dyn.iinet.net.au) (Quit: http://www.mibbit.com ajax IRC Client)
+[21:26:57] *** Joins: grund (empoz@moz-7E0B5623.a303.priv.bahnhof.se)
+[21:29:10] *** Joins: erickt (erickt@B91004E7.345B955C.2321E71E.IP)
+[21:32:53] *** Quits: matp (matp@moz-16FE1E05.matp.at) (Client exited)
+[21:35:42] *** Joins: diffusor (Mibbit@B31F5705.D752E934.BCAC72AC.IP)
+[21:58:05] *** Joins: jroweboy (jrowe7@moz-18814A6B.provo.static.broadweavenetworks.net)
+[21:59:01] *** Joins: janra (Janus@1CDC5701.A48867D7.52E4E107.IP)
+[21:59:26] *** Quits: diffusor (Mibbit@B31F5705.D752E934.BCAC72AC.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[22:00:17] *** Quits: NiccosSystem (NiccosSyst@moz-ED196BB4.customer.lyse.net) (Ping timeout)
+[22:03:23] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[22:05:06] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Ping timeout)
+[22:06:29] *** Joins: jensnockert (jensnocker@moz-33279404.customers.ownit.se)
+[22:08:18] *** Quits: jensnockert (jensnocker@moz-33279404.customers.ownit.se) (Ping timeout)
+[22:10:17] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[22:11:41] *** Quits: janra (Janus@1CDC5701.A48867D7.52E4E107.IP) (Ping timeout)
+[22:12:31] *** Joins: janra (Janus@1CDC5701.A48867D7.52E4E107.IP)
+[22:12:50] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Ping timeout)
+[22:14:58] *** Joins: tikue_ (tkuehn@A7ECB14D.ADD881BB.D5A9E6FD.IP)
+[22:19:12] *** Joins: victorporof (victorporo@moz-1C281963.dsl.bell.ca)
+[22:20:49] *** Quits: victorporof (victorporo@moz-1C281963.dsl.bell.ca) (Quit: victorporof)
+[22:22:10] *** Joins: victorporof (victorporo@moz-1C281963.dsl.bell.ca)
+[22:23:15] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[22:25:37] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[22:31:08] *** Quits: jeaye (jeaye@moz-34FEF2BB.hsd1.ca.comcast.net) (Quit: zzz)
+[22:47:52] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[22:49:21] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Ping timeout)
+[22:51:42] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[22:54:30] *** Quits: johnwatson (johnwatson@moz-D7EA0A26.hsd1.ca.comcast.net) (Client exited)
+[22:54:50] *** Joins: johnwatson (johnwatson@moz-D7EA0A26.hsd1.ca.comcast.net)
+[22:55:13] *** Quits: johnwatson (johnwatson@moz-D7EA0A26.hsd1.ca.comcast.net) (Client exited)
+[22:55:13] *** Joins: johnwatson (johnwatson@moz-D7EA0A26.hsd1.ca.comcast.net)
+[22:55:23] *** Quits: Tobba (Tobba@moz-462B7F7F.ias.bredband.telia.com) (Ping timeout)
+[22:59:01] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[23:07:59] *** Quits: Rym (y@162AAE17.9DB74299.51C6DE68.IP) (Ping timeout)
+[23:10:33] *** Joins: Rym (y@162AAE17.9DB74299.51C6DE68.IP)
+[23:17:12] *** Joins: Tobba (Tobba@moz-462B7F7F.ias.bredband.telia.com)
+[23:35:57] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[23:37:56] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[23:41:10] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)

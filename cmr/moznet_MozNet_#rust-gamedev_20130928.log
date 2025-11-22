@@ -1,0 +1,567 @@
+[00:02:39] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[00:02:55] *** Quits: bjz_ (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Connection reset by peer)
+[00:03:44] *** Quits: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl) (Client exited)
+[00:07:08] *** Joins: erickt1 (Adium@moz-8DB1E76B.hfc.comcastbusiness.net)
+[00:11:05] *** Joins: canhtak (jeremy@moz-3FFB5CDA.wl.t.ulaval.ca)
+[00:11:30] *** Joins: sastraxi (Thunderbir@moz-2C4D9C95.eng.wind.ca)
+[00:12:07] <sastraxi> hey everyone! apologies in advance for the broad question.
+[00:13:01] <sastraxi> i'm coming from a java-based 3d game programming background. I'm wondering what rust would give me that I don't have? I know that I'd get closer-to-native performance and get rid of stop-the-world pauses
+[00:13:25] <sastraxi> but i've tried to program in C++ and always get discouraged because i'm writing so much memory management.
+[00:13:56] <cmr> sastraxi: Rust offers automatic memory management without a GC
+[00:13:56] *** Joins: captaincommunism (Mibbit@moz-A8DB787A.hsd1.il.comcast.net)
+[00:14:03] <cmr> With an opt-in GC
+[00:14:10] <cmr> That is task-local, so no stop-the-world
+[00:14:19] <sastraxi> cmr: that sounds great. so you pick which objects are managed by a collector?
+[00:14:36] <cmr> sastraxi: yup: we call them managed pointers, the syntax for which is @Foo
+[00:15:06] <sastraxi> great! I'll look those up
+[00:15:24] <sastraxi> cmr: when you say task-local...
+[00:15:36] <sastraxi> task vs. thread?
+[00:16:01] <cmr> tasks are scheduled onto threads in an N:M manner, more or less.
+[00:16:24] <dbaupp> Rust has green threads (called tasks) that are multiplexed onto OS threads via the runtime-scheduler
+[00:16:32] <cmr> Yeah, that
+[00:17:12] <sastraxi> ah ok. so like greenlets in python maybe?
+[00:17:18] <Amaranth> More or less
+[00:17:31] <cmr> Like goroutines, too, aiui
+[00:17:49] <Amaranth> Except not as good yet ;)
+[00:18:00] <steveklabnik> i don't know who would be in here that wouldn't be in #rust, but I'd love thoughts on the new pointers tutorial I wrote: https://github.com/mozilla/rust/pull/9579/files#L2L-1
+[00:18:05] <steveklabnik> especially if you're shaky on the details
+[00:18:09] <sastraxi> what would you say the disadvantages are?
+[00:18:19] <cmr> Disadvantages of?
+[00:18:30] <Amaranth> sastraxi: Lifetime management is still something you have to think about
+[00:18:40] <Amaranth> And it can be even more complicated in Rust than C++
+[00:18:44] <sastraxi> cmr: Rust tasks vs. goroutines
+[00:18:46] <cmr> ah
+[00:18:53] <Amaranth> Oh, I thought you meant in general :P
+[00:18:55] <cmr> I know almost nothing about go
+[00:19:13] <cmr> I wrote a tiny bit of code in it a year or so ago :p
+[00:19:16] <steveklabnik> the disadvantages are complexity
+[00:19:23] <sastraxi> I've used threading mostly in java and through intel threading building blocks
+[00:19:27] <tiffany> I've found that dealing with lifetimes is harder than in C which is odd
+[00:19:28] <steveklabnik> go doesn't enforce no shared mutable state
+[00:19:34] <Amaranth> Rust tasks need to be manually rescheduled more often and I've been told the scheduler isn't very good yet
+[00:19:37] <sastraxi> i found lifetime management not to be too hard there--what makes it harder with tasks?
+[00:19:41] <tiffany> I tend to default to ~ even though I should default to &
+[00:19:46] <dbaupp> go is much more flexible about what you do with goroutines, and the Rust compiler will complain about/reject a lot programs that you'd write in Python/Go
+[00:20:08] <sastraxi> Amaranth: ah ok.
+[00:20:17] <dbaupp> e.g. no shared memory except via extra::arc::{Arc,MutexArc,RWArc}
+[00:20:26] <tiffany> yeah, type safety costs edge cases
+[00:21:31] <sastraxi> when you manually reschedule tasks, we're talking about something akin to manually solving a deadlock, correct?
+[00:21:36] <sastraxi> (... or maybe I'm way off...)
+[00:21:41] <cmr> sastraxi: no, calling yield
+[00:21:59] <cmr> (well, deschedule() now, since yield is a reserved keyword)
+[00:22:29] <sastraxi> so saying "I'm not doing anything for the foreseeable future; let someone else re-activate me"
+[00:22:35] <cmr> yes
+[00:22:46] <cmr> We implicitly yield on anything using io in the new runtime.
+[00:23:08] <sastraxi> that seems like it makes sense
+[00:23:20] <Amaranth> cmr: That is the plan but I thought it didn't do it everywhere yet
+[00:23:24] <sastraxi> so are the tasks quite cooperative (In a sense) right now because of deficiencies of the scheduler?
+[00:23:44] <cmr> sastraxi: not so much deficiencies, tasks are meant to be cooperative.
+[00:23:57] <cmr> But the scheduler won't always steal work when it could.
+[00:23:59] <sastraxi> ah awesome!!
+[00:24:13] *** Joins: Lurk_ (chatzilla@moz-F088D030.hsd1.in.comcast.net)
+[00:24:27] <sastraxi> so basically the scheduler decides what tasks are running on which machine threads...
+[00:24:36] <sastraxi> and it could do a better job of saying "this one can wait for a while"
+[00:24:51] <cmr> So, how it works is we have a Sched, which represents an OS thread
+[00:24:57] <cmr> And a Task, which is... a task
+[00:25:00] <cmr> You spawn a task in a sched
+[00:25:19] <cmr> If none of a sched's tasks are executing (are blocked in io), the sched will try and run another sched's task
+[00:25:23] <cmr> As I understand it
+[00:26:08] <cmr> brson might be able to elaborate more.
+[00:26:18] <sastraxi> cmr: thanks for the help! 
+[00:26:29] <sastraxi> i think i'll do some more research myself, and come back if I have more questions
+[00:26:36] <sastraxi> (When, really!)
+[00:26:58] <cmr> sastraxi: just keep in mind Rust is pre-alpha, the language and the libraries are constantly evolving. it's not stable it.
+[00:27:10] <sastraxi> yep, I understand.
+[00:27:20] <cmr> ok
+[00:27:33] <sastraxi> kind of exciting though to see a language develop!
+[00:27:37] <sastraxi> im not going to miss the opportunity...
+[00:27:55] <steveklabnik> :)
+[00:27:58] <steveklabnik> awesome!
+[00:28:44] <sastraxi> i think the main thing i'm excited about are the cooperative threads. could be a really cool thing to mess with wrt gamedev
+[00:34:52] *** Joins: jxv (jxv@moz-8FB92450.lightspeed.irvnca.sbcglobal.net)
+[00:40:32] *** Joins: quvarxa (chatzilla@moz-978E4C31.static.tpgi.com.au)
+[00:43:12] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[00:43:19] <bjz> cmr: ping
+[00:43:51] <cmr> bjz: pogn
+[00:45:10] <bjz> cmr: could you read over my gl-rs announcement ml post? https://gist.github.com/bjz/98ffb0d8af3a4cf4c0d9
+[00:45:27] <cmr> bjz: sec
+[00:45:34] <bjz> some of the wording could be improved
+[00:45:45] <bjz> just need a second pair of eyes
+[00:47:00] <cmr> lgtm
+[00:47:48] <bjz> ?
+[00:47:55] <bjz> 8L
+[00:49:14] <cmr> looks good to me
+[00:50:07] *** Quits: erickt1 (Adium@moz-8DB1E76B.hfc.comcastbusiness.net) (Quit: Leaving.)
+[00:51:23] <Amaranth> bjz: This capability is extremely
+[00:51:23] <Amaranth> important for graphics developers who need access to the latest and OpenGL extensions to push the boundaries
+[00:51:23] <Amaranth> of what's possible. <-- That wording is odd
+[00:51:29] <Amaranth> whoa newlines
+[00:51:43] <Amaranth> Are you missing a word here?
+[00:52:02] <cmr> oh, yes he is
+[00:52:06] <cmr> latest and greatest, perhaps
+[00:52:29] <cmr> my eyeballs aren't very good at reading english :p
+[00:53:10] <bjz> How does this sentence sound: "Hopefully with future updates to rustpkg you will be able to supply the generation options at the `extern mod` line in your source code."
+[00:53:24] <bjz> Amaranth: cool, will fix
+[00:53:37] <Amaranth> Sounds fine to me
+[00:53:42] <Amaranth> Also I can't wait for that :)
+[00:53:57] <cmr> bjz: whoa whoa whoa, what updates to rustpkg would those be?
+[00:54:19] <bjz> well we can do custon pkg.rs things atm
+[00:54:24] <Amaranth> I suspect updates that let you define more than the 'install' keyword
+[00:54:37] <cmr> sure, but once gl-rs is built, it's built.
+[00:54:37] <Amaranth> The pkg.rs seems useless right now
+[00:54:40] <bjz> but you can't pass cmd line options to them in the extern mod thing
+[00:55:22] <cmr> I was unaware anything like that was planned, but if it is, awesome
+[00:55:30] <Amaranth> Unless I missed something you basically have to do all the compiling and installing yourself if you give a pkg.rs and it all happens under the 'install' keyword
+[00:59:17] *** Quits: quvarxa (chatzilla@moz-978E4C31.static.tpgi.com.au) (Client exited)
+[01:00:20] <bjz> Amaranth: how about "This capability is extremely important for enabling developers to make full use of the current graphics hardware."
+[01:00:36] <bjz> woops "This capability is extremely important for enabling developers to make full use of current graphics hardware."
+[01:00:46] <bjz> (removed a 'the')
+[01:00:59] *** Quits: steveklabnik (steveklabn@moz-A6B56C6E.lsan.ca.megapath.net) (Ping timeout)
+[01:01:24] <Amaranth> bjz: Sounds alright
+[01:01:30] <Amaranth> That reminds me, how do you handle extensions?
+[01:01:52] <Amaranth> Oh, derp, I should read the example and not just the english :p
+[01:01:58] <cmr> :p
+[01:03:06] *** Joins: vk (chatzilla@F92596F.2DEF7520.EF7679FA.IP)
+[01:03:07] *** Quits: sastraxi (Thunderbir@moz-2C4D9C95.eng.wind.ca) (Quit: sastraxi)
+[01:03:09] *** Joins: sastraxi (Thunderbir@moz-2C4D9C95.eng.wind.ca)
+[01:03:10] *** Quits: sastraxi (Thunderbir@moz-2C4D9C95.eng.wind.ca) (Quit: sastraxi)
+[01:06:37] *** Joins: ryeguy (ryeguy@9C569A0.5D1143CD.E8644521.IP)
+[01:07:01] <ryeguy> has anyone began making a component/entity system yet?
+[01:07:24] <jeaye> There's been talk of it.
+[01:07:31] <jeaye> Not sure of anyone specific yet though.
+[01:07:38] <Amaranth> I still can't figure out how it'd work
+[01:09:00] <ryeguy> i really don't know if i like the 'hashmap of components' approach
+[01:09:37] <ryeguy> i still think its beneficial to create actual entity classes then have them implement some kind of 'HealthComponentOwner' trait
+[01:09:51] <ryeguy> because a lot of implementations an entity is just an integer
+[01:10:11] <ryeguy> then you fetch the components at runtime, which may or may not even be applicable for that entity type..feels too loose for my liking
+[01:10:16] <Amaranth> Sure you can have a struct and implement a bunch of traits
+[01:10:36] <Amaranth> But how do you check if struct Foo implements the traits you need?
+[01:11:07] <ryeguy> what do you mean? I was suggesting doing it to prevent Foo from getting component Bar, which doesn't make sense for a Foo
+[01:11:45] <bjz> cmr Amaranth: https://mail.mozilla.org/pipermail/rust-dev/2013-September/005812.html
+[01:11:48] <bjz> :)
+[01:12:26] *** Joins: steveklabnik (steveklabn@90E4D93F.93EC364C.1C63AAF3.IP)
+[01:12:33] <Amaranth> bjz: Nice
+[01:13:05] <Amaranth> ryeguy: In your system how do you deal with a function that requires your entity have the position component and the movement component
+[01:13:23] <Amaranth> How do you write that function in a way that enforces the restriction at compile time?
+[01:13:30] <cmr> fn foo<T: Position+Movement>(x: T)
+[01:13:43] <Amaranth> I thought that wasn't implemented yet
+[01:13:52] <cmr> that has been implemented since at least 0.6
+[01:14:20] <Amaranth> Well then, the only problem left is how does a trait store data
+[01:14:20] <cmr> (that's the earliest rust I've used)
+[01:14:27] <cmr> That is the real problem :)
+[01:14:43] <cmr> Currently you need setters and getters for everything :\
+[01:15:17] <Amaranth> cmr: Worse than that, you need to actually have the data in your main struct
+[01:15:28] <ryeguy> Amaranth: You of course can't statically guarantee they actually *have* those components, but you can at least now guarantee they could possibly have them. 
+[01:15:44] <cmr> ryeguy: eh?
+[01:15:47] <Amaranth> So you can't have random components added by a third party because they can't add fields to your entity
+[01:16:10] <ryeguy> thats true, that assumes you want that ability though
+[01:16:25] <Amaranth> And your entity has to pay the memory cost of every component even if it doesn't implement any of them
+[01:16:36] <cmr> Amaranth: to accomplish such, every entity would need an id, and each component would put its storage per entity somewhere, associated with that id
+[01:16:50] <Amaranth> cmr: So we're back to hashmaps of components :D
+[01:16:53] <cmr> probably in TLS
+[01:16:57] <cmr> Basically! :P
+[01:17:08] <cmr> How do existing component entity systems handle it?
+[01:17:18] <ryeguy> hashmaps of components OR arrays 
+[01:17:27] <Amaranth> Or lots of template magic
+[01:17:38] <ryeguy> the downside is they allocate arrays of size N, where N is the number of component types in your system
+[01:17:51] *** Quits: jdm (jdm@FCCEA34F.7672369.D8E68FF6.IP) (Quit: Lost terminal)
+[01:17:51] <ryeguy> but you get fast retrieval..
+[01:18:07] <Amaranth> I think I'd be alright with the hashmap for component data
+[01:18:36] <ryeguy> whats kind of annoying is there is no way to get the type of a type in rust (yet?)
+[01:18:37] *** Quits: steveklabnik (steveklabn@90E4D93F.93EC364C.1C63AAF3.IP) (Ping timeout)
+[01:18:55] <ryeguy> in C# you can which lets you make some nifty and simple apis
+[01:18:59] <cmr> we don't have a typeof yet.
+[01:19:09] <cmr> ryeguy: you mean at runtime?
+[01:19:18] <Amaranth> ryeguy: I don't want to bloat my structs with RTTI
+[01:19:26] <ryeguy> it doenst have to be at runtime
+[01:19:30] <ryeguy> see how scala implements TypeTags
+[01:19:51] <ryeguy> but that is another bag of worms, because that depends on a feature rust doesnt have (implicit params)
+[01:21:03] *** Joins: steveklabnik (steveklabn@90E4D93F.93EC364C.1C63AAF3.IP)
+[01:21:24] <ryeguy> i dont know if there is a clean way to do something like that
+[01:21:52] <Amaranth> LLVM has their own RTTI because they don't want the C++ one either but their version is not extensible
+[01:37:24] *** Quits: steveklabnik (steveklabn@90E4D93F.93EC364C.1C63AAF3.IP) (Ping timeout)
+[01:37:39] *** Joins: steveklabnik (steveklabn@90E4D93F.93EC364C.1C63AAF3.IP)
+[01:47:18] *** Quits: vk (chatzilla@F92596F.2DEF7520.EF7679FA.IP) (Connection reset by peer)
+[01:51:03] *** Quits: bytewise (bytewise@moz-4A801D04.unitymediagroup.de) (Quit: Leaving)
+[01:51:29] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[01:55:45] *** Joins: brson (brson@981AA104.E81F12CD.76F66111.IP)
+[02:04:14] *** Joins: vk (chatzilla@F92596F.2DEF7520.EF7679FA.IP)
+[02:05:26] *** Quits: vk (chatzilla@F92596F.2DEF7520.EF7679FA.IP) (Quit: ChatZilla 0.9.90.1 [Firefox 24.0/20130911164256])
+[02:09:54] *** Quits: mark_edward (quassel@moz-DCB0B750.lightspeed.cicril.sbcglobal.net) (Client exited)
+[02:10:18] *** Quits: steveklabnik (steveklabn@90E4D93F.93EC364C.1C63AAF3.IP) (Ping timeout)
+[02:20:53] *** Joins: quibbit (Mibbit@moz-29F01EBA.lns20.mel4.internode.on.net)
+[02:21:22] *** Quits: quibbit (Mibbit@moz-29F01EBA.lns20.mel4.internode.on.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[02:35:58] *** Quits: kimundi (kimundi@moz-221F72D2.dip0.t-ipconnect.de) (Ping timeout)
+[02:39:02] *** Quits: ryeguy (ryeguy@9C569A0.5D1143CD.E8644521.IP) (Quit: )
+[02:39:19] *** Joins: zz_kimundi (kimundi@moz-E17678C9.dip0.t-ipconnect.de)
+[02:39:21] *** zz_kimundi is now known as kimundi
+[02:44:12] *** Joins: vk (chatzilla@F92596F.2DEF7520.EF7679FA.IP)
+[03:05:42] *** Quits: tikue_ (tkuehn@885B1A5.2ACBBF24.689607DE.IP) (Quit: tikue_)
+[03:07:25] *** Joins: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[03:11:32] *** Quits: eevee (eevee@moz-59EA9CA5.evrt.wa.frontiernet.net) (Quit: kernel upgrade)
+[03:14:04] *** Quits: captaincommunism (Mibbit@moz-A8DB787A.hsd1.il.comcast.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[03:18:00] *** Quits: tiffany (kawaii@moz-EB8B0C08.dhcp.embarqhsd.net) (Ping timeout)
+[03:22:05] *** Joins: maik (maik@moz-DD39128A.dip0.t-ipconnect.de)
+[03:23:18] *** Quits: vk (chatzilla@F92596F.2DEF7520.EF7679FA.IP) (Quit: ChatZilla 0.9.90.1 [Firefox 24.0/20130911164256])
+[03:26:32] *** Quits: maik (maik@moz-DD39128A.dip0.t-ipconnect.de) (Ping timeout)
+[03:27:06] *** Quits: brson (brson@981AA104.E81F12CD.76F66111.IP) (Ping timeout)
+[03:31:29] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[03:32:40] *** Joins: Ferreus_ (ferreus@moz-80A38711.dyn.telefonica.de)
+[03:33:14] *** Quits: Ferreus (ferreus@moz-1C834CDB.dyn.telefonica.de) (Ping timeout)
+[03:34:11] *** Joins: ryeguy (ryeguy@9C569A0.5D1143CD.E8644521.IP)
+[03:45:57] *** Quits: Ferreus_ (ferreus@moz-80A38711.dyn.telefonica.de) (Quit: WeeChat 0.4.1)
+[03:46:41] *** Quits: ryeguy (ryeguy@9C569A0.5D1143CD.E8644521.IP) (Quit: )
+[03:48:32] *** Quits: canhtak (jeremy@moz-3FFB5CDA.wl.t.ulaval.ca) (Quit: canhtak)
+[03:52:53] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[03:55:48] <bjz> cmr: is there an es2 profile for the opengl loader?
+[03:56:16] <cmr> bjz: --api gles2
+[03:56:24] <cmr> and --version 2.0
+[03:56:45] <cmr> (unamusingly, es3 is under gles2, but with version 3.0)
+[03:57:18] <dbaupp> cmr: http://www.reddit.com/r/rust/comments/1nab2s/rustdev_opengl_glrs_updated_with_command_line/ccgu39g
+[04:12:58] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[04:21:54] *** Joins: Eartha_Kitt (sam@moz-212ECDA5.phnx.qwest.net)
+[04:31:15] <cmr> ah
+[04:45:36] <bjz> cmr: I wonder if we should alter that :/
+[04:45:46] <cmr> bjz: alter what?
+[04:45:58] <bjz> the gles weirdness
+[04:46:03] <cmr> Well it's in the xml registry
+[04:46:10] <bjz> yeah
+[04:46:19] <bjz> probably better not then
+[04:47:02] <cmr> Ah!
+[04:47:05] <cmr> I bet I know why they did it
+[04:47:27] <cmr> So that gles2 stuff doesn't inherit the gles1 enums/commands, but the gles3 inherits from gles2
+[04:50:00] *** Joins: foxtrottango (Mibbit@C115A374.24F6D289.49ACD689.IP)
+[04:51:03] *** Quits: foxtrottango (Mibbit@C115A374.24F6D289.49ACD689.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[04:52:06] <bjz> ahh
+[04:52:15] <bjz> makes sense
+[04:52:24] <cmr> because of the funky undocumented way you're supposed to interpret the registry ;(
+[04:52:33] <bjz> :(
+[04:52:51] <bjz> lets complain! http://www.opengl.org/discussion_boards/showthread.php/181927-New-XML-based-API-Registry-released?p=1251775
+[04:53:09] * bjz can't actually be bothered atm, actually
+[04:53:34] <cmr> oh I didn't realize exactly how new the xml registry is
+[04:54:39] <bjz> yup
+[04:54:55] <bjz> be thankful we have an xml registry
+[04:55:02] <bjz> the old one was a nightmare
+[04:56:24] <cmr> yeah
+[04:58:51] <cmr> I also can't be bothered to make an account
+[04:58:52] *** Joins: darkf (darkf@moz-F9058B8A.net)
+[04:59:12] <jeaye> o/ darkf 
+[04:59:22] <darkf> \o jeaye 
+[04:59:29] <darkf> what's crackin'?
+[05:00:37] <jeaye> Typical Friday night: sitting at home programming. :)
+[05:00:43] <cmr> amen
+[05:00:56] * cmr has been reading RFCs
+[05:01:26] <jeaye> https://github.com/jeaye/q3/commit/8f3da5b21e984e533a7a1301d2883bbce26bb40d
+[05:01:28] <jeaye> muahah
+[05:01:40] <bjz> cmr: hehe: http://www.opengl.org/discussion_boards/showthread.php/181978-Highly-Disappointed-w-the-new-XML-API-Database
+[05:01:41] <jeaye> Now to actually get it working with 0.8 -_-
+[05:01:53] <darkf> :P
+[05:02:16] <bjz> cmr: well at least we got it to work
+[05:03:35] <bjz> cmr: it's a shame that the gl api makes use of all the C implicit casts
+[05:13:33] <cmr> bjz: that thread is actually decent!
+[05:13:57] <bjz> which one?
+[05:14:14] <bjz> the disappointed one?
+[05:14:16] <bjz> :P
+[05:15:02] <cmr> yes
+[05:30:57] *** Joins: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP)
+[05:34:24] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[05:38:49] *** Joins: brson (brson@981AA104.E81F12CD.76F66111.IP)
+[05:39:52] *** Joins: Axord (xord@moz-1B228827.lsanca.dsl-w.verizon.net)
+[05:43:11] *** Joins: ecr (Mibbit@6A833033.5BB0586B.11F8506F.IP)
+[05:43:31] *** Parts: ecr (Mibbit@6A833033.5BB0586B.11F8506F.IP) ()
+[05:54:58] *** Quits: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[05:55:35] *** Quits: brson (brson@981AA104.E81F12CD.76F66111.IP) (Quit: leaving)
+[06:00:35] *** Quits: Eartha_Kitt (sam@moz-212ECDA5.phnx.qwest.net) (Quit: WeeChat 0.4.1)
+[06:02:37] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[06:02:42] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[06:06:51] *** Joins: timot (timot@moz-730F561B.bredband.tre.se)
+[06:08:03] *** Quits: timot (timot@moz-730F561B.bredband.tre.se) (Quit: Konversation terminated!)
+[06:08:14] *** Joins: timot (timot@moz-730F561B.bredband.tre.se)
+[06:10:24] *** Quits: mitsuhiko (mitsuhiko-@moz-BC29B73E.srv.pocoo.org) (Quit: ZNC - http://znc.sourceforge.net)
+[06:12:58] *** Quits: jeaye (Jeaye@moz-34FEF2BB.hsd1.ca.comcast.net) (Quit: zzz)
+[06:13:10] *** Quits: timot (timot@moz-730F561B.bredband.tre.se) (Connection reset by peer)
+[06:25:12] *** Joins: timot (timot@moz-730F561B.bredband.tre.se)
+[06:26:35] *** Joins: quvarxa (chatzilla@moz-978E4C31.static.tpgi.com.au)
+[06:26:43] *** Quits: timot (timot@moz-730F561B.bredband.tre.se) (Connection reset by peer)
+[06:30:30] *** Quits: jxv (jxv@moz-8FB92450.lightspeed.irvnca.sbcglobal.net) (Ping timeout)
+[06:30:46] *** Joins: jxv (jxv@moz-8FB92450.lightspeed.irvnca.sbcglobal.net)
+[07:03:03] *** Quits: jxv (jxv@moz-8FB92450.lightspeed.irvnca.sbcglobal.net) (Ping timeout)
+[07:17:37] *** Joins: jxv (jxv@moz-8FB92450.lightspeed.irvnca.sbcglobal.net)
+[07:34:59] *** Quits: jxv (jxv@moz-8FB92450.lightspeed.irvnca.sbcglobal.net) (Ping timeout)
+[07:36:27] *** Quits: Amaranth (travis@moz-F81BB56A.cpe.cableone.net) (Ping timeout)
+[07:38:48] *** Joins: Amaranth (travis@moz-F81BB56A.cpe.cableone.net)
+[07:52:10] *** Joins: jxv (jxv@moz-8FB92450.lightspeed.irvnca.sbcglobal.net)
+[07:56:38] *** Joins: squiddy (squiddy@moz-4265BEBB.adsl.alicedsl.de)
+[08:18:32] *** Quits: jxv (jxv@moz-8FB92450.lightspeed.irvnca.sbcglobal.net) (Quit: Leaving)
+[08:46:02] *** Quits: quvarxa (chatzilla@moz-978E4C31.static.tpgi.com.au) (Ping timeout)
+[08:46:48] *** Joins: quvarxa (chatzilla@moz-978E4C31.static.tpgi.com.au)
+[09:25:31] *** Joins: zeuxcg (zeuxcg@E46D3CE0.E7BADBF1.B0C2132F.IP)
+[09:47:39] *** Joins: tiffany (kawaii@moz-EB8B0C08.dhcp.embarqhsd.net)
+[09:53:25] <zeuxcg> bjz: core profile does not have anisotropic filtering or DXTn enums :-/
+[09:53:46] <zeuxcg> is reducing the size of gl.rs helping with compilation time?
+[09:56:33] *** Quits: zeuxcg (zeuxcg@E46D3CE0.E7BADBF1.B0C2132F.IP) (Ping timeout)
+[09:58:31] *** Joins: zeuxcg (zeuxcg@E46D3CE0.E7BADBF1.B0C2132F.IP)
+[10:25:41] *** Joins: timot (timot@moz-1F31BE3A.mobile.tre.se)
+[10:28:31] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[10:28:35] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[10:28:43] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[10:29:53] *** Quits: zeuxcg (zeuxcg@E46D3CE0.E7BADBF1.B0C2132F.IP) (Ping timeout)
+[10:33:13] *** Joins: canhtak (jeremy@moz-3FFB5CDA.wl.t.ulaval.ca)
+[10:35:27] *** Joins: zeuxcg (zeuxcg@E46D3CE0.E7BADBF1.B0C2132F.IP)
+[10:36:26] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[10:36:44] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[10:40:31] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[10:40:45] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[11:02:58] *** Quits: zeuxcg (zeuxcg@E46D3CE0.E7BADBF1.B0C2132F.IP) (Ping timeout)
+[11:06:19] *** Joins: xinyi7lan (Mibbit@9C74E8B.214B2527.57DA49D3.IP)
+[11:08:47] *** Quits: xinyi7lan (Mibbit@9C74E8B.214B2527.57DA49D3.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[11:11:43] *** Joins: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl)
+[11:35:10] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[12:41:55] *** Quits: timot (timot@moz-1F31BE3A.mobile.tre.se) (Quit: Konversation terminated!)
+[12:42:31] *** Joins: timot (timot@moz-1F31BE3A.mobile.tre.se)
+[12:48:35] *** Quits: canhtak (jeremy@moz-3FFB5CDA.wl.t.ulaval.ca) (Quit: canhtak)
+[12:59:58] *** Joins: maik (maik@moz-DD39128A.dip0.t-ipconnect.de)
+[13:04:09] *** Quits: maik (maik@moz-DD39128A.dip0.t-ipconnect.de) (Ping timeout)
+[13:16:36] *** Joins: kvark (Mibbit@FEA1C6E8.8C19BC3D.26E1259.IP)
+[13:16:50] <kvark> ping bjz Luqman
+[13:24:10] *** Joins: maik (maik@moz-5DA9E925.dip0.t-ipconnect.de)
+[13:30:36] *** Quits: quvarxa (chatzilla@moz-978E4C31.static.tpgi.com.au) (Quit: ChatZilla 0.9.90.1 [Firefox 25.0/20130926170421])
+[13:40:35] *** Quits: maik (maik@moz-5DA9E925.dip0.t-ipconnect.de) (Ping timeout)
+[13:45:53] *** Joins: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[13:50:52] *** Joins: maik (maik@moz-5DA9E925.dip0.t-ipconnect.de)
+[13:53:14] *** Quits: zxcdw (r-a@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[13:53:29] *** Joins: zxcdw (r-a@BC4D85C9.B543C4DE.3933CC16.IP)
+[13:55:24] <bjz> kvark: hullo!
+[13:55:27] <bjz> o/
+[13:55:48] <kvark> bjz what happened to lmath?
+[13:56:12] <bjz> https://github.com/bjz/cgmath-rs
+[13:56:24] <kvark> so it's now a part of cgmath?
+[13:56:35] <kvark> ah
+[13:56:37] <kvark> I see
+[13:56:38] <kvark> hmm
+[13:56:39] <bjz> yeah, the name was confusing
+[13:56:45] <kvark> ok, cool
+[13:56:54] <kvark> and numeric-rs is now a part of the language?
+[13:56:57] <bjz> people thought it was a general linear algebra lib
+[13:56:59] <bjz> yes
+[13:57:10] <bjz> kvark: https://github.com/mozilla/rust/issues/4819
+[13:57:11] <kvark> cool, thanks
+[13:57:13] <bjz> :)
+[13:57:33] *** Quits: zxcdw (r-a@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[13:57:45] *** Quits: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[13:57:47] * kvark was just shocked to see himself as a numeric-rs owner
+[13:57:51] *** Joins: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP)
+[13:57:58] <bjz> hahaha
+[13:58:00] <bjz> :D
+[13:58:29] *** Joins: zxcdw (r-a@BC4D85C9.B543C4DE.3933CC16.IP)
+[13:58:52] <bjz> yeah it was a big effort getting the numeric stuff done
+[13:59:07] <bjz> still not wholly happy, but its better than it was
+[13:59:26] <kvark> cool, will see how it works now, porint my thing to 0.8
+[14:00:39] <kvark> btw, I don't understand rustpkg stuff in full. Your libs are now using it as a primary build tool. Does it require any kind of global register?
+[14:01:04] <kvark> would I benefit from moving my build method to rustpkg? and how would I do it?
+[14:02:19] <bjz> its still kinda broken
+[14:02:43] <bjz> rustpkg build gl, for example
+[14:02:49] <bjz> that works
+[14:03:12] <bjz> but if you change something it doesn't register it
+[14:03:30] <bjz> so you have to rm -rf .rust
+[14:04:01] <kvark> wow
+[14:04:22] <bjz> .rust being the directory in the workspace
+[14:04:43] <maik> one question regarding ffi
+[14:04:44] <bjz> that holds the compile status of the source files
+[14:04:44] <maik> https://github.com/h3r2tic/assimp-rs/blob/master/ffi.rs#L383
+[14:05:02] <maik> doesn't there need to be #[link_args ?
+[14:05:18] <bjz> kvark: also, installing from remotes is broken
+[14:05:31] <bjz> kvark: but it should be fixed soon
+[14:05:34] * bjz hopes
+[14:05:43] <kvark> ah, remotes are not actual for me ATM
+[14:05:56] <kvark> bjz: can/should I move to rustpkg locally?
+[14:06:38] <bjz> up to you. it's pretty nice bar those issues
+[14:07:17] <kvark> ok, will try then
+[14:07:55] <bjz> kvark: https://github.com/mozilla/rust/issues/9177
+[14:08:08] <bjz> kvark: https://github.com/mozilla/rust/issues/9482
+[14:08:11] <kvark> bam! cgmath fails to build on Rust-0.8
+[14:08:34] <dbaupp> maik: possibly
+[14:08:39] <bjz> http://static.rust-lang.org/doc/master/rustpkg.html
+[14:09:00] <bjz> http://tim.dreamwidth.org/1820526.html
+[14:09:11] <bjz> kvark: useful info ^
+[14:09:17] <kvark> bjz: nice links, thanks!
+[14:09:33] <kvark> bjz: did you update cgmath to rust-0.8?
+[14:09:44] <bjz> kvark: sorry, not yet
+[14:09:49] <kvark> ok
+[14:10:02] <bjz> kvark: it shouldn't be far behind
+[14:10:06] <kvark> are you planning to? I can make a pulll request if you are not
+[14:10:56] <bjz> sure, go ahead
+[14:11:09] <bjz> I'll rebuild my rust
+[14:13:42] <kvark> bam
+[14:13:59] <kvark> why isn't my cgmath-rs any longer "forked from bjz/cgmath-rs"???
+[14:14:41] <bjz> oh, because the current cgmath is decended from the lmath repo
+[14:15:01] <kvark> doh
+[14:15:07] <kvark> so I need to re-fork then...
+[14:15:27] <bjz> sorry
+[14:15:52] <kvark> np, just trying to figure out what's going on... after so many changes since 0.6 :))
+[14:16:02] <bjz> wow, that long?
+[14:16:13] <bjz> wooo, new snapshot
+[14:16:30] <bjz> (llvm re-compile)
+[14:17:10] <bjz> kvark: well it's good to see you back ^_^
+[14:17:36] <kvark> good to see you guys so active, thanks for all the great work!
+[14:17:57] <bjz> kvark: oh and h3r3tic has teapots rendering with cgmath, so things seem to be sort of working
+[14:18:06] <bjz> :)
+[14:18:11] <kvark> sort of?! oh
+[14:18:16] <bjz> haha jk
+[14:18:31] * kvark expects everything to be broken now
+[14:19:13] <bjz> things are always breaking, but not as much as they were :P
+[14:20:04] * bjz remembers the 0.4 -> 0.5 cycle... ugh generics breaking everywhere!
+[14:20:29] <kvark> haha
+[14:20:41] <bjz> or was it 0.5 -> 0.6
+[14:20:50] <bjz> it all blurs together :P
+[14:20:55] * dbaupp is disappointed that it was so easy to update the two-month old programs driving IRFY :'(
+[14:21:07] <bjz> dbaupp: hah
+[14:21:23] <bjz> IRFY?
+[14:21:30] <dbaupp> "is rust fast yet"
+[14:21:37] <bjz> ahh
+[14:21:40] * dbaupp wanted to feel like he was doing something productive
+[14:21:56] *** Quits: maik (maik@moz-5DA9E925.dip0.t-ipconnect.de) (Ping timeout)
+[14:23:28] <bjz> dbaupp: do we have an iota function?
+[14:25:30] *** Quits: timot (timot@moz-1F31BE3A.mobile.tre.se) (Ping timeout)
+[14:25:42] *** Joins: timot (timot@moz-1F31BE3A.mobile.tre.se)
+[14:26:45] <dbaupp> bjz: hm?
+[14:26:54] <dbaupp> bjz: like in Go?
+[14:27:42] <bjz> I want to get a vector that increments
+[14:28:10] <dbaupp> range(0, 100)
+[14:28:19] <dbaupp> or vec::from_fn(n, |i| i)
+[14:29:00] <tiffany> range(0,100).to_owned_vec()
+[14:29:04] <tiffany> er
+[14:29:07] <tiffany> rusti: range(0,100).to_owned_vec()
+[14:29:08] -rusti- pastebinned 1 lines of output: http://sprunge.us/ETZf
+[14:29:44] <bjz> cool
+[14:30:06] <bjz> dbaupp: sorry, iota - APLism
+[14:30:32] <dbaupp> bjz: okeydokey
+[14:31:05] <bjz> dbaupp: I think C++ has std::iota to fill an existing iterator incrementing from a value
+[14:32:23] <dbaupp> bjz: yeah, it does IIRC. (I was thinking of http://code.google.com/p/go-wiki/wiki/Iota)
+[14:32:56] <bjz> such a cute name
+[14:33:03] <bjz> :P
+[14:33:30] * dbaupp wants more functions called xi and rho
+[14:33:38] <bjz> hjehe
+[14:45:30] *** Quits: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[14:45:33] *** Joins: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP)
+[14:48:41] *** Quits: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[14:49:21] *** Quits: zxcdw (r-a@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[14:49:59] *** Joins: maik (maik@moz-5DA9E925.dip0.t-ipconnect.de)
+[14:50:34] *** Joins: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP)
+[14:52:25] *** Quits: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl) (Ping timeout)
+[14:53:33] *** Joins: Ferreus (ferreus@moz-80A38711.dyn.telefonica.de)
+[14:53:50] *** Quits: Ferreus (ferreus@moz-80A38711.dyn.telefonica.de) (Quit: WeeChat 0.4.1)
+[14:54:28] *** Joins: zxcdw (r-a@BC4D85C9.B543C4DE.3933CC16.IP)
+[14:55:34] *** Joins: Ferreus (ferreus@moz-80A38711.dyn.telefonica.de)
+[14:55:56] *** Quits: maik (maik@moz-5DA9E925.dip0.t-ipconnect.de) (Ping timeout)
+[14:58:58] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[15:00:29] *** Quits: timot (timot@moz-1F31BE3A.mobile.tre.se) (Ping timeout)
+[15:02:25] *** Joins: timot (timot@moz-1F31BE3A.mobile.tre.se)
+[15:12:38] *** Quits: timot (timot@moz-1F31BE3A.mobile.tre.se) (Quit: Konversation terminated!)
+[15:16:29] *** Joins: timot (timot@moz-1F31BE3A.mobile.tre.se)
+[15:19:17] *** Quits: timot (timot@moz-1F31BE3A.mobile.tre.se) (Ping timeout)
+[15:21:51] *** Joins: timot (timot@moz-1F31BE3A.mobile.tre.se)
+[15:25:08] *** Joins: canhtak (jeremy@moz-6442BF1C.wl.t.ulaval.ca)
+[15:25:09] *** Quits: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[15:25:54] *** Joins: maik (maik@moz-5DA9E925.dip0.t-ipconnect.de)
+[15:25:55] *** Quits: zxcdw (r-a@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[15:25:57] *** Joins: zxcdw (r-a@BC4D85C9.B543C4DE.3933CC16.IP)
+[15:27:04] *** Quits: kvark (Mibbit@FEA1C6E8.8C19BC3D.26E1259.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:30:29] *** Joins: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP)
+[15:35:10] *** Quits: StarLight (StarLight@moz-FFA9EA5.dynamic.avangarddsl.ru) (Ping timeout)
+[15:38:35] *** Quits: maik (maik@moz-5DA9E925.dip0.t-ipconnect.de) (Ping timeout)
+[15:39:31] *** Joins: StarLight (StarLight@moz-DBB2336A.dynamic.avangarddsl.ru)
+[15:54:47] *** Quits: timot (timot@moz-1F31BE3A.mobile.tre.se) (Quit: Konversation terminated!)
+[15:54:53] *** Joins: timot (timot@moz-1F31BE3A.mobile.tre.se)
+[16:18:17] *** Quits: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[16:18:19] *** Joins: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP)
+[16:18:36] *** Joins: steveklabnik (steveklabn@moz-5EF6C37C.socal.res.rr.com)
+[16:30:10] *** Quits: canhtak (jeremy@moz-6442BF1C.wl.t.ulaval.ca) (Quit: canhtak)
+[16:35:55] *** Joins: jeaye (Jeaye@moz-34FEF2BB.hsd1.ca.comcast.net)
+[16:36:37] *** Quits: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[16:36:41] *** Joins: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP)
+[16:45:47] *** Quits: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[16:45:58] *** Joins: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP)
+[16:50:00] *** Quits: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[16:52:07] *** Quits: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[16:52:09] *** Joins: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP)
+[16:54:59] *** Quits: MrByte (MrByte@moz-147070D0.chy-wy.client.bresnan.net) (Quit: )
+[16:55:11] *** Quits: steveklabnik (steveklabn@moz-5EF6C37C.socal.res.rr.com) (Ping timeout)
+[16:57:23] *** Joins: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl)
+[17:06:29] *** Quits: zxcdw (r-a@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[17:06:32] *** Joins: zxcdw (r-a@BC4D85C9.B543C4DE.3933CC16.IP)
+[17:11:06] *** Joins: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[17:14:39] *** Joins: glennsl (textual@moz-5D7B804F.getinternet.no)
+[17:34:47] *** Joins: canhtak (jeremy@moz-C6007F4.wl.t.ulaval.ca)
+[17:34:58] *** Quits: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[17:42:21] *** Joins: mib_1cf1me (Mibbit@moz-67729E2E.volia.net)
+[17:42:30] *** Quits: mib_1cf1me (Mibbit@moz-67729E2E.volia.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[17:48:07] *** Quits: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[17:48:08] *** Quits: zxcdw (r-a@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[17:48:11] *** Joins: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP)
+[17:48:11] *** Joins: zxcdw (r-a@BC4D85C9.B543C4DE.3933CC16.IP)
+[17:48:19] *** Quits: nielsle (nielsle@moz-5CE8ECCD.boa.fiberby.dk) (Ping timeout)
+[18:02:04] *** Joins: CarpNet (Alasdair@moz-EF831A5E.cable.virginmedia.com)
+[18:02:06] *** Joins: Alasdair_ (Alasdair@moz-EF831A5E.cable.virginmedia.com)
+[18:02:14] *** Quits: Alasdair_ (Alasdair@moz-EF831A5E.cable.virginmedia.com) (Client exited)
+[18:13:06] *** Quits: timot (timot@moz-1F31BE3A.mobile.tre.se) (Ping timeout)
+[18:27:22] *** Joins: timot (timot@moz-1F31BE3A.mobile.tre.se)
+[18:27:45] *** Joins: bytewise (bytewise@moz-4A801D04.unitymediagroup.de)
+[18:36:39] *** Joins: jxv (jxv@moz-8FB92450.lightspeed.irvnca.sbcglobal.net)
+[18:38:34] *** Quits: jxv (jxv@moz-8FB92450.lightspeed.irvnca.sbcglobal.net) (Ping timeout)
+[18:55:25] *** Joins: jxv (jxv@moz-8FB92450.lightspeed.irvnca.sbcglobal.net)
+[19:11:02] *** Joins: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[19:30:11] *** Quits: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl) (Quit: Leaving)
+[19:31:17] *** Quits: squiddy (squiddy@moz-4265BEBB.adsl.alicedsl.de) (Input/output error)
+[19:38:54] *** Joins: pnkfelix1 (pnkfelix@moz-43495417.fbx.proxad.net)
+[19:39:27] *** Quits: timot (timot@moz-1F31BE3A.mobile.tre.se) (Quit: Konversation terminated!)
+[19:40:28] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Ping timeout)
+[19:56:40] *** Joins: steveklabnik (steveklabn@moz-624B4A04.west.biz.rr.com)
+[20:03:16] *** Quits: jxv (jxv@moz-8FB92450.lightspeed.irvnca.sbcglobal.net) (Ping timeout)
+[20:18:09] *** Joins: jxv (jxv@moz-8FB92450.lightspeed.irvnca.sbcglobal.net)
+[20:19:59] *** Quits: jxv (jxv@moz-8FB92450.lightspeed.irvnca.sbcglobal.net) (Ping timeout)
+[20:20:43] *** Quits: jeaye (Jeaye@moz-34FEF2BB.hsd1.ca.comcast.net) (Ping timeout)
+[20:20:43] *** Joins: vk (chatzilla@CF715181.CD17DC39.82697C34.IP)
+[20:56:10] *** Quits: vk (chatzilla@CF715181.CD17DC39.82697C34.IP) (Quit: ChatZilla 0.9.90.1 [Firefox 24.0/20130911164256])
+[21:01:18] *** Quits: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[21:12:23] *** Joins: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl)
+[21:13:45] *** Joins: RayWizard (kvirc@E248DB08.9470356F.5B864609.IP)
+[21:28:25] *** Quits: Lurk_ (chatzilla@moz-F088D030.hsd1.in.comcast.net) (Ping timeout)
+[21:30:51] *** Joins: Lurk_ (chatzilla@moz-F088D030.hsd1.in.comcast.net)
+[21:31:39] *** Joins: vk (chatzilla@CF715181.CD17DC39.82697C34.IP)
+[21:34:30] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[21:43:25] *** Quits: RayWizard (kvirc@E248DB08.9470356F.5B864609.IP) (Ping timeout)
+[21:45:52] *** Joins: tikue_ (tkuehn@4245E30A.E2CAEE6E.689607DE.IP)
+[21:46:41] *** Quits: steveklabnik (steveklabn@moz-624B4A04.west.biz.rr.com) (Ping timeout)
+[21:49:04] *** Quits: vk (chatzilla@CF715181.CD17DC39.82697C34.IP) (Ping timeout)
+[21:50:21] *** Joins: steveklabnik (steveklabn@moz-624B4A04.west.biz.rr.com)
+[21:53:47] *** Quits: canhtak (jeremy@moz-C6007F4.wl.t.ulaval.ca) (Quit: canhtak)
+[21:59:12] *** Quits: anri (solancile@moz-E49E7C4B.hsd1.wa.comcast.net) (Quit: anri)
+[22:05:18] *** Joins: jeaye (Jeaye@moz-34FEF2BB.hsd1.ca.comcast.net)
+[22:11:20] *** Quits: Lurk_ (chatzilla@moz-F088D030.hsd1.in.comcast.net) (Ping timeout)
+[22:13:19] *** Joins: squiddy (squiddy@moz-4265BEBB.adsl.alicedsl.de)
+[22:15:11] *** Quits: steveklabnik (steveklabn@moz-624B4A04.west.biz.rr.com) (Quit: brb)
+[22:15:41] *** Quits: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[22:15:44] *** Joins: zagabar (zagabar@BC4D85C9.B543C4DE.3933CC16.IP)
+[22:20:37] *** Quits: zxcdw (r-a@BC4D85C9.B543C4DE.3933CC16.IP) (Ping timeout)
+[22:20:41] *** Joins: zxcdw (r-a@BC4D85C9.B543C4DE.3933CC16.IP)
+[22:24:01] *** Joins: canhtak (jeremy@moz-C6007F4.wl.t.ulaval.ca)
+[22:29:12] *** Quits: CarpNet (Alasdair@moz-EF831A5E.cable.virginmedia.com) (Quit: Leaving)
+[22:30:52] *** Joins: kvark (Mibbit@F21FE202.8C19BC3D.26E1259.IP)
+[22:31:19] <kvark> bjz: how come Quat lost its from_axis_angle?
+[22:44:40] *** Joins: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[22:53:56] *** Quits: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[22:56:33] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[22:58:23] *** pnkfelix1 is now known as pnkfelix
+[23:00:01] *** Joins: brson (brson@6A848D32.C1B840DD.76F66111.IP)
+[23:21:40] *** Joins: jxv (jxv@moz-8FB92450.lightspeed.irvnca.sbcglobal.net)
+[23:24:22] *** Joins: maik (maik@moz-5DA9E925.dip0.t-ipconnect.de)
+[23:28:08] *** Quits: maik (maik@moz-5DA9E925.dip0.t-ipconnect.de) (Ping timeout)
+[23:42:20] *** Joins: maik (maik@moz-5DA9E925.dip0.t-ipconnect.de)
+[23:43:43] *** Quits: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP) (Ping timeout)
+[23:43:53] *** Quits: kvark (Mibbit@F21FE202.8C19BC3D.26E1259.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[23:50:09] *** Joins: kvark (Mibbit@F21FE202.8C19BC3D.26E1259.IP)
+[23:50:13] <kvark> bjz: ping
+[23:55:48] *** Quits: brson (brson@6A848D32.C1B840DD.76F66111.IP) (Quit: leaving)
+[23:59:37] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[23:59:54] *** Quits: maik (maik@moz-5DA9E925.dip0.t-ipconnect.de) (Ping timeout)

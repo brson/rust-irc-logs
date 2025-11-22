@@ -1,0 +1,141 @@
+[00:00:19] <acrichto> right
+[00:00:34] <acrichto> I guess though overall if we could get this working now it may be the best way forward
+[00:00:43] <acrichto> and we could switch to native MSVC stuff once LLVM has better support for it
+[00:00:47] <acrichto> (e.g. it doesn't crash everywhere)
+[00:01:04] <acrichto> and this should in theory be compatible with going into other systems
+[00:01:05] <vadimcn> if we are targetting Win64 specifically, a lot of this can be hardcoded
+[00:01:10] <acrichto> e.g. we're not picking up a new system dependency or anything
+[00:01:21] <acrichto> I feel like we can get by with 64-bit only msvc for now
+[00:01:27] <acrichto> and punting on 32-bit unwinding until LLVM has support
+[00:01:44] <vadimcn> okay, I'll see what I can do
+[00:02:09] <acrichto> sweet!
+[00:02:23] <acrichto> I just posted a PR for fixing codegen-units on MSVC
+[00:02:30] <acrichto> but other than that I haven't found any glaring bugs in the stdlib/compiler
+[00:02:41] <acrichto> it seems to all just be remaining random unwinidng stuff
+[00:02:51] <acrichto> but that's also just the run-pass suite, which isn't 100% comprehensive
+[00:03:45] <vadimcn> so you are doing all this msvc-compat stuff to enable inclusion of Rust modules in Firefox, right?
+[00:04:34] <acrichto> not just Firefox, but basically anything else with MSVC as well
+[00:04:44] <acrichto> e.g. if you have libs built with the MSVC toolchain we should be able to link to them
+[00:04:57] <acrichto> and Rust should be able to be included in projects built with the MSVC toolchain
+[00:05:32] <vadimcn> are mingw libs not compatible?   I was under impression that they were.
+[00:06:11] <vadimcn> didn't Firefox also have the requirement of having MSVC-compatible debug info?
+[00:06:16] <acrichto> they *mostly* are, but there's minor differences in the C runtimes
+[00:06:22] <acrichto> e.g. various symbols are or aren't defined
+[00:06:28] <acrichto> ff does have that requirement yeah
+[00:06:39] <acrichto> Firefox is indeed a big motivator in MSVC support
+[00:06:49] <acrichto> we basically have to act like C++ code built with cl.exe
+[00:07:06] <acrichto> but unwinding should be fine to punt on if that's the one thing where we're not "super compatible"
+[00:07:07] <vadimcn> well, yeah, would be nice to get of libgcc and msvc dependency
+[00:07:16] <acrichto> oh yeah msvc can never pick up a libgcc dep
+[00:07:31] <acrichto> hopefully we could one day drop the libgcc dep with mingw, but I'm not sure precisely what that would entail
+[00:08:40] <vadimcn> I think unwinding is pretty much the only thing that ties us to libgcc
+[00:09:03] <acrichto> yeah same
+[00:09:16] <acrichto> although I fear there may be some intrinsics LLVM lowers to that we rely on
+[00:09:20] <acrichto> but I'm hoping compiler-rt covers all of those
+[00:09:37] <vadimcn> yes, those should exist in compiler-rt
+[00:09:59] <vadimcn> then there's math functions, which we import from msvcrt
+[00:10:18] <acrichto> yeah
+[00:10:25] <acrichto> and then everything else is basically system libs
+[00:10:35] * acrichto wants to remove those deps on the math functions somehow
+[00:11:20] <vadimcn> Firefox imports them from somewhere...
+[00:11:36] <acrichto> firefox may ship its own CRT?
+[00:11:44] <acrichto> I think they may have to for XP support anyway
+[00:11:48] <acrichto> although I'm not 100% sure about that
+[00:11:55] <acrichto> or they may just statically link it...
+[00:11:56] <vadimcn> probably versioned msvcrXXX that comes with VC Compiler
+[00:12:06] <acrichto> yeah
+[00:12:10] <acrichto> that's what I had to do to test out XP support
+[00:12:20] <acrichto> anyway, brb
+[00:14:41] <vadimcn> But what about debug info?  Is there a plan for how to tackle that?
+[00:36:02] <acrichto> vadimcn: mw took a look into it and it looks like we'll just get it for free
+[00:36:18] <acrichto> vadimcn: right now we don't pass the /DEBUG flag to the linker, but if you do that pdb files start appearing and there's lots of good debug info
+[00:36:30] <acrichto> vadimcn: I imagine that we'll need slightly more support than that, but it's a great start at least
+[00:38:57] *** Joins: SilverKey (SilverKey@moz-liif3j.res.rr.com)
+[00:43:40] <vadimcn> acrichto: I thought LLVM could only emit CodeView line number info?
+[00:43:51] <acrichto> oh that may be the case
+[00:43:56] <vadimcn> Anyhow, as long as ff folks are happy...
+[00:43:58] <acrichto> I'm not very good with MSVC's debugger :P
+[00:44:05] <acrichto> I suspect that's like 90% of what firefox wants
+[00:44:17] <acrichto> it's unclear to me how much of a blocker that is for firefox
+[00:44:53] <vadimcn> is 32-bit support required as well?
+[00:49:05] <acrichto> yeah
+[00:49:13] <vadimcn> acrichto: I was always confused how ff could accept Rust modules without full platform parity
+[00:49:28] <acrichto> yeah to get turned on by default we have aways to go
+[00:51:01] <vadimcn> So until LLVM supports 32 bit SEH, it's a no-go?
+[00:55:17] <acrichto> vadimcn: that part's unclear to me
+[00:55:26] <acrichto> b/c we don't want SEH support to interoperate with exceptions in firefox
+[00:55:33] <acrichto> I was under the impression they would want to turn off unwinding
+[00:55:38] <acrichto> in which case it's not a blocker
+[00:55:41] <acrichto> but I have yet to confirm that
+[00:56:10] <vadimcn> i see
+[00:57:43] <vadimcn> acrichto: btw, do you post anywhere what are the current tactical goals of the tools team?
+[01:00:24] <acrichto> vadimcn: ah no not yet, I never got around to that :\
+[01:00:33] <acrichto> I'll try to do that though (it's basically that post on internals awhile back)
+[01:29:56] *** Quits: SilverKey (SilverKey@moz-liif3j.res.rr.com) (Quit: ZZZzzz…)
+[03:13:32] *** Joins: SilverKey (SilverKey@moz-liif3j.res.rr.com)
+[04:24:15] *** Quits: SilverKey (SilverKey@moz-liif3j.res.rr.com) (Quit: ZZZzzz…)
+[06:20:30] *** Quits: ericholscher (ericholsche@moz-5ti26e.or.comcast.net) (Ping timeout: 121 seconds)
+[07:42:39] *** Joins: Tobba (Tobba@moz-oecqnu.plus.com)
+[08:04:44] *** Quits: Tobba (Tobba@moz-oecqnu.plus.com) (A TLS packet with unexpected length was received.)
+[09:27:36] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[13:47:36] *** Joins: Tobba (Tobba@moz-oecqnu.plus.com)
+[14:04:13] *** Joins: ericholscher (ericholsche@moz-5ti26e.or.comcast.net)
+[14:49:28] *** Joins: SilverKey (SilverKey@moz-liif3j.res.rr.com)
+[15:57:16] *** Quits: Tobba (Tobba@moz-oecqnu.plus.com) (Ping timeout: 121 seconds)
+[17:05:30] *** Joins: Tobba (Tobba@moz-4l45on.skybroadband.com)
+[17:43:05] <edunham> aturon, acrichto is http://edunham.net/2015/07/07/rust_packaging_status_across_distros.html along the lines of what you had in mind when putting "evaluate packaging situation" on the spreadsheet? I can also add contact info for everyone who's published a Rust package, if that'd be useful.
+[17:44:27] <huon> edunham: I... thought Rust was packaged officially on debian
+[17:45:01] * edunham rereads the end of that one bug
+[17:45:11] <huon> oh, looks like it must've been removed
+[17:45:46] <huon> https://packages.debian.org/experimental/rustc
+[17:45:59] <edunham> huh nope there's https://packages.debian.org/unstable/main/rustc
+[17:46:05] <edunham> lemme just fix that post
+[17:47:26] <acrichto> edunham: whoa! that looks fantastic
+[17:47:36] <acrichto> aka exactly what I was wondering
+[17:47:38] *** Quits: SilverKey (SilverKey@moz-liif3j.res.rr.com) (Quit: ZZZzzz…)
+[17:48:51] <edunham> huon: thanks for the heads up on that! f5 and it'll be more correct.
+[17:48:58] <acrichto> edunham: were there general trends of "we're all blocked on X" or was it mostly just putting in the effort everywhere?
+[17:49:45] <huon> edunham: np (nice research btw)
+[17:50:04] <edunham> acrichto: Debian's a special case in that they're comically picky. I get the impression that rust packages are available to exactly the extent that assorted community members have had the initiative and attention span to provide/maintain them.
+[17:50:31] <edunham> getting into "real" ubuntu repos rather than personal PPAs might be a little bureuacratic, but there are totally instructions for it.
+[17:50:51] <acrichto> hm ok, interesting
+[17:51:10] * edunham dreams of a magical script that can package something for All The Distros At Once
+[17:52:20] <edunham> huon: thanks! half of any job like mine is crafting well-formed search queries ;)
+[17:52:49] <edunham> oh, the magical script is called fpm. duh.
+[17:53:20] <acrichto> I've worried in the past that everyone wants us to use the system stuff
+[17:53:24] <acrichto> e.g. system llvm and friends
+[17:53:29] <acrichto> and we may have a bad time doing that
+[17:53:31] <acrichto> not sure though
+[17:53:48] <edunham> would demanding a specific LLVM version be sufficient?
+[17:54:31] <acrichto> maybe?
+[17:54:35] <acrichto> I'm more worried about our build
+[17:54:43] <acrichto> e.g. we have 0 automation ensuring we work with any LLVM version other than our own
+[17:54:49] <acrichto> we in theory work with 3.5 and 3.6 currently
+[17:54:52] <acrichto> (the official releases)
+[17:54:57] <acrichto> but we're only testing against 3.7 master
+[17:55:22] *** Parts: huon (huon@moz-hj272o.8rnv.rggd.6180.2400.IP) ("Leaving")
+[17:55:30] *** Joins: huon (huon@moz-hj272o.8rnv.rggd.6180.2400.IP)
+[17:55:55] <acrichto> edunham: it's surprising to me that it's basically impossible to get cargo other than through our own nightlies
+[17:57:10] <edunham> nah you can totally get cargo; it's just likely to be an old version probably
+[17:57:28] <edunham> relatedly, does Cargo have version numbers? because the people who package it don't name their packages with them and it's annoying.
+[17:58:03] <acrichto> cargo does kinda have versions now
+[17:58:08] <acrichto> not as officially as so as rustc itself
+[17:58:17] <acrichto> we're just bumping from 0.n to 0.n+1 whenever rust is released
+[17:58:22] <acrichto> and the current rust picks the last cargo
+[17:58:35] <edunham> oh, ok, that sounds sane
+[17:58:42] <edunham> and by "whenever it's released", you mean minor versions?
+[17:59:32] <acrichto> ah yeah
+[17:59:41] <acrichto> when we have a release of Rust we bump cargo at the same time basically
+[18:00:44] *** Quits: Tobba (Tobba@moz-4l45on.skybroadband.com) (A TLS packet with unexpected length was received.)
+[18:08:57] <edunham> ok cool
+[18:09:56] <edunham> hmm maybe it doesn't make sense to package cargo separately, if it's supposed to ship with every rustc?
+[18:20:34] <acrichto> edunham: yeah I'm not entirely sure what the best way to do this is, if distros want it separate it's not hte end of the world
+[18:20:40] <acrichto> but you're not going to get far in Rust without Cargo
+[18:22:36] <gleb> acrichto: this approach to cargo versioning is pretty puzzling. are there strong reasons to tie it to rustc versions?
+[18:22:54] <acrichto> gleb: no
+[20:14:52] *** Quits: ericholscher (ericholsche@moz-5ti26e.or.comcast.net) (Quit: Leaving...)
+[20:56:25] *** Joins: SilverKey (SilverKey@moz-liif3j.res.rr.com)
+[21:03:34] <nrc> not much further than a bootstrapping compiler and standard library, anyway :-p
+[21:20:29] *** Joins: ericholscher (ericholsche@moz-btq.3dj.255.50.IP)
+[22:30:36] *** Quits: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua) (Ping timeout: 121 seconds)
+[22:55:20] * edunham finds an enormous spreadsheet of everything that happened on our EC2 instances last month and begins figuring out how to transform it into pretty, informative graphs

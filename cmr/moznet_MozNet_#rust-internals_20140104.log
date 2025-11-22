@@ -1,0 +1,889 @@
+[00:01:59] <brson> acrichto: does tcp work on native tasks?
+[00:03:34] <acrichto> brson: yes
+[00:04:30] <acrichto> timers/signals/unix pipes are the only things remaining
+[00:04:45] <jack> script task needs timers.
+[00:04:55] <dbaupp> r? https://github.com/mozilla/rust/pull/11284
+[00:05:02] <jack> so ugh
+[00:05:03] <acrichto> jack: I've got a patch for timers, just fixing bsd
+[00:05:19] <jack> acrichto: any idea when it will land?
+[00:05:21] <acrichto> oh yay it passed!
+[00:05:24] <acrichto> I'll put up the PR tonight
+[00:05:35] <acrichto> or right now...
+[00:06:20] <acrichto> jack: https://github.com/mozilla/rust/pull/11294
+[00:13:59] <sfackler> acrichto: I'm running into that weird metadata entry again. Do you know who would know enough about the metadata infrastructure to know what's going on?
+[00:14:20] <acrichto> sfackler: at this point, probably you :P
+[00:14:29] <sfackler> D:
+[00:14:56] <acrichto> brson may have a few ideas, but otherwise it'd probably be one of me/brson/pcwalton (just guessing)
+[00:18:21] <sfackler> acrichto: ooh, maybe it's just https://github.com/mozilla/rust/blob/master/src/librustc/metadata/encoder.rs#L1911
+[00:18:46] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[00:19:03] <acrichto> sfackler: hm that would be disturbing
+[00:19:20] <sfackler> tbh that line is a bit disturbing
+[00:19:37] <sfackler> as is the line just below it :P
+[00:19:40] <acrichto> I wondered the same thing last time I saw that
+[00:19:54] <acrichto> the second one is my fault lol
+[00:20:01] <acrichto> trying to avoid copying megabytes of data
+[00:20:06] <acrichto> and working around not owning the writer
+[00:20:20] <acrichto> oh we do own it now!
+[00:20:27] <acrichto> sfackler: can you cahnge that to inner()
+[00:20:40] <acrichto> or at least I think we own it
+[00:21:28] <sfackler> acrichto: doesn't look like it
+[00:21:49] <acrichto> let mut wr = MemWriter::new();
+[00:21:50] <sfackler> but shouldn't we just be able to toss 1841 on into a block
+[00:21:58] <acrichto> let mut ebml_w = writer::Encoder(&mut wr);
+[00:22:05] <acrichto> yeah
+[00:22:16] <acrichto> the key thing is that it's no longer owned by @mut
+[00:22:20] <acrichto> which means you can *never* move out of it
+[00:22:38] <acrichto> encode_metadata_writer()
+[00:22:42] <sfackler> maybe prelude::drop would work?
+[00:23:05] <acrichto> I don't think regions are that smart
+[00:23:10] <sfackler> it'd be really nice if things with references could be moved by that
+[00:23:12] <sfackler> yeah
+[00:23:14] <acrichto> something about a syntactical lifetime, there's some bug open on that
+[00:23:20] <acrichto> I would love for that to be the case
+[00:23:23] <acrichto> but alas
+[00:23:50] <acrichto> I prefer my code sound than as pretty as can be
+[00:24:38] <sfackler> yeah
+[00:24:40] <acrichto> brson: I'm a little sad that it took 1200 lines of code to implement timers for native code, this may be a good indication that we're doing something wrong
+[00:26:10] *** kimundi is now known as zz_kimundi
+[00:28:48] *** Joins: pnkfelix (pnkfelix@70A6E7A1.55ADD344.4C2245EF.IP)
+[00:29:34] <sfackler> acrichto: r? https://github.com/mozilla/rust/pull/11295
+[00:32:01] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[00:32:02] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14ee522d8 to 14d3ae3a2: 02http://git.io/N3iJvQ
+[00:32:02] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[00:32:03] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[00:32:03] <ghrust> 01[13rust01] 15bors pushed 60 new commits to 06auto: 02http://git.io/Lq9BuQ
+[00:32:03] <ghrust> 13rust/06auto 14f553701 15Patrick Walton: libsyntax: De-`@mut` `ParseSess::included_mod_stack`
+[00:32:03] <ghrust> 13rust/06auto 143aa19a6 15Patrick Walton: librustc: De-`@mut` the parse session
+[00:32:03] <ghrust> 13rust/06auto 14b33386d 15Patrick Walton: libsyntax: De-`@mut` `StringReader::pos`
+[00:32:05] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[00:35:21] <sfackler> acrichto: oh, it totally makes sense that line 1911 is causing this. if the metadata length is odd, then the second call to vuint_at in maybe_get_doc will fail
+[00:40:26] *** Quits: pnkfelix (pnkfelix@70A6E7A1.55ADD344.4C2245EF.IP) (Quit: rcirc on GNU Emacs 24.3.1)
+[00:45:02] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[00:45:02] *** ChanServ sets mode: +ao pcwalton pcwalton
+[00:56:39] <sfackler> pcwalton: I'm having some issues with ebml::maybe_get_doc failing at the top level of the crate metadata due to this line inserting bad data at the end: https://github.com/mozilla/rust/blob/master/src/librustc/metadata/encoder.rs#L1911 (if the metadata length is odd, you end up with an odd number of null bytes so that function runs off the end of the array)
+[00:56:50] <sfackler> what do you think would be the best way to fix that?
+[00:57:06] <pcwalton> sfackler: is it still needed?
+[00:57:10] <pcwalton> just try deleting that line
+[00:57:13] <pcwalton> either that or hack up EBML
+[00:57:28] <bjz> ugh, deriving is so weird :P
+[00:57:30] <sfackler> I was thinking those or add a top level tag to the metadata
+[00:57:35] <pcwalton> we might as well just rename EBML to RBML that this point ;)
+[00:57:45] <sfackler> but that would require a bunch of work I think
+[00:58:31] <dbaupp> bjz: lies! :P
+[00:58:36] <bjz> :D
+[00:58:49] <pcwalton> sfackler: just try removing it
+[00:58:51] <bjz> dbaupp: here is my deriving(Format) so far: https://gist.github.com/bjz/ed520febc0eb89ce3dbb
+[00:58:51] <pcwalton> that is very ancient
+[00:58:59] <pcwalton> and I'm not sure it matters anymore
+[00:59:05] <sfackler> i'm building now
+[00:59:08] *** Quits: tjc (tjc@moz-6EB4E533.dsl.tsoft.com) (Quit: Textual IRC Client: www.textualapp.com)
+[00:59:18] <sfackler> to see if the world ends :P
+[00:59:36] <bjz> dbaupp: it seems to bug out on https://gist.github.com/bjz/ed520febc0eb89ce3dbb#file-format-rs-L67
+[01:00:06] <dbaupp> bjz: hmmmmm
+[01:00:29] <dbaupp> Since the method is a static method it'll be returning StaticStruct or StaticEnum
+[01:00:39] <dbaupp> (I don't rememver the precise names)
+[01:00:40] <bjz> ohhhh
+[01:00:55] <dbaupp> yeah, those ones
+[01:01:40] <dbaupp> and then you'll basically need to construct the match/field accesses on the first nonself_arg based on the info in that
+[01:02:14] <dbaupp> btw, I have a feeling that the quoting you are doing won't work
+[01:02:54] <dbaupp> (I'm not sure if macros in the result of #[deriving] are expanded)
+[01:03:17] <sfackler> dbaupp: aren't macros expanded inside-out?
+[01:03:21] <dbaupp> in any case, calling `write!()` many times will be less efficient than calling it once
+[01:03:35] <sfackler> so write! expands, then quote_expr! expands with the expanded version of write!
+[01:03:41] <dbaupp> sfackler: no
+[01:03:43] <sfackler> oh
+[01:03:56] <dbaupp> quote_expr is taking a list of tokens
+[01:04:06] <dbaupp> which includes the `write!` token (etc)
+[01:04:09] <sfackler> oh right
+[01:04:28] <dbaupp> I'm wondering about #[deriving] expanding to something with a macro invocation specifically
+[01:04:33] <dbaupp> I guess it does actually get expanded
+[01:04:34] * dbaupp shrugs
+[01:05:50] <jack> brson, acrichto: so one problem i was thinking about is that the caller often wants to control the spawn
+[01:05:55] <jack> but the spawns might be in libraries
+[01:05:57] <dbaupp> bjz: (also, calling write! many times will be less efficient than constructing the whole format string in #[deriving] and then "shelling out" to ext::format directly, although that will require changes to format.)
+[01:06:36] <bjz> dbaupp: I was going to do that, but acrichto recommended I didn't
+[01:06:48] <bjz> dbaupp: but I see what you mean
+[01:07:04] <jack> it seems like you'd want spawn to look at some dynamically scoped var to decide how to spawn
+[01:07:37] <jack> if hte library wants to control it it can use the native::task::spawn or green::task::spawn directly, although that doesn't solve hte problem of the single pool 
+[01:09:19] <bjz> dbaupp: ohw do you get the values from StaticStruct and StaticEnum - there is not FieldInfo https://github.com/mozilla/rust/blob/master/src/libsyntax/ext/deriving/generic.rs#L272-L294
+[01:09:53] *** Quits: geoffhill (geoffhill@moz-738DC0DB.org) (Ping timeout)
+[01:10:12] <bjz> oh, I think I see
+[01:10:30] <dbaupp> bjz: you have to do it yourself
+[01:10:36] <bjz> yeah
+[01:11:21] *** Joins: pnkfelix (pnkfelix@moz-C07D5168.p2p.sfo1.mozilla.com)
+[01:16:03] *** Quits: pnkfelix (pnkfelix@moz-C07D5168.p2p.sfo1.mozilla.com) (Ping timeout)
+[01:16:23] <acrichto> jack: task spawning by default spawns a "sibling" which basically means that it inherits the same mode, you can always explicitly spawn via libgreen/libnative directly
+[01:16:51] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[01:16:51] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14c0208fe to 14d3ae3a2: 02http://git.io/N3iJvQ
+[01:16:51] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[01:16:53] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[01:16:53] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/mAeqpg
+[01:16:53] <ghrust> 13rust/06auto 14c229aef 15Brian Anderson: Update AUTHORS.txt for 0.9
+[01:16:53] <ghrust> 13rust/06auto 141155ee9 15Brian Anderson: Bump more version numbers to 0.9
+[01:16:53] <ghrust> 13rust/06auto 146da2c86 15Brian Anderson: Give more effusive credit to authors
+[01:16:55] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[01:21:43] <jack> acrichto: how do you do that if you don't control the library?
+[01:22:09] <jack> spawn a task just to spawn some tasks? :)
+[01:22:55] <bjz> acrichto: could we change ext::format to allow us to use it directly?
+[01:23:38] <bjz> acrichto: as dbaupp says, multiple write!s would be slower
+[01:24:31] <brson> voting ring, go: https://news.ycombinator.com/newest
+[01:24:37] <jack> acrichto: what does no_uv do? disable starting up in green mode?
+[01:25:13] <bjz> brson: ?
+[01:25:36] <bjz> ohh
+[01:25:54] <bjz> https://news.ycombinator.com/item?id=7009414
+[01:28:30] <bjz> brson: should post it on /r/programming
+[01:30:07] <sfackler> could someone push this to try? https://github.com/sfackler/rust/tree/de-jank-encoder-2
+[01:31:15] <dbaupp> bjz: you have a reddit account, right? :P
+[01:31:24] <dbaupp> sfackler: yup
+[01:31:37] <sfackler> thanks
+[01:31:40] * bjz feels bad for posting all the rust stuff on proggit
+[01:31:58] <bjz> oh well, donesies
+[01:32:33] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[01:32:33] <ghrust> 01[13rust01] 15huonw 04force-pushed 06try from 143a30751 to 14c274a68: 02http://git.io/k471pw
+[01:32:33] <ghrust> 13rust/06try 14c274a68 15Steven Fackler: Stop padding metadata...
+[01:32:33] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[01:32:37] <dbaupp> sfackler: ^
+[01:33:02] <steveklabnik> bjz you should never feel bad
+[01:34:15] <dbaupp> bjz: (unless you're posting "rust sucks" articles to proggit, in which case, you should feel bad. :P )
+[01:34:25] <bjz> haha
+[01:34:41] <steveklabnik> heheh
+[01:35:14] <steveklabnik> bjz: also, direct linking to HN stories is a no-no
+[01:35:24] <steveklabnik> they do referer checking, if they're too much the same the votes dont count
+[01:35:29] <steveklabnik> hence the link to newest
+[01:36:07] <bjz> ohhh
+[01:36:11] <bjz> didn't know that
+[01:36:25] <bjz> thanks
+[01:37:35] <steveklabnik> np
+[01:37:53] <steveklabnik> at least i don't have excessive karma for nothing....
+[01:41:40] *** Joins: tjc (tjc@moz-6EB4E533.dsl.tsoft.com)
+[01:41:40] *** ChanServ sets mode: +o tjc
+[01:46:05] <jack> wow, sounds like that class was a pretty good success
+[01:46:08] <jack> and sounds fun too
+[01:47:03] <bjz> mm
+[01:47:26] <steveklabnik> yeah, seems really good
+[01:47:28] <steveklabnik> except docs
+[01:47:30] <steveklabnik> gotta get on that ;)
+[01:47:31] <steveklabnik> heheh
+[01:54:35] <bjz> http://www.reddit.com/r/programming/
+[01:55:00] <bjz> be sure to upvote folks :)
+[02:12:06] <sfackler> brson: pcwalton: acrichto: try-win is having problems compiling llvm
+[02:12:17] <sfackler> http://buildbot.rust-lang.org/builders/try-win/builds/782/steps/compile/logs/stdio
+[02:12:55] <brson> sfackler: just retry. that always happens on windows istr
+[02:13:54] <sfackler> I don't think I can do it myself
+[02:14:34] <brson> sfackler: log into buildbot as rust/rust, then under force build put `try` as the branch
+[02:15:19] <steveklabnik> okay, this new HN account is pretty obviously a troll
+[02:16:20] <jack> are we going to add libnative and libgreen docs to the rust-lang.org site?
+[02:17:00] <sfackler> brson: sweet, thanks!
+[02:19:40] <brson> jack: We probably should, though I think there's very little public API in them. Doesn't seem like we'll get it done for 0.9
+[02:20:23] <jack> well, knowing how to call native::start and pool.spawn() etc
+[02:20:42] <jack> acrichto's email to the list is the best docs we have :)
+[02:20:56] <brson> acrichto: what's the state of your rust kernel?
+[02:26:46] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[02:26:46] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/mAeqpg
+[02:26:46] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[02:31:01] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[02:32:06] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[02:32:06] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/Z3IiyA
+[02:32:06] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[02:49:13] *** Quits: vadimcn (chatzilla@FB06B64.76F9E272.DA40C4B3.IP) (Connection reset by peer)
+[02:51:02] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[02:52:32] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[02:59:36] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[03:06:28] *** Joins: vadimcn (chatzilla@FB06B64.76F9E272.DA40C4B3.IP)
+[03:15:19] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[03:15:19] *** ChanServ sets mode: +ao pcwalton pcwalton
+[03:21:43] <sfackler> pcwalton: lgty? https://github.com/mozilla/rust/pull/11297
+[03:21:52] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[03:21:52] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/oueh5Q
+[03:21:52] <ghrust> 13rust/06auto 143250e65 15Carl-Anton Ingmarsson: libextra: Add benchmarks for ebml::reader::vuint_at()
+[03:21:52] <ghrust> 13rust/06auto 141749d61 15Carl-Anton Ingmarsson: libstd: Always inline all byteswap functions
+[03:21:52] <ghrust> 13rust/06auto 14a82f32b 15Carl-Anton Ingmarsson: fixup! libstd: Always inline all byteswap functions
+[03:21:54] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[03:22:11] <pcwalton> sfackler: yay! r+
+[03:22:36] <sfackler> it passed on try so hopefully it won't blow up
+[03:25:23] <pcwalton> yay, rust bootstrapped without @ patterns
+[03:25:30] <pcwalton> tine to fix the test suite now
+[03:25:41] <pcwalton> after that, @vec, then @str
+[03:27:28] <bjz> pcwalton: libsyntax too?
+[03:27:36] <pcwalton> everything
+[03:27:40] <bjz> niiice
+[03:30:35] *** Quits: a_m0d|home (a_m0d@moz-322A4DE4.acanac.net) (Quit: Leaving.)
+[03:31:20] <sfackler> acrichto: does it seem reasonable to make deriving "special" to the compiler? The only way I can see of supporting e.g. #[deriving(MyTrait)] is to allow macro_registrar functions to register deriving impls along with normal syntax extensions and then store derivings along with normal syntax extensions in SyntaxEnv
+[03:36:08] *** Quits: zz_kimundi (kimundi@moz-6316CA96.dip0.t-ipconnect.de) (Ping timeout)
+[03:36:51] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[03:36:51] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 147fe0c78 to 148bfd2a8: 02http://git.io/N3iJvQ
+[03:36:51] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[03:36:52] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[03:36:52] <ghrust> 01[13rust01] 15bors pushed 61 new commits to 06auto: 02http://git.io/0GocUw
+[03:36:52] <ghrust> 13rust/06auto 14f553701 15Patrick Walton: libsyntax: De-`@mut` `ParseSess::included_mod_stack`
+[03:36:52] <ghrust> 13rust/06auto 143aa19a6 15Patrick Walton: librustc: De-`@mut` the parse session
+[03:36:52] <ghrust> 13rust/06auto 14b33386d 15Patrick Walton: libsyntax: De-`@mut` `StringReader::pos`
+[03:36:54] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[03:39:41] <brson> i'm not keen on making deriving infinitely smart
+[03:40:00] *** Joins: zz_kimundi (kimundi@moz-A0790602.dip0.t-ipconnect.de)
+[03:40:02] *** zz_kimundi is now known as kimundi
+[03:42:06] <sfackler> brson: the alternative is that you just make #[deriving_MyStruct] but it makes it a bit more verbose as you end up with e.g. #[deriving(Clone, Eq, Ord)] #[deriving_MyStruct] instead of just #[deriving(Clone, Eq, Ord, MyStruct)]
+[03:42:52] <sfackler> that's not the end of the world though
+[03:45:34] <brson> sfackler: maybe i don't understand the background. what is #[deriving_MyStruct]?
+[03:45:56] <sfackler> sorry
+[03:46:16] <sfackler> so say I define a trait called Postgres in librust-postgres
+[03:46:26] <sfackler> that serializes a struct to and from a table
+[03:46:54] <sfackler> it'd be great to be able for clients to automatically derive implementations of it
+[03:48:16] <sfackler> with the external syntax extension stuff I've been working on you can write your own ItemDecorator trait and call it something like #[deriving_Postgres]
+[03:48:34] <sfackler> but it'd ideally be nice to be able to make it so #[deriving(Postgres)] would work instead
+[03:49:33] <sfackler> one option would be to change the definition of the function registers external syntax extensions from
+[03:49:56] <sfackler> fn register(r: |Name, SyntaxExtension|)
+[03:49:56] <sfackler> to
+[03:50:37] <sfackler> fn register(register_se: |Name, SyntaxExtension|, register_deriving: |~str, DerivingExtension|)
+[03:51:02] <sfackler> but that means that the compiler has to treat a #[deriving(..)] differently than a #[foobar(...)]
+[03:52:47] <brson> hm
+[03:53:34] * bjz is still working on deriving(Format)
+[03:53:45] * bjz is wondering if he should hold off for now
+[03:54:13] <sfackler> bjz: keep on working on it, I'll rebase on top of your stuff if it lands
+[03:54:28] <sfackler> the conflict for a new deriving impl shouldn't be huge
+[03:55:04] <bjz> sfackler: the current way is hard for people to implement without a knowledge of the compiler
+[03:55:16] <bjz> but I don't know if that's an issue
+[03:55:53] <sfackler> that won't be changing for nwo
+[03:55:56] <sfackler> *now
+[03:56:34] <bjz> ok
+[03:56:58] *** Quits: whitequark (whitequark@moz-BC42D267.whitequark.org) (Ping timeout)
+[03:57:56] *** Quits: mrmonday (mrmonday@moz-C7DC1A73.lin.openzula.org) (Ping timeout)
+[04:00:21] *** Joins: whitequark (whitequark@moz-BC42D267.whitequark.org)
+[04:01:16] *** Joins: mrmonday (mrmonday@moz-C7DC1A73.lin.openzula.org)
+[04:01:51] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[04:04:15] *** Quits: mrmonday (mrmonday@moz-C7DC1A73.lin.openzula.org) (Ping timeout)
+[04:04:21] *** Quits: whitequark (whitequark@moz-BC42D267.whitequark.org) (Ping timeout)
+[04:08:27] <sfackler> brson: does that make sense?
+[04:09:05] *** Quits: dbussink (dbussink@moz-E0A5568C.bussink.me) (Ping timeout)
+[04:10:04] *** Joins: dbussink (dbussink@moz-E0A5568C.bussink.me)
+[04:11:04] *** Joins: whitequark (whitequark@moz-BC42D267.whitequark.org)
+[04:11:55] <acrichto> jack: task spawning could be controlled with a dynamic variable, but spawning a green task is tricky b/c you don't know where to spawn into. Also no_uv just disables linking to libgreen/librustuv right now and that's it (libgreen currently provides #[lang = "start"]
+[04:12:12] <brson> sfackler: yes. i've always been skeptical of wanting to derive everything. when we added deriving it was my understanding it would be for a few obvious core types, and it's kept growing.
+[04:12:16] <acrichto> bjz: feel free to slice and dice the ext::format api however you please, I have no attachment to it at all
+[04:12:33] <brson> if we want to generalize deriving we'll need to deal with namespacing properly at least
+[04:12:50] <sfackler> yeah
+[04:13:01] <acrichto> brson: my kernel is going well! I got it all working on my flight to des moines, and I haven't worked on it much since then, I emailed the professor of the class it's based on to see how much can get released b/c I don't want to give away answers or anything
+[04:13:05] <sfackler> I was thinking that it'd be really easy to namespace external macros by the name of their crate
+[04:13:08] <brson> afaik haskell doesn't generalize this, except for newtype deriving, which i understand isn't universally loved
+[04:13:20] *** Joins: mrmonday (mrmonday@moz-C7DC1A73.lin.openzula.org)
+[04:13:29] <sfackler> e.g. #[phase(syntax)] extern mod foobar; foobar::my_macro!()
+[04:13:42] <acrichto> sfackler: re #[deriving], couldn't the registrar just add an extra deriving mode? it's just a string key that maps to a funciton which takes an ast item and generates 0 or more ast items I would think
+[04:14:16] <sfackler> acrichto: right, but the string key is just "deriving", and the arguments are then handled by the deriving package
+[04:14:40] <acrichto> sfackler: the deriving package could be modified to have a dynamic table though
+[04:14:54] <brson> acrichto: oh, so it's not on github? drag
+[04:15:02] <sfackler> acrichto: yeah
+[04:15:08] <brson> i suddenly had an itch to contribute to a rust microkernel
+[04:15:16] <acrichto> brson: not yet, but I hope to but it up at some point, haven't heard back from the professor in awhile (probably still on vacation)
+[04:15:17] <brson> like openmirage for rust
+[04:15:24] <acrichto> but it works so well and rust is beautiful
+[04:15:28] <sfackler> but the deriving package couldn't maintain the same scoping as the rest of the macro system itself
+[04:16:16] <sfackler> the most straightforward thing would be to add a separate map of deriving impls to SyntaxEnv
+[04:16:18] <acrichto> right now it doesn't but that doesn't mean it can't?
+[04:16:48] <sfackler> acrichto: the expand infrastructure would have to call into the deriving package every time it entered or exited a block
+[04:17:11] <acrichto> yeah it might not be very pretty, you definitely don't need to deal with it for now
+[04:17:21] <sfackler> that's what I was thinking
+[04:17:39] <sfackler> if we see a huge explosion of #[deriving_Foo]s in third party libraries it'd be worth revisiting
+[04:17:51] <acrichto> yeah definitely
+[04:18:02] <acrichto> this is all feature gated anyway for now
+[04:18:38] <sfackler> yep
+[04:19:10] <sfackler> the change could even be made in a backwards compatible way without much trouble
+[04:32:15] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[04:32:15] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1478e6423 to 148bfd2a8: 02http://git.io/N3iJvQ
+[04:32:15] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[04:32:18] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[04:32:18] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/IttDCw
+[04:32:18] <ghrust> 13rust/06auto 1422f7063 15Jan Niklas Hasse: Make rustc's own lib directory configurable and change the default to rustlib. Fixes #3319
+[04:32:18] <ghrust> 13rust/06auto 1442a2f99 15bors: auto merge of #11118 : jhasse/rust/patch-rustlibdir, r=alexcrichton...
+[04:32:18] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[04:47:02] <bjz> acrichto: not sure how you feel about this: https://github.com/mozilla/rust/pull/11298 - added that to_str function, and I included my reasoning.
+[04:47:42] <acrichto> bjz: hmm, I worry that if it's not a method then no one will use it...
+[04:48:48] <sfackler> what's wrong with keeping ToStr around and just having an Impl<T: Format> ToStr for T?
+[04:50:58] <bjz> sfackler: we are beginning to have lots and lots of traits for simple things
+[04:51:42] <bjz> I agree with strcat about this
+[04:52:06] <bjz> the huge amount of trait exports in the prelude is worrying
+[04:52:50] * strcat finds the fact that we need a prelude to make the language usable worrying
+[04:53:03] <strcat> third party libraries don't get that cop out
+[04:53:09] <strcat> why should libstd do it?
+[04:53:15] <bjz> If a trait is only used once, should it really be a trait? unless it is a 'bag' trait that creates a union of subtraits
+[04:53:22] <SiegeLord> Because it's the libstd :P
+[04:53:33] <bjz> or should I say *intersection
+[04:53:40] <strcat> SiegeLord: so, a third party implementation of networking should be disadvantaged? great
+[04:53:55] <SiegeLord> Don't see why not
+[04:53:58] <strcat> for a language trying to not pull a Go and hardwire stuff into the language at expense of libraries, Rust certainly does a lot of it
+[04:54:11] <strcat> try writing a library with a lot of generics in Rust
+[04:54:14] <sfackler> bjz: because traits are the only way of making extension methods
+[04:54:23] <strcat> extension methods are an anti-pattern
+[04:54:25] <strcat> rust has free functions
+[04:54:32] <strcat> if we are going to do everything as methods, lets drop functions
+[04:55:03] <strcat> foo(x) vs. x.foo() shouldn't be a thing you have to consider every time you write a function
+[04:55:05] <bjz> sfackler: abusing traits for syntax?
+[04:56:10] <strcat> traits have an API impact
+[04:56:16] <strcat> every trait should be justified
+[04:56:20] <strcat> C++ went through this
+[04:56:26] <strcat> they were going to add a ridiculous number of concepts
+[04:56:33] <strcat> to enable every possible kind of code reuse you could imagine
+[04:56:45] <strcat> they realized the cognitive overhead was worse than defining them just when you actually needed that corner case
+[04:56:56] <strcat> and scaled back to a very limited set of *widely used* concepts
+[04:56:59] <bjz> yep
+[04:57:06] <strcat> haskell also makes very conservative use of a few type classes
+[04:57:14] <bjz> I think we should listen to bjarne on this.
+[04:57:28] <strcat> type classes are a *HUGE* API burden
+[04:57:38] <SiegeLord> C++ has overloading, Rust does not
+[04:57:44] <strcat> overloading isn't relevant
+[04:58:03] <strcat> overloading saves you from writing more than one name for a function/method
+[04:58:10] <SiegeLord> I don't want longer function names, or to have to import individual functions to get the same functionality you get with traits
+[04:58:11] <strcat> rust doesn't have a solution to that, with or without traits
+[04:58:16] <strcat> and imo shouldn't have one
+[04:58:24] <strcat> SiegeLord: and you don't need that
+[04:58:26] <strcat> rust has namespaces
+[04:58:32] <SiegeLord> That's the importing part
+[04:58:37] <strcat> again, if we don't like free functions lets drop them
+[04:58:43] <strcat> ruby doesn't have free functions
+[04:58:46] <strcat> it works fine
+[04:59:06] <strcat> I shouldn't have to worry about choosing between an extension method or free function every time I write one
+[04:59:10] <strcat> a free function is the obvious choice
+[04:59:16] <strcat> it doesn't needlessly bloat the API and make the docs confusing
+[04:59:27] <strcat> but apparently, it's not so obvious for libstd
+[04:59:37] <strcat> because the burden is hidden until you look at the ridiculously ugly docs
+[04:59:45] <strcat> and the people writing rust apparently don't read the docs
+[04:59:49] <strcat> new users do, and it sucks.
+[04:59:49] <SiegeLord> Fix the docs then
+[04:59:57] <strcat> SiegeLord: fix the docs? ok, lets remove all the traits
+[04:59:59] <strcat> that'll fix them
+[05:00:04] <SiegeLord> Or just fix the docs :P
+[05:00:11] <strcat> SiegeLord: ok, so lets remove the traits
+[05:00:14] <strcat> the traits are the problem with the docs
+[05:00:24] <SiegeLord> The documentation is horrible, traits or not
+[05:00:35] <strcat> SiegeLord: agreed, but I am specifically pointing out traits as a problem
+[05:00:41] <strcat> I am not talking about the documentation in general
+[05:00:53] <strcat> I am saying that moving functionality into a trait makes the API larger, and harder to navigate/learn
+[05:01:10] <strcat> I don't think that is debatable
+[05:01:30] <strcat> you have 'fn foo<T> {}', and you go to a trait, you have double the API
+[05:01:54] <strcat> all because someone prefers .foo()
+[05:01:58] <bjz> yep
+[05:02:03] <strcat> and if we do prefer that, why do we have both?
+[05:02:14] <strcat> D lets you call functions as methods, ruby just has methods
+[05:02:32] <bjz> see I wonder also if folks don't like using functions because methods auto ref
+[05:02:46] <strcat> well imo we should have auto-ref to &T
+[05:02:46] <bjz> (or is it autoderef)
+[05:02:50] <strcat> bjz: both
+[05:03:00] <strcat> they do both and it's a very weird dynamic.
+[05:03:05] <strcat> bjz: here's a good one
+[05:03:15] <strcat> I give you &5, clone it so you have another
+[05:03:19] <strcat> (another &5)
+[05:03:19] <bjz> like, min(&1, &2)
+[05:03:26] <strcat> rusti: let x = &5; x.clone()
+[05:03:30] -rusti- pastebinned 37 lines of output: http://ix.io/9EJ
+[05:03:34] <strcat> rusti: let x = &5i; x.clone()
+[05:03:36] -rusti- 5
+[05:03:43] <bjz> o_o
+[05:03:51] <strcat> rusti: let x = &5i; let y = &x; y.clone()
+[05:03:53] -rusti- pastebinned 18 lines of output: http://ix.io/9EK
+[05:03:57] <strcat> rusti: let x = &5i; let y = &x; *y.clone()
+[05:03:57] -rusti- 5
+[05:04:04] <strcat> so it does one level of auto-deref there
+[05:04:21] <strcat> rusti: let x = "foo"; let y = &x; let z = &y; z.len()
+[05:04:22] -rusti- 3u
+[05:04:31] <bjz> strcat: perhaps there should be an RFC on this?
+[05:04:44] <strcat> dunno
+[05:04:47] <strcat> seems to late to change anyone's mind
+[05:04:52] <bjz> strcat: since I think there is merit to your arguments
+[05:05:05] <strcat> I think we should just have auto-ref to &T
+[05:05:06] <bjz> strcat: regarding the proliferation of traits
+[05:05:09] <strcat> and remove auto-ref from ~T to &mut T
+[05:05:11] <bjz> that is
+[05:05:16] <strcat> so...
+[05:05:26] <strcat> rusti: fn foo(_: &int) {} foo(~5)
+[05:05:27] -rusti- ()
+[05:05:29] <strcat> that's sensible...
+[05:05:31] <strcat> rusti: fn foo(_: &int) {} foo(5)
+[05:05:33] -rusti- pastebinned 7 lines of output: http://ix.io/9EL
+[05:05:36] <strcat> this isn't, why doesn't it work?
+[05:05:39] <strcat> if one works, both should
+[05:05:47] <strcat> but I think auto-ref to &mut for parameters needs to get cut out
+[05:06:09] <strcat> Google forbids mutable ref parameters in favour of nullable ptrs even when nullability isn't desired
+[05:06:11] <strcat> for this reason
+[05:06:16] <strcat> in their C++ style guide
+[05:06:20] <strcat> auto-ref to &T seems fine though.
+[05:06:27] <strcat> especially since generics often end up using it
+[05:06:36] <strcat> map.find(5) would work
+[05:06:40] <bjz> strcat: I think the Trait issue deserves not to be lost in IRC debate
+[05:06:49] <strcat> I don't see why you should be able to do map.find(~5) but not map.find(&5)
+[05:06:56] <bjz> yep
+[05:06:57] <strcat> bjz: well, I don't really care - the stdlib is optional
+[05:07:07] <strcat> my opinions don't need to win for me to have an option available
+[05:07:23] <strcat> I am still passionate about language issues but you are not really going to find me reporting many library issues
+[05:07:28] <bjz> the stdlib is an important example of how the language should be used
+[05:07:55] <bjz> and it is important that we don't have fragmentation in the future
+[05:08:13] <strcat> well right now I think it's a good example of how the language shouldn't be used - overengineered trait hierarchies, abstractions where lack of abstraction would work fine, convenience functions less convenient than doing it manually, lack of composition, etc.
+[05:08:14] <SiegeLord> It's just as optional as 3rd party libraries that use it :P
+[05:08:34] <SiegeLord> And I'm not seeing a clear guideline when not to use traits here either
+[05:08:40] <strcat> well, I see a clear guideline
+[05:08:44] <SiegeLord> It's just a blanket "too many useless traits"
+[05:08:55] <strcat> traits implemented by 1 type are a horrible anti-pattern
+[05:09:00] <SiegeLord> One's useless trait is another useful one
+[05:09:09] <strcat> traits filling in for generic functions simply to get method syntax are an anti-pattern (why have free functions?)
+[05:09:20] <bjz> SiegeLord: traits should be for clear concept in an application domain.
+[05:09:36] <strcat> default methods when overriding never makes sense could very well be an anti-pattern too, I am on the fence and am guilty of making a lot of them
+[05:09:45] <SiegeLord> One man's clarity is another's obscurity
+[05:10:02] <strcat> I've seen a lot of people struggle with the standard library's traits
+[05:10:25] <strcat> I doubt most have ever been used for code reuse (especially the ones implemented for 1 type)
+[05:10:28] <SiegeLord> The one trait for one type thing seems a reasonable complaint
+[05:10:49] <strcat> SiegeLord: why is replacing a free function with one different?
+[05:11:01] <strcat> as in using a generic impl
+[05:11:07] <strcat> no one else can implement that trait
+[05:12:21] <strcat> like IterBytes, why does it exist? it's specifically designed for Hash (requires you to give a length when you give a string, etc.) and you can't implement Hash and also IterBytes
+[05:12:57] <strcat> why do TotalOrd and TotalEq need to exist? why not just write out some rules for Ord/Eq instead of leaving them unspecified?
+[05:14:17] <strcat> if we expose a trait and don't actually use it for code reuse, it's questionable, because it's not actually dogfooded in any way - it's just there, and expected to be useful for generics, but it may not be
+[05:15:08] <strcat> if you're turning some real life thing (numeric concepts) into traits, then maybe you can get away with it...
+[05:15:46] <strcat> pub use vec::{ImmutableEqVector, ImmutableTotalOrdVector, ImmutableCopyableVector};
+[05:15:49] <strcat> pub use vec::{OwnedVector, OwnedCopyableVector,OwnedEqVector};
+[05:15:51] <strcat> pub use send_str::{SendStr, SendStrOwned, SendStrStatic, IntoSendStr};
+[05:16:00] <strcat> pub use path::{GenericPath, Path, PosixPath, WindowsPath};
+[05:16:25] <strcat> this is an API - does it make sense as one? these are type classes (things we expect people to use as bounds in generics)
+[05:16:39] * strcat shrugs
+[05:17:15] <strcat> imo if you can't remember everything that's in the prelude, there's a major issue
+[05:17:39] <strcat> http://docs.python.org/3.3/library/functions.html this is way too much. and it's not even as bad
+[05:17:50] <SiegeLord> I don't see it... I'm not going to ever import specific bits of my libraries. It's use my_lib::*;
+[05:18:33] <strcat> SiegeLord: which is feature-gated off and may not stay around, because it's not a great thing to do
+[05:18:50] <strcat> it means adding a function to the namespace breaks the source-level API
+[05:18:59] <strcat> so, when an end-user wants to compile the program
+[05:19:04] <strcat> and the library was updated
+[05:19:07] <strcat> the end-user now hits an error
+[05:19:15] <strcat> the library tried to keep API compatibility
+[05:19:30] <SiegeLord> Well, they could do use my_lib; where my lib pub used everything in that module
+[05:19:40] <strcat> traits do the same thing, and I was convinced of that being a problem earlier today
+[05:19:46] <strcat> (or was it yesterday?)
+[05:19:54] <strcat> so, lets say a program imports 'trait Foo'
+[05:19:58] <SiegeLord> You can hide the API complexity using reimports
+[05:20:04] <strcat> this means that the library adding a method to Foo is a *breaking change*
+[05:20:33] <strcat> so if you're using traits as very carefully designed, widely reused patterns, then adding methods probably isn't going to happen much
+[05:20:48] <strcat> if you're using them everywhere, for anything you can think of, you're going to be breaking the source-level API a *lot*
+[05:21:05] <strcat> you add a method 'bar', now you conflict with library B using that name
+[05:21:22] <strcat> because traits get implemented by types you didn't define yourself (even built-ins like int)
+[05:21:29] <strcat> and the other library is probably going to do that too
+[05:21:42] <strcat> you might think... hey, my time lib should add this method to int
+[05:21:48] <strcat> and you know what? it might be a reasonable idea
+[05:21:53] <strcat> in fact, most other time libraries might copy it
+[05:21:54] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[05:21:54] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1442a2f99 to 148bfd2a8: 02http://git.io/N3iJvQ
+[05:21:54] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[05:21:55] <strcat> now they all conflict.
+[05:22:46] <strcat> you have to import a trait to use the methods, so the methods basically need to be unique
+[05:23:07] <strcat> code reuse means widespread usage, so if you really expect it to be a great trait then you're basically taking those names for yourself
+[05:23:22] <strcat> like hash()
+[05:23:31] <strcat> you can't just go ahead and make a trait with a method called hash
+[05:23:40] <strcat> the stdlib already took that name
+[05:23:43] <SiegeLord> I don't quite see the argument here... you can selectively import traits, you can type bound a type to have only a few traits
+[05:24:01] <SiegeLord> There are ways to resolve all these issues
+[05:25:02] <strcat> if you need traits from two libraries with the same name, then what? your codebase is going to be laid out based on the names library authors gave these functions, and you'll struggle to write code using both?
+[05:25:40] <strcat> maybe rust isn't the language I'm looking for, there is a pretty big divergence in what I want and where rust is going
+[05:25:59] <SiegeLord> There was a suggestion for method renaming
+[05:26:35] <SiegeLord> It's just I'm not seeing the argument here. Extension methods are seen as a great thing
+[05:27:11] <SiegeLord> Are you arguing against extension methods? Against traits as extension methods?
+[05:27:35] <strcat> I'm against extension methods in a language with free functions
+[05:27:52] <strcat> subjective syntax wankery ;p
+[05:27:58] <SiegeLord> Well, glad we got here :P
+[05:28:00] <strcat> with a very real cost in complexity
+[05:28:07] <SiegeLord> Few will agree with this point of view
+[05:28:22] <strcat> I really doubt that
+[05:29:07] <strcat> rust appeals to me from a performance and robustness POV, and that's also why many other people are drawn to it
+[05:29:27] <strcat> traits as implemented by rust are very much a placement of a subjective syntax over robustness of API compatibility
+[05:29:40] <strcat> and without auto-complete, I definitely think it's not worth it
+[05:29:47] <strcat> with auto-complete, maybe it would be
+[05:29:53] <strcat> but rust is going to be really hard to do auto-complete for
+[05:30:04] <strcat> harder than C++
+[05:30:26] <strcat> which took years and years to materialize outside of MSVC++ in a non-hacky form
+[05:30:44] <strcat> it took people writing a whole new compiler with this as one of their first priorities from the start
+[05:31:32] <strcat> dot notation makes a lot of sense when I can type .foo and see 10 methods + docstrings
+[05:31:35] <strcat> when I can't, I don't like it
+[05:31:43] <strcat> it just adds ambiguity
+[05:31:44] <SiegeLord> I've been writing C++ without autocomplete for years
+[05:31:48] <strcat> and source-level conflicts
+[05:31:51] <SiegeLord> I just don't see the argument here
+[05:32:02] <strcat> I am not saying you need auto-complete
+[05:32:34] <strcat> I am saying rust values a potential auto-complete more than other issues (source level compatibility, lack of conflicts between libs, simplicity)
+[05:32:49] <strcat> because as far as I am concerned, that is the benefit of dot notation for methods
+[05:32:53] <strcat> and I prefer haskell's way otherwise
+[05:33:09] <strcat> simpler, better namespacing
+[05:33:29] <strcat> one great way to do it, no widespread choice to be settled by style guidelines
+[05:36:15] <SiegeLord> How are you going to implement something like pow() without the dot syntax?
+[05:42:54] <strcat> >>> pow(5, 2)
+[05:42:55] <strcat> 25
+[05:43:01] <strcat> ?
+[05:43:15] <SiegeLord> It has to be generic
+[05:43:38] <SiegeLord> Let's say over f32 and f64
+[05:49:28] <SiegeLord> It is just not apparent to me what you have to do without traits inside a function that is generic over T and you want to call pow on it
+[05:52:44] <SiegeLord> To that end, it seems to me that traits have a clear purpose, as implemented
+[05:53:03] <SiegeLord> They enable one to write generic functions
+[05:53:28] <SiegeLord> Notably, generic free functions
+[05:54:21] <SiegeLord> So the only problem I see is a trait used only once, which isn't necessary for that
+[06:01:41] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: leaving)
+[06:27:18] <bjz> strcat: the API breakages was brought up by Bjarne as one of the considerations when it came to concepts lite
+[06:27:39] <bjz> strcat: they did look at Haskell
+[06:29:12] <bjz> strcat: at least with Haskell you don't have the issue of a change to an imported trait breaking stuff because there is a conflicting method
+[06:29:26] <bjz> seeing as there are no methods
+[06:31:34] <bjz> it's important folks watch http://www.youtube.com/watch?v=0avh39CI_ls, because although their situation is slightly different from ours, and despite lots of people hating C++, they are smart people, and they've spent a great deal of time thinking about the issues
+[06:32:06] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[06:32:06] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/xWS3EQ
+[06:32:06] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[06:35:05] <bjz> they are much more constrained due to their language's complexity, and their incredible commitment to backwards compatibility, so the solution they proposed (it was rejected for C++14) would not be as relevant to Rust, but the design issues Bjarne highlights are pertinant
+[06:35:20] *** Quits: tjc (tjc@moz-6EB4E533.dsl.tsoft.com) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[06:36:44] *** Joins: tjc (tjc@moz-6EB4E533.dsl.tsoft.com)
+[06:36:45] *** ChanServ sets mode: +o tjc
+[06:36:54] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[06:36:54] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/lqgtLg
+[06:36:54] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[06:36:55] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[06:36:55] <ghrust> 01[13rust01] 15bors pushed 61 new commits to 06auto: 02http://git.io/_3EaAA
+[06:36:55] <ghrust> 13rust/06auto 14f553701 15Patrick Walton: libsyntax: De-`@mut` `ParseSess::included_mod_stack`
+[06:36:55] <ghrust> 13rust/06auto 143aa19a6 15Patrick Walton: librustc: De-`@mut` the parse session
+[06:36:55] <ghrust> 13rust/06auto 14b33386d 15Patrick Walton: libsyntax: De-`@mut` `StringReader::pos`
+[06:36:57] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[06:46:12] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[07:06:56] *** Joins: edftwin (edftwin@moz-E43EC1F2.nyc.res.rr.com)
+[07:15:24] *** Quits: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net) (Connection reset by peer)
+[07:15:25] *** Joins: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net)
+[07:21:05] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: Leaving)
+[07:24:34] *** Quits: tjc (tjc@moz-6EB4E533.dsl.tsoft.com) (Quit: Textual IRC Client: www.textualapp.com)
+[07:33:49] *** Joins: tjc (tjc@moz-6EB4E533.dsl.tsoft.com)
+[07:33:49] *** ChanServ sets mode: +o tjc
+[07:33:57] *** Quits: tjc (tjc@moz-6EB4E533.dsl.tsoft.com) (Quit: Textual IRC Client: www.textualapp.com)
+[07:46:55] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[07:46:56] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/_3EaAA
+[07:46:56] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[07:51:49] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[07:51:49] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/gbXDVg
+[07:51:49] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[07:51:51] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[07:51:51] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/rxmA_Q
+[07:51:51] <ghrust> 13rust/06auto 14512e28d 15Brian Anderson: Use C++ for unwinding on Android. #11147...
+[07:51:51] <ghrust> 13rust/06auto 14dd8cfac 15bors: auto merge of #11281 : brson/rust/androidunwind, r=alexcrichton...
+[07:51:51] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[08:02:56] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[08:16:04] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[08:32:11] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[08:32:11] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/Vha20w
+[08:32:11] <ghrust> 13rust/06auto 14649c648 15Brian Anderson: Abort on double-failure. #910...
+[08:32:11] <ghrust> 13rust/06auto 14239fb1f 15bors: auto merge of #11283 : brson/rust/doublefailure, r=alexcrichton...
+[08:32:12] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[08:49:59] *** Quits: edftwin (edftwin@moz-E43EC1F2.nyc.res.rr.com) (Client exited)
+[09:14:54] <bjz> strcat: love :=
+[09:15:05] <strcat> heh
+[09:15:16] <bjz> bit late though :(
+[09:15:59] <strcat> well, I happen to like significant indentation and [] for generics and {} for generic container literals
+[09:16:17] <bjz> hah
+[09:16:28] <strcat> and := for assignment is pretty nice ;p
+[09:16:43] <bjz> <3 all those excep significant indentation... maybe
+[09:16:44] <strcat> I don't care all that much about syntax though
+[09:16:49] <bjz> yeah
+[09:16:55] <strcat> I get used to what I'm using
+[09:17:22] <bjz> I like nice syntax, but semantics are always more important
+[09:17:43] <strcat> HashMap<Vec<int>, Vec<int>>
+[09:18:02] <strcat> HashMap[Vec[int], Vec[int]], for whatever reason, I find that a lot easier to read
+[09:18:21] <strcat> and editors will happily jump to a matching [ and highlight it
+[09:18:23] <bjz> indeed
+[09:18:28] <bjz> and easier to parse
+[09:18:50] <bjz> (if containers use {}
+[09:18:51] <bjz> )
+[09:18:57] <strcat> and if you use significant indentation you have {} free ;p
+[09:23:18] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: sleep)
+[09:51:55] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[09:51:55] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/Vha20w
+[09:51:55] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[09:56:54] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[09:56:54] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/LgfZOQ
+[09:56:54] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[09:56:55] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[09:56:55] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/wezhBA
+[09:56:55] <ghrust> 13rust/06auto 142453079 15Alex Crichton: Change rmake and doc-test to support TESTNAME...
+[09:56:55] <ghrust> 13rust/06auto 14b4253a2 15bors: auto merge of #11290 : alexcrichton/rust/testname, r=brson...
+[09:56:56] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[10:05:51] <dbaupp> jack: re docs for libnative and libgreen: http://static.rust-lang.org/doc/master/native/index.html and http://static.rust-lang.org/doc/master/green/index.html
+[10:06:19] <dbaupp> someone (cmr?) added that to the `make docs` target last week, iirc.
+[10:06:30] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[10:41:38] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[10:47:19] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[10:48:10] *** Quits: veddan (viktor@moz-C79BC80B.csbnet.se) (Ping timeout)
+[10:53:26] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[11:02:09] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[11:02:09] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14b4253a2 to 14239fb1f: 02http://git.io/N3iJvQ
+[11:02:09] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[11:02:09] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[11:02:10] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/K5Cb5w
+[11:02:10] <ghrust> 13rust/06auto 146130888 15Adrien Tétar: doc: un-xfail conditions tutorial
+[11:02:10] <ghrust> 13rust/06auto 1489220e0 15Adrien Tétar: std: io: add some code examples...
+[11:02:10] <ghrust> 13rust/06auto 144b0f92e 15bors: auto merge of #11271 : adridu59/rust/patch-io, r=huonw
+[11:02:12] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[11:04:29] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[11:57:00] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[11:57:00] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/nfToTg
+[11:57:00] <ghrust> 13rust/06auto 14f86d079 15Brian Anderson: Fix windows dist script...
+[11:57:00] <ghrust> 13rust/06auto 14690e464 15bors: auto merge of #11291 : brson/rust/copy-runtime-deps, r=alexcrichton...
+[11:57:00] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[11:57:03] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[11:57:03] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 144b0f92e to 14239fb1f: 02http://git.io/N3iJvQ
+[11:57:03] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[11:59:49] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[12:01:23] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Quit: Konversation terminated!)
+[12:01:31] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[12:04:33] *** Quits: Luqman (laden@moz-AB7945E9.csclub.uwaterloo.ca) (Ping timeout)
+[12:10:18] *** Joins: Luqman (laden@moz-AB7945E9.csclub.uwaterloo.ca)
+[12:46:26] *** Joins: tupshin_ (quassel@moz-E7B03838.c3-0.nyr-ubr1.nyr.ny.cable.rcn.com)
+[13:05:25] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[13:07:00] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[13:07:00] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/nfToTg
+[13:07:00] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[13:11:55] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[13:11:55] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/S-Hw5Q
+[13:11:55] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[13:32:17] *** Quits: tupshin_ (quassel@moz-E7B03838.c3-0.nyr-ubr1.nyr.ny.cable.rcn.com) (Ping timeout)
+[13:51:45] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Ping timeout)
+[13:52:53] *** Joins: tupshin_ (quassel@moz-E7B03838.c3-0.nyr-ubr1.nyr.ny.cable.rcn.com)
+[14:04:07] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[14:21:59] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[14:21:59] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/IG_7Gg
+[14:21:59] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[14:26:53] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[14:26:53] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/dn-5og
+[14:26:53] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[14:26:55] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[14:26:55] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/vKYk7Q
+[14:26:55] <ghrust> 13rust/06auto 14ba80157 15Adrien Tétar: doc: un-xfail conditions tutorial
+[14:26:55] <ghrust> 13rust/06auto 1495ace50 15Adrien Tétar: std: io: add some code examples...
+[14:26:55] <ghrust> 13rust/06auto 1414c24ac 15bors: auto merge of #11271 : adridu59/rust/patch-io, r=huonw
+[14:26:57] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[14:35:29] *** Quits: doomlord_ (servitor@moz-CA917A47.range86-184.btcentralplus.com) (Client exited)
+[14:49:42] *** Joins: canhtak (canhtak@moz-7307D7CE.wl.t.ulaval.ca)
+[14:50:30] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[15:00:23] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[15:06:01] *** flaper87|afk is now known as flaper87
+[15:36:56] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[15:36:56] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/vKYk7Q
+[15:36:57] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[15:41:53] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[15:41:53] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/K9McOQ
+[15:41:53] <ghrust> 13rust/06auto 14d45b364 15Steven Fackler: Remove a hacky buffer extraction from metadata
+[15:41:53] <ghrust> 13rust/06auto 14fcca394 15bors: auto merge of #11295 : sfackler/rust/de-jank-encoder, r=brson
+[15:41:53] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[15:45:49] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Connection reset by peer)
+[15:55:44] *** Joins: a_m0d|home (a_m0d@moz-322A4DE4.acanac.net)
+[16:16:58] *** Quits: a_m0d|home (a_m0d@moz-322A4DE4.acanac.net) (Quit: Leaving.)
+[16:33:20] *** Joins: Kxepal832 (Miranda@moz-B0CFA8DA.pppoe.mtu-net.ru)
+[16:33:47] *** Quits: Kxepal (Miranda@moz-244F811C.pppoe.mtu-net.ru) (Ping timeout)
+[16:38:37] <eddyb> woo, transplanting commits with git rebase --onto :D
+[16:43:52] *** Joins: a_m0d|home (a_m0d@moz-322A4DE4.acanac.net)
+[16:44:54] *** Quits: tikue (tikue@moz-FEADCD38.hsd1.pa.comcast.net) (Ping timeout)
+[16:52:00] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[16:52:00] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/K9McOQ
+[16:52:00] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[16:56:52] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[16:56:53] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/gov_Zw
+[16:56:53] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[16:59:48] <eddyb> acrichto: could you reopen https://github.com/mozilla/rust/pull/11161?
+[17:01:25] <cmr> eddyb: do you want a review?
+[17:01:41] <eddyb> cmr: after the PR is reopened and I can get my changes through :P
+[17:01:45] <cmr> ah
+[17:01:55] <cmr> I didn't realize github did that
+[17:01:55] <eddyb> if that even works, we'll see
+[17:02:05] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[17:02:05] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/gov_Zw
+[17:02:05] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[17:02:07] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[17:02:07] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/A1bZ_g
+[17:02:07] <ghrust> 13rust/06auto 14bc78d86 15Brian Anderson: rt: Define exp10 on Android...
+[17:02:07] <ghrust> 13rust/06auto 14d86cb6a 15bors: auto merge of #11299 : brson/rust/exp10, r=pcwalton...
+[17:02:07] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[17:02:32] <eddyb> haha what?
+[17:03:03] <eddyb> is my master not in sync?
+[17:07:01] <eddyb> cmr: hmm. a rebase against parent and a force pushed fixed it. thanks :) (r? if you have time)
+[17:07:27] <cmr> negative diffstat yay1
+[17:08:28] <eddyb> oh yeah, I tend to do that lately :P
+[17:10:30] <eddyb> cmr: erm, what happened here? http://huonw.github.io/isrustfastyet/mem/#00d87e0,cc1b93e
+[17:10:54] <cmr> eddyb: I wish I knew
+[17:11:05] <cmr> I think some PRs are missing
+[17:11:21] <cmr> I've been doing things in windowslandia, so the bencher hasn't been running :(
+[17:11:34] <eddyb> dbaupp: sorry to bother you again, but did you have a chance to reset irsy?
+[17:11:40] <cmr> he did
+[17:11:43] <cmr> ... I think
+[17:11:56] <eddyb> cmr: the linker nonsense is still there AFAICT
+[17:12:18] <eddyb> e.g. http://huonw.github.io/isrustfastyet/mem/#29ca435
+[17:13:04] <cmr> look at the one after LTO
+[17:13:09] <cmr> I don't think I re-benched LTO itself.
+[17:13:35] <cmr> you'll also note that linking isn't present in the passes data
+[17:15:07] <eddyb> cmr: I know that linking disappeared after one point. idk, I wish I knew where ~200MB came from
+[17:15:13] <eddyb> (and then disappeared :S)
+[17:16:20] *** Joins: gwty (gwtypc@F37DE23.519A4FE9.27560D6E.IP)
+[17:18:57] <cmr> eddyb: r+ with nits fixed
+[17:23:26] <eddyb> cmr: the hardest thing is coming up with a good expect message >_>
+[17:24:31] <eddyb> let ast_map = ast_map.expect("--pretty=typed missing ast_map"); // is this good enough?
+[17:25:24] <cmr> yeah that's fine
+[17:25:52] <cmr> IME any given unwrap is going to cause an ICE at some point :)
+[17:32:56] *** Joins: johto (rnn@moz-31EB76BD.to)
+[17:33:44] <cmr> acrichto: it's unfortunate that one can't select on a DuplexStream. peek() was removed, too, which is fairly unfortunate for this code. I'm not actually sure this pattern can be implemented anymore: https://github.com/huonw/multibuilder/blob/master/main.rs#L197
+[17:34:12] <cmr> recv_opt will return the item, but we still need to try_recv if it's None to know if it was closed, which will block.
+[17:35:48] <cmr> not 100% sure
+[17:36:02] <cmr> I haven't had breakfast or my tea yet ;)
+[17:39:39] <eddyb> cmr: you've got me going through the diff and adding spaces after ":" >_>
+[17:40:25] <eddyb> though now I can't see how you looked through it so fast (did you read *all of it* :P?)
+[17:40:43] <cmr> eddyb: sed -i 's/:([^\w])/: $1/'?
+[17:40:51] <cmr> or some other character class
+[17:40:55] <cmr> I always forget which is which
+[17:40:59] <cmr> should probably be \s
+[17:41:06] <eddyb> yeah, no, I'm not inflating my PR
+[17:41:09] <cmr> :P
+[17:42:10] <cmr> I admit that I skipped all one-line changes about 1/5 the way through, and looked only at the real changes (rather than the simple @->&)
+[18:01:45] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[18:02:20] <eddyb> cmr: great, now I have to fix visit.rs too -_-
+[18:04:59] <acrichto> cmr: I think that DuplexStream just needs to expose the underlying port
+[18:08:43] *** Quits: canhtak (canhtak@moz-7307D7CE.wl.t.ulaval.ca) (Quit: canhtak)
+[18:10:05] <eddyb> cmr: hah /home/eddy/Projects/rust/src/librustc/front/assign_node_ids_and_map.rs:1: incorrect license
+[18:10:13] <eddyb> should I only put the last year, not a range?
+[18:11:54] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[18:11:54] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/A1bZ_g
+[18:11:54] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[18:16:04] <eddyb> cmr: should I strip the last commit from my crazy trans PR, and the let smaller fixes go through?
+[18:16:54] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[18:16:54] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/-Vq-Gg
+[18:16:54] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[18:16:56] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[18:16:57] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/-70iaQ
+[18:16:57] <ghrust> 13rust/06auto 14dcaf10f 15Alex Crichton: Add a stack_bounds function to the Runtime trait...
+[18:16:57] <ghrust> 13rust/06auto 14b432e82 15bors: auto merge of #11306 : alexcrichton/rust/native-bounds, r=pcwalton...
+[18:16:57] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[18:19:05] <eddyb> cmr: I removed pcwalton's r+ comment from the second commit a few days ago when I thought I had "just one more fix" on the third commit, but nope :(
+[18:19:21] <eddyb> oh, look, I went over 1k lines. pffft
+[18:21:52] *** Joins: canhtak (canhtak@moz-7307D7CE.wl.t.ulaval.ca)
+[18:31:25] *** Quits: Kxepal832 (Miranda@moz-B0CFA8DA.pppoe.mtu-net.ru) (Quit: Kxepal832)
+[18:31:45] *** Joins: Kxepal (Miranda@moz-B0CFA8DA.pppoe.mtu-net.ru)
+[18:32:06] *** Quits: canhtak (canhtak@moz-7307D7CE.wl.t.ulaval.ca) (Quit: canhtak)
+[18:34:00] <eddyb> cmr: r?
+[18:36:32] <eddyb> (nvm about the other PR, it looks like it needs proper review *anyways* so I'll just wait)
+[18:50:34] <eddyb> cmr: don't tell me that ": " fixing delay was enough for you to go away. oh well, it can wait
+[19:05:05] *** flaper87 is now known as flaper87|afk
+[19:13:23] *** Joins: canhtak (canhtak@moz-7307D7CE.wl.t.ulaval.ca)
+[19:22:18] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[19:24:55] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[19:24:55] *** ChanServ sets mode: +ao pcwalton pcwalton
+[19:26:50] <eddyb> pcwalton: it was actually easy to transplant my commit on top of master https://github.com/mozilla/rust/pull/11161
+[19:26:57] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[19:26:57] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/-70iaQ
+[19:26:57] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[19:27:20] <eddyb> pcwalton: currently pending an r+ from cmr (I think I took too long to fix some nits and he went afk)
+[19:27:40] <pcwalton> if it's just converting @ to & then I can r+
+[19:29:23] <eddyb> pcwalton: mostly, yeah. also removing @ in places (and a RefCell that wasn't required because a recent change) and minute cleanups
+[19:29:44] <pcwalton> r+ then, as long as tests pass :)
+[19:30:14] <eddyb> pcwalton: thanks. I most likely won't be here if they fail, but I know at least that it compiles :P
+[19:30:38] <eddyb> and tidy passes and I did check rustpkg/rustdoc back when I changed the passes
+[19:31:24] *** Quits: gwty (gwtypc@F37DE23.519A4FE9.27560D6E.IP) (Ping timeout)
+[19:32:10] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[19:32:10] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/zDIGog
+[19:32:10] <ghrust> 13rust/06auto 14609bab4 15Eduard Burtescu: Disowned the Visitor.
+[19:32:10] <ghrust> 13rust/06auto 14d5f5619 15bors: auto merge of #11161 : eddyb/rust/de-at-visitor, r=pcwalton...
+[19:32:11] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[19:37:09] *** Joins: gwty (gwtypc@B25AFF70.D8188D01.45DA6411.IP)
+[19:37:10] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[19:37:10] *** ChanServ sets mode: +qo brson brson
+[19:51:07] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[19:51:08] <ghrust> 01[13rust01] 15brson merged 06master into 06dist-snap: 02http://git.io/S7LbCQ
+[19:51:08] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[19:52:12] *** Joins: nrc (ncameron@7BE24E90.A5032A01.3CFC199D.IP)
+[19:53:16] <nrc> Suppose I have some representation of a module in the compiler (the ast node, the ty information, whatever), is there any way to lookup it's parent?
+[19:53:38] <nrc> e.g., if I have a reference to a::b::c, is there a way to find a::b?
+[19:54:08] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: Lost terminal)
+[19:54:53] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[19:54:53] *** ChanServ sets mode: +qo brson brson
+[19:56:49] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[19:56:49] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/wtYWtA
+[19:56:49] <ghrust> 13rust/06auto 14cefb2c7 15Vadim Chugunov: Fix ARM unwinding.
+[19:56:49] <ghrust> 13rust/06auto 148990708 15bors: auto merge of #11301 : vadimcn/rust/fix-android, r=brson...
+[19:56:49] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[19:56:52] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[19:56:52] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14d5f5619 to 14b432e82: 02http://git.io/N3iJvQ
+[19:56:52] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[19:57:08] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[20:06:13] *** Quits: canhtak (canhtak@moz-7307D7CE.wl.t.ulaval.ca) (Quit: canhtak)
+[20:26:25] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[20:40:08] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[21:16:50] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[21:16:50] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/wtYWtA
+[21:16:50] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[21:19:51] <eddyb> cmr: lol, I was expecting the build to fail because the actual Visitor changes, in rustpkg/rustdoc (I realized too late). but it died from a missing import >_>
+[21:21:57] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[21:21:57] <ghrust> 01[13rust01] 15bors pushed 6 new commits to 06auto: 02http://git.io/WW4P0g
+[21:21:57] <ghrust> 13rust/06auto 1418cef3f 15Brian Anderson: Don't allow single-variant enums to be dereferenced. #6246...
+[21:21:57] <ghrust> 13rust/06auto 146ae46b9 15Brian Anderson: Don't allow newtype structs to be dereferenced. #6246
+[21:21:57] <ghrust> 13rust/06auto 14de31452 15Brian Anderson: rustc: Add error about obsolete struct deref
+[21:21:59] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[21:27:09] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[21:50:02] *** Quits: gwty (gwtypc@B25AFF70.D8188D01.45DA6411.IP) (Client exited)
+[21:53:18] <larsberg> are timers not supported in some cases in modern-ish (08321f1c49 ) Rust? we're getting https://gist.github.com/larsbergstrom/8261178
+[21:53:29] <larsberg> Will we need to wait for https://github.com/mozilla/rust/pull/11294 to land for servo?
+[21:53:45] *** Quits: Axord (xord@moz-C0D5F15A.lsanca.dsl-w.verizon.net) (Quit: I'm sure it's perfectly safe)
+[21:55:04] <acrichto> larsberg: timers in native tasks aren't implemented, but timers on green tasks still work
+[21:56:25] <larsberg> acrichto: thanks! unfortunately, it's our main UI thread, so we're sort of stuck on a native thread
+[21:56:33] <larsberg> all we're using it for, though, is just to call sleep(10)
+[21:56:49] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[21:56:49] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14c4acd9e to 148990708: 02http://git.io/N3iJvQ
+[21:56:49] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[21:56:50] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[21:56:50] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/NGpuMg
+[21:56:50] <ghrust> 13rust/06auto 14f1b5f59 15Huon Wilson: std: adjust requested stack size for thread-local storage....
+[21:56:50] <ghrust> 13rust/06auto 1455d4923 15bors: auto merge of #11284 : huonw/rust/issue-6233, r=alexcrichton...
+[21:56:51] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[21:56:54] <larsberg> (it's in our message pump loop that polls for messages and window events)
+[22:04:03] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[22:05:04] <larsberg> should we just unsafe-ffi out to nanosleep until native thread timers land? if we don't sleep there, servo spins a CPU at 100%, which is pretty bogus
+[22:12:12] *** Joins: SiegeLord (sl@moz-3B527BD6.bstnma.fios.verizon.net)
+[22:17:05] *** flaper87|afk is now known as flaper87
+[22:22:55] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Ping timeout)
+[22:30:21] <acrichto> larsberg: yeah I would just do that for now
+[22:30:30] <acrichto> that's all that timer::sleep will do anyway
+[22:31:03] <Eridius> acrichto: is it possible to set up a libgreen pool that doesn't spawn any OS threads but instead uses the current one? (assuming it's spawned from a libnative task)
+[22:31:22] <Eridius> because it would be kind of neat to have a set of green tasks that all live on the main thread and thus can access the UI
+[22:31:47] <larsberg> acrichto: thanks, sounds great!
+[22:31:53] <acrichto> Eridius: not right now no, although I've considered adding a function to SchedPool which does exacty that
+[22:32:23] <Eridius> this assumes, of course, that the UI library in use doesn't require its own runloop, because then libgreen would be keeping that runloop suspended and things wouldn't work (e.g. Cocoa would not work in this fashion)
+[22:32:53] <Eridius> acrichto: what about making it just a case of PoolConfig where threads == 0?
+[22:33:00] <benh> I assume you can't share a port/chan pair between a green thread and a native thread? :v
+[22:33:24] <acrichto> benh: you can, that was a major design goal
+[22:33:37] <acrichto> Eridius: it'd be something like 'fn consume_and_wait(self)` on SchedPool
+[22:33:38] <benh> that's pretty neat
+[22:33:39] <larsberg> benh: yeah, we require that pretty heavily in servo :-)
+[22:34:52] <acrichto> larsberg: running a pool of tsaks on the main thread?
+[22:35:05] <acrichto> and just the main thread, not connected with any other pools
+[22:35:54] <larsberg> acrichto: no, I just meant being able to send on a chan in a green thread back to a port that's doing the rev in a native thread
+[22:36:35] <larsberg> Eridius' idea is interesting, but I'm not sure what other tasks we have that we would want touching the UI in servo
+[22:36:42] <Eridius> acrichto: is there any workaround today for #11165 (TcpStream.split(), or alternatively I/O in select())?
+[22:37:31] <acrichto> Eridius: right now, no
+[22:37:35] *** Joins: doomlord_ (servitor@moz-CA917A47.range86-184.btcentralplus.com)
+[22:37:46] <Eridius> damn. Seems like a big oversight, and it means I can't write the IRC bot that I want to write
+[22:37:52] <acrichto> Eridius: if you have direct access to the native file descriptor then you can call dup()
+[22:38:00] <acrichto> but that would require you to use the native I/O apis directly
+[22:38:09] <Eridius> which I'd rather avoid
+[22:46:36] <dbaupp> acrichto: don't we have an FdReader/FdWriter wrapper?
+[22:46:55] <acrichto> dbaupp: we do, native::io::file::FileDesc
+[22:47:11] <acrichto> everything packaged all in one
+[22:47:16] <dbaupp> so using native IO isn't necessarily too horrible? :)
+[22:47:29] <acrichto> it should be very nice
+[22:47:36] <acrichto> at least I attempted to design it that way
+[22:47:45] <acrichto> I didn't lose too much sleep over it though
+[22:47:58] <dbaupp> acrichto: (btw, you've called a file in libnative bookeeping... are we keeping boos or eeping books? :P)
+[22:48:13] <acrichto> I prefer to eep books
+[23:16:48] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[23:16:48] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/NGpuMg
+[23:16:48] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[23:21:47] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[23:21:47] <ghrust> 01[13rust01] 15bors pushed 6 new commits to 06auto: 02http://git.io/y1qRog
+[23:21:47] <ghrust> 13rust/06auto 1418cef3f 15Brian Anderson: Don't allow single-variant enums to be dereferenced. #6246...
+[23:21:47] <ghrust> 13rust/06auto 143b1862a 15Brian Anderson: Don't allow newtype structs to be dereferenced. #6246
+[23:21:48] <ghrust> 13rust/06auto 142d8fbba 15Brian Anderson: rustc: Add error about obsolete struct deref
+[23:21:50] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[23:21:51] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[23:21:52] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/Kca2GA
+[23:21:52] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[23:23:39] <acrichto> my god user space context switching is fast
+[23:23:44] <acrichto> 10x improvement over native
+[23:52:02] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[23:55:20] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[23:55:20] *** ChanServ sets mode: +qo brson brson

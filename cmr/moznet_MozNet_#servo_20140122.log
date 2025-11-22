@@ -1,0 +1,726 @@
+[00:00:19] *** Joins: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca)
+[00:04:32] *** Joins: canhtak (canhtak@moz-6D20A1A6.wl.t.ulaval.ca)
+[00:11:29] <larsberg> https://etherpad.mozilla.org/Servo-meeting-weekly
+[00:11:33] *** Joins: recrack (Mibbit@5AB4884B.FCC4549.14D5B978.IP)
+[00:11:38] <recrack> Hi,
+[00:11:53] <jack> recrack: https://github.com/mozilla/servo/issues/1290
+[00:12:05] <jack> recrack: http://test.csswg.org/suites/css2.1/20110323/html4/toc.html
+[00:13:17] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[00:20:54] *** Quits: pauls (pauls@moz-7140CF01.ccs.neu.edu) (Ping timeout)
+[00:21:34] *** Joins: pauls (pauls@moz-7140CF01.ccs.neu.edu)
+[00:24:24] *** Joins: brson (brson@moz-C07D5168.p2p.sfo1.mozilla.com)
+[00:24:24] *** ChanServ sets mode: +o brson
+[00:32:21] *** Joins: hoverbear (hoverbear@moz-A73BC514.wireless.uvic.ca)
+[00:33:54] *** Quits: sammykim_ (sammy.kim@5AB4884B.FCC4549.14D5B978.IP) (Quit: Lost terminal)
+[00:34:38] <jdm> pcwalton: please help me sort out my complicated feelings about vtable-like things for servo
+[00:34:47] <pcwalton> okay :)
+[00:34:50] <jdm> pcwalton: in particular, for things like event handling
+[00:35:16] <jdm> pcwalton: in eventdispatcher, we basically want to do a virtual dispatch to call per-element-type rust event handlers
+[00:35:32] <jdm> I just really don't like the existing solutions we have for things like AfterSetAttr in element.rs
+[00:35:35] <jdm> it's terrible
+[00:35:56] <pcwalton> well, we do want single inheritance in rust
+[00:36:37] <pcwalton> maybe it'd be easiest to use "as &mut Trait"
+[00:37:04] <jdm> pcwalton: I'm not sure that will work. we have the equivalent of JSManaged<EventTarget>
+[00:37:12] <pcwalton> (abstract_self as &mut Something).AfterSetAttr
+[00:37:27] <jdm> is the idea that we would have something like
+[00:37:45] <jdm> impl VirtualStuff for JSManaged<Something> { ... }
+[00:37:56] <jdm> impl VirtualStuff for JSManaged<AnotherThing> { ... }
+[00:38:08] <jdm> no, that doesn't seem like that would work
+[00:38:23] <pcwalton> well, eventually we want something like
+[00:38:32] <pcwalton> fn foo(JSManaged<self>, a: int, b: int) {}
+[00:40:37] <jdm> pcwalton: so it sounds like we would need to switch on the type and cast to the concrete one regardless of the solution :<
+[00:41:03] <pcwalton> well, if Node were actually a *trait* object then it wouldn't be a problem
+[00:41:10] *** Quits: TimAbraldes (quassel@125EF623.B2666F0E.66399531.IP) (Input/output error)
+[00:41:32] *** Quits: Jayflux (Jason@moz-D3C22420.as13285.net) (Quit: Leaving)
+[00:41:33] <pcwalton> then you could just call the virtual method.
+[00:41:49] <jdm> yeah, but I find it hard to reason about how that would interact with the current smart pointer setup
+[00:43:00] *** Quits: canhtak (canhtak@moz-6D20A1A6.wl.t.ulaval.ca) (Quit: canhtak)
+[00:43:23] <jdm> let's imagine that there's an EventListener trait
+[00:43:37] <jdm> and it's implemented by HTMLFooElement and HTMLBarElement
+[00:44:14] <jdm> if we have an EventTarget type, which secretly is either an HTMLFooElement or HTMLBarElement
+[00:44:35] <jdm> can we just obtain an EventListener trait object from that EventTarget object?
+[00:45:07] *** Quits: brson (brson@moz-C07D5168.p2p.sfo1.mozilla.com) (Ping timeout)
+[00:45:11] <jdm> by default |some_listener as &EventListener| won't compile, since there's no EventListener impl for EventTarget
+[00:46:32] *** Quits: recrack (Mibbit@5AB4884B.FCC4549.14D5B978.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[00:47:46] *** Joins: canhtak (canhtak@moz-6D20A1A6.wl.t.ulaval.ca)
+[00:48:41] *** Joins: brson (brson@moz-C07D5168.p2p.sfo1.mozilla.com)
+[00:48:42] *** ChanServ sets mode: +o brson
+[00:50:08] *** Joins: sammykim (sammy.kim@5AB4884B.FCC4549.14D5B978.IP)
+[00:51:11] <larsberg> brson: https://github.com/mozilla/rust/issues/9120 is why we need API >= 18 for Rust on Android
+[00:56:22] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[00:57:15] *** Quits: hoverbear (hoverbear@moz-A73BC514.wireless.uvic.ca) (Quit: Taking a nap.)
+[01:01:52] <jack> nmatsakis: ping? https://gist.github.com/metajack/8551693
+[01:02:21] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[01:04:50] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[01:04:50] <ghservo> [13servo] 15jdm opened issue #1527: Implement vtable support for common overriding behaviours 02http://git.io/ZICpZA
+[01:04:50] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[01:05:11] <dbaupp> jack: does it work with a temporary for self.attrs.iter()?
+[01:07:11] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[01:07:11] <ghservo> [13servo] 15jdm opened issue #1528: Implement Rust event handlers for DOM elements 02http://git.io/w_Hf8A
+[01:07:11] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[01:15:31] <jack> dbaupp: if i do that i get the same error message on the temp assign line
+[01:16:01] <dbaupp> jack: maybe a temp for self.attrs?
+[01:17:10] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[01:18:09] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[01:18:09] <ghservo> [13servo] 15ibnc opened pull request #1529: Dumping display list levels to rust log (06master...06display_list_debug) 02http://git.io/xjqqHQ
+[01:18:09] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[01:18:37] <jack> dbaupp: same :(
+[01:18:59] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[01:20:16] <dbaupp> weird :(
+[01:23:33] <patrickkim> pcwalton : ping
+[01:33:37] *** Joins: aydinkim (aydin.kim@5AB4884B.FCC4549.14D5B978.IP)
+[01:33:56] <aydinkim> jack: ping
+[01:34:27] *** Joins: sonwow (Mibbit@5AB4884B.FCC4549.14D5B978.IP)
+[01:36:45] <pcwalton> patrickkim: pong
+[01:38:01] <patrickkim> could you review my prs?
+[01:38:09] <pcwalton> sure
+[01:38:23] <patrickkim> #1506
+[01:38:25] <patrickkim> #1520
+[01:39:41] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[01:39:48] *** Joins: hoverbear (hoverbear@moz-A73BC514.wireless.uvic.ca)
+[01:41:31] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Ping timeout)
+[01:44:39] *** Quits: hoverbear (hoverbear@moz-A73BC514.wireless.uvic.ca) (Quit: Taking a nap.)
+[01:47:41] *** Joins: hyunjunekim (hyunjuneki@5AB4884B.FCC4549.14D5B978.IP)
+[01:49:42] * jdm likes the name hoverbear
+[01:50:03] *** Quits: brson (brson@moz-C07D5168.p2p.sfo1.mozilla.com) (Ping timeout)
+[01:50:06] <jdm> best avatar: https://developer.mozilla.org/en-US/profiles/Hoverbear
+[01:50:07] *** Joins: brson (brson@moz-C07D5168.p2p.sfo1.mozilla.com)
+[01:50:07] *** ChanServ sets mode: +o brson
+[01:52:22] *** Quits: brson (brson@moz-C07D5168.p2p.sfo1.mozilla.com) (Ping timeout)
+[01:54:21] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[01:58:44] <patrickkim> pcwalton : ping
+[01:58:47] <pcwalton> patrickkim: pong
+[01:58:50] <patrickkim> can i have question?
+[01:58:52] <pcwalton> sure
+[01:58:57] <patrickkim> in #1520
+[01:58:58] <crowbot> Issue #1520: fix imagebox size compute - https://github.com/mozilla/servo/pull/1520
+[01:59:22] <patrickkim> should i make assing_height thing in box_ you think?
+[01:59:36] <pcwalton> I would do that
+[01:59:56] <patrickkim> and..
+[02:00:02] <patrickkim> in #1506
+[02:00:03] <crowbot> Issue #1506: fix text-decoration property in layout & fix line-height property - https://github.com/mozilla/servo/pull/1506
+[02:00:25] <patrickkim> in my pr, uses three color(4bytes *3)
+[02:00:43] <patrickkim> if i make Option<~RareFlowFlags>
+[02:01:05] <patrickkim> that also needs one color value
+[02:01:35] *** kimundi is now known as zz_kimundi
+[02:01:58] <patrickkim> so, it uses Option(8bytes?) + 4bytes i think
+[02:02:35] <patrickkim> how do you think?
+[02:04:29] <pcwalton> I was thinking that the color value should just be assumed to be equal to the text color if RareFlowFlags is none
+[02:06:00] <patrickkim> <div style="text-decoration:underline;color:blue"> <em>asdf</em> </div>
+[02:06:23] <patrickkim> in this case underline of "asdf" uses color of div i think
+[02:06:43] <patrickkim> so we need option+color(or style of div)
+[02:07:03] <larsberg> aydinkim: ping
+[02:07:10] <patrickkim> <div style="text-decoration:underline;color:blue"> <em style="color:red">asdf</em> </div>
+[02:07:12] <aydinkim> larsberg: poin
+[02:07:26] <aydinkim> larsberg: Sorry for bother you :)
+[02:07:30] <pcwalton> oh, I guess text color should not be in RareFlowFlags then
+[02:07:36] <larsberg> I see that _rust_crate_map_toplevel is now in your list of symbols
+[02:07:45] <pcwalton> so RareFlowFlags would be None for <div style="text-decoration:underline;color:blue"> <em>asdf</em> </div>
+[02:07:50] <larsberg> And no problem - sorry it didn't just work with my changes!
+[02:07:55] <pcwalton> but RareFlowFlags would be Some for <div style="text-decoration:underline;color:blue"> <em style="color:red">asdf</em> </div>
+[02:08:19] <larsberg> in libstd in the function get_crate_map, my patch added debugging output that tells you if rust was able to find the symbol
+[02:08:25] <larsberg> what gets printed in that output?
+[02:09:19] <larsberg> aydinkim: the code at https://gist.github.com/larsbergstrom/8513764#file-rust_crate_map-rs-L37-L52
+[02:09:54] <aydinkim> larsberg: yes. it must be succeeded. but I don't know why crashed.
+[02:10:07] <patrickkim> pcwalton : ok i will try that!
+[02:10:15] <pcwalton> cool :)
+[02:10:16] <aydinkim> larsberg: I applied your all changes.
+[02:10:48] <aydinkim> larsberg: and succeeded in finding libservo and _rust_crate_map_toplevel.
+[02:11:12] <aydinkim> larsberg: and symbol pointer is valid (not null)
+[02:11:45] <larsberg> aydinkim: very good! do you have a stack backtrace for the new failure?
+[02:12:59] <aydinkim> larsberg: Unfortunately failure log is same. I think I need to run gdb or change ndk version.
+[02:13:03] <larsberg> you can get one even without the debugger from:
+[02:13:04] <larsberg> ~/android-sdk-macosx/platform-tools/adb logcat | ~/android-ndk-r9c/ndk-stack -sym libs/armeabi/
+[02:13:40] <aydinkim> larsberg: Oh, you are now using ndk r9c version?
+[02:14:13] <larsberg> aydinkim: yes, I am
+[02:14:53] <aydinkim> larsberg: I'm now using original r9 version. so now I'm trying to build with version change to r9b.
+[02:15:19] <aydinkim> larsberg: Possibly it causes the error.
+[02:16:26] <aydinkim> larsberg: Anyway, rustuv is using on android? I couldn't find relation to any ohter libraries by using nm.
+[02:17:05] <aydinkim> larsberg: I mean librustuv is just a standalone library that differs to linux.
+[02:18:23] <jack> we need rustuv because we use green threads and uv is used for i/o
+[02:18:33] <aydinkim> larsberg: I'm not sure that it is somthing like weak symbol problem or it is originally unused on android.
+[02:18:38] <jack> I'm not sure I quite understand what you mean when you talk about rustuv
+[02:18:52] <aydinkim> jack: librustuv is used on android?
+[02:19:11] <jack> there is nothing different about the i/o on OS X or Linux and the i/o on android.
+[02:19:42] <aydinkim> jack: As I investigated with nm, there is no link with any other libraries.
+[02:19:52] <aydinkim> jack: in case of android
+[02:19:55] <aydinkim> jack: in case of android servo
+[02:20:00] <larsberg> libservo references librustuv
+[02:20:13] <hyunjunekim> exit
+[02:20:17] *** Quits: hyunjunekim (hyunjuneki@5AB4884B.FCC4549.14D5B978.IP) (Quit: leaving)
+[02:21:44] <aydinkim> jack: Really? So I can conclude that my binaries are incorrect because my ndk standalone(api18, just n9) is not support for weak symbol or something like that correctly.
+[02:22:41] <aydinkim> larsberg: Yes. on linux, librustuv is used by servo binary. but on my android servo binary, it is not strangly.
+[02:23:51] *** Quits: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: jet)
+[02:24:30] <aydinkim> larsberg: I just want to know your android device? nexus? what is the major version of android. 4.3?
+[02:24:49] <larsberg> aydinkim: yes, I am using Nexus7 on 4.3
+[02:24:53] <larsberg> aydinkim: where is it crashing now? what is the new stack backtrace?
+[02:25:35] <aydinkim> larsberg: Just a moment~
+[02:28:15] <aydinkim> https://gist.github.com/aydinkim/8552487
+[02:28:58] <aydinkim> larsberg: I will try to build again after ndk toolchain version change.
+[02:31:35] *** Quits: jdm (jdm@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: Lost terminal)
+[02:32:26] <larsberg> aydinkim: ok, sounds good - thanks! I believe that I have seen that error when I was unable to load the crate map and librustuv failed to be able to print
+[02:32:32] *** Quits: ibnc (chatzilla@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Ping timeout)
+[02:32:34] <larsberg> we are leaving for dinner, but I should be back in a bit.
+[02:33:18] <aydinkim> larsberg: we are about to going for a lunch, too!
+[02:33:28] <aydinkim> larsberg: have a good dinner!
+[02:34:25] *** Quits: azakai_ (alon@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[02:39:02] *** Joins: pradeep (pradeep@5AB4884B.FCC4549.14D5B978.IP)
+[02:40:49] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Ping timeout)
+[03:00:22] *** Joins: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[03:00:27] *** Quits: sonwow (Mibbit@5AB4884B.FCC4549.14D5B978.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[03:06:51] *** Quits: bholley (bholley@moz-FCAF9AAB.hsd1.ca.comcast.net) (Quit: bholley)
+[03:18:00] <nrc> how does Servo treat sizes for layout? Does it have different sizes (app units, css pixels, real pixels, etc.) and are they distinguished by the type system?
+[03:18:07] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[03:18:51] <cmr> I *think* the answer to both of those questions is yes.
+[03:19:38] *** Quits: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[03:19:45] *** Joins: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca)
+[03:19:54] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[03:21:11] <nrc> I ask because I spent the afternoon untangling these things in Firefox and it is truly something the compiler should do for me
+[03:21:26] *** Quits: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca) (Ping timeout)
+[03:22:13] <cmr> SimonSapin: ^ ?
+[03:32:16] *** Quits: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: jet)
+[03:32:32] *** Joins: bholley (bholley@moz-FCAF9AAB.hsd1.ca.comcast.net)
+[03:32:54] *** Quits: sammykim (sammy.kim@5AB4884B.FCC4549.14D5B978.IP) (Quit: Lost terminal)
+[03:38:28] *** Quits: zz_kimundi (kimundi@moz-BEFFE5BF.dip0.t-ipconnect.de) (Ping timeout)
+[03:42:23] *** Joins: zz_kimundi (kimundi@moz-E1616236.dip0.t-ipconnect.de)
+[03:42:24] *** zz_kimundi is now known as kimundi
+[03:54:17] *** Quits: kanru (kanru@moz-99690620.hinet-ip.hinet.net) (Ping timeout)
+[03:59:02] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[04:06:56] *** Joins: kanru (kanru@moz-99690620.hinet-ip.hinet.net)
+[04:10:36] *** Joins: exobit (foo@moz-90D1B547.nycmny.fios.verizon.net)
+[04:13:53] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Connection reset by peer)
+[04:13:57] *** Joins: miketaylrrrr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[04:27:26] *** Quits: bholley (bholley@moz-FCAF9AAB.hsd1.ca.comcast.net) (Quit: bholley)
+[04:40:05] *** Joins: hoverbear (hoverbear@moz-86FCBF4B.gv.shawcable.net)
+[05:01:56] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: pcwalton)
+[05:04:13] <aydinkim> larsberg: Could you send me your libservo binary? I want to look into it.
+[05:15:10] *** Joins: bholley (bholley@moz-FCAF9AAB.hsd1.ca.comcast.net)
+[05:16:47] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[05:18:07] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[05:18:54] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[05:19:01] *** Quits: miketaylrrrr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Linkinus - http://linkinus.com)
+[05:19:21] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[05:20:43] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[05:22:10] <aydinkim> jack: ping
+[05:23:41] <jack>  nrc, cmr, We have css pixels and App units, and those are differnet in the type systems. So are percentage and relative measures, etc.
+[05:24:04] <jack> I don't think we have the full set that we need yet. For example, we don't support HiDPI yet, which needs another scale factor somewhere.
+[05:28:09] <aydinkim> jack: I have builded servo linux with forced to generate share lib instead of executable, but there is no link flag on libservo. Is it fine?
+[05:28:55] <aydinkim> jack: Used the shell command "readelf -d libservo-xxxx.so"
+[05:29:32] <larsberg> Aydinm: try adding "external mod rustuv;" to servo.rc
+[05:30:02] <larsberg> I can't upload the binary until tomorrow morning due to bad hotel internet
+[05:30:32] <aydinkim> larsberg: Okay. I'll follow you.
+[05:32:44] <cmr> hotel internet \o/
+[05:33:15] <aydinkim> larsberg: I'm not sure my problem is caused by rustuv, but suspicious.
+[05:33:30] <aydinkim> larsberg: Oh.. Succeeded!
+[05:33:41] <larsberg> Great!
+[05:34:28] <aydinkim> larsberg: You had added rustuv extern code into servo.rc, also?
+[05:35:38] <larsberg> aydinkim: yes, I went back through all of my debugging code and found that change, which was based on a tip from acrichto
+[05:37:10] <aydinkim> larsberg: larsberg: Ok. In conclusion.. If we make a executable, the Rust embed librustuv link flag into executable automatically.
+[05:37:37] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[05:38:30] <aydinkim> larsberg: On the other hands, If we make a library, it doesn't put librustuv link into library. So we need to link with 'extern'? 
+[05:39:27] *** Quits: bholley (bholley@moz-FCAF9AAB.hsd1.ca.comcast.net) (Quit: bholley)
+[05:40:01] <larsberg> aydinkim: I need to look into this problem more tomorrow. I believe we thought it was something with the android toolchain. I will comment in the issue once I find out. 
+[05:40:31] <aydinkim> larsberg: Okay. Thank you very much!
+[05:40:55] <larsberg> No problem and sorry it took me so long to figure out what we were missing
+[05:42:30] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[05:42:30] *** ChanServ sets mode: +o pcwalton
+[05:44:23] <aydinkim> larsburg: And in addition, I had tested on "linux" same way, the library doesn't have any librustuv link flag on it. I think it may not be toolchain problem.
+[05:44:35] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[05:45:17] <aydinkim> larsberg: No problem. I'm pleased that we can solve this strange problem. Thank you.
+[05:45:48] *** Joins: brson (brson@moz-D434EC03.dsl.sca.megapath.net)
+[05:45:48] *** ChanServ sets mode: +o brson
+[05:47:24] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[05:47:24] *** ChanServ sets mode: +qo dherman dherman
+[05:47:56] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[05:55:17] *** Quits: canhtak (canhtak@moz-6D20A1A6.wl.t.ulaval.ca) (Quit: canhtak)
+[05:57:17] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Ping timeout)
+[06:02:03] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[06:03:44] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Ping timeout)
+[06:14:13] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[06:24:32] *** Joins: recrack (recrack@5AB4884B.FCC4549.14D5B978.IP)
+[06:32:22] *** Quits: hoverbear (hoverbear@moz-86FCBF4B.gv.shawcable.net) (Quit: Taking a nap.)
+[06:34:40] *** Quits: brson (brson@moz-D434EC03.dsl.sca.megapath.net) (Ping timeout)
+[06:34:47] *** Joins: brson (brson@moz-D434EC03.dsl.sca.megapath.net)
+[06:34:47] *** ChanServ sets mode: +o brson
+[06:45:44] *** Quits: dbaupp (Thunderbir@F99D8787.D5A1DCF.37681C44.IP) (Ping timeout)
+[06:48:37] *** Joins: victorporof (victorporo@E55FB5BC.20287B6C.D111398B.IP)
+[07:19:36] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[07:19:49] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[07:21:45] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[07:26:22] *** Joins: bholley (bholley@moz-FCAF9AAB.hsd1.ca.comcast.net)
+[07:34:10] <brson> the android buildslave is green!
+[07:39:33] *** Joins: dbaupp (Thunderbir@moz-A840EB3D.lns20.syd6.internode.on.net)
+[07:47:51] *** Joins: brendan (brendaneic@ED1D06F0.E4611EEC.436A6ED6.IP)
+[07:49:15] *** Quits: brendan (brendaneic@ED1D06F0.E4611EEC.436A6ED6.IP) (Quit: brendan)
+[07:52:02] *** Joins: Ms2ger (Ms2ger@768AD319.7BE2E8BA.187A1082.IP)
+[07:55:58] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Broken pipe)
+[07:56:10] *** Joins: brendan (brendaneic@ED1D06F0.E4611EEC.436A6ED6.IP)
+[07:56:13] *** Quits: deokjinkim (Mibbit@B4104EBB.3CC170B1.1E14B209.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[07:56:20] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[07:57:42] *** Joins: deokjinkim (Mibbit@B4104EBB.3CC170B1.1E14B209.IP)
+[08:00:57] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[08:03:02] <Ms2ger> Someone should tell pcwalton about critic
+[08:05:13] *** Quits: bholley (bholley@moz-FCAF9AAB.hsd1.ca.comcast.net) (Quit: bholley)
+[08:05:13] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Quit: Leaving...)
+[08:10:53] *** Joins: marianoguerra (marianogue@moz-C6801CB6.dip0.t-ipconnect.de)
+[08:11:22] *** Joins: eddyb (eddy@EDE07015.D51DAF03.FB866788.IP)
+[08:16:48] *** Joins: Debloper (debloper@moz-88FF8AE8.redhat.com)
+[08:21:05] *** Quits: Debloper (debloper@moz-88FF8AE8.redhat.com) (Ping timeout)
+[08:22:07] *** Joins: Debloper (debloper@moz-88FF8AE8.redhat.com)
+[08:23:44] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Client exited)
+[08:24:05] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[08:25:35] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[08:29:09] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[08:29:50] *** Quits: reyre (reyre@moz-89E9865B.com) (Ping timeout)
+[08:34:41] *** Quits: brson (brson@moz-D434EC03.dsl.sca.megapath.net) (Quit: leaving)
+[08:37:07] *** Joins: jackneill (jackneill@moz-E9D68037.pool.digikabel.hu)
+[08:37:30] *** Quits: Debloper (debloper@moz-88FF8AE8.redhat.com) (Ping timeout)
+[08:38:16] *** Joins: Debloper (debloper@moz-88FF8AE8.redhat.com)
+[08:45:39] *** Quits: Debloper (debloper@moz-88FF8AE8.redhat.com) (Ping timeout)
+[08:46:39] *** Joins: Debloper (debloper@moz-88FF8AE8.redhat.com)
+[08:51:56] *** Quits: Debloper (debloper@moz-88FF8AE8.redhat.com) (Ping timeout)
+[08:54:32] *** Joins: Debloper (debloper@moz-88FF8AE8.redhat.com)
+[08:58:52] *** Quits: Debloper (debloper@moz-88FF8AE8.redhat.com) (Ping timeout)
+[08:59:21] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Client exited)
+[08:59:43] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[09:01:49] *** Joins: Debloper (debloper@moz-88FF8AE8.redhat.com)
+[09:01:54] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Client exited)
+[09:03:57] *** Joins: eibwen (kvirc@moz-BA489CAB.dip0.t-ipconnect.de)
+[09:05:27] *** Quits: brendan (brendaneic@ED1D06F0.E4611EEC.436A6ED6.IP) (Quit: brendan)
+[09:09:47] *** Quits: Debloper (debloper@moz-88FF8AE8.redhat.com) (Ping timeout)
+[09:10:29] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[09:12:12] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Ping timeout)
+[09:12:35] *** Joins: Debloper (debloper@moz-88FF8AE8.redhat.com)
+[09:13:54] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[09:25:31] *** Quits: Debloper (debloper@moz-88FF8AE8.redhat.com) (Ping timeout)
+[09:27:19] *** Joins: Debloper (debloper@moz-88FF8AE8.redhat.com)
+[09:36:02] *** Quits: exobit (foo@moz-90D1B547.nycmny.fios.verizon.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[09:51:45] *** Quits: jaeman (Mibbit@B4104EBB.3CC170B1.1E14B209.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[09:55:24] *** Quits: Debloper (debloper@moz-88FF8AE8.redhat.com) (Ping timeout)
+[09:55:33] *** Joins: Debloper (debloper@moz-88FF8AE8.redhat.com)
+[10:02:37] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[10:09:40] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[10:16:15] *** Joins: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP)
+[10:23:13] *** Quits: Debloper (debloper@moz-88FF8AE8.redhat.com) (Ping timeout)
+[10:30:54] *** kimundi is now known as zz_kimundi
+[10:32:11] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[10:34:03] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Ping timeout)
+[10:40:36] *** Joins: brendan (brendaneic@ED1D06F0.E4611EEC.436A6ED6.IP)
+[10:40:46] *** Quits: brendan (brendaneic@ED1D06F0.E4611EEC.436A6ED6.IP) (Quit: brendan)
+[10:41:40] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[10:43:24] *** Joins: brendan (brendaneic@ED1D06F0.E4611EEC.436A6ED6.IP)
+[10:51:17] *** Joins: Debloper (debloper@moz-88FF8AE8.redhat.com)
+[11:00:13] *** zz_kimundi is now known as kimundi
+[11:13:28] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[11:15:08] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[11:15:40] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[11:19:35] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[11:30:53] *** Quits: Debloper (debloper@moz-88FF8AE8.redhat.com) (Ping timeout)
+[11:35:44] *** Quits: recrack (recrack@5AB4884B.FCC4549.14D5B978.IP) (Client exited)
+[11:42:15] *** Quits: johns (johns@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[11:42:15] *** Joins: johns (johns@moz-BBE3ABD.mv.mozilla.com)
+[11:46:25] *** Joins: Debloper (debloper@moz-88FF8AE8.redhat.com)
+[11:46:51] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[11:48:19] *** Quits: marianoguerra (marianogue@moz-C6801CB6.dip0.t-ipconnect.de) (Ping timeout)
+[12:05:33] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[12:11:37] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[12:21:26] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Ping timeout)
+[12:22:27] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[12:48:27] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Ping timeout)
+[12:55:22] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[12:59:12] *** Quits: deokjinkim (Mibbit@B4104EBB.3CC170B1.1E14B209.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[13:13:55] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[13:22:43] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[13:23:01] <ChrisMorgan> Can Servo make POST requests?
+[13:25:08] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[13:25:51] *** Quits: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[13:25:53] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[13:26:14] <abinader> morning Servo :-)
+[13:26:22] *** Joins: canhtak (canhtak@moz-86A8B2E0.wl.t.ulaval.ca)
+[13:27:35] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[13:27:51] <dbaupp> ChrisMorgan: can rust-http?
+[13:28:39] <Ms2ger> I don't think we support anything that'll trigger a post request
+[13:28:42] <ChrisMorgan> dbaupp: it exposes the means to make a proper POST request, but gives no assistance in entity body encoding at present. I'm wondering whether Servo has implemented any sort of form handling for POST requests.
+[13:28:58] <Ms2ger> We don't have forms
+[13:29:10] <ChrisMorgan> OK, I’m answered ☺
+[13:31:32] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[13:31:58] <abinader> Ms2ger: r? https://github.com/mozilla/servo/pull/1525
+[13:32:47] <Ms2ger> Hmm, why does critic think it's finished?
+[13:32:56] *** bhearsum|afk is now known as bhearsum
+[13:33:06] <abinader> it was previously accepted
+[13:33:33] <abinader> so I closed after
+[13:33:36] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Ping timeout)
+[13:34:57] *** Parts: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) ()
+[13:35:30] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[13:35:35] *** Quits: dbaupp (Thunderbir@moz-A840EB3D.lns20.syd6.internode.on.net) (Quit: dbaupp)
+[13:36:21] *** Joins: dbaupp (Thunderbir@moz-A840EB3D.lns20.syd6.internode.on.net)
+[13:37:12] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[13:37:12] <ghservo> 01[13servo01] 15bors-servo pushed 0 new commits to 06auto: 02http://git.io/0Xka5Q
+[13:37:12] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[13:37:15] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[13:37:15] <ghservo> 01[13servo01] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/QfqkTg
+[13:37:15] <ghservo> 13servo/06auto 141067da7 15Bruno de Oliveira Abinader: Basic support for Document::contentType...
+[13:37:15] <ghservo> 13servo/06auto 142dc4359 15bors-servo: auto merge of #1525 : brunoabinader/servo/document-contenttype, r=Ms2ger...
+[13:37:16] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[13:38:40] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Ping timeout)
+[13:41:45] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[14:01:18] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[14:01:19] <ghservo> 01[13servo01] 15bors-servo merged 06auto into 06master: 02http://git.io/QfqkTg
+[14:01:19] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[14:01:19] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[14:01:19] <ghservo> [13servo] 15bors-servo closed pull request #1525: Basic support for Document::contentType (06master...06document-contenttype) 02http://git.io/brHiDQ
+[14:01:19] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[14:07:35] *** Quits: canhtak (canhtak@moz-86A8B2E0.wl.t.ulaval.ca) (Quit: canhtak)
+[14:08:15] *** Quits: victorporof (victorporo@E55FB5BC.20287B6C.D111398B.IP) (Quit: victorporof)
+[14:22:35] *** Joins: canhtak (canhtak@moz-86A8B2E0.wl.t.ulaval.ca)
+[14:29:39] *** bstrie_nan is now known as bstrie_dfl
+[14:40:34] *** Joins: ahal (ahal@moz-7DE89BF0.cable.teksavvy.com)
+[14:40:44] *** Quits: canhtak (canhtak@moz-86A8B2E0.wl.t.ulaval.ca) (Quit: canhtak)
+[14:42:29] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[14:43:07] *** kimundi is now known as zz_kimundi
+[14:49:21] *** Quits: Debloper (debloper@moz-88FF8AE8.redhat.com) (Quit: Leaving.)
+[14:57:41] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[14:57:54] *** Joins: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca)
+[15:08:04] *** Quits: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[15:11:32] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[15:14:10] *** Joins: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca)
+[15:18:51] *** Joins: canhtak (canhtak@moz-86A8B2E0.wl.t.ulaval.ca)
+[15:21:14] *** Joins: sedman_ (sedman@E4D2F0A.47298EC7.57E8EAD3.IP)
+[15:33:36] *** Quits: canhtak (canhtak@moz-86A8B2E0.wl.t.ulaval.ca) (Quit: canhtak)
+[15:33:49] *** zz_kimundi is now known as kimundi
+[15:35:51] *** Joins: jdm (jdm@moz-BDD802ED.hfc.comcastbusiness.net)
+[15:35:51] *** ChanServ sets mode: +o jdm
+[15:37:48] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[15:44:23] *** Joins: exobit (foo@moz-90D1B547.nycmny.fios.verizon.net)
+[15:45:20] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[15:46:37] *** Joins: jensnock_ (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[15:47:15] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[15:51:23] *** Quits: exobit (foo@moz-90D1B547.nycmny.fios.verizon.net) (Ping timeout)
+[15:53:53] *** Quits: brendan (brendaneic@ED1D06F0.E4611EEC.436A6ED6.IP) (Quit: brendan)
+[15:56:42] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[15:57:59] *** Quits: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[16:00:29] *** Joins: brendan (brendaneic@ED1D06F0.E4611EEC.436A6ED6.IP)
+[16:02:28] *** Quits: doomlord_ (servitor@moz-D9C46C01.range86-184.btcentralplus.com) (Ping timeout)
+[16:03:49] *** Joins: doomlord_ (servitor@moz-D9C46C01.range86-184.btcentralplus.com)
+[16:07:58] *** Joins: gandalf (zbraniecki@moz-912D7A86.hsd1.ca.comcast.net)
+[16:10:20] *** Quits: brendan (brendaneic@ED1D06F0.E4611EEC.436A6ED6.IP) (Quit: brendan)
+[16:10:33] *** Quits: jdm (jdm@moz-BDD802ED.hfc.comcastbusiness.net) (Ping timeout)
+[16:12:55] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[16:13:01] *** Joins: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com)
+[16:13:09] *** Quits: jensnock_ (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[16:14:00] <jack> nmatsakis: https://gist.github.com/metajack/8551693
+[16:14:18] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[16:14:24] <jack> nmatsakis: current theory is that this is a bug in borrowck
+[16:14:36] <Ms2ger> Waaa
+[16:14:55] <jack> (the types are slightly wrong in the gist. it should be let attr: ***Box<Attr> = ...; the error is the same either way.
+[16:15:02] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[16:17:27] <jack> Ms2ger: yeah, it's not going to win a beauty contest.
+[16:17:46] * Ms2ger mumbles something about rust and safety
+[16:18:14] <Ms2ger> So what actually happens if someone calls setAttribute during layout?
+[16:18:26] <jack> Ms2ger: bad things.
+[16:18:37] <jack> right now layout and script don't run concurrently.
+[16:18:38] *** Joins: brendan (brendaneic@ED1D06F0.E4611EEC.436A6ED6.IP)
+[16:18:59] <Ms2ger> Should they?
+[16:19:05] <jack> Eventually yes.
+[16:19:25] <Ms2ger> What then?
+[16:20:37] <jack> well the whole DOM will have to change to COW DOM or something similar.
+[16:21:31] *** Joins: canhtak (canhtak@moz-86A8B2E0.wl.t.ulaval.ca)
+[16:26:30] <nmatsakis> jack: I'll take a look
+[16:27:31] <nmatsakis> jack: what version of rustc is that? it looks like #3511 (recently fixed)
+[16:27:49] <jack> nmatsakis: pre de-@mut
+[16:27:57] <nmatsakis> ok, I could be wrong about what's causing it though
+[16:28:02] <jack> also, i tried assigning every expression to a temp
+[16:28:26] <jack> it gets the same error on let temp1: &[@mut Attr] = self.attrs;
+[16:29:17] <nmatsakis> jack: did you try : "let iter = self.attrs.iter();"
+[16:29:24] <jack> yes
+[16:29:29] <nmatsakis> same error?
+[16:29:42] <jack> let me do it again quick to grab the error..
+[16:29:48] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[16:30:25] *** Quits: brendan (brendaneic@ED1D06F0.E4611EEC.436A6ED6.IP) (Quit: brendan)
+[16:30:47] <jack> error: cannot infer an appropriate lifetime for autoref due to conflicting requirements on this span: let iter = self.attrs.iter(); pointing to self.
+[16:33:48] *** Quits: canhtak (canhtak@moz-86A8B2E0.wl.t.ulaval.ca) (Quit: canhtak)
+[16:35:23] *** Joins: bholley (bholley@moz-FCAF9AAB.hsd1.ca.comcast.net)
+[16:36:24] *** Joins: jensnockert (jensnocker@moz-4E3BE0F8.wireless.lu.se)
+[16:36:31] *** Quits: jensnockert (jensnocker@moz-4E3BE0F8.wireless.lu.se) (Input/output error)
+[16:40:17] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[16:40:25] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[16:41:06] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[16:41:21] *** Joins: jensnockert (jensnocker@moz-4E3BE0F8.wireless.lu.se)
+[16:42:08] *** Joins: hoverbear (hoverbear@EBFA78B5.F19E5E7B.E74D50F2.IP)
+[16:42:14] *** Quits: jensnockert (jensnocker@moz-4E3BE0F8.wireless.lu.se) (Quit: Leaving...)
+[16:42:15] *** Parts: cstipkovic (uid6805@moz-E77DEB21.irccloud.com) ()
+[16:44:50] <nmatsakis> jack: sorry, got distracted by the talk here... so, can you point me at the code in a git repo somewhere? I'd lke to see e.g. def'ns of the type
+[16:44:53] <nmatsakis> s/win 38
+[16:44:55] <nmatsakis> oops
+[16:47:42] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse)
+[16:52:06] *** Joins: dherman (dherman@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[16:52:06] *** ChanServ sets mode: +qo dherman dherman
+[16:53:49] <eddyb> nmatsakis: ohai :)
+[16:53:58] <SimonSapin> http://c2.com/cgi/wiki?ThreeStarProgrammer :)
+[16:57:17] <nmatsakis> eddyb: hey! =)
+[17:00:03] *** Quits: ToBeFree (tobefree@moz-EA367A59.de) (Ping timeout)
+[17:01:35] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[17:02:06] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Client exited)
+[17:03:42] <jack> nmatsakis: this is the original function: https://github.com/mozilla/servo/blob/master/src/components/script/dom/element.rs#L148-L156
+[17:03:57] <jack> teh goal is just to make sure it never borrows and returns Option<&'a str>
+[17:07:39] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[17:07:45] *** Joins: ToBeFree (tobefree@moz-EA367A59.de)
+[17:15:46] <Ms2ger> abinader, didn't know you were into css meetings :)
+[17:16:15] <abinader> Ms2ger: ah yes, joined CSSWG by the end of last year :)
+[17:16:54] <Ms2ger> Hope you enjoy Process!
+[17:17:49] <nmatsakis> jack: so the original compiled?
+[17:18:13] <abinader> Ms2ger: so far so good :D glazou has helped me a lot with process
+[17:20:16] <abinader> lol, telco is ruined
+[17:20:17] *** Quits: bholley (bholley@moz-FCAF9AAB.hsd1.ca.comcast.net) (Quit: bholley)
+[17:20:55] <jack> nmatsakis: yes. still does :)
+[17:21:51] <nmatsakis> jack: have you tried reverting one closure at a time?
+[17:22:17] <nmatsakis> jack: I know it won't have the same properties exactly but I'm trying to understand where things go wrong
+[17:22:32] <Ms2ger> abinader, what the hell happened?
+[17:22:37] <jack> nmatsakis: it's the find one
+[17:22:58] <abinader> Ms2ger: it seems plinss forgot his tv on :D
+[17:23:02] <jack> if you put fails in both sides it compiles. if you put fail just in the find, it compiles.
+[17:23:09] <jack> nmatsakis: i'm trying to build a minimal exmaple now
+[17:23:20] <nmatsakis> jack: what happens if you comment out teh `==` and just put true 
+[17:23:22] *** Joins: reyre (reyre@moz-89E9865B.com)
+[17:23:26] <nmatsakis> jack: i.e., just have the transmute in find
+[17:23:48] <abinader> (or [Bloomberg], dunno for sure)
+[17:23:52] *** Joins: ibnc (chatzilla@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[17:23:55] *** Joins: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca)
+[17:24:36] <jack> nmatsakis: that gives the same error
+[17:24:56] <nmatsakis> jack: also if you comment out the body of map and just put "foo" or something?
+[17:25:35] <nmatsakis> jack: and, in that case, what about if you comment out the transmute too? :)
+[17:26:04] <nmatsakis> jack: if you can't minimize, then I guess you have to intruct me how to do a checkout / build myself :)
+[17:28:09] *** Quits: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[17:28:25] <jack> nmatsakis: https://gist.github.com/metajack/8563098
+[17:29:27] <nmatsakis> jack: awesome, thanks.
+[17:33:01] *** Joins: canhtak (canhtak@moz-CEAFB489.wl.t.ulaval.ca)
+[17:40:22] *** Quits: sedman_ (sedman@E4D2F0A.47298EC7.57E8EAD3.IP) (Ping timeout)
+[17:41:31] *** Quits: hoverbear (hoverbear@EBFA78B5.F19E5E7B.E74D50F2.IP) (Ping timeout)
+[17:42:55] *** Joins: jdm (jdm@moz-C07D5168.p2p.sfo1.mozilla.com)
+[17:42:55] *** ChanServ sets mode: +o jdm
+[17:46:56] *** Joins: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[17:47:30] *** Joins: bholley (bholley@moz-FCAF9AAB.hsd1.ca.comcast.net)
+[17:48:27] <jack> nmatsakis: tried commenting out map, same problem.
+[17:48:37] <jack> it appears to be the transmute call in find
+[17:48:39] *** Joins: hoverbear (hoverbear@EBFA78B5.F19E5E7B.E74D50F2.IP)
+[17:49:11] <nmatsakis> jack: ok, sorry I haven't been able to dig into it bceause I have very little battery life right now -- hopefully after this talk terminatesI can relocate somewhere with a plug :)
+[17:51:08] *** Joins: valenting (Thunderbir@9A1975C1.39CE2EE.E400A05F.IP)
+[17:52:51] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[17:55:11] <jack> ibnc: https://github.com/ibnc/servo/commit/12f74e7c714fcb7c7c5d0631b1b098ccd7883823#diff-77d16b040ef797bedcad39d0694a7af0R65
+[17:55:21] *** Joins: brendan (brendaneic@77AE999A.FC6A2EC4.67894F1C.IP)
+[17:57:18] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[17:58:16] *** Joins: azita (Azita@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[18:00:37] *** Quits: brendan (brendaneic@77AE999A.FC6A2EC4.67894F1C.IP) (Quit: brendan)
+[18:01:11] *** Joins: eagen (eagen@15B176CF.7A99C13A.B7961A98.IP)
+[18:01:29] *** Joins: exobit (foo@moz-90D1B547.nycmny.fios.verizon.net)
+[18:02:31] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[18:21:19] *** ahal is now known as ahal|afk
+[18:21:49] *** Quits: bholley (bholley@moz-FCAF9AAB.hsd1.ca.comcast.net) (Quit: bholley)
+[18:22:22] *** Joins: bholley (bholley@moz-FCAF9AAB.hsd1.ca.comcast.net)
+[18:22:31] *** Quits: bholley (bholley@moz-FCAF9AAB.hsd1.ca.comcast.net) (Quit: bholley)
+[18:23:37] <jdm> firefox: https://forums.alliedmods.net/images/yak.gif
+[18:23:42] <jdm> servo: http://4.bp.blogspot.com/-rDIC68ytS5Q/Tpf8YO-FtjI/AAAAAAAAApU/1uHkuC9wN14/s320/Animal%2Bspecies%2Bthe%2BYak.jpg
+[18:24:33] <cmr> yak *almost* rhymes with task
+[18:25:31] <SimonSapin> jdm: proposals for the Servo logo?
+[18:26:29] <eddyb> cmr: tak
+[18:26:36] <SimonSapin> http://www.olddogsplanes.com/yak3-14.jpg comes up for "Parallel yak"
+[18:27:18] <eddyb> SimonSapin: at least it can fly
+[18:30:26] * Ms2ger shaves those
+[18:32:18] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[18:32:54] *** Quits: eagen (eagen@15B176CF.7A99C13A.B7961A98.IP) (Ping timeout)
+[18:33:55] *** Quits: hoverbear (hoverbear@EBFA78B5.F19E5E7B.E74D50F2.IP) (Ping timeout)
+[18:34:09] *** Quits: jdm (jdm@moz-C07D5168.p2p.sfo1.mozilla.com) (Connection reset by peer)
+[18:34:18] *** Joins: jdm (jdm@moz-C07D5168.p2p.sfo1.mozilla.com)
+[18:34:18] *** ChanServ sets mode: +o jdm
+[18:34:38] *** Joins: hoverbear (hoverbear@EBFA78B5.F19E5E7B.E74D50F2.IP)
+[18:35:39] <jdm> apparently pulling aurora, beta, and cloning esr24 simultaneously is enough to sever my IRC connection
+[18:36:05] *** Joins: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net)
+[18:36:06] <Ms2ger> That's why I put those in the same tree
+[18:37:34] *** Quits: jdm (jdm@moz-C07D5168.p2p.sfo1.mozilla.com) (Connection reset by peer)
+[18:38:32] *** Joins: jdm (jdm@moz-C07D5168.p2p.sfo1.mozilla.com)
+[18:38:32] *** ChanServ sets mode: +o jdm
+[18:40:40] *** Joins: brendan (brendaneic@7D275E5E.369AB919.1C1BA5F7.IP)
+[18:41:39] *** Joins: brson (brson@moz-C07D5168.p2p.sfo1.mozilla.com)
+[18:41:39] *** ChanServ sets mode: +o brson
+[18:53:03] *** Quits: valenting (Thunderbir@9A1975C1.39CE2EE.E400A05F.IP) (Ping timeout)
+[18:53:04] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[18:53:04] <ghservo> 01[13servo01] 15bors-servo pushed 4 new commits to 06auto: 02http://git.io/ATfBLw
+[18:53:04] <ghservo> 13servo/06auto 14201e8a8 15Patrick Walton: layout: Separate out the `LayoutContext` into shared and per-thread...
+[18:53:04] <ghservo> 13servo/06auto 14fea2e2a 15Patrick Walton: layout: Group the various bits of information needed to create a font...
+[18:53:04] <ghservo> 13servo/06auto 148cd4396 15Patrick Walton: layout: Implement parallel reflow for the bubble-widths and...
+[18:53:06] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[18:53:33] *** Quits: brendan (brendaneic@7D275E5E.369AB919.1C1BA5F7.IP) (Quit: brendan)
+[18:56:03] *** Joins: brendan (brendaneic@7D275E5E.369AB919.1C1BA5F7.IP)
+[18:58:39] *** Quits: brendan (brendaneic@7D275E5E.369AB919.1C1BA5F7.IP) (Quit: brendan)
+[18:59:14] *** Joins: bholley (bholley@moz-3EBD3656.hsd1.ca.comcast.net)
+[18:59:40] *** Quits: azita (Azita@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: azita)
+[19:00:55] *** Quits: brson (brson@moz-C07D5168.p2p.sfo1.mozilla.com) (Ping timeout)
+[19:04:33] *** Joins: azita (Azita@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[19:11:58] <jdm> jack: https://github.com/jdm/servo/commits/jsmanaged
+[19:14:48] <jdm> jack: https://github.com/jdm/servo/blob/ea221dc74ac074d0336a005a549aa99e57dede0a/src/components/script/dom/eventdispatcher.rs#L29
+[19:16:52] <jdm> jack: https://github.com/jdm/servo/blob/ea221dc74ac074d0336a005a549aa99e57dede0a/src/components/script/dom/uievent.rs#L21
+[19:17:56] <jdm> jack: https://github.com/jdm/servo/blob/ea221dc74ac074d0336a005a549aa99e57dede0a/src/components/script/dom/htmlbrelement.rs#L19
+[19:18:43] *** Quits: gandalf (zbraniecki@moz-912D7A86.hsd1.ca.comcast.net) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[19:20:59] * Ms2ger wanders in
+[19:21:25] *** Joins: valenting (Thunderbir@9A1975C1.39CE2EE.E400A05F.IP)
+[19:26:13] <jack> jgraham: if someone forced push a branch is there a way to get critic to see it? i never did a reveiw on the old commits in critic.
+[19:26:44] *** Quits: hoverbear (hoverbear@EBFA78B5.F19E5E7B.E74D50F2.IP) (Quit: Taking a nap.)
+[19:28:16] *** Joins: hoverbear (hoverbear@EBFA78B5.F19E5E7B.E74D50F2.IP)
+[19:29:33] <Ms2ger> jdm, what happened to putting the @int into Reflector?
+[19:30:01] *** Quits: hoverbear (hoverbear@EBFA78B5.F19E5E7B.E74D50F2.IP) (Ping timeout)
+[19:30:08] <jdm> oh, right
+[19:30:18] <jdm> that makes so much more senes
+[19:31:30] <jdm> *((void*)& diff +5)’ may be used uninitialized in this function
+[19:31:33] <jdm> how terrifying
+[19:31:56] *** Quits: azita (Azita@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: azita)
+[19:32:36] <jgraham> jack: Yes
+[19:32:43] <jgraham> jack: Which PR?
+[19:32:56] <jack> jgraham: #1507
+[19:32:57] <crowbot> Issue #1507: Implement white-space property(pre) - https://github.com/mozilla/servo/pull/1507
+[19:34:59] <jgraham> https://critic.hoppipolla.co.uk/r/562
+[19:35:04] <jgraham> Rebased 
+[19:35:09] *** Quits: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP) (Ping timeout)
+[19:35:13] *** Joins: azita (Azita@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[19:35:26] <jgraham> You get a nasty merge commit though; it really helps if people seperate out moves and squashes
+[19:36:05] *** Joins: simon (simon@moz-1D4897B4.net.uwaterloo.ca)
+[19:37:17] <jgraham> (in this case I think the merge commit is just all the additions on master and no changes to the patch (which would be "parent 2") so it isn't too bad)
+[19:39:16] <SimonSapin> larsberg: http://dabblet.com/gist/8565595
+[19:46:33] *** Joins: Savago (Savago@D8B9C081.E820043D.D4C04133.IP)
+[19:47:35] *** Quits: simon (simon@moz-1D4897B4.net.uwaterloo.ca) (Quit: brb)
+[19:49:25] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[19:49:25] <ghservo> [13servo] 15larsbergstrom opened pull request #1530: Add the Rust crate map to the servo library and dependency on libuv (06master...06android_fixups) 02http://git.io/VNNkEw
+[19:49:25] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[19:57:36] *** Quits: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: jet)
+[20:07:33] *** Joins: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[20:11:25] <larsberg> eddyb: ping
+[20:11:36] <eddyb> larsberg: pong
+[20:11:52] <larsberg> should we expect pngs that we generate from identical RGB info to be identical?
+[20:12:04] <eddyb> larsberg: depends on the compressor
+[20:12:16] <eddyb> actually, there's the filter functions, too
+[20:12:16] <larsberg> we're implementing our ref tests and use `diff` to compare two PNGs that we spit out for pages, but are getting what seem to be false negatives
+[20:12:37] *** Joins: hoverbear (hoverbear@moz-A4D3860E.wireless.uvic.ca)
+[20:12:37] <eddyb> larsberg: what happens if you bindiff the files?
+[20:13:56] <larsberg> eddyb: I looked at them in emacs hexl-mode and they appear to have subtly different values in identical locations
+[20:14:05] <larsberg> do you have a preferred bindiff tool for viewing output on OSX?
+[20:14:11] <larsberg> https://dl.dropboxusercontent.com/u/1620890/pngs/inline_a.png
+[20:14:13] <larsberg> https://dl.dropboxusercontent.com/u/1620890/pngs/inline_b.png
+[20:14:25] <eddyb> larsberg: thanks, I'll see what I can do :D
+[20:14:57] <larsberg> whoops, looks like it might be shifted by 1 pixel!
+[20:15:06] <larsberg> (my hand diffing was inconclusive)
+[20:15:13] <eddyb> heh
+[20:15:33] <eddyb> tab switching with the scroll wheel (linux) may do the trick
+[20:15:54] <eddyb> larsberg: it's shifted alright
+[20:16:29] <eddyb> more than one pixel I'd say
+[20:16:56] <larsberg> I think we need to do something more interesting like doing a pixel-by-pixel diff and spitting out an image that shows a "shadow" of where the differences were
+[20:18:41] <eddyb> larsberg: it's actually as easy as a.pixels.iter().zip(b.pixels.iter()).map(|(&a, &b)| abs(a-b)).collect()
+[20:19:21] <eddyb> though you might want 255-that to be opaque
+[20:26:27] <larsberg> eddyb: thanks - that's honestly cleaner than our shell out to `diff`, blocking, and checking the return code
+[20:26:52] <eddyb> larsberg: you can fold to count the different pixels, too
+[20:31:24] *** Quits: valenting (Thunderbir@9A1975C1.39CE2EE.E400A05F.IP) (Ping timeout)
+[20:38:01] *** Quits: eddyb (eddy@EDE07015.D51DAF03.FB866788.IP) (Ping timeout)
+[20:38:17] *** Joins: brson (brson@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[20:38:17] *** ChanServ sets mode: +o brson
+[20:40:37] *** Quits: brson (brson@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: leaving)
+[20:53:18] *** Quits: jackneill (jackneill@moz-E9D68037.pool.digikabel.hu) (Ping timeout)
+[21:00:26] *** Joins: brson (brson@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[21:00:26] *** ChanServ sets mode: +o brson
+[21:02:13] *** Quits: brson (brson@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: leaving)
+[21:02:16] *** Joins: brson (brson@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[21:02:16] *** ChanServ sets mode: +o brson
+[21:06:19] *** Quits: Ms2ger (Ms2ger@768AD319.7BE2E8BA.187A1082.IP) (Quit: nn)
+[21:07:39] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Linkinus - http://linkinus.com)
+[21:08:00] *** Quits: dherman (dherman@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Ping timeout)
+[21:09:35] *** Joins: dherman (dherman@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[21:09:35] *** ChanServ sets mode: +qo dherman dherman
+[21:09:37] *** bstrie_dfl is now known as bstrie_borskiller
+[21:13:27] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[21:13:27] <ghservo> 01[13servo01] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/JCJBDw
+[21:13:27] <ghservo> 13servo/06auto 14960ed1e 15Lars Bergstrom: Add the Rust crate map to the servo library and dependency on libuv
+[21:13:27] <ghservo> 13servo/06auto 144fcb48d 15bors-servo: auto merge of #1530 : larsbergstrom/servo/android_fixups, r=metajack...
+[21:13:27] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[21:13:47] *** Quits: brson (brson@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Ping timeout)
+[21:13:53] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[21:24:11] *** Joins: simon (simon@moz-FD4ADBC6.cable.teksavvy.com)
+[21:24:16] *** Quits: hoverbear (hoverbear@moz-A4D3860E.wireless.uvic.ca) (Quit: Taking a nap.)
+[21:24:38] *** Quits: vodik (simon@moz-FD4ADBC6.cable.teksavvy.com) (Ping timeout)
+[21:24:49] *** Quits: reyre (reyre@moz-89E9865B.com) (Ping timeout)
+[21:25:30] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[21:25:30] <ghservo> [13servo] 15ibnc opened pull request #1531: added vim tmp files to git ignore (06master...06git_ignore_vim) 02http://git.io/dr7fGQ
+[21:25:30] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[21:30:49] *** Quits: simon (simon@moz-FD4ADBC6.cable.teksavvy.com) (Ping timeout)
+[21:32:06] *** Joins: hoverbear (hoverbear@moz-A4D3860E.wireless.uvic.ca)
+[21:35:25] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[21:35:25] <ghservo> [13servo] 15bors-servo closed pull request #1530: Add the Rust crate map to the servo library and dependency on libuv (06master...06android_fixups) 02http://git.io/VNNkEw
+[21:35:25] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[21:35:26] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[21:35:26] <ghservo> 01[13servo01] 15bors-servo merged 06auto into 06master: 02http://git.io/JCJBDw
+[21:35:26] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[21:38:09] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[21:38:09] <ghservo> 01[13servo01] 15bors-servo pushed 0 new commits to 06auto: 02http://git.io/pmuBXw
+[21:38:09] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[21:38:11] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[21:38:12] <ghservo> 01[13servo01] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/UqXsrQ
+[21:38:12] <ghservo> 13servo/06auto 14a107513 15Isabelle Carter: added vim tmp files to git ignore
+[21:38:12] <ghservo> 13servo/06auto 141ee5224 15bors-servo: auto merge of #1531 : ibnc/servo/git_ignore_vim, r=larsbergstrom...
+[21:38:12] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[21:49:14] *** Joins: simon (simon@moz-FD4ADBC6.cable.teksavvy.com)
+[21:50:36] *** Joins: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[21:58:48] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[21:58:48] <ghservo> 01[13servo01] 15bors-servo merged 06auto into 06master: 02http://git.io/UqXsrQ
+[21:58:48] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[22:03:55] *** Quits: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[22:07:12] *** bstrie_borskiller is now known as bstriecoin
+[22:07:35] *** Quits: dbaupp (Thunderbir@moz-A840EB3D.lns20.syd6.internode.on.net) (Ping timeout)
+[22:10:51] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse)
+[22:11:19] *** Quits: Savago (Savago@D8B9C081.E820043D.D4C04133.IP) (Ping timeout)
+[22:11:27] *** Quits: azita (Azita@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: azita)
+[22:11:53] *** Quits: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: jet)
+[22:12:19] *** Joins: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[22:13:38] *** bhearsum is now known as bhearsum|afk
+[22:15:45] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[22:15:45] <ghservo> [13servo] 15ibnc opened issue #1532: Support multiple display lists 02http://git.io/G1CEsQ
+[22:15:45] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[22:17:08] *** Quits: veddan (viktor@moz-C79BC80B.csbnet.se) (Ping timeout)
+[22:21:37] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Client exited)
+[22:31:12] *** Joins: azita (Azita@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[22:35:49] <jdm> https://etherpad.mozilla.org/board-games-night
+[22:36:42] *** Quits: dherman (dherman@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: dherman)
+[22:39:56] *** Joins: discomfitor__ (discomfito@moz-975BC507.hsd1.ct.comcast.net)
+[22:40:04] *** Joins: brson (brson@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[22:40:04] *** ChanServ sets mode: +o brson
+[22:41:18] *** Quits: zmike (discomfito@moz-975BC507.hsd1.ct.comcast.net) (Ping timeout)
+[22:43:42] *** Joins: Savago (Savago@D8B9C081.E820043D.D4C04133.IP)
+[22:49:38] *** Quits: bholley (bholley@moz-3EBD3656.hsd1.ca.comcast.net) (Quit: bholley)
+[22:54:57] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[22:54:57] *** ChanServ sets mode: +o pcwalton
+[22:57:02] <nmatsakis> jack: ping
+[22:57:52] *** Quits: simon (simon@moz-FD4ADBC6.cable.teksavvy.com) (Ping timeout)
+[22:59:54] *** Joins: vodik (simon@moz-FD4ADBC6.cable.teksavvy.com)
+[23:01:27] *** Quits: brson (brson@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Ping timeout)
+[23:01:37] <nmatsakis> jack: you can at least workaround the error by annotating `find(|attr| ...)` to `find(|attr: & & @mut Attr| ...)`
+[23:01:41] <nmatsakis> jack: not sure yet what's the problem
+[23:02:03] <nmatsakis> jack: no time yet to dig in in detail :/
+[23:07:41] *** Quits: canhtak (canhtak@moz-CEAFB489.wl.t.ulaval.ca) (Ping timeout)
+[23:08:17] *** Joins: canhtak (canhtak@moz-CEAFB489.wl.t.ulaval.ca)
+[23:09:00] *** Quits: canhtak (canhtak@moz-CEAFB489.wl.t.ulaval.ca) (Quit: canhtak)
+[23:11:02] *** Joins: brson (brson@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[23:11:02] *** ChanServ sets mode: +o brson
+[23:13:25] *** Quits: brson (brson@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Ping timeout)
+[23:17:15] *** Quits: discomfitor__ (discomfito@moz-975BC507.hsd1.ct.comcast.net) (Quit: ah. I see.)
+[23:17:21] *** Joins: zmike (discomfito@moz-975BC507.hsd1.ct.comcast.net)
+[23:25:32] *** Joins: dbaupp (Thunderbir@32742E97.D5A1DCF.37681C44.IP)
+[23:25:32] *** Joins: canhtak (canhtak@moz-CEAFB489.wl.t.ulaval.ca)
+[23:30:18] *** Quits: Savago (Savago@D8B9C081.E820043D.D4C04133.IP) (Ping timeout)
+[23:31:12] *** Joins: Savago (Savago@CDD1823.E820043D.D4C04133.IP)
+[23:31:58] *** Joins: harth_ (heather@moz-42412102.hsd1.ca.comcast.net)
+[23:32:48] *** Joins: brson (brson@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[23:32:48] *** ChanServ sets mode: +o brson
+[23:33:53] *** Quits: harth_ (heather@moz-42412102.hsd1.ca.comcast.net) (Ping timeout)
+[23:35:37] *** Quits: brson (brson@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Ping timeout)
+[23:45:24] *** Quits: hoverbear (hoverbear@moz-A4D3860E.wireless.uvic.ca) (Quit: Taking a nap.)
+[23:51:13] *** Quits: dbaupp (Thunderbir@32742E97.D5A1DCF.37681C44.IP) (Ping timeout)
+[23:51:15] *** Joins: dbaupp (Thunderbir@32742E97.D5A1DCF.37681C44.IP)
+[23:51:52] *** Joins: jaeman (Mibbit@B4104EBB.3CC170B1.1E14B209.IP)
+[23:53:00] *** Joins: hoverbear (hoverbear@moz-A4D3860E.wireless.uvic.ca)
+[23:53:45] *** Quits: dbaupp (Thunderbir@32742E97.D5A1DCF.37681C44.IP) (Input/output error)
+[23:53:48] *** Joins: dbaupp (Thunderbir@32742E97.D5A1DCF.37681C44.IP)

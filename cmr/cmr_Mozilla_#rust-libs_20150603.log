@@ -1,0 +1,214 @@
+[00:33:58] <huon> acrichto: is there an easy way to determine the transitions you made?
+[00:34:07] <huon> (I can see the FCP tag, but... nothing else?)
+[00:48:37] *** Quits: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se) (Ping timeout: 121 seconds)
+[00:49:04] *** Joins: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se)
+[01:08:01] <acrichto> huon: hm yeah that would probably be a good idea
+[01:08:09] <acrichto> huon: If you search for all T-libs PRs you may be able to get more
+[01:08:14] *** Quits: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se) (Ping timeout: 121 seconds)
+[01:08:17] <acrichto> but otherwise I was just relying on emails :(
+[01:08:30] <acrichto> overall though a few were merged, a few were moved to FCP, and a few were closed
+[01:09:27] <huon> acrichto: oh, I guess github might be able to sort by "recently updated"
+[01:09:33] * huon tries
+[01:10:15] <huon> https://github.com/rust-lang/rfcs/issues?utf8=%E2%9C%93&q=label%3AT-libs+sort%3Aupdated-desc+ seems to work
+[01:10:35] <acrichto> huon: aha yes those look familiar
+[01:16:43] <Gankro> I've made BitVec and BitSet generic over u8/u16/u32/u64 backing storage and ported them to cargo
+[01:17:17] <huon> Gankro: will it work with SIMD types?
+[01:17:24] <Gankro> huon: Not naively
+[01:17:35] <Gankro> huon: Largely just because of bitshifts
+[01:17:37] <huon> I'm sure it can be tweaked...
+[01:17:38] <huon> oh
+[01:18:07] <Gankro> If you can provide a Shr and Shl impl that "acts" like a u128 then everything should be golden
+[01:18:09] <huon> I guess you just need to have a way to expose the backing vector internally as, say, &mut [u8] and "hard" operations can be implemented on that
+[01:18:32] <Gankro> huon: Alternatively u128 should just work?
+[01:18:46] <Gankro> And be equivalent to a simd type?
+[01:19:06] <huon> probably doing more work than necessary
+[01:19:19] <Gankro> Oh?
+[01:19:38] <huon> i.e. a shift is having to be all complicated and behave like a u128 shift, rather than doing what you actually want to do
+[01:19:44] <huon> (which is some bitvec operation)
+[01:19:50] <Gankro> Yeah
+[01:19:57] <huon> I could easily believe they optimise to the same thing, though
+[01:20:29] <Gankro> I did try to do simd a while back, but ran into annoyances with them
+[01:20:41] <Gankro> In particular all the operators aren't exposed as traits
+[01:20:45] <Gankro> And shift is weird
+[01:21:01] <Gankro> Oh, +1 and -1 are probably also busted
+[01:21:10] <Gankro> Really just want u128
+[01:21:12] <huon> hm, i think I ported a bitvec to simd at one point
+[01:21:18] <huon> what's +1 for?
+[01:21:27] <Gankro> -1 is used for some crazy trick
+[01:21:29] <huon> (but -1 is just !zero, right?)
+[01:21:41] <huon> or are you literally meaning subtraction?
+[01:22:04] <Gankro> `let k = (self.head & (!self.head + B::one())) - B::one();`
+[01:22:18] <huon> generally all this stuff could be stuck into a custom BitBacking trait of course
+[01:22:25] <huon> wait
+[01:22:27] <huon> wat
+[01:22:57] <Gankro> That nonsense apparently isolates the LSB and then subtracts one to get 000000001111111
+[01:23:08] <huon> yeah
+[01:23:19] <huon> bithacks are awesome :P
+[01:23:34] <Gankro> huon: But yeah my solution was basically an epic BitBlock trait
+[01:23:48] <Gankro> So you could theoretically just move all the bit nonsense we do "into" the trait
+[01:23:56] <Gankro> And have SIMD do something custom
+[01:24:47] <Gankro> https://github.com/contain-rs/bit-vec/blob/master/src/lib.rs#L100-L127
+[01:26:02] <Gankro> Anyone this is basically a minimal port
+[01:26:10] <Gankro> I logged a bunch of issues against the design
+[01:26:13] <Gankro> There's probably more
+[01:27:27] <huon> Gankro: ( https://github.com/huonw/simd-bitvec are what I experimented with so far)
+[01:27:40] <huon> ah, cool
+[01:53:53] * Gankro needs to revive a lot of his old collections API projects
+[01:54:24] <Gankro> huon: It looks like LLVM/rustc needs a lot of work to avoid brutally misoptimizing iterators
+[01:55:10] <Gankro> Although some of it looked like coercing a few loop unrolls would have maybe pushed it over the edge
+[01:55:51] <huon> I think a Rust-level optimisation pass that understood enums (specifically Option) would solve most problems I've seen
+[01:56:14] <huon> (i.e. I agree)
+[01:56:36] <Gankro> Anything like trusted_len is kinda moot until we have this solved
+[01:56:54] <Gankro> (although it does indeed improve a lot of cases)
+[01:56:59] <huon> well, trusted_len is orthogonal to many of these problems
+[01:57:23] <Gankro> It's just a trick to improve the odds of optimization working
+[01:57:36] <Gankro> In principle it's useless for a "sufficiently smart" compiler
+[01:59:15] <huon> well, many iterator problems are problems even when used with, say, `for`
+[02:00:00] <huon> (e.g. 24500(?) from yesterday)
+[02:00:30] <Gankro> That's definitely not an issue that was filed yesterday
+[02:00:34] *** WindowsBunny is now known as WindowsSheep
+[02:00:52] <huon> we were discussing it yesterday
+[02:01:06] <Gankro> Ah
+[02:01:06] <huon> (the problem with repeat.take)
+[02:01:10] <Gankro> Ah yeah
+[02:01:44] <Gankro> manually working around it was too janky
+[02:01:53] <huon> (oh, not even close https://github.com/rust-lang/rust/issues/24660 )
+[02:05:13] *** Quits: zz_kimundi (kimundi@moz-6vnj1q.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[02:07:32] *** Joins: zz_kimundi (kimundi@moz-iru09r.dip0.t-ipconnect.de)
+[02:07:33] *** zz_kimundi is now known as kimundi
+[02:09:20] <Gankro> lol rust-traverse is super out of date
+[02:09:22] <Gankro> whelp
+[02:09:26] <Gankro> time to fix that I guess
+[03:03:37] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[04:37:14] *** Quits: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au) (Ping timeout: 121 seconds)
+[05:21:02] *** Joins: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au)
+[05:41:47] <huon> acrichto: ping
+[05:44:55] <acrichto> huon: pong
+[05:45:40] <huon> acrichto: I'm just having trouble understanding https://github.com/rust-lang/rfcs/pull/590#issuecomment-108125198
+[05:45:52] <huon> acrichto: why is it backward incompatible to change std APIs?
+[05:46:11] <huon> It seems like removing "unnecessary" bounds in data type definitions is fine?
+[05:46:15] <acrichto> if we added, e.g., Hash + Eq to the K parameter on HashMap, it'd be backwads incompatible
+[05:46:21] <huon> oh, *adding*
+[05:46:22] <acrichto> removing bounds would be fine though
+[05:46:23] <huon> ok
+[05:46:26] <acrichto> ah sorry wasn't clear
+[05:46:44] <huon> thanks for clarifying
+[06:06:45] *** Quits: aatch (james@moz-5r41gb.6pd7.20lj.e000.2406.IP) (Connection closed)
+[06:51:27] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[07:07:41] *** Quits: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au) (Ping timeout: 121 seconds)
+[07:44:42] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[09:34:23] *** kimundi is now known as zz_kimundi
+[09:58:37] *** Joins: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se)
+[10:19:15] <bluss> Gankro: nice that bitset and bitvec are finally on crates.io
+[10:41:40] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[11:26:40] *** WindowsSheep is now known as WindowsBunny
+[12:09:56] *** zz_kimundi is now known as kimundi
+[12:27:24] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Connection closed)
+[12:50:40] *** Joins: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au)
+[13:37:38] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[14:57:08] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[14:57:09] *** ChanServ sets mode: +qo brson brson
+[16:10:01] <Gankro> bluss: Need to get rid of feature(core) though
+[17:14:59] *** Joins: killercup (killercup@moz-723bo4.dip0.t-ipconnect.de)
+[18:41:53] *** Quits: flaper87 (flaper87@moz-fnn.1e9.132.209.IP) (Ping timeout: 121 seconds)
+[18:48:52] *** Joins: flaper87 (flaper87@moz-fnn.1e9.132.209.IP)
+[18:52:54] *** Quits: flaper87 (flaper87@moz-fnn.1e9.132.209.IP) (Ping timeout: 121 seconds)
+[19:01:33] *** Joins: sigma (sigma@moz-im7cik.range86-135.btcentralplus.com)
+[19:01:52] *** Joins: ff (flaper87Moz@moz-gc8je6.ip57.fastwebnet.it)
+[19:03:48] *** Quits: ff (flaper87Moz@moz-gc8je6.ip57.fastwebnet.it) (Quit: 1.1.1)
+[19:48:02] *** Quits: sigma (sigma@moz-im7cik.range86-135.btcentralplus.com) (Connection closed)
+[20:54:55] <bluss> Gankro: you should tweak their description so you find them by their names (bitset and bitvec) in search
+[20:55:44] <Gankro> bluss: eh, you're an owner of all the contain-rs repos now
+[20:55:46] <Gankro> Go nuts :P
+[20:56:18] <bluss> lol wut
+[20:56:21] <bluss> sure
+[20:57:17] <Gankro> editing 1 field is easier than two :P
+[21:03:23] *** Quits: archshift (archshift@moz-qhvdod.com) (Ping timeout: 121 seconds)
+[21:04:31] *** Quits: Dabo (dabo@moz-u83r54.dabo.guru) (Ping timeout: 121 seconds)
+[21:12:21] *** Joins: Dabo (dabo@znc.dabo.guru)
+[21:12:39] *** Joins: archshift (archshift@moz-qhvdod.com)
+[21:21:43] <bluss> Gankro: I'm editing bitvec now. There is no default type param for ::new(), so it's a bit cumbersome
+[21:23:44] <Gankro> bluss: Defaults pushing inference would fix that, no?
+[21:24:26] <bluss> I don't know
+[21:24:48] <bluss> I'm used to how it half works and half not
+[21:25:23] <bluss> and type params on impl blocks are their own beast
+[21:25:31] <bluss> compared to those on the struct
+[21:34:00] <Gankro> bluss: being able to refer to Self solved most of my problems with declarations
+[21:36:45] <bluss> yeah that's nice
+[21:36:54] <bluss> I pushed straight to bit-vec
+[21:37:07] <bluss> I don't think I can configure travis to enable it
+[21:37:27] <Gankro> (in the future can you open a PR?)
+[21:37:29] <bluss> oh I can
+[21:38:09] <bluss> Gankro: sure. I figured I'd start with a bang since you tossed me the keys
+[21:38:46] <bluss> given the level of the issues I thought it was still a pretty loose organization :)
+[21:39:29] <Gankro> I like all changes to be reviewed just in case one of us is really braindead
+[21:39:51] <Gankro> At least you can sleep easy knowing that you braindeath was mutual
+[21:40:00] <Gankro> (also travis gets to test the changes for us)
+[21:40:15] <bluss> right
+[21:40:26] <bluss> I didn't think I could enable travis but I found the switch
+[21:40:32] <bluss> so I'll test it out now
+[21:42:36] <bluss> travis https://travis-ci.org/contain-rs/bit-vec/builds/65318370
+[21:43:17] <Gankro> Yeah there's some secret keys I need to feed travis...
+[21:43:43] <Gankro> For docs and stuff
+[21:44:15] <bluss> oh bummer it didn't actually fix the feature(core) dependency... *Cloned*
+[21:46:29] <Gankro> huon: I can't remember... do I want to make the keys flashcat's, or my own...?
+[21:46:44] <huon> probably flashcats
+[21:49:30] <Gankro> ok bit-vec and bit-set should be totally wired up
+[21:50:03] <Gankro> huon: I heard some people have configured travis to do cargo publish whenever the version in the toml increments. Thoughts?
+[21:55:46] <huon> I don't like implicit publishes personally
+[21:56:42] <huon> I'm happy if it only happened for specific (non-master) branches, or detected a git tag etc.
+[21:58:09] <Gankro> It *would* solve the annoying problem of someone patching it and then someone (me) forgetting to do a publish
+[21:58:32] <Gankro> Or rather, it would remove the single point of failure
+[21:58:53] <Gankro> hmm... maybe we can just teach FlashCat `publish` or something...
+[21:59:29] <huon> you'll need to update the highfive/homu configurations and tell me to update them on the server bw
+[21:59:31] <huon> *btw
+[22:03:11] <Gankro> huon: I updated the cfgs but I can't do that last part
+[22:03:20] <Gankro> Oh wait, tell *you*
+[22:03:23] <Gankro> Ok I just did
+[22:03:24] <Gankro> that
+[22:03:27] <Gankro> now
+[22:05:47] <huon> heh
+[22:08:49] <huon> Gankro: done
+[22:10:40] *** Quits: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua) (Ping timeout: 121 seconds)
+[22:33:03] <Gankro> cmr: What do you mean by the claim that changing to Display in Result::expect can be done later?
+[22:33:14] <Gankro> Surely it's not backcompat...?
+[22:33:33] <huon> Gankro: &str implements Display, right?
+[22:33:41] <huon> but, oh, type inference will fall down
+[22:33:58] <huon> foo.unwrap(Default::default())
+[22:34:29] <huon> hm, that seems like a general problem...
+[22:34:38] * huon checks the RFC
+[22:37:42] <Gankro> Oh wait, now *I'm* confused
+[22:37:48] <Gankro> more confused
+[22:39:53] <huon> going from fn unwrap(self, &str) to fn unwrap<T: Display>(self, T) will make that example go from "compiling" to "not compiling"
+[22:40:19] <bluss> I think that's covered as a minor change in the RFC
+[22:40:26] <huon> https://github.com/rust-lang/rfcs/pull/1105/files#diff-237a6e1cd0ae879ccb2a1c71d4b505bfR580
+[22:40:30] <huon> yeah, just found it :)
+[22:40:41] <huon> (and the inference failures are considered)
+[22:41:05] <Gankro> Ugh yeah I got confused because the text doesn't give an impl but cmr did
+[22:41:20] <Gankro> So I kinda instantly went to RFC proposes cmr's design
+[22:43:08] *** Quits: [o__o] ([o__o]@moz-4s2t5k.compute-1.amazonaws.com) (Connection closed)
+[22:43:28] *** Joins: [o__o] ([o__o]@moz-4s2t5k.compute-1.amazonaws.com)
+[22:44:51] <Gankro> Is https://github.com/rust-lang/rfcs/pull/770/ even actionable post 1.0?
+[22:46:38] <Gankro> Making all io stuff basically not flush/close on drop
+[22:48:50] <aturon> Gankro: yeah, i think there's a path to do it
+[22:49:08] <Gankro> aturon: Is it desirable?
+[22:49:29] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[22:49:30] <aturon> it's not 100% clear to me. it adds some non-idiomatic complexity, for sure --
+[22:49:45] <aturon> but on the other hand there are some errors you just can't "see" today
+[22:49:52] <huon> Gankro: oh, whoops, I thought the RFC had a &str parameter like Option::unwrap, but it seems it has a `Debug`-bounded generic...
+[22:50:07] <aturon> Gankro: but there may be other designs that are a better fit for Rust's idioms
+[22:50:07] <Gankro> huon: No I'm pretty sure you're right
+[22:50:25] <Gankro> The Debug is on the Err
+[22:50:37] <huon> Gankro: oh ... I agree that the RFC would be greatly improved by writing out the signatures
+[22:51:14] <Gankro> aturon: Also it seems the subteam member still don't have rights on the rfcs repo...? I've asked this a few times, and I thought the answer was we should. Maybe since it hasn't happened I'm mistaken...?
+[22:52:03] <aturon> oversight, i think. i will fix.
+[22:52:19] <Gankro> kk
+[23:02:33] <huon> drawing attention to https://github.com/rust-lang/rust/pull/25646
+[23:07:21] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[23:21:50] <Gankro> huon: Can we throw crater at it?
+[23:23:26] <bluss> crater doesn't capture all breakage at all
+[23:23:45] <bluss> oh and since it doesn't run tests, just checks the compile I guess crater is useless for a change to align of
+[23:29:20] *** Quits: killercup (killercup@moz-723bo4.dip0.t-ipconnect.de) (Quit: Bye)
+[23:42:36] <Gankro> Oh shoot, I thought it ran tests
+[23:53:47] <bluss> Gankro: if you wonder why all the examples pass in bit-vec, it's because they all demonstrate std::collections::BitVec
+[23:55:34] <Gankro> lmao

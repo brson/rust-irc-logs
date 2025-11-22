@@ -1,0 +1,188 @@
+[02:44:21] <cmr> acrichto: do you plan on doing proper cross-crate things or are you going to move on to bigger fish?
+[02:44:36] <acrichto> I'm not entirely sure right now
+[02:44:47] <acrichto> proper cross-crate things will require more discussion I think (in my opinion)
+[02:45:01] <cmr> Can we have that discussion now?
+[02:45:13] <acrichto> sure, I'm on a train so I may be in an out
+[02:45:19] <cmr> ok
+[02:45:32] <acrichto> so there's two inda things here
+[02:45:43] <acrichto> first is that ExteranlPath should have more info than just 2 strings
+[02:45:47] <acrichto> for things like typarams/lifetimes etc
+[02:46:23] <acrichto> the second is that we shouldn't have to require that all libraries forever specify where the "std/extra" documentation lives
+[02:46:32] <acrichto> we definitely *should* be linking to it
+[02:46:55] <acrichto> and then also rustdoc shouldn't have hardcoded urls 
+[02:47:10] <acrichto> the system that I was imagining was kinda like this
+[02:47:22] <acrichto> 1. in RUST_PATH there are doc dirs along with lib/bin
+[02:47:35] <acrichto> 2. when you build documentation for a library, it drops the json files in these dirs
+[02:47:46] <acrichto> 3. when linking, you search RUST_PATH for previously built documentation
+[02:48:03] <acrichto> 4. you either generate links to it, or the json specifies where it is on the web
+[02:48:42] <acrichto> but that's not entirely sufficient
+[02:48:49] <acrichto> versions would work kinda like that-ish
+[02:49:01] <acrichto> but basically I was imagining some form of search of RUST_PATH
+[02:52:03] <cmr> ExternalPath definitely needs work.
+[02:52:07] <cmr> It should be a full Path
+[02:52:30] <cmr> Might bug pcwalton of how to get an ast::Path from metadata, rather than the neutered ast_util::path
+[02:53:39] <cmr> As for specification of external crates.
+[02:54:10] <cmr> It should be an attribute.
+[02:54:17] <cmr> #[doc(hosted_at="...")];
+[02:54:36] <cmr> So yeah, you'd look in the json.
+[02:54:47] <acrichto> I'd be cool with that, but you would specify that in the source crate, not the external crates
+[02:54:50] <cmr> acrichto: why isn't it entirely sufficient?
+[02:54:53] <cmr> Yes, definitely.
+[02:55:01] <acrichto> so libstd would have #[doc(at = "...")]
+[02:55:08] <acrichto> but never #[doc(std(at = " ..."))]
+[02:55:12] <cmr> yep
+[02:55:15] <acrichto> so we might not even need to generate json
+[02:55:21] <cmr> Well
+[02:55:29] <acrichto> it could just read metadata maybe
+[02:56:17] <cmr> yeah, that would work
+[02:56:25] <cmr> Although for...
+[02:57:05] <cmr> https://github.com/mozilla/rust/issues/1453
+[02:57:08] <cmr> We'd want to generate the json
+[02:57:17] <cmr> Although maybe not
+[02:57:25] <cmr> Maybe it could spoof the hosted_at or whatever
+[02:57:55] <acrichto> so one thing that's always nice is to generate docs locally and have everything "just work"
+[02:58:07] <acrichto> but also to have everything "just work" when putting things on a server
+[02:58:27] <cmr> I want to be able to generate json for every crate I use, and have a fully hyperlinked local version
+[02:58:34] <cmr> Is that what the desire you're getting at?
+[02:59:01] <acrichto> yeah basically
+[02:59:13] <acrichto> hyperlinks are though though
+[02:59:26] <cmr> Additionally
+[02:59:26] <acrichto> b/c if they're all in the same directory it's easy
+[02:59:30] <acrichto> like the same 'doc/' directory
+[02:59:36] <cmr> What do you think about a --doc-json=output.json to rustc?
+[02:59:44] <acrichto> hmm...
+[02:59:44] <cmr> It would skip having extra typechecking and stuff for docs.
+[02:59:56] <acrichto> I'd almost rather that be a rustpkg thing
+[02:59:58] <cmr> It'd just call out to rustdoc, skipping the get_ast_and_resolve step.
+[03:00:16] <cmr> If rustpkg is in a position to be able to do that, sure.
+[03:00:17] <acrichto> it is sad right now that you can't pass things like --cfg to rustdoc
+[03:00:24] <cmr> Yeah, it is.
+[03:00:27] <acrichto> I think it just execs right now :(
+[03:01:05] <acrichto> we should definitely have a stop_after_typeck option though
+[03:01:12] <cmr> Because doing the command line params with librustc is hard :p
+[03:01:15] <acrichto> probably as an extra phase
+[03:01:25] <acrichto> well the good part is that most of the time you don't need a command line parameter
+[03:01:29] <acrichto> yay attributes!
+[03:01:35] <cmr> Yeah
+[03:01:39] <cmr> but you do for --cfg
+[03:01:46] <cmr> which is basically the only thing you'd do it for, for rustdoc
+[03:02:23] <acrichto> yeah so it'd be pretty easy to add I think
+[03:02:37] <acrichto> I'm not sure how much support rustpkg has for this but in theory we'd want similar support
+[03:03:17] <cmr> rustpkg basically parses a subset of rustc's params and then reconstructs them to exec rustc
+[03:03:29] <cmr> (I was very interested in how rustpkg went about it when writing rustdoc)
+[03:10:28] <acrichto> so basically it's like something sees an external path with a crate named "foo"
+[03:10:49] <acrichto> well we should resolve "foo" in the same way that rustc does, and then somehow we need to determine where that crate's documentation lives
+[03:11:22] <acrichto> it's on the web (via doc(at = "...")), then generate links there, otherwise see if it's on the local filesystem. If so, link to the root location, otherwise don't link at all
+[03:11:32] <acrichto> maybe emit a warning if you have an external create without dox
+[03:12:32] <cmr> yeah
+[03:24:58] <acrichto> cmr: I just closed #5413, thinking that you accidentally re-opened it
+[03:26:49] <cmr> acrichto: heh. thanks
+[03:44:39] <cmr> acrichto: http://static.rust-lang.org/doc/master/extra/getopts/index.html
+[03:44:42] <cmr> It lost indentation
+[03:49:26] <acrichto> oh dear
+[06:05:40] *** Quits: bjz_ (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[06:10:44] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[07:07:05] *** Quits: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[09:37:12] *** Joins: bytbox (s@moz-DC83764A.washdc.fios.verizon.net)
+[09:37:19] *** Parts: bytbox (s@moz-DC83764A.washdc.fios.verizon.net) ()
+[09:49:56] <Seldaek> acrichto: yay, landed on rust-lang.org! :)
+[09:52:41] <Seldaek> (maybe it's not new, but I didn't realize until now;)
+[09:58:27] <Seldaek> acrichto: makes me wonder now.. how about updating the main site's design for 0.8? it's not ugly but it's not exactly nice either, and the main links people need (like the doc ones) are in a tiny corner crammed into a list of links
+[09:58:41] <Seldaek> do you know of any plans to work on that?
+[10:32:53] <dbaupp> Seldaek: I believe 0.8 is due in the next 48 hours (I could be entirely wrong) so better get started, if you're volunteering :P
+[10:33:13] <dbaupp> btw, https://github.com/graydon/rust-www/tree/gh-pages
+[11:14:13] <Seldaek> :P
+[11:14:23] <Seldaek> dbaupp: just askin'
+[11:14:50] <Seldaek> but yeah maybe I will
+[11:15:03] <Seldaek> if I find time tonight
+[11:18:49] <dbaupp> Seldaek: I might've said it before :P but the new docs are awesome <3
+[11:29:04] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[11:31:33] <Seldaek> dbaupp: I think you have :P
+[12:25:49] *** Quits: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Connection reset by peer)
+[13:09:49] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[13:36:19] <Seldaek> acrichto: is the "removal" of the [src] links intentional or you forgot or is there a technical issue?
+[14:49:15] <cmr> Seldaek: intentional omission
+[14:52:48] <Seldaek> so technical issue?
+[14:52:54] <Seldaek> I guess also "attributes vs configuration"
+[16:11:04] <acrichto> Seldaek: I'm perfectly OK with a #[doc(src_root = "...")] for now to generate src links, but we shouldn't have to remember to freeze it at a git tag every time a new version is released (0.8 docs shouldn't point to master)
+[16:11:18] <acrichto> so yes/no on the purposeful omission, mainly that I didn't have a great way to deal with versions just yet
+[16:13:26] <Seldaek> how about src_root and add a %revision%  in that you replace by the current rev of the git repo?
+[16:13:49] <Seldaek> if there is no git repo, use master or error out or ask for input
+[16:34:52] <acrichto> Seldaek:  the find-and-replace of the literal string "%revision%" always seemed a bit magical to me, but I'm not entirely sure how to avoid it
+[16:35:03] <acrichto> one option is to just "know" that github has special source urls
+[16:35:14] <acrichto> also we already have #[link(src = "...")]
+[16:35:34] <acrichto> oh, #[link(url = "...")]
+[16:35:37] <cmr> Part of the problem is that paths in the JSON are relative to where you run rustdoc from.
+[16:35:40] <acrichto> so perhaps we could make that smarter
+[16:35:51] <acrichto> cmr: wait what
+[16:35:56] <acrichto> file paths?
+[16:36:00] <cmr> yes, in the spans.
+[16:36:07] <acrichto> oh I never looked at those
+[16:36:20] <acrichto> hmm...
+[16:36:24] <Seldaek> yeah, those in the json you sent me were completely messed up
+[16:36:32] <Seldaek> they had absolute /c/something or whatever
+[16:36:43] <Seldaek> those cmr built usually only had one dir too many 
+[16:36:56] <Seldaek> this should be normalized to crate root somehow
+[16:36:58] <acrichto> they should probably be crate-relative
+[16:37:07] <acrichto> it looks like you're just using span_to_str
+[16:37:10] <cmr> yeah
+[16:37:14] <acrichto> which seems like it should rather be a json hash or something
+[16:37:47] <acrichto> I don't want to have to specify the source twice
+[16:38:02] <acrichto> so we should either remove #[link(url = "...")] usage
+[16:38:06] <acrichto> or leverage it
+[16:38:21] <acrichto> we *might* be able to detect things like github
+[16:38:37] <acrichto> although the other option is also to just have our own source browser
+[16:38:46] <acrichto> not as fancy as github's, but it'd always be correct
+[16:38:57] <cmr> I think we can normalize based on the crate root, given that the path to the crate root is the rustdoc argument.
+[16:39:08] <cmr> I'd rather not define our own source browser.
+[16:39:25] <cmr> We could have one, but we should integrate with other tools.
+[16:40:06] <acrichto> we'd still have the trouble of moving from the crate root to the git-root
+[16:40:19] <acrichto> in theory #[link(url = "http://github.com/mozilla/rust")]
+[16:40:30] <cmr> oh, yeah :(
+[16:40:37] <cmr> Well
+[16:40:37] <acrichto> and then rustdoc would recognize github, append 'tree/master'
+[16:40:42] <acrichto> and then it would recognize git as well
+[16:40:45] <cmr> Hm
+[16:40:46] <acrichto> and append 'src/libstd/'
+[16:40:48] <cmr> This is a bit hairy.
+[16:40:58] <acrichto> I don't like something that's github-specific
+[16:41:36] <cmr> #[homepage="..."];
+[16:41:54] <cmr> #[source_root="github.com/mozilla/rust/tree/%revision/src/libstd"];
+[16:41:56] <cmr> or something
+[16:42:21] <cmr> Either there's going to be a lot of magic, or it's going to have to be fairly verbose.
+[16:42:25] <acrichto> maybe, but then how many magical %-escapes do we have?
+[16:44:27] <cmr> I don't know
+[16:44:35] <cmr> I don't really see a nice solution to this
+[16:45:24] <acrichto> yeah :(
+[16:45:46] <acrichto> right now the best thing may just be a crate-relative path appended to whatever #[link(url)] says
+[16:45:56] <acrichto> b/c it's simple, it works, and it's easy to understand
+[16:46:26] <cmr> yeah
+[16:46:56] <acrichto> right now I'm working on hiding private things
+[16:49:00] <Seldaek> acrichto: except that you need something between link(url) (the git repo url) and the path
+[16:49:14] <Seldaek> i.e. the /tree/%revision bit
+[16:49:24] <acrichto> yeah for now everything will point to master
+[16:49:41] <acrichto> we'd have to re-write it to /tree/0.8/ for when we generate 0.8 docs
+[16:49:52] <cmr> acrichto: hiding private things should be easy? there was a pass for it that worked.
+[16:50:11] <acrichto> cmr: private things can be publicly re-exported and they'd all be hidden
+[16:50:38] <cmr> ah I see
+[16:50:43] <acrichto> also privacy shouldn't be recalculated in rustdoc
+[16:50:46] <cmr> so it'd just be removing them from the indices?
+[16:50:58] <acrichto> perhaps
+[16:51:17] <acrichto> I hadn't thought about the search index
+[16:51:39] <acrichto> basically http://static.rust-lang.org/doc/master/std/hashmap/struct.HashMap.html is still not very helpful
+[16:51:44] <cmr> well not just the search index, the module indices were what I would think of
+[16:52:15] <acrichto> yeah that should probably happen
+[16:52:19] <Seldaek> yeah IMO they should be available in the docs and search index perhaps but not in module listings
+[16:52:33] <acrichto> hmm this is more annoying than I thought
+[16:53:13] <Seldaek> acrichto: also I noticed you blasted away the 4 links on top, I know you want to avoid all configuration but it'd be kinda nice to have at least a link back to the main rust site
+[16:53:37] <acrichto> Seldaek: I think pcwalton was opposed to those as well
+[16:53:42] <Seldaek> especially if std & extra aren't cross-linked it's quite useful
+[16:53:43] <acrichto> http://static.rust-lang.org/doc/master/std/i8/index.html is also still very sad
+[16:54:14] <Seldaek> opposed to what? the way they looked? their name? having a link to main site?
+[16:54:25] <Seldaek> because the latter I think is important, the rest we can discuss :)
+[16:54:57] <acrichto> I'm not entirely sure yeah
+[22:52:47] <acrichto> we should get cross-crate linking working for 0.8
+[23:49:27] <acrichto> jesus christ
+[23:49:38] <acrichto> sundown took markdown times from 30s to 0.5s
+[23:50:18] <cmr> Holy balls
+[23:51:50] <acrichto> yeah lol

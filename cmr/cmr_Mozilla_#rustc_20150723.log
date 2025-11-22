@@ -1,0 +1,223 @@
+[00:00:41] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[00:05:04] *** Joins: achanda (achanda@moz-qv7q4n.ca.comcast.net)
+[00:36:14] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Ping timeout: 121 seconds)
+[00:37:24] *** Joins: brson (brson@moz-qjbkeh.mtv2.mozilla.com)
+[00:37:24] *** ChanServ sets mode: +qo brson brson
+[00:52:44] *** Quits: brson (brson@moz-qjbkeh.mtv2.mozilla.com) (Quit: leaving)
+[00:53:22] *** Joins: brson (brson@moz-qjbkeh.mtv2.mozilla.com)
+[00:53:22] *** ChanServ sets mode: +qo brson brson
+[01:51:43] *** Joins: aatch (james@moz-i1k1ks.tlms.2o1v.e006.2406.IP)
+[02:06:22] *** Quits: barosl (barosl@moz-tmp.qma.67.220.IP) (Quit: Leaving)
+[02:29:14] *** Quits: brson (brson@moz-qjbkeh.mtv2.mozilla.com) (Connection closed)
+[02:45:19] *** Quits: kimundi (kimundi@moz-uicitd.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[02:47:27] *** Joins: kimundi (kimundi@moz-4gvoif.8lpn.sem7.57bc.2002.IP)
+[02:48:46] *** Joins: barosl (barosl@moz-tmp.qma.67.220.IP)
+[03:18:25] *** Quits: barosl (barosl@moz-tmp.qma.67.220.IP) (Quit: Leaving)
+[03:27:55] *** Joins: barosl (barosl@moz-tmp.qma.67.220.IP)
+[05:56:48] *** Joins: laumann (thomas@moz-3m6.3kq.109.2.IP)
+[06:24:12] <eternaleye> Out of curiosity, is there a reason rustc uses 'ar crus' when creating rlibs? It's a new file, so 'u' is a no-op, but 'u' means that 'D' can't be used... and so timestamps get embedded in the rlib, making the build nondeterministic.
+[06:24:52] <eternaleye> I just tested with a custom -C ar= that replaces "crus" with "crsD", and the generated rlib was bit-for-bit identical between builds
+[06:27:01] <aatch> eternaleye, I'm guessing that the `ar` command creates a temporary file?
+[06:28:03] <eternaleye> Hm, actually, it doesn't, so I was wrong about "u" being a noop
+[06:28:59] <eternaleye> I assumed it did, because otherwise sudden interruption would corrupt the rlib but leave it in place
+[06:29:02] <eternaleye> But seems not
+[06:29:12] <eternaleye> Oh, unless you mean internally
+[06:30:09] <aatch> eternaleye, I meant within the compiler, as in "create libfoo.a; rename libfoo.a -> libfoo.rlib"
+[06:30:38] <eternaleye> aatch: The compiler does not
+[06:31:02] <eternaleye> aatch: ar does, though
+[06:32:00] <eternaleye> aatch: The compiler just calls "ar crus <file> <stuff>'
+[06:32:06] <aatch> eternaleye, ok, then the `u` might not be a no-op, but don't rlibs generally only contain a single object file anyway?
+[06:32:27] <eternaleye> aatch: Yes, seems so - and it's writing out the whole file anyway, so the 'u' probably isn't saving much
+[06:32:45] <eternaleye> aatch: since ar internally opens a temp file with O_CREAT, writes it, and rename()s it
+[06:32:50] <aatch> eternaleye, thats what I thought. Might be worth making that change anyway then.
+[06:33:14] <eternaleye> Nice thing is it's a pair of one-character changes :>
+[06:33:27] <eternaleye> change cruS and crus to crDS and crDs
+[06:33:33] <eternaleye> in librustc_back
+[06:34:23] <aatch> eternaleye, I think the `u` option is mostly for `make` with C/C++ code, so you can just update the re-built objects.
+[06:34:57] <eternaleye> Yeah
+[06:35:02] <eternaleye> Oh, hm
+[06:35:12] <eternaleye> Searching in the rust-lang/rust repo doesn't find crus
+[06:35:28] <eternaleye> I found it in librustc_back-*.so, though, so that means it's probably from LLVM :/
+[06:35:36] <aatch> eternaleye, oh, right, I forgot, we're not using the system archiver anymore.
+[06:35:47] <eternaleye> Ah, and I was testing with stable
+[06:35:52] <eternaleye> Lemme multirust up to nightly
+[06:36:25] <aatch> eternaleye, LLVM has a built-in archiver which we're using now (I'm pretty sure anyway).
+[06:36:37] <eternaleye> aatch: Yeah, I'm going to test if it's deterministic
+[06:37:44] *** Quits: aatch (james@moz-i1k1ks.tlms.2o1v.e006.2406.IP) (Quit: Leaving)
+[06:47:30] <eternaleye> Mm, looks like no, but trivial to fix: https://github.com/rust-lang/rust/blob/d4432b37378ec55450e06799f5344b4b0f4b94e0/src/rustllvm/ArchiveWrapper.cpp#L171
+[06:47:40] <eternaleye> Just changing that "false" to "true" should do the trick
+[06:55:20] <eternaleye> PR submitted :D
+[07:07:48] <eternaleye> richo: The beautiful thing is it was just flipping a bool :D
+[07:07:57] <richo> yeah!
+[07:08:02] <richo> I mean, there's still more work to be done
+[07:08:08] <richo> but I'm glad other people are working on the same things
+[07:08:22] <richo> I found my way into a deep pit of darwin's ar(1) being basically broken last time
+[07:08:26] <richo> and haven't gone back to it since
+[07:09:00] <eternaleye> richo: Yup. Though, this coming out _bit-for-bit_ is damn nice: http://ix.io/jTd/
+[07:09:19] <richo> \o/
+[07:09:21] <richo> nice!
+[07:09:21] <eternaleye> richo: My next step: Build all of crates.io twice :D
+[07:09:34] <richo> :D
+[07:09:37] <richo> let me know if I can help
+[07:10:02] <eternaleye> Well, I've got a server at $WORK I'm allowed to do fun stuff with that's got 24 cores that mostly sit idle
+[07:10:10] <eternaleye> So I should be fine :D
+[07:11:34] <eternaleye> richo: I'm planning on implementing HIPv2 in Rust, and deterministic builds are a good thing™ when publishing crypto+networking code :D
+[07:11:48] <richo> yeah definitely
+[07:12:21] <richo> I've been fiddling around with a proposal to prove that rust isn't the victim of a reflections on trusting trust style attack
+[07:13:04] <eternaleye> richo: A pcc/tcc equivalent?
+[07:13:21] <richo> something like that
+[07:13:22] <eternaleye> richo: So that people can do diverse double-compiling?
+[07:13:41] <richo> so rust has the neat property that you don't need to protect the languages semantics
+[07:13:49] <richo> only the parse + trans + codegen stage
+[07:14:04] <richo> so you don't need to implement borrowck and friends in the sibling compiler
+[07:14:08] <eternaleye> Ooooh
+[07:14:41] <richo> like you could literally shell out to rustc -Z no-trans if you wanted to be interested in validity before blindly translating
+[07:15:04] <richo> so I was thinking about doing a JVM thing for funsies, but at some point you do need native code because you need to be able to backend a rustc-alike to build the post-images
+[07:16:18] <eternaleye> Dunno if you do, actually - I mean, the _original_ C compiler bootstrapped via a C _interpreter_...
+[07:16:35] <richo> well so
+[07:16:44] <richo> the end goal here is to build a rustc and a rustc'
+[07:16:48] <richo> and diff them via the two toolchains
+[07:16:57] <eternaleye> Sure
+[07:17:10] <eternaleye> But you can actually lengthen that chain
+[07:17:16] <richo> sure
+[07:17:22] <eternaleye> Or you can compare rustc and interpreted(rustc')
+[07:19:31] <eternaleye> Although, I'd find it deeply hilarious if Rust's equivalent of Ruby's "write a 'let's build a webapp' tutorial" became "write a 'Let's build a Rust compiler in $your_favorite_language' tutorial"
+[07:20:17] <eternaleye> _Really_ diverse double-compiling :D
+[07:21:15] <richo> haha so
+[07:21:55] <richo> my strangeloop talk is on building toy compilers in rust
+[07:22:01] <richo> just gotta invert that and we're golden
+[08:10:58] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[08:13:23] *** Quits: achanda (achanda@moz-qv7q4n.ca.comcast.net) (Connection closed)
+[08:15:29] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[08:16:24] *** Joins: achanda (achanda@moz-qv7q4n.ca.comcast.net)
+[08:18:33] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[08:20:37] *** Quits: achanda (achanda@moz-qv7q4n.ca.comcast.net) (Ping timeout: 121 seconds)
+[08:35:02] *** Joins: eddyb_ (eddyb@moz-hhq.qs4.25.188.IP)
+[08:36:37] *** Quits: eddyb (eddyb@moz-9qr.ba9.25.188.IP) (Ping timeout: 121 seconds)
+[08:42:14] *** Quits: eddyb_ (eddyb@moz-hhq.qs4.25.188.IP) (Connection closed)
+[08:42:23] *** Joins: eddyb_ (eddyb@moz-hhq.qs4.25.188.IP)
+[08:44:42] *** Joins: achanda (achanda@moz-qv7q4n.ca.comcast.net)
+[08:44:44] *** eddyb_ is now known as eddyb
+[08:50:55] <doener> hm, could we mark methods for non-public types as internal?
+[08:51:05] <doener> i.e. internal linkage?
+[08:52:03] *** Quits: globin (globin@moz-isrgf8.de) (Connection closed)
+[08:53:18] <doener> seems rather useless that we keep the empty drop function around: http://is.gd/dLTbPl
+[09:01:14] *** Joins: globin (globin@moz-isrgf8.de)
+[09:04:12] *** Quits: globin (globin@moz-isrgf8.de) (Quit: leaving)
+[09:04:50] *** Joins: globin (globin@moz-isrgf8.de)
+[09:05:39] *** Quits: globin (globin@moz-isrgf8.de) (Quit: leaving)
+[09:05:54] *** Joins: globin (globin@moz-isrgf8.de)
+[09:30:20] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (A TLS packet with unexpected length was received.)
+[11:54:40] *** Quits: achanda (achanda@moz-qv7q4n.ca.comcast.net) (Connection closed)
+[11:55:09] *** Joins: achanda (achanda@moz-qv7q4n.ca.comcast.net)
+[14:25:48] <eddyb> pnkfelix: whoa, push/pop for unsafe?
+[14:27:18] <pnkfelix> eddyb: it was quickest / cleanest way to get safety hygiene with respect to the expansion
+[14:27:31] <eddyb> are you calling the intrinsic directly?
+[14:28:08] <pnkfelix> eddyb: as noted in the commit message, it's not meant for use elsewhere; we want to make a more disciplined approach to hygiene here
+[14:28:12] <eddyb> oh, you are indeed
+[14:28:23] <pnkfelix> eddyb: yeah I had to, from what I saw
+[14:28:52] <eddyb> pnkfelix: I found a way to get LLVM to elide the copy, not sure if you saw what I did
+[14:29:07] <pnkfelix> eddyb: I know you claimed you have seen otherwise (I assume in other contexts) but I haven't read your code yet
+[14:29:27] <eddyb> pnkfelix: return &mut T instead of *mut T from Place::pointer or w/e
+[14:29:31] <pnkfelix> You used &mut as part of it, right?
+[14:29:44] <eddyb> that way it's marked as noalias and dereferenceable(sizeof(T)) and LLVM elides the copy
+[14:30:07] <pnkfelix> Yeah I think I'm with arielb1 on this point: I don't like having &mut point at uninit
+[14:30:27] <eddyb> the function to return it is unsafe *shrug*
+[14:30:30] <pnkfelix> It may work today but it is bad to lock into it
+[14:30:37] <eddyb> I thought the API was unstable
+[14:31:02] <eddyb> the proper solution involves a pointer wrapper, like Unique, with no guarantees about the value, only about the allocation
+[14:31:49] <pnkfelix> eddyb: the Placer API is indeed unstable.  So we can discuss this
+[14:32:02] <eddyb> in the box protocol, I needed no statements for expected type hints, so I ended up with https://gist.github.com/eddyb/a7af6aa3e7ad8ae87cb1#file-box-protocol-rs-L42
+[14:32:40] <eddyb> which is safe and does get actual RVO after optimizations
+[14:34:10] <eddyb> I should remove the free functions, as they do not apply to this cleaned up form (they work with that hacky Unsize-based branch that I abandoned)
+[14:35:54] <eddyb> pnkfelix: https://play.rust-lang.org/?gist=a7af6aa3e7ad8ae87cb1&version=nightly
+[14:37:08] <eddyb> oh that is rather messy IR, due to my use of Vec for testing
+[14:39:08] <pnkfelix> eddyb: hmm, I am trying to private message you but it seems like the server ... thinks my account is not registered?
+[14:39:43] <eddyb> do you actually get told that? so I haven't missed PMs due to my filtering, that's very nice
+[14:39:55] * pnkfelix wonders if something's gone wrong with my irccloud's interaction with NickServ
+[14:40:33] <pnkfelix> yeah, I was getting a dialog box popping up and telling me that attempts to private message need to come from a registered account
+[14:43:09] <eddyb> https://play.rust-lang.org/?gist=a7af6aa3e7ad8ae87cb1&version=nightly
+[14:43:14] <eddyb> see release IR
+[14:43:40] <eddyb> oh I know what's going on, the tuple isn't captured :(
+[14:43:58] <eddyb> or the individual references. v is captured still
+[14:44:08] *** ChanServ sets mode: +ao pnkfelix pnkfelix
+[14:48:41] <eddyb> doener: I give up, what is this doing? https://play.rust-lang.org/?gist=a7af6aa3e7ad8ae87cb1&version=nightly
+[14:48:55] <eddyb> it reads from %.sroa.0.i, but isn't that uninitialized?
+[14:49:14] <eddyb> nothing wrote to it
+[14:52:48] <eddyb> oh dear, the store of that value is dead, too
+[14:53:38] * eddyb wonders if something bad happened to mem::uninitialized
+[14:55:31] <eddyb> doener: reads from uninitialized allocas do not turn into undef
+[14:55:48] <eddyb> which means we keep loads and stores around even when using mem::uninitialized
+[14:56:23] <eddyb> only if RVO applies, AFAICT
+[15:03:11] *** Quits: laumann (thomas@moz-3m6.3kq.109.2.IP) (Ping timeout: 121 seconds)
+[15:47:10] <nmatsakis> who hear is an LLVM expert? :)
+[15:47:24] <nmatsakis> I would like to know if it's easy to find out which functions were inlined into one another
+[15:50:00] <doener> nmatsakis: after the fact?
+[15:50:11] <nmatsakis> right
+[15:50:14] <nmatsakis> for tracking incr. compilation
+[15:50:19] <nmatsakis> I guess maybe we can glean this from debug info
+[15:50:30] <nmatsakis> but that sounds (a) hard and (b) unreliable
+[16:00:43] <doener> nmatsakis: I don't think the inlining pass retains any information about that
+[16:01:09] <nmatsakis> doener: I wonder how hard it would be to make it do so; we could certainly come up with a conservative approx if needed tho
+[16:01:20] <nmatsakis> but it'd be pretty dang conservative to start :)
+[16:05:36] <doener> nmatsakis: looks like there's a single point where you could trace it, it already emits diagnostics about the successful inlining there.
+[16:07:27] <doener> nmatsakis: https://github.com/rust-lang/llvm/blob/rust-llvm-2015-06-30/lib/Transforms/IPO/Inliner.cpp#L564
+[16:07:49] <nmatsakis> doener: nice, too bad it'd require modifying LLVM I guess
+[16:08:03] <nmatsakis> or can we get a trace of the "optimization remarks"
+[16:08:15] <nmatsakis> I presume that's just a debug log
+[16:08:34] <doener> you don't get the callee there (just a string)
+[16:19:56] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[16:22:49] *** Joins: arielb1 (Ariel@moz-ndu.uqk.67.109.IP)
+[16:23:20] *** Joins: sunfish (sunfish@moz-no0.93r.245.63.IP)
+[16:25:42] *** Quits: achanda (achanda@moz-qv7q4n.ca.comcast.net) (Connection closed)
+[16:25:58] *** Joins: achanda (achanda@moz-qv7q4n.ca.comcast.net)
+[16:27:57] *** Quits: doener (doener@moz-fnh.n4j.147.5.IP) (Quit: leaving)
+[17:27:20] *** Joins: brson (brson@moz-qjbkeh.mtv2.mozilla.com)
+[17:27:20] *** ChanServ sets mode: +qo brson brson
+[17:28:29] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[17:45:30] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[17:45:38] *** Joins: killercup (killercup@moz-h7k.3fv.10.91.IP)
+[17:59:09] *** Joins: globin_ (globin@moz-isrgf8.de)
+[17:59:15] *** Quits: globin_ (globin@moz-isrgf8.de) (Quit: leaving)
+[18:27:37] *** Quits: arielb1 (Ariel@moz-ndu.uqk.67.109.IP) (Ping timeout: 121 seconds)
+[18:47:49] *** Joins: arielb1 (Ariel@moz-1hdjvc.cablep.bezeqint.net)
+[18:53:02] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[19:14:01] *** Quits: achanda (achanda@moz-qv7q4n.ca.comcast.net) (Ping timeout: 121 seconds)
+[19:44:25] *** Quits: code_crimes (code_crimes@moz-5rmsk2.fios.verizon.net) (*.net *.split)
+[19:44:25] *** Quits: kmehall (quassel@moz-i98f9d.kevinmehall.com) (*.net *.split)
+[19:44:25] *** Quits: [o__o] ([o__o]@moz-4s2t5k.compute-1.amazonaws.com) (*.net *.split)
+[19:44:25] *** Quits: brson (brson@moz-qjbkeh.mtv2.mozilla.com) (*.net *.split)
+[19:44:25] *** Quits: whipsch (whipsch@moz-bl4i0b.from.irc.camp) (*.net *.split)
+[19:44:25] *** Quits: tekacs (tekacs@moz-q64vt8.com) (*.net *.split)
+[19:44:25] *** Quits: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net) (*.net *.split)
+[19:44:25] *** Quits: klutzy (not@moz-0t8.piq.68.115.IP) (*.net *.split)
+[19:44:25] *** Quits: lahwran (lahwran@lahwran.net) (*.net *.split)
+[19:44:25] *** Quits: WindowsBunny (Peter@moz-vlal7g.east.verizon.net) (*.net *.split)
+[19:44:37] *** Joins: brson (brson@moz-qjbkeh.mtv2.mozilla.com)
+[19:44:37] *** Joins: whipsch (whipsch@moz-bl4i0b.from.irc.camp)
+[19:44:37] *** Joins: code_crimes (code_crimes@moz-5rmsk2.fios.verizon.net)
+[19:44:37] *** Joins: kmehall (quassel@moz-i98f9d.kevinmehall.com)
+[19:44:37] *** Joins: lahwran (lahwran@lahwran.net)
+[19:44:37] *** Joins: WindowsBunny (Peter@moz-vlal7g.east.verizon.net)
+[19:44:37] *** Joins: klutzy (not@moz-0t8.piq.68.115.IP)
+[19:44:37] *** Joins: [o__o] ([o__o]@moz-4s2t5k.compute-1.amazonaws.com)
+[19:44:37] *** Joins: tekacs (tekacs@moz-q64vt8.com)
+[19:44:37] *** Joins: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net)
+[19:44:37] *** levin.mozilla.org sets mode: +qo brson brson
+[20:06:54] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[20:42:05] *** Joins: marcusklaas (marcus@moz-0ol9oe.chello.nl)
+[20:44:29] <marcusklaas> Can anyone here provide some insight into rustc's parser concerning box syntax? I can't figure out what becomes of `box 5` in `let x = box 5;`..
+[20:45:10] <marcusklaas> I thought it'd be put in the ExprBox of http://doc.rust-lang.org/stable/syntax/ast/enum.Expr_.html, but it doesn't appear so..
+[20:50:42] <marcusklaas> It appears to be a WIP: https://github.com/rust-lang/rust/blob/master/src/libsyntax/parse/parser.rs#L2653-L2655
+[20:59:57] <kimundi> marcusklaas: Well, it seems to turn into a ExprUnary unary operator expression
+[21:01:43] <Luqman> marcusklaas: yea, as kimundi it's an ExprUnary(UnUniq, <boxed expr>). this is because the syntax used to be ~foo (so more like a unary operation)
+[21:05:57] <nrc> lol, the AST is terrible
+[21:08:01] <nrc> s/the AST/all software, ever
+[21:10:02] <Luqman> nrc: up for a quick review? :D https://github.com/rust-lang/rust/pull/27017
+[21:37:20] *** Quits: killercup (killercup@moz-h7k.3fv.10.91.IP) (Ping timeout: 121 seconds)
+[21:50:04] *** Joins: achanda (achanda@moz-qv7q4n.ca.comcast.net)
+[21:50:09] <nrc> Luqman: you just missed me as I left the house. I can look at it in 10 minutes or so
+[21:58:10] <nrc> nice tests!
+[22:04:40] <nrc> Luqman: it looks fine to me, but I don't know the code or the context well enough to feel good about r+'ing, sorry
+[22:23:08] *** Quits: achanda (achanda@moz-qv7q4n.ca.comcast.net) (Ping timeout: 121 seconds)
+[22:33:44] *** Quits: arielb1 (Ariel@moz-1hdjvc.cablep.bezeqint.net) (Quit: Ex-Chat)

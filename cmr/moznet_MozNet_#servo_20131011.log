@@ -1,0 +1,743 @@
+[00:02:29] *** Quits: azita (Azita@moz-BBE3ABD.mv.mozilla.com) (Quit: azita)
+[00:06:08] *** Quits: tjc (tjc@moz-BBE3ABD.mv.mozilla.com) (Quit: Places to go, people to annoy)
+[00:06:11] *** Joins: dbaupp (Thunderbir@B11E503F.D5A1DCF.37681C44.IP)
+[00:07:19] *** Joins: CaseyBecking (CaseyBecki@moz-7EBF4B5D.lsanca.fios.verizon.net)
+[00:12:52] *** jdm sets mode: -b *!tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp
+[00:15:09] <jdm> pcwalton: you around?
+[00:15:15] <pcwalton> jdm: yup
+[00:15:29] <jdm> pcwalton: can we chat about traits inheriting from structs for a little bit?
+[00:15:34] <pcwalton> sure
+[00:15:35] <jdm> I want to understand what problem they solve
+[00:16:10] <pcwalton> there are no concrete plans for it and I think maybe "traits with fields" is a better solution but they're functionally more or less equivalent
+[00:16:25] <jdm> bholley is pushing to improve the current DOM inheritance implementation
+[00:16:50] <jdm> and last I heard trait inheritance was proposed as something for that
+[00:17:17] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[00:17:26] <jdm> pcwalton: the end results is that traits can only be implemented by types with given fields, right?
+[00:17:26] <pcwalton> the problem that it solves is single inheritance in a way that: (a) doesn't make every field access involve virtual dispatch; (b) gets the "this" pointer right when calling methods on both base classes and derived classes; (c) allows for both virtual and non-virtual methods on both base and derived classes
+[00:17:37] <jdm> this means that default methods can refer to them too
+[00:17:37] <pcwalton> currently there is no way to do all 3 in Rust efficiently
+[00:17:38] <pcwalton> yes
+[00:17:51] <pcwalton> that's basically all it is, as far as my latest thinking is concerned
+[00:18:10] <pcwalton> you write fields in the trait declaration and then all implementations must start with those fields, in that order
+[00:18:54] <jdm> pcwalton: I'm having trouble figuring out what this means for our downcasting solution; do we end up storing Node trait objects for first_child, etc. instead of AbstractNode?
+[00:19:01] <pcwalton> that's right
+[00:19:13] <pcwalton> everything is just JSManaged<Node>
+[00:19:18] <jdm> ah, I see
+[00:19:18] <pcwalton> (this depends on DSTs)
+[00:19:26] <pcwalton> dynamically sized types
+[00:19:57] <pcwalton> N.B. in my branch I've already converted both Flow and RenderBox to work this way
+[00:20:02] <pcwalton> the shared fields are just done with an unsafe cast
+[00:20:07] <pcwalton> and the perf benefits are huge
+[00:20:14] <jdm> very interesting
+[00:20:40] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[00:23:48] <jdm> pcwalton: so would INode just be a duplicate of Node's definition, full of default methods that are just what used to be in Node's impl?
+[00:23:54] *** Joins: exobit (foo@moz-90D1B547.nycmny.fios.verizon.net)
+[00:24:01] <jdm> (assuming INode is the trait and Node the struct)
+[00:24:51] <pcwalton> Node is not an abstract base class, right? you can have Nodes that are not instances of any subclass?
+[00:24:55] <pcwalton> or is Node an abstract base class?
+[00:25:21] <jdm> there are no concrete nodes
+[00:25:25] <pcwalton> oh, ok
+[00:25:30] <pcwalton> then you don't need INode and Node
+[00:25:32] <pcwalton> Node is just the trait
+[00:25:54] <pcwalton> and all concrete implementations start with the fields
+[00:26:12] <jdm> pcwalton: well, it might be nice to package it up in a Node struct so that all derived types could just include that
+[00:26:15] <pcwalton> having to repeat the fields for every subclass is kind of a bummer but it may be OK, you can factor them out into a struct
+[00:26:16] <pcwalton> yeah
+[00:27:44] <jdm> so for an ABC you could have all default methods, for a concrete type with non-virtual methods you still use an impl with methods?
+[00:28:05] <pcwalton> you can impl directly on the boxed trait
+[00:28:09] <pcwalton> that's how you do non-virtual methods
+[00:28:25] *** Quits: tikue_ (tikue_star@8E84FE3F.F3E8A984.689607DE.IP) (Ping timeout)
+[00:28:30] <pcwalton> trait MyNonVirtualMethods { fn foo() {} } impl MyNonVirtualMethods for JSManaged<MyType> { fn foo() {} }
+[00:28:33] <pcwalton> er
+[00:28:39] <pcwalton> trait MyNonVirtualMethods { fn foo(self) {} } impl MyNonVirtualMethods for JSManaged<MyType> { fn foo(self) {} }
+[00:29:23] <jdm> I guess the trait is required because of the impl for same-mod type rule?
+[00:31:41] <pcwalton> yeah
+[00:31:53] <pcwalton> although we might conceivably relax that
+[00:31:54] <pcwalton> to avoid that trait
+[00:31:56] <pcwalton> I just did it for now
+[00:32:04] <pcwalton> I think there would actually probably be no problem with relaxing it
+[00:36:56] *** Quits: dbaron (dbaron@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[00:36:57] *** Joins: emi (whatabunch@moz-9FE842F.cpe.net.cable.rogers.com)
+[00:39:55] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[00:42:31] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[00:51:22] *** Joins: six600110 (six600110@moz-C663577C.hsd1.il.comcast.net)
+[00:57:31] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[00:59:26] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[01:07:53] *** Quits: dbaupp (Thunderbir@B11E503F.D5A1DCF.37681C44.IP) (Ping timeout)
+[01:09:21] *** Quits: jdm (jdm@moz-E4B91594.zone16.bethere.co.uk) (Quit: Lost terminal)
+[01:10:41] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[01:13:09] *** Quits: ahal (ahal@moz-94F07FF4.cable.teksavvy.com) (Ping timeout)
+[01:16:04] *** mccr8 is now known as mccr8|away
+[01:18:03] *** Quits: mccr8|away (mccr8@moz-5FEA0C74.dsl.dynamic.sonic.net) (Quit: mccr8|away)
+[01:19:33] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[01:21:14] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[01:25:58] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[01:26:38] *** Quits: exobit (foo@moz-90D1B547.nycmny.fios.verizon.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[01:28:49] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[01:29:58] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[01:32:55] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[01:34:37] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[01:37:14] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[01:37:29] *** Joins: dherman (dherman@moz-EA765158.midsouth.biz.rr.com)
+[01:37:29] *** ChanServ sets mode: +qo dherman dherman
+[01:37:33] *** bz is now known as bz_sleep
+[01:37:42] *** Quits: joone_ (joone@moz-C50DC051.jf.intel.com) (Ping timeout)
+[01:38:38] *** Joins: joone_ (joone@3CCE8CB5.2160464A.A34EC3BB.IP)
+[01:47:23] *** Joins: exobit (foo@moz-90D1B547.nycmny.fios.verizon.net)
+[01:52:58] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[01:53:48] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[02:01:12] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[02:02:37] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[02:08:04] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[02:08:52] *** Quits: pcwalton (pcwalton@moz-BBE3ABD.mv.mozilla.com) (Quit: pcwalton)
+[02:14:51] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[02:16:54] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[02:19:41] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[02:23:37] <jack> what is fail2!?
+[02:23:56] <jack> oh is, this the new fmt transition?
+[02:25:34] <kmc> think so
+[02:27:11] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[02:27:11] <ghservo> [13servo] 15kmcallister opened pull request #1037: Implement data: URLs, fix broken tests, and misc. cleanup (06master...06data-url)  02http://git.io/WLf41w
+[02:27:11] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[02:27:13] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[02:28:09] <kmc> r? anyone
+[02:30:41] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[02:31:53] *** Quits: kimundi (kimundi@moz-ED7978E9.dip0.t-ipconnect.de) (Ping timeout)
+[02:33:15] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[02:35:08] *** Joins: kimundi (kimundi@moz-E1BEDB61.dip0.t-ipconnect.de)
+[02:39:34] *** kimundi is now known as zz_kimundi
+[02:45:23] *** Quits: emi (whatabunch@moz-9FE842F.cpe.net.cable.rogers.com) (Quit: Leaving)
+[02:45:27] *** Joins: emi (whatabunch@moz-9FE842F.cpe.net.cable.rogers.com)
+[02:49:56] *** Quits: Luqman (laden@moz-AB7945E9.csclub.uwaterloo.ca) (Input/output error)
+[02:50:04] *** Quits: exobit (foo@moz-90D1B547.nycmny.fios.verizon.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[02:52:27] *** Joins: Luqman (laden@moz-AB7945E9.csclub.uwaterloo.ca)
+[02:54:37] *** Quits: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com) (Quit: lmandel)
+[02:57:18] *** Joins: tikue (quassel@moz-FEADCD38.hsd1.pa.comcast.net)
+[03:02:46] *** Joins: dbaupp (Thunderbir@moz-4301A13F.lns20.syd6.internode.on.net)
+[03:27:17] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[03:30:06] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[03:33:29] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[03:33:51] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[03:39:04] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[03:43:35] *** Joins: robertknight (robertknig@moz-54528EE0.wby.mendeley.com)
+[03:45:27] *** Quits: robertknight (robertknig@moz-54528EE0.wby.mendeley.com) (Ping timeout)
+[03:54:48] *** Joins: sanxiyn (tinuviel@B4104EBB.3CC170B1.1E14B209.IP)
+[04:03:35] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Linkinus - http://linkinus.com)
+[04:07:51] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[04:10:03] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[04:12:01] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[04:12:01] *** ChanServ sets mode: +o brson
+[04:15:12] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[04:18:53] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[04:20:35] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[04:24:55] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[04:34:24] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[04:41:22] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[05:08:53] *** Joins: vodik (simon@moz-FD4ADBC6.cable.teksavvy.com)
+[05:09:53] *** Quits: sanxiyn (tinuviel@B4104EBB.3CC170B1.1E14B209.IP) (Quit: Leaving)
+[05:10:35] *** Joins: tikue_ (quassel@moz-FEADCD38.hsd1.pa.comcast.net)
+[05:10:43] *** Quits: vodik (simon@moz-FD4ADBC6.cable.teksavvy.com) (Ping timeout)
+[05:10:55] *** Joins: vodik (simon@moz-FD4ADBC6.cable.teksavvy.com)
+[05:11:24] *** Quits: tikue (quassel@moz-FEADCD38.hsd1.pa.comcast.net) (Ping timeout)
+[05:11:36] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[05:14:35] *** Quits: dzbarsky (Adium@DB6E1F3D.1EBC2536.DA1C73DD.IP) (Quit: Leaving.)
+[05:18:04] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[05:25:57] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[05:30:04] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[05:41:52] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[05:44:31] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[05:45:33] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[05:45:58] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[05:46:12] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[05:46:37] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[05:48:47] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[05:49:04] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[05:49:12] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[05:49:13] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Quit: Gone to save the world!)
+[05:50:55] *** Quits: vodik (simon@moz-FD4ADBC6.cable.teksavvy.com) (Ping timeout)
+[05:51:20] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[05:55:14] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Leaving...)
+[05:55:24] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[05:55:48] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[05:57:23] *** Quits: Houm (Houm@moz-25669AA8.fbx.proxad.net) (Ping timeout)
+[05:58:15] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[06:00:07] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[06:04:17] *** Joins: valenting (Thunderbir@moz-416F9035.residential.rdsnet.ro)
+[06:05:02] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[06:05:30] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[06:10:16] *** Joins: tgummerer (tgummerer@51D3B54.FEF996EA.EA6FEF3D.IP)
+[06:19:24] *** Quits: doomlord_ (servitor@moz-728E30A7.range109-151.btcentralplus.com) (Connection reset by peer)
+[06:20:59] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[06:25:03] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[06:25:31] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[06:34:14] *** Joins: exobit (foo@moz-90D1B547.nycmny.fios.verizon.net)
+[06:34:39] *** Quits: exobit (foo@moz-90D1B547.nycmny.fios.verizon.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[06:45:54] *** Quits: valenting (Thunderbir@moz-416F9035.residential.rdsnet.ro) (Ping timeout)
+[06:47:55] *** Quits: lbergstrom (Adium@moz-5D8E4B14.lightspeed.cicril.sbcglobal.net) (Ping timeout)
+[06:51:30] *** Quits: emi (whatabunch@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[06:51:56] *** Quits: CaseyBecking (CaseyBecki@moz-7EBF4B5D.lsanca.fios.verizon.net) (Client exited)
+[06:52:14] *** Joins: lbergstrom (Adium@moz-5D8E4B14.lightspeed.cicril.sbcglobal.net)
+[06:54:52] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[06:55:02] *** Quits: tgummerer (tgummerer@51D3B54.FEF996EA.EA6FEF3D.IP) (Ping timeout)
+[06:57:11] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[06:59:03] *** Quits: dherman (dherman@moz-EA765158.midsouth.biz.rr.com) (Quit: dherman)
+[07:05:31] *** Joins: Ms2ger (Ms2ger@4C3AB550.528524A1.F15B0BB3.IP)
+[07:10:59] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[07:21:22] *** Joins: emi (whatabunch@moz-9FE842F.cpe.net.cable.rogers.com)
+[07:25:00] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[07:26:26] *** Quits: emi (whatabunch@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[07:30:15] *** Joins: annevk (annevk@moz-57C951F7.dynamic.upc.nl)
+[07:35:17] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[07:37:51] <Ms2ger> aborting due to 406 previous errors
+[07:37:52] <Ms2ger> \o/
+[07:42:08] *** Joins: timot (timot@moz-E3C52487.mobile.tre.se)
+[07:44:16] *** Joins: robertknight (robertknig@moz-54528EE0.wby.mendeley.com)
+[07:46:02] *** Quits: robertknight (robertknig@moz-54528EE0.wby.mendeley.com) (Ping timeout)
+[07:48:07] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[07:59:35] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[08:00:37] *** Joins: vodik (simon@moz-FD4ADBC6.cable.teksavvy.com)
+[08:03:48] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Client exited)
+[08:04:08] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[08:06:07] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Ping timeout)
+[08:18:14] *** Quits: Ms2ger (Ms2ger@4C3AB550.528524A1.F15B0BB3.IP) (Quit: bbl)
+[08:22:05] *** Joins: tgummerer (tgummerer@moz-9FE3F44D.kthopen.kth.se)
+[08:28:08] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[08:28:08] <ghservo> 01[13servo01] 15bors-servo pushed 0 new commits to 06auto: 02http://git.io/9Me_nA
+[08:28:08] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[08:28:10] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[08:28:10] <ghservo> 01[13servo01] 15bors-servo pushed 14 new commits to 06auto: 02http://git.io/rNdSTg
+[08:28:10] <ghservo> 13servo/06auto 1405901f8 15Keegan McAllister: Simplify ResourceTask creation
+[08:28:10] <ghservo> 13servo/06auto 14cb67a50 15Keegan McAllister: Fix indentation in URL loaders
+[08:28:11] <ghservo> 13servo/06auto 1448af4e5 15Keegan McAllister: Refactor resource loader protocol to send metadata first
+[08:28:13] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[08:32:53] *** Parts: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) ()
+[08:36:10] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[08:39:54] *** Joins: robertknight (robertknig@moz-54528EE0.wby.mendeley.com)
+[08:43:01] *** Quits: robertknight (robertknig@moz-54528EE0.wby.mendeley.com) (Quit: ["Textual IRC Client: www.textualapp.com"])
+[08:43:43] *** Joins: robertknight (robertknig@moz-54528EE0.wby.mendeley.com)
+[08:52:09] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[08:52:09] <ghservo> [13servo] 15kmcallister closed issue #778: Support `data:` URLs  02http://git.io/HgabyQ
+[08:52:09] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[08:52:09] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[08:52:09] <ghservo> [13servo] 15bors-servo closed pull request #1037: Implement data: URLs, fix broken tests, and misc. cleanup (06master...06data-url)  02http://git.io/WLf41w
+[08:52:09] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[09:02:29] *** Quits: tgummerer (tgummerer@moz-9FE3F44D.kthopen.kth.se) (Ping timeout)
+[09:11:08] *** Joins: tgummerer (tgummerer@moz-9FE3F44D.kthopen.kth.se)
+[09:12:36] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[09:21:38] *** Quits: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Connection reset by peer)
+[09:25:34] *** Quits: timot (timot@moz-E3C52487.mobile.tre.se) (Ping timeout)
+[09:27:50] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[09:27:56] *** Joins: jdm (jdm@88F51059.F3BBB17D.144F44FA.IP)
+[09:27:56] *** ChanServ sets mode: +o jdm
+[09:30:17] *** Joins: Ms2ger (Ms2ger@moz-15B436EA.ugent.be)
+[09:31:00] <Ms2ger> jdm, r? :)
+[09:31:11] * jdm looks at the list
+[09:31:32] <Ms2ger> createComment
+[09:31:43] <jdm> Ms2ger: can you address kmc's comment?
+[09:32:17] <Ms2ger> There's a comment?
+[09:32:18] * Ms2ger looks
+[09:32:33] <Ms2ger> Ah
+[09:32:34] <Ms2ger> Fair enough
+[09:32:39] * Ms2ger didn't like the name either
+[09:33:13] <Ms2ger> On another note, how hard is it to update the rust version?
+[09:34:15] <jdm> often, not a big deal
+[09:34:36] <jdm> just pull in the submodule and try rebuilding, then fix the problems
+[09:36:08] <Ms2ger> I'll probably try that this afternoon, then
+[09:36:51] * Ms2ger wants CString::as_str
+[09:44:00] <Ms2ger> jdm, r? :)
+[09:46:01] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[09:46:01] <ghservo> 01[13servo01] 15bors-servo pushed 0 new commits to 06auto: 02http://git.io/v-SIlQ
+[09:46:01] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[09:46:04] *** Joins: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP)
+[09:46:04] <ghservo> 01[13servo01] 15bors-servo pushed 3 new commits to 06auto: 02http://git.io/PgTZKg
+[09:46:04] <ghservo> 13servo/06auto 1410d5217 15Ms2ger: Implement Document.createComment.
+[09:46:04] <ghservo> 13servo/06auto 14314dff9 15Ms2ger: Rename null_str_to_string to null_str_as_word_null.
+[09:46:05] <ghservo> 13servo/06auto 1435b6994 15bors-servo: auto merge of #1036 : Ms2ger/servo/createComment, r=jdm
+[09:46:07] *** Parts: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP) ()
+[09:59:12] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[09:59:13] <ghservo> [13servo] 15marcoscaceres closed pull request #1015: Initial implementation of the `HTMLMainElement`  (06master...06master)  02http://git.io/u1Wd8Q
+[09:59:13] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[09:59:47] *** Quits: annevk (annevk@moz-57C951F7.dynamic.upc.nl) (Input/output error)
+[10:00:14] *** Joins: annevk (annevk@moz-57C951F7.dynamic.upc.nl)
+[10:02:00] *** Quits: annevk (annevk@moz-57C951F7.dynamic.upc.nl) (Ping timeout)
+[10:07:03] *** Quits: tgummerer (tgummerer@moz-9FE3F44D.kthopen.kth.se) (Ping timeout)
+[10:26:54] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[10:29:03] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[10:38:13] <Ms2ger> Tests failed?
+[10:38:16] * Ms2ger does not approve
+[10:39:18] <Ms2ger> jdm, re-r? :)
+[10:39:49] <jdm> nice commit message
+[10:40:05] <jdm> Ms2ger: want to squash those three together?
+[10:40:13] <Ms2ger> Want to tell me how?
+[10:40:28] <jdm> Ms2ger: http://gitready.com/advanced/2009/02/10/squashing-commits-with-rebase.html
+[10:41:03] <Ms2ger> Crap
+[10:41:09] <Ms2ger> I managed to do it without help
+[10:41:15] * Ms2ger needs to move back to hg
+[10:41:18] <jdm> heh
+[10:41:24] <jgraham> Victory!
+[10:41:30] <Ms2ger> Noooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo
+[10:41:31] <jgraham> We broke Ms2ger!
+[10:44:44] <jgraham> (in unrelated news, the internal compiler error I saw seems to be because the get_attr() function was changed on mainline from fn get_attr(&self, [...]) -> DOMString to fn get_atrr(&'self self, [...]) -> Option<&str>, which some other functions then depend on. I don't really understand this stuff well enough to know what I need to change in my code so that returning a borrow is OK)
+[10:46:05] *** Quits: Ms2ger (Ms2ger@moz-15B436EA.ugent.be) (Quit: bbl)
+[10:46:16] <jgraham> (the point being that if I use the old signature I avoid the internal compiler error but other parts of the code complain that they are getting the wrong type from get_attr. And making a copy every time someone looks up an attribute does indeed seem like badness)
+[10:47:32] <jdm> interesting
+[10:50:17] <jdm> I would be curious to see the line triggering it
+[10:53:12] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[10:53:12] <ghservo> 01[13servo01] 15bors-servo 04force-pushed 06auto from 1435b6994 to 143690c37: 02http://git.io/c8GovQ
+[10:53:12] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[10:53:16] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[10:53:16] <ghservo> 01[13servo01] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/7Pz39w
+[10:53:16] <ghservo> 13servo/06auto 1498cdf5c 15Ms2ger: Implement Document.createComment.
+[10:53:16] <ghservo> 13servo/06auto 14bc3eeb6 15bors-servo: auto merge of #1036 : Ms2ger/servo/createComment, r=jdm
+[10:53:17] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[10:54:56] <jgraham> jdm: That should be easy enough to arrange
+[11:01:58] *** zz_kimundi is now known as kimundi
+[11:03:48] *** Joins: bholley (anonymous@moz-D5EB36E2.rev.numericable.fr)
+[11:07:41] *** Joins: tgummerer (tgummerer@moz-9FE3F44D.kthopen.kth.se)
+[11:13:05] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[11:13:05] <ghservo> 01[13servo01] 15bors-servo merged 06auto into 06master: 02http://git.io/7Pz39w
+[11:13:05] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[11:13:06] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[11:13:07] <ghservo> [13servo] 15bors-servo closed pull request #1036: Implement Document.createComment. (06master...06createComment)  02http://git.io/db3uiQ
+[11:13:07] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[11:21:14] *** Quits: tgummerer (tgummerer@moz-9FE3F44D.kthopen.kth.se) (Ping timeout)
+[11:27:30] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[11:28:48] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[11:45:28] *** Quits: victorporof (victorporo@A8FF5052.5E882C5.D111398B.IP) (Ping timeout)
+[11:51:36] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[11:53:23] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[12:04:27] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[12:05:10] *** Joins: victorporof (victorporo@75D4E0BA.E3B14EAA.D111398B.IP)
+[12:06:21] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Ping timeout)
+[12:09:14] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[12:11:50] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[12:14:19] *** Joins: Ms2ger (Ms2ger@4C3AB550.528524A1.F15B0BB3.IP)
+[12:41:56] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[12:46:46] *** Quits: vodik (simon@moz-FD4ADBC6.cable.teksavvy.com) (Ping timeout)
+[12:53:07] *** Joins: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP)
+[12:55:27] *** Joins: ahal (ahal@moz-94F07FF4.cable.teksavvy.com)
+[12:57:04] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[12:59:01] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[13:20:51] *** Joins: annevk (annevk@moz-57C951F7.dynamic.upc.nl)
+[13:26:15] <jgraham> jdm: https://github.com/jgraham/servo/blob/attr_support_rebase_1_broken/src/components/script/dom/element.rs#L145 is the code (known broken, doesn't compile)
+[13:27:45] *** Joins: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com)
+[13:35:00] <lbergstrom> just when I thought Zimbra couldn't be any worse, it appears to be offline… ugh. I guess that's *one* way to do a "load balancer upgrade"
+[13:39:35] <lbergstrom> … and, it's back :-)
+[13:40:38] *** Quits: Ms2ger (Ms2ger@4C3AB550.528524A1.F15B0BB3.IP) (Ping timeout)
+[13:55:11] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[13:56:19] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[13:58:52] *** Joins: Ms2ger (Ms2ger@4C3AB550.528524A1.F15B0BB3.IP)
+[13:59:46] <Ms2ger> jdm, so what's the currently preferred test harness for content?
+[14:03:01] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[14:04:15] <Ms2ger> jgraham, so what's wrong with that code? It seems like just keeping the signature as |pub fn get_attr(&'self self, name: &str) -> Option<&'self str> {| should work
+[14:06:48] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[14:07:20] *** Joins: dzbarsky (Adium@DB6E1F3D.1EBC2536.DA1C73DD.IP)
+[14:11:51] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[14:12:08] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[14:15:02] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[14:18:58] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[14:19:24] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[14:22:12] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[14:24:00] <Ms2ger> jdm, ping
+[14:26:31] <jdm> Ms2ger: ping
+[14:26:41] <jdm> was discussing rust formulations with simon
+[14:26:57] <jdm> Ms2ger: is there more than one content test harness?
+[14:26:58] <Ms2ger> So I think I updated rust and it built
+[14:27:01] <Ms2ger> No idea :)
+[14:27:15] <jdm> all tests that should be run automatically go in src/test/html/content
+[14:27:58] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[14:28:42] <Ms2ger> So git diff says:
+[14:28:42] <Ms2ger> --- a/src/compiler/rust
+[14:28:43] <Ms2ger> +++ b/src/compiler/rust
+[14:28:43] <Ms2ger> @@ -1 +1 @@
+[14:28:43] <Ms2ger> -Subproject commit d39cec65b025ad4c6de50e778ffd1177279b5b3d
+[14:28:43] <Ms2ger> +Subproject commit 5bddcc1eadeafd2461f7026d7c1f5c70980c1f06-dirty
+[14:28:47] <Ms2ger> What now? :)
+[14:30:05] <jdm> Ms2ger: now you git add the rust submodule from the servo dir
+[14:30:43] <Ms2ger> Okay...
+[14:31:17] <Ms2ger> And then I can commit?
+[14:31:23] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[14:31:28] <jdm> yep
+[14:31:42] * jdm is curious to see whether this fixes jgraham's ICE
+[14:33:08] *** Joins: CaseyBecking (CaseyBecki@moz-7EBF4B5D.lsanca.fios.verizon.net)
+[14:34:47] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[14:34:47] <ghservo> [13servo] 15Ms2ger opened pull request #1038: Update rust. (06master...06update-rust)  02http://git.io/g5DZTA
+[14:34:47] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[14:34:59] <Ms2ger> jdm, let's try it, then :)
+[14:35:16] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[14:35:31] <jdm> Ms2ger: huh, no other changes required for a working build?
+[14:35:52] <Ms2ger> It seems to build this way
+[14:36:28] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[14:36:44] <Ms2ger> I'd be happy to believe I did something wrong :)
+[14:37:08] <jdm> Ms2ger: oh, you need to update https://github.com/Ms2ger/servo/blob/master/src/compiler/rust-auto-clean-trigger as well
+[14:37:11] <jdm> or the bots will break
+[14:37:26] <Ms2ger> <3
+[14:42:22] * jdm wishes he could find pcwalton's changes to renderboxes
+[14:42:35] <jdm> it's unclear whether they're on a published branch or not
+[14:43:16] <Ms2ger> jdm, want to r+ and see if the bots survive? :)
+[14:43:20] <jdm> yep
+[14:47:02] *** Joins: vodik (simon@moz-FD4ADBC6.cable.teksavvy.com)
+[14:47:04] <Ms2ger> ttaubert, excellent :)
+[14:47:31] *** Quits: CaseyBecking (CaseyBecki@moz-7EBF4B5D.lsanca.fios.verizon.net) (Ping timeout)
+[14:52:00] *** Joins: Jackneill (Jackneill@moz-5C6C0907.pool.digikabel.hu)
+[14:52:01] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[14:52:01] <ghservo> 01[13servo01] 15bors-servo pushed 0 new commits to 06auto: 02http://git.io/4odliw
+[14:52:01] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[14:52:02] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[14:52:02] <ghservo> 01[13servo01] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/3c5bYg
+[14:52:02] <ghservo> 13servo/06auto 149fe9145 15Tim Taubert: implement NodeList and consolidate common scope and context retrieval
+[14:52:02] <ghservo> 13servo/06auto 14fc9fdf3 15bors-servo: auto merge of #1018 : ttaubert/servo/nodelist, r=jdm...
+[14:52:02] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[14:53:03] <jgraham> Ms2ger: I don't know what's wrong with that code. I know that for some reason making it get_attr(&'self self, [...]) made the compiler die with an unhandled error
+[14:53:12] <Ms2ger> Fun
+[14:58:16] *** Quits: annevk (annevk@moz-57C951F7.dynamic.upc.nl) (Input/output error)
+[14:58:45] *** Joins: annevk (annevk@moz-57C951F7.dynamic.upc.nl)
+[14:58:47] <Ms2ger> jgraham, jdm, so I guess the only thing that's really blocking us from running existing testharness.js tests is being able to listen for window.onload
+[14:58:55] <jdm> nice
+[15:00:29] <Ms2ger> And some setup to figure out the expected failures
+[15:00:30] *** Quits: annevk (annevk@moz-57C951F7.dynamic.upc.nl) (Ping timeout)
+[15:00:41] <Ms2ger> I don't guess servo implements sync xhr? :)
+[15:00:48] *** bz_sleep is now known as bz
+[15:05:34] <SimonSapin> one month of Rust updates without a single code change in Servo?
+[15:05:38] *** Joins: dherman (dherman@1BB0349.FEF91D35.59163313.IP)
+[15:05:38] *** ChanServ sets mode: +qo dherman dherman
+[15:05:58] <Ms2ger> SimonSapin, ... maybe?
+[15:06:05] <SimonSapin> does it build?
+[15:06:24] <Ms2ger> I think so
+[15:06:36] <Ms2ger> But I'm skeptical of my own abilities here :)
+[15:06:51] <SimonSapin> we’ll see what bors has to say
+[15:07:45] <Ms2ger> Indeed
+[15:09:22] *** Quits: vodik (simon@moz-FD4ADBC6.cable.teksavvy.com) (Ping timeout)
+[15:09:46] <SimonSapin> my experience was significant code changes for just days of Rust updates, but maybe I was unlucky or Rust is stabilizing
+[15:10:12] <Ms2ger> That's more in line with what I was expecting :)
+[15:10:30] *** Joins: eholk (eholk@2BA6FFA2.FC9BEE08.51B6877.IP)
+[15:12:58] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[15:12:58] <ghservo> 01[13servo01] 15bors-servo merged 06auto into 06master: 02http://git.io/3c5bYg
+[15:12:58] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[15:12:59] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[15:12:59] <ghservo> [13servo] 15bors-servo closed pull request #1018: Implement Nodelist and consolidate common scope and context retrieval (06master...06nodelist)  02http://git.io/JHU4cA
+[15:12:59] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[15:19:00] <jdm> whoops, I left a comment in the wrong place
+[15:21:59] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[15:22:00] <ghservo> 01[13servo01] 15bors-servo pushed 0 new commits to 06auto: 02http://git.io/HdHYFA
+[15:22:00] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[15:22:01] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[15:22:01] <ghservo> 01[13servo01] 15bors-servo pushed 3 new commits to 06auto: 02http://git.io/mPRDbQ
+[15:22:01] <ghservo> 13servo/06auto 14810392b 15Ms2ger: Update rust.
+[15:22:01] <ghservo> 13servo/06auto 140c0b29c 15Ms2ger: Trigger cleaning for the rust update.
+[15:22:01] <ghservo> 13servo/06auto 148e7f403 15bors-servo: auto merge of #1038 : Ms2ger/servo/update-rust, r=jdm
+[15:22:03] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[15:24:54] *** Quits: eholk (eholk@2BA6FFA2.FC9BEE08.51B6877.IP) (Ping timeout)
+[15:25:15] *** Joins: CaseyBecking (CaseyBecki@ED8170C4.82E507D6.C334098E.IP)
+[15:26:12] *** Joins: eholk (eholk@6E5D3D97.7EDA02CF.51B6877.IP)
+[15:31:18] *** Quits: eholk (eholk@6E5D3D97.7EDA02CF.51B6877.IP) (Quit: eholk)
+[15:34:09] <jdm> 08:26:53     INFO -  if test -d ./dist/bin ; then touch ./dist/bin/.purgecaches ; fi
+[15:34:12] <jdm> 08:26:53    ERROR - Return code: 2
+[15:34:15] <jdm> 08:26:53    FATAL - Build failed, can't continue.
+[15:34:17] <jdm> sigh
+[15:36:35] <jdm> I don't even know what to do with that
+[15:44:51] *** Joins: emi (whatabunch@moz-9FE842F.cpe.net.cable.rogers.com)
+[15:48:53] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[15:49:00] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Input/output error)
+[15:49:27] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[15:49:42] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Connection reset by peer)
+[15:49:51] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[15:52:29] *** Quits: victorporof (victorporo@75D4E0BA.E3B14EAA.D111398B.IP) (Ping timeout)
+[15:59:52] <jack> jd: what is that from?
+[16:00:03] <jack> jdm: ^
+[16:01:01] *** Joins: doomlord_ (servitor@moz-728E30A7.range109-151.btcentralplus.com)
+[16:02:10] *** Quits: robertknight (robertknig@moz-54528EE0.wby.mendeley.com) (Ping timeout)
+[16:04:14] <SimonSapin> jack: probably http://servo-buildbot.pub.build.mozilla.org/builders/mac/builds/385/steps/shell/logs/stdio
+[16:04:19] <SimonSapin> https://github.com/mozilla/servo/pull/1038
+[16:05:53] <jack> that looks like nss/nspr?
+[16:06:03] <jack> or does mozjs also have a `dist`?
+[16:06:19] <SimonSapin> (unrelated) apparently re-running ../configure always rebuilds spidermonkey
+[16:07:30] *** Joins: victorporof (victorporo@75D4E0BA.E3B14EAA.D111398B.IP)
+[16:10:24] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[16:11:15] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[16:11:44] <SimonSapin> Trying to add a new crate: error: Could not write output: Error opening output file '/home/simon/projects/servo/build/x86_64-unknown-linux-gnu/src/components/style/style.o'
+[16:12:00] <SimonSapin> what part of the makefile is responsible from creating the directory?
+[16:14:59] <SimonSapin> ah, it’s in configure
+[16:17:39] *** Joins: robertknight (robertknig@moz-54528EE0.wby.mendeley.com)
+[16:21:06] <jdm> jack: the log for the rust upgrade build on mac
+[16:21:38] <jdm> jack: https://github.com/mozilla/servo/pull/1038
+[16:23:41] * jdm wants pcwalton to wake up
+[16:25:01] * Ms2ger wants stuff to magically work
+[16:25:38] <SimonSapin> do_what_i_mean()
+[16:25:55] <Ms2ger> Step 3: And then a miracle happens
+[16:28:25] *** bz is now known as bz_away
+[16:30:32] *** Joins: mccr8 (mccr8@moz-BBE3ABD.mv.mozilla.com)
+[16:35:07] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[16:35:22] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[16:39:36] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[16:48:27] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[16:49:42] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[16:53:54] *** Quits: bz_away (bzbarsky@moz-EA9A3995.bstnma.fios.verizon.net) (Quit: Leaving)
+[16:58:06] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[17:04:43] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[17:04:43] *** ChanServ sets mode: +o brson
+[17:07:56] *** Joins: vodik (simon@moz-FD4ADBC6.cable.teksavvy.com)
+[17:17:35] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[17:22:07] <jdm> bholley: https://pastebin.mozilla.org/3238486
+[17:22:28] <jdm> jack: if you're not feeling particularly PTOish, you may want to check that out too
+[17:22:46] *** Joins: eholk (eholk@4371ACE8.7EDA02CF.51B6877.IP)
+[17:24:22] <jdm> in particular, it does catch when there's a mutable reference to the internals open and stops you from creating an immutable one
+[17:24:25] <jdm> and vice versa
+[17:25:11] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[17:25:37] *** Quits: robertknight (robertknig@moz-54528EE0.wby.mendeley.com) (Ping timeout)
+[17:26:36] *** Joins: Jayflux (Jason@moz-D45012C4.as13285.net)
+[17:27:45] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[17:29:54] <Ms2ger> jdm, no more <View>?
+[17:30:05] <jdm> Ms2ger: I just removed it for the purposes of experimentation
+[17:30:07] <jdm> it's not going away
+[17:30:12] <Ms2ger> :(
+[17:30:18] <jdm> phantom types are the future
+[17:30:30] <jdm> all hail the phantom overloads
+[17:30:38] <Ms2ger> What I see in my future is build erros
+[17:30:40] <Ms2ger> errors
+[17:30:59] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Input/output error)
+[17:31:02] <jdm> I can't imagine why
+[17:31:12] <jdm> you must not be trying hard enough to compile with your brain
+[17:31:13] <Ms2ger> Because this is rust?
+[17:31:34] * jgraham is surprised Ms2ger isn't going down the "phantom menace" route
+[17:31:46] <Ms2ger> I'll leave that to you, jgraham :)
+[17:32:10] <jdm> haha
+[17:32:20] <jgraham> I don't have anything against phanom types (yet ;)
+[17:32:29] <jgraham> *phantom
+[17:37:57] *** Quits: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[17:40:33] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[17:42:36] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[17:43:37] *** Joins: valenting (Thunderbir@moz-416F9035.residential.rdsnet.ro)
+[17:45:27] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[17:47:27] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[17:49:56] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[18:05:36] *** Joins: tikue3 (tikue_star@91CF8C6.21C37D63.689607DE.IP)
+[18:12:38] *** Joins: tjc_ (tjc@moz-BBE3ABD.mv.mozilla.com)
+[18:12:39] *** Joins: pcwalton (pcwalton@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[18:12:39] *** ChanServ sets mode: +o pcwalton
+[18:13:26] <jdm> pcwalton: what are your feelings on replacing the with_foo callbacks with https://pastebin.mozilla.org/3238712 instead?
+[18:13:50] *** Quits: vodik (simon@moz-FD4ADBC6.cable.teksavvy.com) (Ping timeout)
+[18:14:37] <pcwalton> why use Box? Isn't JSManaged more appropriate?
+[18:15:27] <pcwalton> also, shouldn't transmute be an unsafe fn?
+[18:15:28] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[18:15:31] <jdm> pcwalton: JSManaged doesn't quite make sense to me
+[18:15:53] <jdm> Box is what the data type is right now
+[18:16:04] <jdm> since we're storing a raw pointer to something in a @
+[18:16:10] <pcwalton> I'm fine with keeping it the way it is for now then
+[18:16:25] <pcwalton> but eventually we wanted to switch to the JS GC managing the nodes, right?
+[18:16:30] <jdm> yes, totally
+[18:16:32] <pcwalton> ok
+[18:17:05] <jdm> pcwalton: is there any reason to run this past the mailing list, or should I just plug away and put up a PR?
+[18:17:20] <pcwalton> in general, +a million on removing with_foo callbacks
+[18:17:31] <pcwalton> this seems OK to me, but I have thought for a while that AbstractNode is an overly verbose name
+[18:17:38] <pcwalton> and I'm fully responsible for it, apologies
+[18:17:53] <pcwalton> maybe NodeRef?
+[18:17:57] <jdm> Nodey
+[18:18:11] <jdm> but NodeRef might work
+[18:18:29] <jdm> similarly DocumentRef
+[18:18:33] <jdm> EventTargetRef
+[18:18:40] <pcwalton> yeah, it seems reasonable
+[18:19:11] <jdm> we could even use terms like self_ref instead of abstract_self, too
+[18:19:15] <pcwalton> right
+[18:19:39] <jdm> ok, I'll give the list a heads up and put it on my todo list
+[18:19:46] <pcwalton> cool
+[18:20:08] <Ms2ger> Is there a newsgroup too?
+[18:20:18] <jdm> Ms2ger: mozilla.dev.servo
+[18:20:20] <pcwalton> I'm not sure if dev-servo is reflected into newsgroup land
+[18:20:23] <pcwalton> oh, looks like it is
+[18:20:35] * Ms2ger adds that
+[18:22:45] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[18:29:02] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[18:31:34] *** Joins: timot (timot@moz-45B39FB4.bredband.tre.se)
+[18:32:06] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[18:34:14] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[18:34:52] *** Quits: timot (timot@moz-45B39FB4.bredband.tre.se) (Ping timeout)
+[18:35:12] *** Joins: timot (timot@moz-DD0AA6DE.mobile.tre.se)
+[18:43:34] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[18:44:32] *** Joins: jet (jet@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[18:49:14] *** Quits: Jayflux (Jason@moz-D45012C4.as13285.net) (Ping timeout)
+[18:57:26] *** Quits: eholk (eholk@4371ACE8.7EDA02CF.51B6877.IP) (Quit: eholk)
+[18:58:27] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[18:58:27] <ghservo> [13servo] 15kmcallister opened issue #1039: Convert test_bindings.html to content tests  02http://git.io/txNbYw
+[18:58:27] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[18:59:08] *** Joins: Jayflux (Jason@moz-EDE80FC0.as13285.net)
+[18:59:12] *** mccr8 is now known as mccr8|lunch
+[18:59:28] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[18:59:28] <ghservo> [13servo] 15kmcallister closed issue #1039: Convert test_bindings.html to content tests  02http://git.io/txNbYw
+[18:59:28] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[18:59:39] <kmc> dupe of #631 :)
+[19:00:00] *** Quits: CaseyBecking (CaseyBecki@ED8170C4.82E507D6.C334098E.IP) (Ping timeout)
+[19:00:22] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[19:00:38] *** Quits: dherman (dherman@1BB0349.FEF91D35.59163313.IP) (Quit: dherman)
+[19:04:17] *** Quits: timot (timot@moz-DD0AA6DE.mobile.tre.se) (Ping timeout)
+[19:05:06] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[19:05:06] <ghservo> [13servo] 15Ms2ger closed issue #888: Node's owner document should never be None  02http://git.io/75WPpg
+[19:05:06] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[19:06:03] *** Joins: Jayflux_ (Jason@moz-EDE80FC0.as13285.net)
+[19:06:06] *** Quits: Jayflux_ (Jason@moz-EDE80FC0.as13285.net) (Connection reset by peer)
+[19:06:15] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[19:06:15] <ghservo> [13servo] 15kmcallister closed issue #248: Set up test automation  02http://git.io/YEdhsw
+[19:06:15] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[19:07:21] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[19:11:49] *** Quits: Jayflux (Jason@moz-EDE80FC0.as13285.net) (Ping timeout)
+[19:12:03] *** Quits: jdm (jdm@88F51059.F3BBB17D.144F44FA.IP) (Quit: Lost terminal)
+[19:12:14] *** Joins: Jayflux (Jason@moz-5778949D.as13285.net)
+[19:14:44] *** Joins: CaseyBecking (CaseyBecki@moz-7EBF4B5D.lsanca.fios.verizon.net)
+[19:15:30] *** Quits: jet (jet@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: jet)
+[19:18:37] <kmc> I moved some I-infrastructure bugs to a new I-testing
+[19:20:05] *** Quits: tikue3 (tikue_star@91CF8C6.21C37D63.689607DE.IP) (Ping timeout)
+[19:23:23] <Ms2ger> Is that related to A-testing?
+[19:23:34] * Ms2ger finds those letters horrible
+[19:25:30] <lbergstrom> Having worked on projects where the issue/bug tracker had no less than 20 different fields, each requiring a value, I find the letters a bit disturbing but still a decent way of classifying some of the labels without resorting to bug-form-entry-purgatory.
+[19:26:38] <tjc_> lbergstrom: heh
+[19:26:54] <tjc_> I think github goes a bit too far in the other direction as far as bug reports being "free-text"
+[19:26:59] <tjc_> it's good enough for now, though
+[19:27:56] <lbergstrom> tjc_: I agree on both counts. 
+[19:27:59] <kmc> er, sorry. I moved some A-infrastructure bugs to a new A-testing :)
+[19:28:06] <kmc> there is only one -testing tag :)
+[19:28:34] <kmc> are we backing up the bug tracker database?
+[19:28:49] <tjc_> backups?
+[19:28:50] <lbergstrom> it's "in the cloud"!
+[19:28:53] <tjc_> but, but, the cloud will take care of it
+[19:28:56] <tjc_> lbergstrom: hi-five
+[19:29:14] <lbergstrom> tjc_: made my friday
+[19:29:21] <tjc_> haha
+[19:29:33] <kmc> :D
+[19:29:59] <kmc> okay well when GitHub starts charging $10 per bug opened then I'll have the last laugh
+[19:30:39] *** Joins: jet (jet@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[19:31:00] <Ms2ger> ALERT: Test: status 0 (null)
+[19:31:00] <Ms2ger> ALERT: Test: status 0 (null)
+[19:31:00] <Ms2ger> ALERT: Test: status 0 (null)
+[19:31:00] <Ms2ger> ALERT: Test: status 0 (null)
+[19:31:01] <Ms2ger> ALERT: Test: status 0 (null)
+[19:31:01] <Ms2ger> ALERT: Test: status 0 (null)
+[19:31:02] <Ms2ger> ALERT: Test: status 0 (null)
+[19:31:04] <Ms2ger> ALERT: {"status":0,"message":null}
+[19:31:30] <lbergstrom> kmc: looks like there's an API for extracting the data, but I don't see any tools for dumping/restoring whole respositories and their issues
+[19:32:21] <benh> I remember reading about someone doing it manually with a script and accidentally sending out hundreds of emails in the process
+[19:32:22] <lbergstrom> Are you looking for the ability to migrate elsewhere (e.g., bugzilla) later? Or just an emergency in case one of us goes on a drunken triage spree and cleans the issue tracker?
+[19:32:37] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[19:33:13] <kmc> mostly the former
+[19:33:32] <lbergstrom> benh: good call. github seems to e-mail me every time somebody talks about servo. LIttle overwhelming. Must be what it is like to work for the NSA.
+[19:34:57] * Ms2ger puts a watch on lbergstrom 
+[19:35:06] <lbergstrom> kmc: aha, ok. Then I guess we can probably cross that road when we come to it? I assume that would happen if we became Real Product.
+[19:35:13] <tjc_> Mmmm drunken triage
+[19:35:15] <tjc_> the best kind of triage
+[19:36:20] <Ms2ger> lbergstrom, I'd rather it happened before that :)
+[19:37:23] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[19:37:32] <kmc> I'm fine sticking with GitHub issues for now, but I'd like to be prepared such that we aren't in such a bind if they do something evil or inconvenient in the future
+[19:39:34] *** Joins: dbaron (dbaron@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[19:42:03] *** Parts: a_m0d (dschoof@moz-670D1285.commercial.cgocable.net) ()
+[19:43:55] *** mccr8|lunch is now known as mccr8
+[19:45:54] *** Quits: valenting (Thunderbir@moz-416F9035.residential.rdsnet.ro) (Ping timeout)
+[19:49:17] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[19:49:46] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[19:51:55] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Client exited)
+[19:52:15] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[19:54:08] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Ping timeout)
+[19:56:29] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[19:59:05] *** Quits: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP) (Ping timeout)
+[20:01:08] *** Joins: Ms2ger` (Ms2ger@D2CDF20A.29977EA1.187A1082.IP)
+[20:01:28] *** Quits: Ms2ger (Ms2ger@4C3AB550.528524A1.F15B0BB3.IP) (Ping timeout)
+[20:02:43] *** Quits: victorporof (victorporo@75D4E0BA.E3B14EAA.D111398B.IP) (Quit: victorporof)
+[20:18:01] *** Quits: Jackneill (Jackneill@moz-5C6C0907.pool.digikabel.hu) (Input/output error)
+[20:19:55] *** Quits: tjc_ (tjc@moz-BBE3ABD.mv.mozilla.com) (Quit: zzzzzzzzzz)
+[20:25:59] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[20:28:26] *** Joins: azita_ (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[20:32:23] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[20:32:48] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[20:32:48] *** azita_ is now known as azita
+[20:32:50] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[20:34:46] *** Quits: dbaron (dbaron@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[20:34:58] *** Joins: dbaron (dbaron@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[20:39:06] *** Joins: valenting (Thunderbir@moz-416F9035.residential.rdsnet.ro)
+[20:53:29] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[20:53:41] *** Quits: valenting (Thunderbir@moz-416F9035.residential.rdsnet.ro) (Ping timeout)
+[21:02:40] *** Joins: valenting (Thunderbir@moz-416F9035.residential.rdsnet.ro)
+[21:04:16] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[21:06:21] *** Joins: robertknight (robertknig@moz-54528EE0.wby.mendeley.com)
+[21:07:00] *** Joins: tjc_ (tjc@moz-7B0110AD.mv.mozilla.com)
+[21:08:02] *** Quits: robertknight (robertknig@moz-54528EE0.wby.mendeley.com) (Ping timeout)
+[21:08:30] *** Quits: ahal (ahal@moz-94F07FF4.cable.teksavvy.com) (Input/output error)
+[21:11:14] *** Quits: Ms2ger` (Ms2ger@D2CDF20A.29977EA1.187A1082.IP) (Quit: nn)
+[21:12:05] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Input/output error)
+[21:12:21] *** Joins: dherman (dherman@4373060E.96DDD56F.4EA770CF.IP)
+[21:12:22] *** ChanServ sets mode: +qo dherman dherman
+[21:12:52] *** Quits: tjc_ (tjc@moz-7B0110AD.mv.mozilla.com) (Ping timeout)
+[21:13:07] *** Joins: tjc_ (tjc@moz-BBE3ABD.mv.mozilla.com)
+[21:18:47] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[21:18:47] <ghservo> [13servo] 15kmcallister opened pull request #1040: Fix eviction in MonoCache::find_or_create (06master...06monocache)  02http://git.io/ii8TVA
+[21:18:47] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[21:20:24] *** Quits: bholley (anonymous@moz-D5EB36E2.rev.numericable.fr) (Quit: bholley)
+[21:21:24] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[21:21:24] <ghservo> [13servo] 15kmcallister opened issue #1041: Fix transform_text and/or its test cases  02http://git.io/FTtYVQ
+[21:21:24] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[21:28:38] *** Quits: jet (jet@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: jet)
+[21:28:39] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[21:32:22] *** Joins: gandalf (zbraniecki@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[21:35:06] *** Quits: dzbarsky (Adium@DB6E1F3D.1EBC2536.DA1C73DD.IP) (Quit: Leaving.)
+[21:39:41] *** Joins: eholk (eholk@25AABEE9.48D4C455.51B6877.IP)
+[21:40:55] *** Quits: dherman (dherman@4373060E.96DDD56F.4EA770CF.IP) (Quit: dherman)
+[21:47:19] *** Quits: CaseyBecking (CaseyBecki@moz-7EBF4B5D.lsanca.fios.verizon.net) (Client exited)
+[21:51:26] *** Joins: CaseyBecking (CaseyBecki@moz-7EBF4B5D.lsanca.fios.verizon.net)
+[21:53:35] *** Joins: dherman (dherman@4373060E.96DDD56F.4EA770CF.IP)
+[21:53:36] *** ChanServ sets mode: +qo dherman dherman
+[21:55:55] *** Quits: dbaron (dbaron@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[21:56:20] *** Joins: dbaron (dbaron@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[21:59:43] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Quit: Gone to save the world!)
+[22:00:25] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[22:06:42] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[22:08:15] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[22:08:38] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[22:08:38] <ghservo> [13servo] 15ttaubert opened issue #1042: test/html/content/test_global.html crashes Servo  02http://git.io/b0-JKQ
+[22:08:38] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[22:15:08] *** Joins: tikue3 (tikue_star@75BD426D.28336FB0.689607DE.IP)
+[22:17:08] *** Quits: dherman (dherman@4373060E.96DDD56F.4EA770CF.IP) (Ping timeout)
+[22:20:46] *** Quits: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net) (Quit: Jesse)
+[22:26:24] *** Quits: eholk (eholk@25AABEE9.48D4C455.51B6877.IP) (Quit: eholk)
+[22:28:40] *** Joins: eholk (eholk@25AABEE9.48D4C455.51B6877.IP)
+[22:35:02] *** Quits: tjc_ (tjc@moz-BBE3ABD.mv.mozilla.com) (Quit: Places to go, people to annoy)
+[22:45:29] *** Joins: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com)
+[22:45:36] *** Quits: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com) (Input/output error)
+[22:45:46] *** Joins: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com)
+[22:48:54] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Quit: Gone to save the world!)
+[22:49:23] *** Joins: dzbarsky (Adium@DB6E1F3D.1EBC2536.DA1C73DD.IP)
+[22:53:25] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: leaving)
+[22:53:29] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[22:53:29] *** ChanServ sets mode: +o brson
+[22:53:56] *** Joins: dherman (dherman@4373060E.96DDD56F.4EA770CF.IP)
+[22:53:56] *** ChanServ sets mode: +qo dherman dherman
+[22:58:51] *** Joins: jet (jet@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[23:00:33] *** Quits: dherman (dherman@4373060E.96DDD56F.4EA770CF.IP) (Client exited)
+[23:01:05] *** Joins: dherman (dherman@4373060E.96DDD56F.4EA770CF.IP)
+[23:01:05] *** ChanServ sets mode: +qo dherman dherman
+[23:01:25] *** Joins: dherman_ (dherman@4373060E.96DDD56F.4EA770CF.IP)
+[23:02:05] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[23:02:05] <ghservo> [13servo] 15kmcallister closed issue #364: Allow generated bindings to use custom trace hooks  02http://git.io/mVOtyg
+[23:02:05] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[23:02:47] *** Quits: dherman (dherman@4373060E.96DDD56F.4EA770CF.IP) (Ping timeout)
+[23:02:50] *** dherman_ is now known as dherman
+[23:10:20] <kmc> anyone want to do a quick r? on https://github.com/mozilla/servo/pull/1040
+[23:12:04] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[23:12:13] *** Quits: lbergstrom (Adium@moz-5D8E4B14.lightspeed.cicril.sbcglobal.net) (Quit: Leaving.)
+[23:13:24] *** Joins: lbergstrom (Adium@moz-5D8E4B14.lightspeed.cicril.sbcglobal.net)
+[23:16:03] *** Joins: tjc_ (tjc@moz-7B0110AD.mv.mozilla.com)
+[23:16:04] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[23:16:04] <ghservo> 01[13servo01] 15bors-servo 04force-pushed 06auto from 148e7f403 to 14fc9fdf3: 02http://git.io/c8GovQ
+[23:16:04] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[23:16:08] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[23:16:08] <ghservo> 01[13servo01] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/ELe0Ng
+[23:16:08] <ghservo> 13servo/06auto 145289d35 15Keegan McAllister: Fix eviction in MonoCache::find_or_create
+[23:16:08] <ghservo> 13servo/06auto 1423e37c6 15bors-servo: auto merge of #1040 : kmcallister/servo/monocache, r=metajack
+[23:16:08] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[23:22:23] <kmc> thanks jack
+[23:43:25] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[23:50:26] *** Joins: brendan (brendaneic@5FF29450.615B56E6.43362C16.IP)
+[23:51:45] *** Quits: eholk (eholk@25AABEE9.48D4C455.51B6877.IP) (Quit: eholk)
+[23:52:22] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[23:54:16] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Ping timeout)
+[23:55:49] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[23:55:49] <ghservo> [13servo] 15kmcallister opened pull request #1043: Misc small bug fixes (06master...06misc)  02http://git.io/QpssTA
+[23:55:49] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[23:57:27] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[23:58:13] *** Quits: jet (jet@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: jet)

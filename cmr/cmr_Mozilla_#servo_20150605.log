@@ -1,0 +1,1874 @@
+[00:00:23] <gw> njn: quite likely. I wonder if it's the way it is from back in the dark days when TLS was (apparently) very expensive to access?
+[00:00:57] *** Quits: mib_bc877e (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[00:01:22] <eddyb> right now, on supported platforms, it's just checking a couple booleans on top of #[thread_local]
+[00:01:23] <njn> a safe mutable referece would suffice... is RefCell appropriate?
+[00:01:53] <eddyb> njn: here's one option https://gist.github.com/eddyb/48ea89d3679bb4e7c0f3
+[00:02:06] *** Joins: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP)
+[00:02:07] *** Joins: nrc|distracted (nrc|distrac@moz-14pjgj.xtra.co.nz)
+[00:02:08] <eddyb> but then the -> &mut accessors are problematic
+[00:02:29] <njn> Refcell within a RefCell, yikes
+[00:03:06] <eddyb> the outer RefCell<Option<...>> is because you need the shared context to initialize the value
+[00:03:51] <njn> does LocalLayoutContext need to have RefCell fields?
+[00:04:09] <eddyb> if it's wrapped in a RefCell no... but...
+[00:04:22] <eddyb> gw: how sure are you there's only one LayoutContext?
+[00:04:26] <eddyb> gw: is it long-lived?
+[00:04:38] <eddyb> because this whole sharade seems pointless then
+[00:05:10] <eddyb> another way you could do it is move the data into TLS in the destructor of LocalContext
+[00:05:41] *** Joins: tetsuharu (testuharu@moz-fmjbd6.ucom.ne.jp)
+[00:06:05] <gw> eddyb: I *think* they are short lived, and only one exists at a time. it looks like there is one created for each pass of the flow tree (e.g. look in parallel.rs). I suspect it's one of those cases of code that has been shuffled around through multiple upgrades and "works" but could really do with a rewrite :)
+[00:07:05] <njn> and here I was hoping that some small tweak would be enough to fix the leak :(
+[00:08:04] <gw> njn: if you were looking for a small tweak to fix the leak, couldn't you manually destruct the layout context when the thread exits? (not a great solution, I know)
+[00:08:06] <eddyb> gw: if that is the case, this can be as efficient as before, by swapping a Box<LocalLayoutContext> in and out of TLS
+[00:08:23] <njn> gw: quite possibly
+[00:08:44] <gw> eddyb: so just have Cell<Box<LocalLayoutContext>> right?
+[00:08:58] <eddyb> RefCell<Option<Box<...>>>, but yes :)
+[00:09:20] <gw> eddy: ah, yes true. :)
+[00:09:27] <eddyb> you could install some safe-guard (i.e. use a custom enum instead of Option) that after the first initialization on a thread, no secondary initializations happen
+[00:09:32] <eddyb> (because that would be wasteful)
+[00:11:54] <eddyb> njn: https://gist.github.com/eddyb/48ea89d3679bb4e7c0f3
+[00:12:10] *** Joins: jviereck (Adium@moz-9s6lnu.rgd2.9kg1.0101.2620.IP)
+[00:12:30] <eddyb> njn: replace the raw pointers with Box and add a destructor to LocalContext to move that Box into TLS (and assert that there isn't something already in TLS)
+[00:12:36] <eddyb> hmm, the destructor part is tricky
+[00:13:33] *** Quits: MrZeus (MrZeus@moz-jf4304.skybroadband.com) (Ping timeout: 121 seconds)
+[00:13:51] <njn> eddyb: the take() means you're swapping Some(_) for None in the TLS, is that right?
+[00:13:57] <eddyb> presumably nulling it out will prevent destruction (but pnkfelix would know better)
+[00:14:00] *** Quits: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP) (Ping timeout: 121 seconds)
+[00:14:02] <eddyb> njn: yes
+[00:14:15] *** Quits: tetsuharu (testuharu@moz-fmjbd6.ucom.ne.jp) (Quit: Bye!)
+[00:14:32] *** Quits: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com) (Quit: computer sleep)
+[00:14:41] * eddyb wonders why this even happens like it does. is there no context to stash the caches on, higher up? is this for threads part of a worker pool?
+[00:14:55] *** Joins: tetsuharu (testuharu@moz-fmjbd6.ucom.ne.jp)
+[00:15:16] <eddyb> playbot: std::boxed::from_raw(0 as *mut i32)
+[00:15:16] -playbot- <anon>:9:9: 9:29 error: unresolved name `std::boxed::from_raw`
+[00:15:17] -playbot- <anon>:9         std::boxed::from_raw(0 as *mut i32)
+[00:15:17] -playbot- output truncated; full output at: http://bit.ly/1KHTu6H
+[00:17:07] *** Joins: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP)
+[00:18:32] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[00:18:32] -ghservo- [13rust-azure] 15jdm pushed 2 new commits to 06master: 02http://git.io/vITSA
+[00:18:32] -ghservo- 13rust-azure/06master 14de42221 15Corey Farwell: Update dependencies reflect new locations, crate names
+[00:18:32] -ghservo- 13rust-azure/06master 147402a05 15Josh Matthews: Merge pull request #164 from frewsxcv/patch-1...
+[00:18:32] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[00:18:43] *** Quits: mwu (mwu@moz-lu71bu.oi2i.p882.0085.2601.IP) (Quit: Leaving)
+[00:19:01] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[00:19:01] -ghservo- [13io-surface-rs] 15jdm pushed 2 new commits to 06master: 02http://git.io/vIT9T
+[00:19:01] -ghservo- 13io-surface-rs/06master 14912162f 15Jack Moffitt: Use modern naming conventions.
+[00:19:01] -ghservo- 13io-surface-rs/06master 1451c187a 15Josh Matthews: Merge pull request #30 from metajack/modern-conventions...
+[00:19:01] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[00:19:18] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[00:19:18] -ghservo- [13rust-layers] 15jdm closed pull request #169: Update dependencies to reflect new locations, crate names (06master...06patch-1) 02http://git.io/vITuD
+[00:19:18] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[00:19:25] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[00:19:25] -ghservo- [13rust-layers] 15jdm pushed 2 new commits to 06master: 02http://git.io/vIT9m
+[00:19:25] -ghservo- 13rust-layers/06master 14a96a50c 15Corey Farwell: Update dependencies to reflect new locations, crate names
+[00:19:25] -ghservo- 13rust-layers/06master 14641eca2 15Josh Matthews: Merge pull request #169 from frewsxcv/patch-1...
+[00:19:25] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[00:22:07] *** Quits: jviereck (Adium@moz-9s6lnu.rgd2.9kg1.0101.2620.IP) (Quit: Leaving.)
+[00:22:13] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[00:22:13] -ghservo- [13rust-offscreen-rendering-context] 15frewsxcv opened pull request #2: Update URL to crate (06master...06patch-1) 02http://git.io/vIT9y
+[00:22:13] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[00:23:34] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[00:23:34] -ghservo- [13rust-offscreen-rendering-context] 15frewsxcv closed pull request #2: Update URL to crate (06master...06patch-1) 02http://git.io/vIT9y
+[00:23:34] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[00:24:24] *** Quits: Savago (Savago@moz-8hd.3b6.246.162.IP) (Client exited)
+[00:27:24] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[00:29:06] *** Joins: Caspy7 (chatzilla@moz-tkogmh.stlsmo.sbcglobal.net)
+[00:34:29] <njn> eddyb: if create_or_get_local_context() returns a Box<LocalLayoutContext>, will the contents of the Box be mutable?
+[00:34:53] <eddyb> njn: if it's a mutable location, yes
+[00:35:22] *** Quits: valentin (icecold@moz-9bn.d10.25.188.IP) (Quit: Leaving.)
+[00:35:23] <eddyb> njn: Box only introduces indirection to avoid copying a large structure in and out of TLS
+[00:36:02] *** Joins: valentin (icecold@moz-9bn.d10.25.188.IP)
+[00:36:38] <njn> eddyb: in https://gist.github.com/eddyb/48ea89d3679bb4e7c0f3, in the `None` case, doesn't the TLS need to be set in some way?
+[00:36:56] <njn> `r.borrow_mut() = box ...` or something
+[00:37:57] <eddyb> njn: nope :)
+[00:38:14] *** Quits: bdero (bran@moz-bbb.8fo.42.70.IP) (Quit: Leaving.)
+[00:38:15] *** Joins: valentin1 (icecold@moz-9bn.d10.25.188.IP)
+[00:38:15] *** Joins: bdero (bran@moz-bbb.8fo.42.70.IP)
+[00:38:44] <eddyb> njn: you set the TLS when you're done with a LocalContext (you'll need a Drop impl or a method, but Rust doesn't have linear types so it would be non-trivial to enforce a method gets called)
+[00:39:25] <njn> eddyb: so a post-condition of create_or_get_local_context() is that it leaves the TLS empty?
+[00:40:04] *** Quits: valentin (icecold@moz-9bn.d10.25.188.IP) (Ping timeout: 121 seconds)
+[00:41:16] <eddyb> yes. I wouldn't even leave it in a function, given how it's more tied with LocalContext, rather than being a general function
+[00:42:05] *** Joins: valentin (icecold@moz-9bn.d10.25.188.IP)
+[00:42:20] *** Quits: bdero (bran@moz-bbb.8fo.42.70.IP) (Ping timeout: 121 seconds)
+[00:42:20] *** Quits: valentin1 (icecold@moz-9bn.d10.25.188.IP) (Quit: Leaving.)
+[00:44:07] *** Joins: bholley (bholley@moz-qpv0dk.ca.comcast.net)
+[00:46:15] *** Joins: bdero (bran@moz-bbb.8fo.42.70.IP)
+[00:47:03] *** Quits: joone (joone@moz-rj2.r6t.134.134.IP) (Connection closed)
+[00:48:26] *** Joins: zmike_ (discomfitor@moz-3ctsh7.ocn.ne.jp)
+[00:50:09] *** Quits: bdero (bran@moz-bbb.8fo.42.70.IP) (Connection closed)
+[00:52:50] <njn> eddyb: in your proposed design, what would the font_context getter look like?
+[00:55:01] *** Joins: mib_bt3pan (Mibbit@moz-juv.9o3.252.72.IP)
+[00:55:41] *** Quits: mib_bt3pan (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[00:56:18] <eddyb> njn: the same actually
+[00:56:30] <eddyb> njn: you take &mut self and return &mut FontContext
+[00:57:47] <njn> eddyb: is the body just `&mut self.cached_local_layout_context.font_context` ?
+[00:59:55] *** Joins: gsingh93 (gulshan@moz-ln1ktu.st3l.iv8o.0004.2601.IP)
+[01:00:25] *** Quits: bholley (bholley@moz-qpv0dk.ca.comcast.net) (Quit: Textual IRC Client: www.textualapp.com)
+[01:00:43] <njn> and are the lifetime annotations necessary?
+[01:00:52] <njn> I have this:
+[01:00:56] <njn>     pub fn font_context(&mut self) -> &mut FontContext {
+[01:00:57] <njn>         &mut self.cached_local_layout_context.font_context
+[01:00:59] <njn>     }
+[01:01:18] <eddyb> that should work
+[01:01:35] <eddyb> (via lifetime elision)
+[01:01:56] <njn> ok, thanks
+[01:02:13] <njn> eddyb: I'm getting this error in create_or_get_local_context: error: cannot borrow immutable field `context.applicable_declarations_cache` as mutable
+[01:03:39] *** Quits: sneakyness (textual@moz-6un.t6n.183.64.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[01:05:09] *** Quits: ienzam (enzam@moz-spq.4ra.239.216.IP) (Ping timeout: 121 seconds)
+[01:05:41] <eddyb> njn: yeah, I'm missing a `mut` there
+[01:05:50] <eddyb> njn: if let Some(mut context)
+[01:06:33] <njn> thanks
+[01:07:03] <njn> eddyb: is this right?
+[01:07:04] <njn> pub struct LayoutContext<'a> { 
+[01:07:06] <njn>     pub shared: &'a SharedLayoutContext,
+[01:07:07] <njn>     cached_local_layout_context: Box<LocalLayoutContext>,
+[01:07:09] <njn> }  
+[01:07:26] <eddyb> sure
+[01:08:07] <eddyb> playbot: unsafe { std::mem::transmute::<usize, Box<Vec<i32>>>(0) }
+[01:08:09] -playbot- playpen: application terminated abnormally with signal 4 (Illegal instruction)
+[01:08:24] <eddyb> playbot: let _x = unsafe { std::mem::transmute::<usize, Box<Vec<i32>>>(0) }; 
+[01:08:25] -playbot- playpen: application terminated abnormally with signal 4 (Illegal instruction)
+[01:08:32] <eddyb> that's odd
+[01:08:42] <eddyb> playbot: let _x = unsafe { std::mem::transmute::<usize, Box<Vec<i32>>>(0x1) }; 
+[01:08:43] -playbot- playpen: application terminated abnormally with signal 4 (Illegal instruction)
+[01:09:23] <eddyb> playbot: let _x = unsafe { std::mem::transmute::<usize, Box<Vec<i32>>>(0x1d1d1d1d1d1d1d1d) }; 
+[01:09:24] -playbot- ()
+[01:09:56] <njn> oh look, here comes the borrow xhecker
+[01:09:58] <njn> *checker
+[01:10:04] <njn> lots of errors like these: https://pastebin.mozilla.org/8835818
+[01:10:37] <eddyb> njn: to handle putting it back in the TLS in the Drop impl, you'll need mem::replace(&mut self.cached_local_layout_context, mem::dropped())
+[01:10:55] <eddyb> njn: wait, was it &self -> &mut before?
+[01:11:40] <njn> eddyb: the font_context getter? yeah: pub fn font_context<'b>(&'b self) -> &'b mut FontContext
+[01:11:44] <eddyb> dear lord
+[01:12:07] <eddyb> that's more terrible than I thought it was
+[01:12:14] <njn> excellent
+[01:12:27] <eddyb> the only way that's not UB is if it returns a distinct pointer each time
+[01:12:44] <eddyb> (like an arena does in its alloc method)
+[01:13:07] <eddyb> call it twice and now you have two &mut T pointing at the same thing
+[01:13:27] <njn> O_o
+[01:13:40] <eddyb> njn: if you feel like it, save your current progress in a git branch or something and start marking stuff as mutable
+[01:13:48] <eddyb> it might not work, I don't know
+[01:14:00] <njn> eddyb: I'm trying; those compile errors are where I'm stuck
+[01:14:09] <njn> `self` is mut in that function (construct.rs:426)
+[01:14:15] <eddyb> if there's a fundamental reason for it not working, you'll need to switch to RefCell
+[01:14:30] <eddyb> njn: what type is the layout_context field?
+[01:14:50] *** Quits: wilfredh (uid159@moz-md9so9.brockwell.irccloud.com) (Quit: Connection closed for inactivity)
+[01:15:16] <njn> pub struct FlowConstructor<'a> {
+[01:15:17] <njn>       pub layout_context: &'a LayoutContext<'a>,
+[01:15:19] <njn> }
+[01:16:13] <eddyb> well, there's your problem
+[01:16:33] *** Joins: mib_pj0361 (Mibbit@moz-juv.9o3.252.72.IP)
+[01:16:39] *** Quits: nrc|distracted (nrc|distrac@moz-14pjgj.xtra.co.nz) (Ping timeout: 121 seconds)
+[01:16:47] *** Joins: bdero (bran@moz-bbb.8fo.42.70.IP)
+[01:16:48] <eddyb> njn: you have to use RefCell. you can use it on each field and change the constructors to
+[01:16:54] <eddyb> &self -> RefMut<T>
+[01:17:09] <eddyb> (which is the type returned by .borrow_mut())
+[01:17:33] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[01:17:39] <njn> eddyb: like this?
+[01:17:41] <njn> struct LocalLayoutContext {
+[01:17:43] <njn>     font_context: RefCell<FontContext>,
+[01:17:44] <njn>     applicable_declarations_cache: RefCell<ApplicableDeclarationsCache>,
+[01:17:46] <njn>     style_sharing_candidate_cache: RefCell<StyleSharingCandidateCache>,
+[01:17:47] <njn> }
+[01:18:13] * njn is *so* far out of his Rust comfort zone right now
+[01:18:16] <eddyb> yupp
+[01:18:50] <eddyb> at this point you can go back to storing Rc<LocalLayoutContext> in the TLS and cloning it out
+[01:18:55] <eddyb> instead of doing fancy Box things
+[01:19:07] <eddyb> sorry for the derail, I had no idea how it was going to be used
+[01:19:19] <eddyb> or rather, I missed the insanity of the getters
+[01:20:48] <njn> eddyb: that's the exact TLS type? No RefCell?
+[01:22:54] *** Joins: fkaa (tundmatu@moz-501od2.business.telia.com)
+[01:23:12] <njn> eddyb: and do I now need to pass around RefMut<FontContext> everywhere that previously got &mut FontContext?
+[01:24:13] <eddyb> njn: RefCell<Option<Rc<LocalLayoutContext>>>
+[01:24:21] <njn> ah, ok
+[01:24:22] <eddyb> njn: and no, you just use &mut FontContext everywhere
+[01:24:23] *** Joins: joone (joone@moz-8cd.7m2.55.192.IP)
+[01:24:45] <eddyb> something like do_something(&mut foo.font_context()) should work
+[01:24:57] <eddyb> because the temporary lives long enough for the scope
+[01:27:18] <njn> thank you for all the help so far, BTW, I couldn't have done anything like this much by myself
+[01:28:34] <njn> eddby: is the return type of create_or_get_local_context() now just Rc<LocalLayoutContext>?
+[01:29:28] <eddyb> yes
+[01:35:37] *** Quits: tetsuharu (testuharu@moz-fmjbd6.ucom.ne.jp) (Quit: Bye!)
+[01:38:00] <njn> OMG it compiles
+[01:38:07] * njn is scared to run it
+[01:41:15] *** Quits: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP) (Ping timeout: 121 seconds)
+[01:41:30] <njn> eddyb: oh... do I need to do the fancy stuff with drop you mentioned before? or can I just set the TLS in create_or_get_local_content the first time it's called?
+[01:42:39] <eddyb> njn: if you're using Rc, you can just set the TLS
+[01:46:40] <njn> eddyb: like this?  https://pastebin.mozilla.org/8835819
+[01:46:48] <njn> oh, wait, the take() is no longer appropriate
+[01:48:12] *** Quits: mib_pj0361 (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[01:50:39] <brson> does servo ever use rust's lto?
+[01:52:23] <eddyb> njn: like my original code :P
+[01:52:38] *** Joins: mib_qpamaw (Mibbit@moz-juv.9o3.252.72.IP)
+[01:53:44] <njn> eddyb: did you write a version that used Rc?
+[01:53:47] <eddyb> njn: https://gist.github.com/eddyb/48ea89d3679bb4e7c0f3
+[01:54:00] <eddyb> I did, and this is one without Rc<RefCell<T>>
+[01:54:02] <njn> ah, excellent!
+[01:54:58] *** chmanchester is now known as chmanchester|afk
+[01:56:35] *** Quits: mib_qpamaw (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[01:57:36] <njn> eddyb: near the bottom it should be `*r = Some(context.clone());` but otherwise it is good
+[01:58:17] <njn> hmm: thread 'LayoutTask PipelineId(0)' panicked at 'cannot access a TLS value during or after it is destroyed'
+[01:58:47] *** Joins: je_julie (uid29643@moz-2q4j9e.brockwell.irccloud.com)
+[01:58:55] *** Joins: mr_trousers (Mibbit@moz-juv.9o3.252.72.IP)
+[01:59:58] <eddyb> whoa whoa
+[02:00:05] <eddyb> how did you manage that?
+[02:00:51] <eddyb> how are you running code at that time? are there any other TLS slots with dtors?
+[02:01:25] *** Joins: nrc|distracted (nrc|distrac@moz-14pjgj.xtra.co.nz)
+[02:03:48] *** Joins: playjax (chatzilla@moz-bqrtim.optusnet.com.au)
+[02:05:38] *** Quits: mr_trousers (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[02:06:06] *** Joins: naudtov (naudtov@moz-9fcbja.ca.comcast.net)
+[02:07:11] <njn> eddyb: not sure, investigating
+[02:11:50] <njn> eddyb: ah, I've seen something lke this before; there's a TLS used by println! and friends
+[02:12:14] <njn> and the destruction of the LOCAL_CONTEXT_KEY interacts badly with that TLS
+[02:12:33] <njn> it's also relevant that I have a println! happening when LOCAL_CONTEXT_KEY is destroyed
+[02:12:39] <njn> I think if I remove the println! everything will be fine
+[02:13:54] *** Joins: Nekit1235007 (nekit@moz-0a7.a78.189.91.IP)
+[02:14:20] <zmike_> abinader!
+[02:15:04] *** Joins: cakecatz (cakecatz@moz-u6p4rc.so-net.ne.jp)
+[02:17:38] *** Quits: Nekit1234007 (nekit@moz-0a7.a78.189.91.IP) (Ping timeout: 121 seconds)
+[02:17:38] *** Nekit1235007 is now known as Nekit1234007
+[02:18:18] <njn> eddyb: yeah, removing the println! avoids the panic. Unfortunately, that println! was how I was telling if the leak was present :)
+[02:19:54] <njn> I think I can use something lower-level than println!
+[02:22:33] *** Quits: Nekit1234007 (nekit@moz-0a7.a78.189.91.IP) (Ping timeout: 121 seconds)
+[02:25:07] *** Quits: tglman (tglman@moz-l8btep.as13285.net) (Ping timeout: 121 seconds)
+[02:26:02] *** Joins: Nekit1234007 (nekit@moz-0a7.a78.189.91.IP)
+[02:28:37] *** Quits: crowbot1 (nodebot@moz-4c16ej.compute-1.amazonaws.com) (A TLS packet with unexpected length was received.)
+[02:28:39] *** Joins: crowbot (nodebot@moz-1n92f6.compute-1.amazonaws.com)
+[02:31:03] *** Joins: Nekit1235007 (nekit@moz-0a7.a78.189.91.IP)
+[02:31:57] *** Quits: bdero (bran@moz-bbb.8fo.42.70.IP) (Connection closed)
+[02:32:28] *** Quits: Nekit1234007 (nekit@moz-0a7.a78.189.91.IP) (Ping timeout: 121 seconds)
+[02:32:28] *** Nekit1235007 is now known as Nekit1234007
+[02:35:21] *** Joins: gandalf (zbraniecki@moz-u3dg2t.sfo1.mozilla.com)
+[02:35:43] *** Quits: Nekit1234007 (nekit@moz-0a7.a78.189.91.IP) (A TLS packet with unexpected length was received.)
+[02:42:17] *** Joins: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP)
+[02:43:39] *** Joins: smerft (Mibbit@moz-juv.9o3.252.72.IP)
+[02:45:24] *** Quits: smerft (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[02:49:59] *** Joins: bdero (bran@moz-bbb.8fo.42.70.IP)
+[02:50:00] <njn> yep:  ::std::io::stdout().write(&s.into_bytes());
+[02:50:25] <njn> eddyb: so the TLS storage is now being dropped correctly... at least, for all threads except 1
+[02:50:37] <njn> there are six worker threads, and each time one of them doesn't get dropped
+[02:50:55] <njn> I wonder if it's something relating to shutdown, e.g. if it's the last thread alive then the TLS doesn't get freed, or something
+[02:50:57] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[02:50:58] *** Joins: emc (e[@moz-uf5h9q.ca.charter.com)
+[02:51:00] <njn> certainly an improvement
+[02:53:29] <njn> eddyb: thank you again for all your help
+[02:55:56] *** Parts: Nashenas88 (Nashenas88@moz-of81j9.miamfl.sbcglobal.net) ()
+[02:56:11] *** Joins: Nashenas88 (Nashenas88@moz-of81j9.miamfl.sbcglobal.net)
+[02:57:04] *** Quits: gandalf (zbraniecki@moz-u3dg2t.sfo1.mozilla.com) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[02:58:19] *** Joins: mccr8 (mccr8@moz-m84lpe.ca.comcast.net)
+[02:59:22] *** Joins: kimundi_ (kimundi@moz-ghr.vgt.188.87.IP)
+[02:59:33] *** Quits: j3parker (j3parker@moz-ecec9v.ca) (Ping timeout: 121 seconds)
+[03:01:54] *** Quits: kimundi (kimundi@moz-b6c.mnt.188.87.IP) (Ping timeout: 121 seconds)
+[03:01:54] *** kimundi_ is now known as kimundi
+[03:06:35] *** Quits: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP) (Quit: 堕入 /dev/null)
+[03:07:05] *** Quits: bdero (bran@moz-bbb.8fo.42.70.IP) (Ping timeout: 121 seconds)
+[03:19:45] *** Joins: montezuma (Mibbit@moz-juv.9o3.252.72.IP)
+[03:20:51] *** Quits: montezuma (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[03:27:19] *** Joins: gandalf (zbraniecki@moz-23eq8h.ca.comcast.net)
+[03:27:24] *** kimundi is now known as zz_kimundi
+[03:31:52] *** Quits: gandalf (zbraniecki@moz-23eq8h.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[03:33:23] *** Joins: gandalf (zbraniecki@moz-23eq8h.ca.comcast.net)
+[03:35:05] *** Quits: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com) (Ping timeout: 121 seconds)
+[03:42:52] *** Quits: gandalf (zbraniecki@moz-23eq8h.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[03:42:52] *** Quits: naudtov (naudtov@moz-9fcbja.ca.comcast.net) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[03:43:29] *** Joins: gandalf (zbraniecki@moz-23eq8h.ca.comcast.net)
+[03:48:29] *** Joins: sneakyness (textual@moz-tmbr33.biz.rr.com)
+[03:53:22] <njn> I thought |./mach build| didn't work any more, that the -d/-r was mandatory...
+[03:54:43] <gw> njn: it's not required if there is an existing debug *or* release build (assumes you want the same). it will ask you if there are both or neither present
+[03:55:16] <njn> gw: ah
+[03:55:19] <njn> thank you
+[03:55:37] <njn> subtle, but makes a certain sense
+[03:55:54] <njn> though I'm tempted to argue "explicit is better than implicit"...
+[03:55:56] <njn> :)
+[03:56:26] <gw> I tend to agree :)
+[03:57:44] *** Joins: ienzam (enzam@moz-fussc3.ca.comcast.net)
+[03:58:15] *** Joins: bdero (bran@moz-lbs.91h.47.73.IP)
+[03:59:50] <njn> gw: in case it wasn't clear, with much hand-holding from eddyb I've fixed the LOCAL_CONTEXT_KEY leak
+[04:00:26] <gw> njn: yep, nice one :)
+[04:01:15] *** Joins: frogaincia (Mibbit@moz-juv.9o3.252.72.IP)
+[04:02:14] *** Quits: mccr8 (mccr8@moz-m84lpe.ca.comcast.net) (Quit: quit)
+[04:03:42] <njn> gw: I think I even understand RefCell<Option<Rc<LocalLayoutContext>>> now :)
+[04:04:41] <gw> njn: :)
+[04:05:47] *** Quits: ienzam (enzam@moz-fussc3.ca.comcast.net) (Ping timeout: 121 seconds)
+[04:06:57] <njn> gw: you going to Whistler?
+[04:07:31] <gw> njn: yep, arriving on sunday but leaving on the friday. you?
+[04:07:31] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[04:07:31] -ghservo- [13servo] 15nnethercote opened pull request #6289: Make LOCAL_CONTEXT_KEY safe and non-leaky. (06master...06unleak-LOCAL_CONTEXT_KEY) 02http://git.io/vIkoc
+[04:07:31] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[04:10:36] <njn> gw: arriving monday, leaving staurday
+[04:11:45] *** Quits: gandalf (zbraniecki@moz-23eq8h.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[04:12:49] *** Quits: Nashenas88 (Nashenas88@moz-of81j9.miamfl.sbcglobal.net) (Ping timeout: 121 seconds)
+[04:13:13] *** Quits: cakecatz (cakecatz@moz-u6p4rc.so-net.ne.jp) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[04:15:51] *** Quits: frogaincia (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[04:16:53] *** Joins: gandalf (zbraniecki@moz-23eq8h.ca.comcast.net)
+[04:18:32] *** Quits: sneakyness (textual@moz-tmbr33.biz.rr.com) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[04:18:53] *** Quits: caitp (caitp@moz-lmogh4.cable.rogers.com) (Ping timeout: 121 seconds)
+[04:28:08] *** Joins: Nashenas88 (Nashenas88@moz-of81j9.miamfl.sbcglobal.net)
+[04:29:17] *** darkowlzz|afk is now known as darkowlzz
+[04:35:49] *** darkowlzz is now known as darkowlzz|afk
+[04:38:37] *** Joins: cakecatz (cakecatz@moz-u6p4rc.so-net.ne.jp)
+[04:43:02] *** Quits: marshall_law (marshall@moz-2cq.qdc.36.66.IP) (Ping timeout: 121 seconds)
+[04:44:20] *** Quits: gandalf (zbraniecki@moz-23eq8h.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[04:44:21] *** Joins: marshall_law (marshall@moz-2cq.qdc.36.66.IP)
+[04:45:02] *** Joins: ienzam (enzam@moz-fussc3.ca.comcast.net)
+[04:47:53] *** Quits: zmike_ (discomfitor@moz-3ctsh7.ocn.ne.jp) (Ping timeout: 121 seconds)
+[04:50:40] *** Joins: mib_su10ze (Mibbit@moz-juv.9o3.252.72.IP)
+[04:51:03] *** Quits: mib_su10ze (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[04:59:41] *** Joins: jviereck (Adium@moz-k5glv6.85nl.qf2a.0009.2601.IP)
+[05:01:39] *** Quits: nrc|distracted (nrc|distrac@moz-14pjgj.xtra.co.nz) (Ping timeout: 121 seconds)
+[05:06:19] *** Quits: bdero (bran@moz-lbs.91h.47.73.IP) (Ping timeout: 121 seconds)
+[05:10:50] *** Joins: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com)
+[05:11:06] *** Quits: cakecatz (cakecatz@moz-u6p4rc.so-net.ne.jp) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[05:11:59] *** Joins: cakecatz (cakecatz@moz-u6p4rc.so-net.ne.jp)
+[05:12:19] *** Joins: zmike_ (discomfitor@moz-3ctsh7.ocn.ne.jp)
+[05:12:33] *** Quits: Nashenas88 (Nashenas88@moz-of81j9.miamfl.sbcglobal.net) (Client exited)
+[05:13:55] *** Joins: dstrbad (dstrbad@moz-47e.2ni.217.31.IP)
+[05:18:09] *** Quits: dstrbad (dstrbad@moz-47e.2ni.217.31.IP) (A TLS packet with unexpected length was received.)
+[05:18:53] *** Joins: acgtyrant (acgtyrant@moz-g8d.4sk.186.39.IP)
+[05:25:43] *** Quits: jviereck (Adium@moz-k5glv6.85nl.qf2a.0009.2601.IP) (Quit: Leaving.)
+[05:33:23] *** Quits: sunu (quassel@moz-dq2.41e.235.168.IP) (Ping timeout: 121 seconds)
+[05:33:46] *** Quits: gsingh93 (gulshan@moz-ln1ktu.st3l.iv8o.0004.2601.IP) (Ping timeout: 121 seconds)
+[05:34:06] *** Joins: sunu (quassel@moz-dq2.41e.235.168.IP)
+[05:36:13] *** Joins: nattokirai (nattokirai@moz-rq9a8e.asahi-net.or.jp)
+[05:37:17] *** Quits: nonsensickle (nonsensickl@moz-4v0.gkd.16.182.IP) (Quit: Leaving)
+[05:38:02] *** Joins: dinfuehr (dinfuehr@moz-c25.u8s.112.91.IP)
+[05:39:00] *** Joins: dinfuehr_ (dinfuehr@moz-c25.u8s.112.91.IP)
+[05:39:00] *** Quits: dinfuehr (dinfuehr@moz-c25.u8s.112.91.IP) (Connection closed)
+[05:43:11] *** Joins: caitp (caitp@moz-lmogh4.cable.rogers.com)
+[05:45:16] *** Quits: jiojiajiu (Guro@moz-trc2j7.asianet.co.th) (Ping timeout: 121 seconds)
+[05:47:28] *** Joins: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net)
+[05:49:26] *** Quits: emc (e[@moz-uf5h9q.ca.charter.com) (Quit: Lost terminal)
+[05:52:02] *** Quits: zmike_ (discomfitor@moz-3ctsh7.ocn.ne.jp) (Ping timeout: 121 seconds)
+[05:54:43] *** Joins: ldng (ldng@moz-l3gmiq.abo.bbox.fr)
+[05:54:55] *** Quits: ldng (ldng@moz-l3gmiq.abo.bbox.fr) (Quit: Leaving)
+[06:03:15] *** Joins: waffles (Wafflespean@moz-6v0.9s5.23.1.IP)
+[06:04:13] *** Joins: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP)
+[06:04:26] *** Quits: dbaron (dbaron@moz-7i8mdt.2rkg.9kg1.0101.2620.IP) (Ping timeout: 121 seconds)
+[06:12:44] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[06:14:02] *** Joins: mib_yb6v5j (Mibbit@moz-juv.9o3.252.72.IP)
+[06:14:18] *** Joins: tglman (tglman@moz-l8btep.as13285.net)
+[06:14:28] *** Quits: mib_yb6v5j (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[06:19:29] *** Quits: cakecatz (cakecatz@moz-u6p4rc.so-net.ne.jp) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[06:19:41] *** Joins: moa (Cedric@moz-lqipa6.abo.wanadoo.fr)
+[06:20:41] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[06:20:41] -ghservo- [13servo] 15hyowon opened pull request #6290: Replace fill_color & stroke_color with fill_style & stroke_style in CanvasContextState. (06master...06fill_or_stroke_style) 02http://git.io/vIIfu
+[06:20:41] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[06:32:34] *** Joins: zmike_ (discomfitor@moz-mfl.g5u.215.61.IP)
+[06:34:23] *** Joins: cakecatz (cakecatz@moz-u6p4rc.so-net.ne.jp)
+[06:42:25] *** Joins: Tobba (Tobba@moz-6oh.7ki.21.217.IP)
+[06:51:25] *** Joins: dbaron (dbaron@moz-12jr9n.dynamic.fusionbroadband.com)
+[06:55:04] *** Quits: ienzam (enzam@moz-fussc3.ca.comcast.net) (Ping timeout: 121 seconds)
+[06:58:18] *** Quits: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[06:59:40] *** Joins: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net)
+[07:03:07] *** Joins: ienzam (enzam@moz-fussc3.ca.comcast.net)
+[07:05:59] *** Joins: till (till@moz-0tejpc.adsl.alicedsl.de)
+[07:11:27] *** Joins: Jesse (jruderman@moz-h28sem.sntcca.sbcglobal.net)
+[07:12:02] *** Quits: acharles (acharles@moz-ulbdcn.ca.comcast.net) (Ping timeout: 121 seconds)
+[07:12:40] *** Quits: njn (chatzilla@moz-c6c476.iinet.net.au) (Quit: ChatZilla 0.9.91.1 [Firefox 41.0a1/20150531163607])
+[07:19:15] <waffles> Uh, I need some help. How much of Rust should someone know for an E-easy bug?
+[07:19:52] <Manishearth> waffles: not much really
+[07:19:55] <Manishearth> depends on the bug
+[07:20:19] <waffles> Manishearth: I saw a few bugs, but I don't seem to understand much
+[07:20:28] <waffles> (it reminds me of my first day in Bugzilla)
+[07:20:47] <Manishearth> links?
+[07:20:50] <waffles> So far, I've found only one bug which is not C-assigned
+[07:20:59] <waffles> https://github.com/servo/servo/issues/6271
+[07:20:59] <crowbot> Issue #6271: get_proto_or_iface_array should return *const ProtoOrIfaceArray - https://github.com/servo/servo/issues/6271
+[07:21:09] <waffles> (a recent one)
+[07:21:12] <Manishearth> ...that looks scary
+[07:21:14] *** Quits: dbaron (dbaron@moz-12jr9n.dynamic.fusionbroadband.com) (Ping timeout: 121 seconds)
+[07:21:27] <Manishearth> waffles: oh this is easy
+[07:21:33] <waffles> And, there are very few easy bugs
+[07:21:34] <waffles> https://github.com/servo/servo/issues?utf8=%E2%9C%93&q=is%3Aopen+label%3AE-easy+no%3Aassignee+-label%3AC-assigned+
+[07:21:51] <waffles> Manishearth: Ah??
+[07:24:03] <Manishearth> actually, maybe not. I don't see a cast in the callers
+[07:26:10] *** Joins: dstrbad (dstrbad@moz-smbt6v.cable.xnet.hr)
+[07:26:15] *** Joins: ray (bernhard@moz-vsafmp.dynamic.surfer.at)
+[07:26:23] *** Quits: dstrbad (dstrbad@moz-smbt6v.cable.xnet.hr) (A TLS packet with unexpected length was received.)
+[07:26:25] *** Joins: dstrbad (dstrbad@moz-smbt6v.cable.xnet.hr)
+[07:26:48] <Manishearth> https://github.com/servo/servo/issues/5690 may be doable
+[07:26:48] <crowbot> Issue #5690: window.performance.now values are way too big - https://github.com/servo/servo/issues/5690
+[07:27:21] <Manishearth> or https://github.com/servo/servo/issues/5774
+[07:27:21] <crowbot> Issue #5774: Return an Atom from Element::parsed_name. - https://github.com/servo/servo/issues/5774
+[07:27:35] <Manishearth> sadly I'm a bit busy now and can't mentor :)
+[07:29:06] <waffles> alright, thanks :)
+[07:31:21] *** Quits: acgtyrant (acgtyrant@moz-g8d.4sk.186.39.IP) (Quit: 堕入 /dev/null)
+[07:32:25] *** Quits: ienzam (enzam@moz-fussc3.ca.comcast.net) (Ping timeout: 121 seconds)
+[07:35:44] *** Joins: mib_1ghvsf (Mibbit@moz-juv.9o3.252.72.IP)
+[07:36:10] *** Joins: bogdan_maris (Instantbird@moz-662.esi.231.62.IP)
+[07:37:19] *** Quits: mib_1ghvsf (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[07:38:09] *** Quits: moa (Cedric@moz-lqipa6.abo.wanadoo.fr) (Ping timeout: 121 seconds)
+[07:40:38] *** Quits: bogdan_maris (Instantbird@moz-662.esi.231.62.IP) (Client exited)
+[07:41:42] *** Joins: bogdan_maris (Instantbird@moz-662.esi.231.62.IP)
+[07:43:54] *** Quits: bogdan_maris (Instantbird@moz-662.esi.231.62.IP) (Client exited)
+[07:44:13] *** Joins: bogdan_maris (Instantbird@moz-662.esi.231.62.IP)
+[07:47:15] *** Joins: Witcher (Witcher@moz-65s.g1n.108.213.IP)
+[07:47:46] *** Quits: tomaka (Pierre@moz-ppjd78.abo.wanadoo.fr) (Quit: Leaving)
+[07:53:12] *** Joins: tomaka (Pierre@moz-ppjd78.abo.wanadoo.fr)
+[07:53:22] *** Quits: tglman (tglman@moz-l8btep.as13285.net) (Ping timeout: 121 seconds)
+[07:53:52] *** Joins: Jackneill (Jackneill@moz-d0suub.pool.digikabel.hu)
+[07:56:47] *** Quits: caitp (caitp@moz-lmogh4.cable.rogers.com) (Ping timeout: 121 seconds)
+[07:59:08] *** Joins: moa (Cedric@moz-rkm.tp0.160.37.IP)
+[08:02:45] *** Quits: waffles (Wafflespean@moz-6v0.9s5.23.1.IP) (Connection closed)
+[08:05:41] *** Joins: filsmick (filsmick@moz-v28ds8.abo.wanadoo.fr)
+[08:07:48] *** Quits: fkaa (tundmatu@moz-501od2.business.telia.com) (RecvQ exceeded)
+[08:08:05] *** Joins: fkaa (tundmatu@moz-501od2.business.telia.com)
+[08:08:52] *** Joins: kmicu (kmicu@moz-uga.edn.218.91.IP)
+[08:11:06] *** Quits: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net) (Connection closed)
+[08:13:04] *** Joins: acharles (acharles@moz-ulbdcn.ca.comcast.net)
+[08:13:45] *** Quits: hyowon (Mibbit@moz-rde.dlj.94.210.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[08:15:09] *** Quits: till (till@moz-0tejpc.adsl.alicedsl.de) (A TLS packet with unexpected length was received.)
+[08:15:49] *** Quits: Witcher (Witcher@moz-65s.g1n.108.213.IP) (Ping timeout: 121 seconds)
+[08:17:21] *** Joins: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net)
+[08:22:53] *** Joins: Ms2ger (Ms2ger@moz-vbh.07m.182.91.IP)
+[08:27:49] *** Quits: fkaa (tundmatu@moz-501od2.business.telia.com) (Ping timeout: 121 seconds)
+[08:29:21] *** Quits: Jesse (jruderman@moz-h28sem.sntcca.sbcglobal.net) (Ping timeout: 121 seconds)
+[08:30:26] *** Joins: acgtyrant (acgtyrant@moz-g8d.4sk.186.39.IP)
+[08:31:41] *** Joins: fkaa (tundmatu@moz-501od2.business.telia.com)
+[08:32:47] *** Quits: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com) (Ping timeout: 121 seconds)
+[08:35:46] *** Quits: robn (robn@moz-lmns4l.static.theplanet.com) (Quit: Coyote finally caught me)
+[08:36:06] *** Joins: robn (robn@moz-lmns4l.static.theplanet.com)
+[08:38:01] *** jandem-away is now known as jandem
+[08:39:25] *** Joins: ienzam (enzam@moz-fussc3.ca.comcast.net)
+[08:48:22] *** Quits: dstrbad (dstrbad@moz-smbt6v.cable.xnet.hr) (A TLS packet with unexpected length was received.)
+[08:49:01] *** Joins: till (till@moz-0tejpc.adsl.alicedsl.de)
+[08:49:15] *** Quits: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP) (Ping timeout: 121 seconds)
+[08:51:45] *** Quits: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[08:54:28] *** Joins: waffles (Wafflespean@moz-6v0.9s5.23.1.IP)
+[08:55:15] <eddyb> gw: do you happen to know what's with the RWArc comments around raw pointers?
+[08:56:46] <Ms2ger> pcwalton's FIXMEs?
+[08:57:50] *** Joins: laumann (thomas@moz-gqpfnm.science.ku.dk)
+[08:58:30] *** Quits: moa (Cedric@moz-rkm.tp0.160.37.IP) (Ping timeout: 121 seconds)
+[08:59:01] <eddyb> maybe. I'd ask him but he's not around. I was wondering whether a different futex-based RwLock might give it the necessary speedup
+[08:59:47] <Ms2ger> I don't know if we still need a speedup at this point
+[09:00:04] <eddyb> but glibc's is bloated :(
+[09:06:41] *** Quits: Tobba (Tobba@moz-6oh.7ki.21.217.IP) (Ping timeout: 121 seconds)
+[09:06:57] *** Joins: tglman (tglman@moz-l8btep.as13285.net)
+[09:11:51] *** Joins: Tobba (Tobba@moz-6oh.7ki.21.217.IP)
+[09:15:07] *** Joins: dstrbad (dstrbad@moz-smbt6v.cable.xnet.hr)
+[09:19:31] *** Joins: Witcher (Witcher@moz-65s.g1n.108.213.IP)
+[09:27:57] *** Joins: nicknikolov (nicknikolov@moz-7ep.6g7.220.90.IP)
+[09:27:57] *** Quits: ienzam (enzam@moz-fussc3.ca.comcast.net) (Ping timeout: 121 seconds)
+[09:32:43] *** Quits: Tobba (Tobba@moz-6oh.7ki.21.217.IP) (Ping timeout: 121 seconds)
+[09:36:04] *** darkowlzz|afk is now known as darkowlzz
+[09:40:16] *** Quits: Witcher (Witcher@moz-65s.g1n.108.213.IP) (Ping timeout: 121 seconds)
+[09:51:06] *** Quits: filsmick (filsmick@moz-v28ds8.abo.wanadoo.fr) (Quit: )
+[09:56:29] <gw> eddyb: I don't know sorry, that's definitely a pcwalton question
+[09:58:27] <fkaa> gw: merge time? :) https://github.com/servo/cgl-rs/pull/7
+[09:58:27] <crowbot> PR #7: Add option setters/getters and link to OpenGL framework - https://github.com/servo/cgl-rs/pull/7
+[09:58:55] <fkaa> also servo/cgl-rs doesn't seem to be on cargo
+[10:01:05] *** Joins: Nekit1234007 (nekit@moz-0a7.a78.189.91.IP)
+[10:01:14] *** Joins: jiojiajiu (Guro@moz-trc2j7.asianet.co.th)
+[10:09:28] <waffles> I need some clarification regarding issue #5690
+[10:09:29] <crowbot> Issue #5690: window.performance.now values are way too big - https://github.com/servo/servo/issues/5690
+[10:09:48] <waffles> Why's that multiplying by million wrong?
+[10:10:00] <waffles> (This is my first servo bug, I'm just curious)
+[10:12:52] <jgraham> Because if something takes 10^6 ns that's 1 ms, not 10^12 ms
+[10:13:54] *** Quits: jiojiajiu (Guro@moz-trc2j7.asianet.co.th) (Ping timeout: 121 seconds)
+[10:14:03] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[10:14:03] -ghservo- [13cgl-rs] 15glennw closed pull request #7: Add option setters/getters and link to OpenGL framework (06master...06cgl-options) 02http://git.io/vILGQ
+[10:14:03] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[10:14:12] <gw> fkaa: thanks!
+[10:15:15] *** Joins: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP)
+[10:15:38] <jgraham> t / (10^-3) s = (t / (10-9 s)) / 10^6 if you like
+[10:15:54] *** Quits: acgtyrant (acgtyrant@moz-g8d.4sk.186.39.IP) (Ping timeout: 121 seconds)
+[10:16:05] *** Joins: jiojiajiu (Guro@moz-trc2j7.asianet.co.th)
+[10:17:26] *** Quits: dstrbad (dstrbad@moz-smbt6v.cable.xnet.hr) (A TLS packet with unexpected length was received.)
+[10:18:29] *** Joins: deokjinkim (Mibbit@moz-anu.h91.108.114.IP)
+[10:18:38] <waffles> jgraham: Ah, damn! I was confused (silly me)
+[10:18:42] <waffles> Thanks :)
+[10:20:04] *** Quits: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP) (Ping timeout: 121 seconds)
+[10:30:30] <jgraham> waffles: Since this bug exists, I guess you weren't the only one ;)
+[10:30:55] <waffles> lol
+[10:32:09] *** Joins: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP)
+[10:34:38] <eddyb> oh, that thing
+[10:34:50] <eddyb> wait, 14th of April?
+[10:35:13] <eddyb> I thought I hit that in December
+[10:36:30] <eddyb> https://github.com/servo/servo/pull/4381
+[10:36:30] <crowbot> PR #4381: Fix window.performance.now() - https://github.com/servo/servo/pull/4381
+[10:36:54] <eddyb> jgraham, waffles: was that fix really wrong?
+[10:37:59] <eddyb> oh dear I see it now
+[10:38:05] <waffles> heh :P
+[10:38:11] <eddyb> Manishearth: did I really never get a chance to test your fix?
+[10:38:14] <eddyb> that's really lame :(
+[10:38:19] <eddyb> waffles: I'm sorry
+[10:39:05] <eddyb> that fix was for the "ink droplet" fade animation in polymer buttons
+[10:39:12] <waffles> Oh, don't worry.
+[10:39:13] <eddyb> maybe I should try to get that working again
+[10:41:30] <waffles> Okay, I seem to have some problem. On checking out my branch, I see that `tests/ref/hello_a?foo#bar.html` has been deleted and `support/android-rs-glue` has been modified
+[10:41:37] *** Joins: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP)
+[10:41:39] <waffles> Why does this happen?
+[10:41:57] <waffles> (I never touched those files)
+[10:43:17] <Manishearth> eddyb: which fix?
+[10:43:20] <Manishearth> ah
+[10:43:30] <eddyb> waffles: have you tried building Servo?
+[10:43:41] <eddyb> waffles: I'm guessing the submodules update from ./mach commands
+[10:44:03] <eddyb> on rust-lang/rust I know I have to run make and let it do its thing otherwise the submodules won't be sync'd
+[10:44:22] <Manishearth> waffles: a servo build is just ./mach build
+[10:44:32] <Manishearth> no submodules, no building rust, just mach build
+[10:44:44] <waffles> Yeah, but I never thought that my revision needs a build
+[10:44:47] <Manishearth> (last time you dropped in you seemed to think that you needed to build rust)
+[10:44:50] <waffles> After all, it's just a symbol change
+[10:44:59] <Manishearth> ?
+[10:45:02] <Manishearth> symbol?
+[10:45:05] *** Quits: tglman (tglman@moz-l8btep.as13285.net) (Ping timeout: 121 seconds)
+[10:45:05] <waffles> Manishearth: Yeah, I got your message later
+[10:45:08] <Manishearth> you will still need to build
+[10:45:09] <eddyb> Manishearth: this was an answer to `support/android-rs-glue`
+[10:45:17] <eddyb> being modified
+[10:45:20] <eddyb> oops, copy fail
+[10:45:47] <eddyb> waffles: you should use something like git gui to pick the changes you want to commit btw
+[10:46:17] *** Joins: aravindavk (aravinda@moz-q3c.37j.200.117.IP)
+[10:46:19] *** Quits: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP) (Ping timeout: 121 seconds)
+[10:46:21] <eddyb> hmpf, now I have a submodule issue
+[10:46:30] <eddyb> error: The following untracked working tree files would be overwritten by checkout:
+[10:46:32] <Manishearth> eddyb: android-rs-glue is unecessary unless youre building for android
+[10:47:07] <eddyb> Manishearth: *sigh*. the issue is that it appears modified for waffles
+[10:47:16] <eddyb> presumably it's a submodule and mach updates it
+[10:47:41] <eddyb> in rust-lang/rust, submodules don't update until you run make (or do it manually, but that's more trouble than it's worth)
+[10:48:40] *** Joins: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP)
+[10:49:07] <eddyb> crap I ran out of space
+[10:50:26] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[10:50:26] -ghservo- [13gleam] 15ecoal95 opened pull request #22: Add renderbuffer wrappers and correct frame_buffer -> framebuffer (06master...06more-wrappers) 02http://git.io/vILuT
+[10:50:26] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[10:51:48] <waffles> Manishearth: I got your message last time. I just didn't know how to respond to a bot :)
+[10:52:04] <waffles> By symbol, I meant that my first bug requires me to change a '*' to '/'
+[10:52:49] <eddyb> oh, operator. I didn't know what you meant, either
+[10:53:30] *** Quits: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP) (Ping timeout: 121 seconds)
+[10:53:44] <waffles> (sigh) yeah. I keep forgetting those keywords
+[10:54:10] <eddyb> waffles: if you had an older checkout and you updated it, the submodules are going to be out of sync. either ignore them or hope attempting a build will sync them
+[10:54:30] <waffles> heh, okay :)
+[10:54:41] <eddyb> though maybe this feature needs a test
+[10:54:44] <eddyb> using setTimeout
+[10:54:48] <waffles> So, any time I make a change, I gotta build it before my commit, right?
+[10:54:52] <eddyb> and assert that it's the right magnitude
+[10:55:10] <waffles> eddyb: You mean, I gotta write the test?
+[10:55:36] <eddyb> you should open the PR before you do that, especially if it's not obvious where to put the test
+[10:55:59] *** Joins: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP)
+[10:56:07] *** Quits: jincreator (Thunderbird@moz-d7i.i1g.195.175.IP) (Ping timeout: 121 seconds)
+[10:56:09] *** Quits: laumann (thomas@moz-gqpfnm.science.ku.dk) (Ping timeout: 121 seconds)
+[10:57:17] <jgraham> There might be a wpt for it
+[10:57:36] <eddyb> oh, yeah
+[10:57:43] <eddyb> test enabling time!
+[10:58:11] *** Joins: laumann (thomas@moz-1i4.hq0.225.130.IP)
+[11:02:14] *** Quits: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP) (Ping timeout: 121 seconds)
+[11:02:31] <jgraham> waffles: Are you OK to enable the relevant wpt tests as part of your patch? You need to add
+[11:02:36] <jgraham> [hr-time]
+[11:02:41] <jgraham>   skip: false
+[11:02:49] <jgraham> to tests/wpt/include.ini
+[11:03:10] <jgraham> and then make sure to run those tests and update the expected metadata
+[11:04:04] <jgraham> ./mach test-wpt --log-raw hr-time.log hr-time
+[11:04:18] <jgraham> ./mach update-wpt hr-time.log
+[11:04:37] *** Joins: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP)
+[11:07:21] <waffles> Sorry, I'll need some time. I'll first reset my repo and build servo (I need to make sure that it's the same as remote)
+[11:08:49] <jgraham> waffles: Sure, no rush :)
+[11:12:01] *** zz_kimundi is now known as kimundi
+[11:16:34] *** Quits: cakecatz (cakecatz@moz-u6p4rc.so-net.ne.jp) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[11:16:48] *** Joins: tglman (tglman@moz-5ig.9ko.117.94.IP)
+[11:18:20] *** Joins: cakecatz (cakecatz@moz-u6p4rc.so-net.ne.jp)
+[11:19:38] *** Quits: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP) (Quit: Leaving)
+[11:19:55] *** Quits: laumann (thomas@moz-1i4.hq0.225.130.IP) (Ping timeout: 121 seconds)
+[11:21:58] *** Joins: laumann (thomas@moz-gqpfnm.science.ku.dk)
+[11:25:57] *** Quits: dinfuehr_ (dinfuehr@moz-c25.u8s.112.91.IP) (Connection closed)
+[11:26:18] *** Joins: dinfuehr (dinfuehr@moz-c25.u8s.112.91.IP)
+[11:30:20] *** Quits: dinfuehr (dinfuehr@moz-c25.u8s.112.91.IP) (Ping timeout: 121 seconds)
+[11:35:30] *** Quits: nicknikolov (nicknikolov@moz-7ep.6g7.220.90.IP) (Connection closed)
+[11:37:30] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[11:37:31] -ghservo- [13rust-azure] 15frewsxcv opened issue #165: Does not currently compile 02http://git.io/vIL1d
+[11:37:31] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[11:39:31] *** Joins: zxq9 (ceverett@moz-qsm369.mesh.ad.jp)
+[11:39:31] *** Joins: duncan (paul@moz-dst.ms6.225.173.IP)
+[11:43:41] *** Joins: dstrbad (dstrbad@moz-smbt6v.cable.xnet.hr)
+[11:43:51] *** Quits: cakecatz (cakecatz@moz-u6p4rc.so-net.ne.jp) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[11:46:31] <waffles> jgraham: I gotta do those tests only after my build, right?
+[11:47:13] <Ms2ger> waffles, it would be better to do that first, and then see if you fixed any tests
+[11:47:33] <waffles> ah, okay - I'll test them first
+[11:53:16] *** Joins: nicknikolov (nicknikolov@moz-7ep.6g7.220.90.IP)
+[11:59:13] <waffles> Ms2ger: What does those `test-wpt` and `update-wpt` do really?
+[11:59:38] <jgraham> Define "do really"?
+[12:00:06] <Ms2ger> test-wpt runs tests, update-wpt updates the expectation files
+[12:00:29] <jgraham> test-wpt launches a python harness that runs the web-platform-tests in your servo build
+[12:00:38] *** Quits: aravindavk (aravinda@moz-q3c.37j.200.117.IP) (Ping timeout: 121 seconds)
+[12:01:16] <jgraham> update-wpt, in this case, takes the log file from a test-wpt run, and uses it to set the expected result of each test (since we don't expect to pass every test right away)
+[12:01:34] *** darkowlzz is now known as darkowlzz|afk
+[12:03:20] <waffles> Oh, that's why I should update the logs once I run a test
+[12:06:21] <waffles> Now, I'm confused about the results. I'll tell you what I did
+[12:07:01] <Ms2ger> Note that update-wpt commits its changes
+[12:07:27] <waffles> Firstly, I sync'ed my repo with remote, built Servo and I made my changes.
+[12:07:47] <waffles> Then, I tested the build, when it showed two unexpected fails
+[12:08:10] <waffles> I updated the log and built Servo again
+[12:08:21] <waffles> Now, when I did the tests, I haven't got any failure
+[12:08:38] *** darkowlzz|afk is now known as darkowlzz
+[12:09:19] <waffles> Is this the right way to test my change?
+[12:09:52] <Ms2ger> Push your branch somewhere?
+[12:10:37] <waffles> gimme a min
+[12:15:32] *** Joins: mukilan (mukilan@moz-inv.v1b.164.122.IP)
+[12:15:58] <waffles> Ms2ger: I need some help! I've pushed as `master` to my forked repo and I can't find it now
+[12:16:13] *** Quits: laumann (thomas@moz-gqpfnm.science.ku.dk) (Ping timeout: 121 seconds)
+[12:17:31] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[12:17:31] -ghservo- [13servo] 15Ms2ger opened pull request #6291: Use if let in HTMLTableElement::SetCaption. (06master...06caption) 02http://git.io/vILNp
+[12:17:31] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[12:17:49] *** Quits: tglman (tglman@moz-5ig.9ko.117.94.IP) (Ping timeout: 121 seconds)
+[12:19:37] *** Quits: Caspy7 (chatzilla@moz-tkogmh.stlsmo.sbcglobal.net) (Ping timeout: 121 seconds)
+[12:23:35] *** Joins: laumann (thomas@moz-gqpfnm.science.ku.dk)
+[12:24:10] <frewsxcv> waffles: what is your github username?
+[12:25:20] <waffles> Phew, I've fixed it. There's a new branch with my commit now
+[12:25:27] <waffles> frewsxcv: https://github.com/Wafflespeanut/servo
+[12:26:08] <frewsxcv> waffles: https://github.com/Wafflespeanut/servo/tree/timestamp
+[12:26:20] <waffles> Yeah, I found it. Thanks :)
+[12:27:08] <waffles> I'm just wondering whether that hr-time.log is required
+[12:28:11] <waffles> jgraham: help?
+[12:30:53] <eddyb> the .log file should be .gitignore'd automatically, no?
+[12:31:34] <jgraham> waffles: You don't need to upload the .log file
+[12:31:40] <jgraham> s/upload/commit/
+[12:34:18] <waffles> jgraham: I didn't upload it. It got included in the commit somehow. Is this normal?
+[12:35:32] <Ms2ger> Not really
+[12:40:15] <waffles> Okay, I deleted the log and force-updated my commit
+[12:40:17] <waffles> https://github.com/servo/servo/compare/master...Wafflespeanut:timestamp?expand=1
+[12:40:23] <waffles> Ms2ger: ^^^
+[12:41:25] <jgraham> waffles: That looks right, but you probably need to actually open the PR
+[12:43:22] *** Joins: bdero (bran@moz-hmj.qkj.56.172.IP)
+[12:44:26] *** Quits: kaksmet (kaksmet@moz-n1sp9f.se.alltele.net) (Quit: )
+[12:44:52] <frewsxcv> as of right now, a bunch of servo projects (besides servo itself) don't utilize travis ci or build documentation automatically. if i wanted to work on that, would that be helpful?
+[12:44:57] <frewsxcv> e.g. https://github.com/servo/cgl-rs
+[12:45:06] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[12:45:06] -ghservo- [13servo] 15Wafflespeanut opened pull request #6292: Timestamp (06master...06timestamp) 02http://git.io/vItLy
+[12:45:06] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[12:45:44] <Ms2ger> frewsxcv, one issue is that travis doesn't really do OSX
+[12:45:47] *** Joins: kaksmet (kaksmet@moz-n1sp9f.se.alltele.net)
+[12:45:48] *** Joins: jviereck (Adium@moz-ahe138.85nl.qf2a.0009.2601.IP)
+[12:47:21] <Ms2ger> waffles, so no test was failing because of that * vs / confusion?
+[12:47:56] <Ms2ger> waffles, it seems like we should be able to test that the timestamps are right to an order of magnitude, at least
+[12:48:01] <frewsxcv> Ms2ger: 1. even if we couldn't get OSX working, wouldn't it still be helpful?  2. i might have some connections at travis ci that could set us up with multiple operating system support
+[12:48:40] <Ms2ger> frewsxcv, except for the osx-only crates, sure
+[12:48:45] <waffles> Ms2ger: The tests returned "OK" at the end
+[12:49:12] <frewsxcv> Ms2ger: yeah
+[12:49:13] <jgraham> I think larsberg knew some people at travis too; I guess OSX doesn't work well for them because Apple are incredibly CI hostile
+[12:49:27] <SimonSapin> frewsxcv: fwiw, we do have docs at http://doc.servo.org/cgl/index.html
+[12:49:48] <waffles> Ms2ger: Okay, how should I go about testing them?
+[12:50:06] <frewsxcv> SimonSapin: do those get regenerated upon every master-commit for each individual project, or just when servo rebuilds?
+[12:50:11] <jgraham> (no virtulisation except on Apple hardware, no server-grade apple hardware, hard to get old revs of hardware, etc.)
+[12:50:30] <SimonSapin> frewsxcv: on every update to servo master
+[12:50:31] <Ms2ger> 301 jgraham, I need to run
+[12:50:46] <fkaa> SimonSapin: needs to be on cargo as well ;)
+[12:50:48] *** Joins: morton (Mibbit@moz-juv.9o3.252.72.IP)
+[12:50:53] <frewsxcv> jgraham: not sure what point you're making; i know projects that use osx on travis
+[12:50:58] <SimonSapin> fkaa: on cargo?
+[12:51:03] <fkaa> rust-cgl
+[12:51:10] <SimonSapin> fkaa: do you mean on crates.io?
+[12:51:11] <fkaa> crates*, sorry
+[12:51:27] *** Quits: bdero (bran@moz-hmj.qkj.56.172.IP) (Ping timeout: 121 seconds)
+[12:51:45] <SimonSapin> do you want it? we can do that
+[12:51:52] <jgraham> frewsxcv: I don't know what the situation is, exactly, but I can imagine that it would be either resource constrained or expensive
+[12:52:04] <fkaa> that would be nice, otherwise we'd have to have `glutin_cgl` to maintain
+[12:52:12] <frewsxcv> jgraham: for us or for travis?
+[12:52:35] <jgraham> waffles: That's crazy. It should be possible to check that the timestamp is reasonably close to the date.now() timestamp, I would have thought
+[12:52:48] <jgraham> frewsxcv: Well both; one implies the other
+[12:53:38] <frewsxcv> i know the python cryptography project doesn't pay anything for osx support, and their builds are less than 10 minutes
+[12:53:43] *** Quits: morton (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[12:53:54] *** darkowlzz is now known as darkowlzz|afk
+[12:54:05] <frewsxcv> well, mostly less than 10 minutes :)
+[12:54:24] <frewsxcv> though i guess the concern is the queue time, which i'm not sure about
+[12:55:56] <SimonSapin> PSA: if there’s something under https://github.com/servo/ that’s not on crates.io and you want it there, please file issues
+[12:56:41] <waffles> jgraham: I don't understand. What's crazy? I thought I should write some kinda test for checking that out.
+[12:56:54] <jgraham> waffles: Yeah, I mean that there isn't already a test
+[12:58:38] <jgraham> waffles: So I would add a test file in tests/wpt/hr-time which does an async_test(function() {var initial_hrt = performance.now(); var initial_date = new Date(); setTimeout(this.step_func(function() {/* get a new Date and new performance.now timestamp and assert_approx_equals that the delta from the initial values are about equal to within e.g. 30ms */}), 2000)
+[12:58:57] *** Quits: Ms2ger (Ms2ger@moz-vbh.07m.182.91.IP) (Ping timeout: 121 seconds)
+[13:00:45] *** Quits: jviereck (Adium@moz-ahe138.85nl.qf2a.0009.2601.IP) (Quit: Leaving.)
+[13:01:57] *** Quits: nattokirai (nattokirai@moz-rq9a8e.asahi-net.or.jp) (Client exited)
+[13:02:41] <waffles> I'm sorry if I ask too many questions, but this is my first time with forked repos in Github
+[13:02:49] *** Joins: cakecatz (cakecatz@moz-rakufn.sannet.ne.jp)
+[13:02:51] <waffles> jgraham: What happens to my pull-request, then?
+[13:03:07] <waffles> Can I update it with additional commits?
+[13:03:16] <jgraham> waffles: Yes
+[13:03:56] <jgraham> waffles: And don't worry about asking lots of questions, GitHub takes some getting used to
+[13:04:05] <waffles> Thanks :)
+[13:06:10] *** Joins: tglman (tglman@moz-l8btep.as13285.net)
+[13:09:10] <eddyb> waffles: got distracted. I just ran ./mach build and it did this: Submodule path 'support/android-rs-glue': checked out '4ed3cb30b289aa0aa84a00e0d5682bc853108e5a'
+[13:09:26] <eddyb> so yeah, that's how that goes
+[13:09:53] <waffles> eddyb: Actually, I pulled and rebuilt Servo (like you said previously), which fixed it :)
+[13:10:13] <eddyb> yeah, ./mach build updates the submodule, hence the output
+[13:10:27] *** Joins: jviereck (Adium@moz-ui8ah2.ca.comcast.net)
+[13:10:44] <eddyb> rustc: error while loading shared libraries: libstdc++.so.6: cannot open shared object file: No such file or directory
+[13:10:49] <eddyb> huh, how does it even get there?
+[13:11:25] <waffles> jgraham: BTW, isn't the test path tests/wpt/web-platform-tests/hr-time?
+[13:11:45] <waffles> Because, that's where I already find a test (`test_cross_frame_start.html`)
+[13:12:21] *** Joins: bjz (bjz@moz-puppgq.tpgi.com.au)
+[13:12:38] <eddyb> yeah, that's not the error I get from running the binary manually
+[13:13:24] <jgraham> waffles: Yeah, sorry you're right
+[13:14:01] *** Joins: jdm (jdm@moz-ilbt2e.cable.teksavvy.com)
+[13:14:01] *** ChanServ sets mode: +qo jdm jdm
+[13:14:15] *** Quits: jviereck (Adium@moz-ui8ah2.ca.comcast.net) (Quit: Leaving.)
+[13:14:19] *** Joins: jviereck (Adium@moz-5edgd9.85nl.qf2a.0009.2601.IP)
+[13:14:37] <eddyb> jdm: how can I be sure of what ./mach build runs?
+[13:14:56] *** Quits: jviereck (Adium@moz-5edgd9.85nl.qf2a.0009.2601.IP) (Quit: Leaving.)
+[13:15:13] <eddyb> jdm: it behaves differently than running ./.servo/rust/**/bin/rustc manually
+[13:15:30] <jdm> eddyb: what do you mean "be sure"?
+[13:15:32] <jdm> what's the concern here?
+[13:16:10] *** Joins: caitp (caitp@moz-lmogh4.cable.rogers.com)
+[13:16:19] <eddyb> oh, it passes LD_LIBRARY_PATH
+[13:16:52] <eddyb> now I'm getting the same error as it ./mach build does
+[13:20:06] *** Joins: bdero (bran@moz-e4f4ei.mit.edu)
+[13:20:10] *** Joins: fkaa_ (tundmatu@moz-501od2.business.telia.com)
+[13:21:26] *** Joins: Witcher (Witcher@moz-65s.g1n.108.213.IP)
+[13:22:55] *** Quits: yury (yury@moz-i7uuvr.ok.cox.net) (Connection closed)
+[13:23:01] *** Quits: fkaa (tundmatu@moz-501od2.business.telia.com) (Ping timeout: 121 seconds)
+[13:24:03] * frewsxcv tests to see how long osx builds take https://travis-ci.org/frewsxcv/cgl-rs/builds/65566360
+[13:24:26] *** Joins: yury (yury@moz-i7uuvr.ok.cox.net)
+[13:27:03] <fkaa_> are travis osx builds free?
+[13:27:04] *** AutomatedTester|AFK is now known as AutomatedTester
+[13:28:43] *** Joins: akiss (akiss@moz-kij.q96.114.160.IP)
+[13:29:08] <Manishearth> fkaa_: yes, but they don't enable osx for new repos anymore
+[13:29:45] *** Joins: ahal (ahal@moz-b8e0a0.cpe.pppoe.ca)
+[13:30:01] <fkaa_> hm, wonder if glutin qualifies for it
+[13:30:04] <frewsxcv> sure they do, you just have to specify language: objective-c :)
+[13:30:14] <frewsxcv> https://github.com/frewsxcv/cgl-rs/pull/1/files
+[13:30:14] <crowbot> PR #1: Add travis config - https://github.com/frewsxcv/cgl-rs/pull/1
+[13:30:47] <frewsxcv> though if you want to do it the official way with 'os: osx', you have to email travis
+[13:31:17] <fkaa_> would it work for rust code?
+[13:32:52] <frewsxcv> probably
+[13:33:34] <frewsxcv> though if it takes a 30+ minutes just to wait in the osx queue, not entirely sure it's worth the effort at this point
+[13:35:34] *** Joins: dinfuehr (dinfuehr@moz-c10hdb.highway.telekom.at)
+[13:41:49] *** Quits: zmike_ (discomfitor@moz-mfl.g5u.215.61.IP) (Ping timeout: 121 seconds)
+[13:42:39] *** Quits: dstrbad (dstrbad@moz-smbt6v.cable.xnet.hr) (A TLS packet with unexpected length was received.)
+[13:45:42] *** Joins: dstrbad (dstrbad@moz-smbt6v.cable.xnet.hr)
+[13:52:33] <waffles> jgraham: Shall I put that async_test inside basic.html?
+[13:53:40] <jgraham> waffles: I don't have a strong opinion. A new file or inside basic.html are both fine
+[13:53:41] <waffles> Because, `test_cross_frame_start.html` is testing for time deltas in iframes
+[13:53:52] <waffles> alright
+[13:55:53] *** Quits: jiojiajiu (Guro@moz-trc2j7.asianet.co.th) (Connection closed)
+[13:56:09] <waffles> jgraham: Now, I should build again, test, look for errors and update?
+[13:56:24] <waffles> I don't have to change the `include.ini` file, right?
+[13:57:34] *** Quits: playjax (chatzilla@moz-bqrtim.optusnet.com.au) (Connection closed)
+[13:57:42] <jgraham> waffles: You don't even need to build again if you still have your previous build
+[13:57:53] <jgraham> Just run the test steps again
+[13:58:13] *** Joins: psd (psd@moz-1trfbi.mtnl.net.in)
+[13:58:24] <waffles> Oh, right. I've just added a test file
+[13:58:34] *** Joins: jiojiajiu (Guro@moz-trc2j7.asianet.co.th)
+[14:03:59] <eddyb> jdm: oh, I'm hitting similar issues to my March experiments
+[14:04:40] <eddyb> jdm: facebook refuses to let me in, even after spoofing the user agent (which lets me log in, but then I see the same "update your browser" message)
+[14:05:17] <Manishearth> eddyb: m.facebook.com
+[14:05:19] <Manishearth> that works
+[14:05:27] <Manishearth> last I checked you can't post though
+[14:05:32] <eddyb> Manishearth: that's cheating
+[14:05:40] <eddyb> I had facebook.com's feed showing up in Servo in December
+[14:05:45] <eddyb> you've obviously regressed :P
+[14:05:54] *** Quits: jgallagher (john@moz-6ge.dhn.131.24.IP) (Client exited)
+[14:07:31] <Manishearth> [heh
+[14:07:39] <Manishearth> or fracebook has *progressed
+[14:08:12] *** Quits: tomaka (Pierre@moz-ppjd78.abo.wanadoo.fr) (Connection closed)
+[14:08:23] <jgraham> eddyb: They could easily be doing some kind of object detection that wouldn't work in Servo
+[14:08:36] <jgraham> including looking for non-standard APIs
+[14:08:58] <Manishearth> or looking for standard ones
+[14:09:17] <jgraham> That's what I meant by object detection
+[14:09:20] <Manishearth> shouldn't be hard to backtrack really
+[14:09:22] <Manishearth> ah
+[14:09:24] <jgraham> Although it wasn't obvious
+[14:09:44] <eddyb> I do have facebook's deminified JS up somewhere
+[14:09:48] <eddyb> from when it worked
+[14:09:57] <Manishearth> eddyb: wait, does facebook let you log in?
+[14:10:25] <Manishearth> because you could log in to the mobile site and then open the normal one using servo-shell if thats the blocker
+[14:10:41] <eddyb> Manishearth: it lets me log in if I spoof the user agent, but then it catches on
+[14:11:03] <Manishearth> ah
+[14:11:08] <eddyb> I've just applied my 3 patches, let's see if that changes anything
+[14:11:32] <eddyb> nobody has turned window into a proxy yet, to let me list all the accesses...
+[14:17:12] *** Joins: tomaka (Pierre@moz-ppjd78.abo.wanadoo.fr)
+[14:17:37] <nmatsakis> ok so
+[14:17:42] <nmatsakis> I have an instrumented rustc
+[14:17:44] <nmatsakis> and want to build servo
+[14:17:52] <waffles> jgraham: That Date() object you suggested, doesn't that give the time since 1970?
+[14:17:56] <nmatsakis> this was working just fine (i.e., I built my own rustc etc)
+[14:17:59] <nmatsakis> but now that I made some changes I get:
+[14:17:59] <nmatsakis> rustc: symbol lookup error: /home/nmatsakis/versioned/servo/components/servo/target/debug/deps/libphf
+[14:18:02] <nmatsakis> _macros-214d2e92cc9a0e4b.so: undefined symbol: _ZN6plugin8registry22Registry$LT$$u27$a$GT$14register_
+[14:18:05] <nmatsakis> macro20h0446d07db0c3ddbaUcsE
+[14:18:09] <nmatsakis> I presume this is because `./mach clean` doesn't really clean everything
+[14:18:11] <eddyb> nmatsakis: do you have stage3 rustc?
+[14:18:12] <nmatsakis> is there a way to do it?
+[14:18:17] <Manishearth> nmatsakis: kill the target dir
+[14:18:20] <nmatsakis> eddyb: no, but I didn't before either
+[14:18:28] <Manishearth> nmatsakis: the target dir is in components/servo
+[14:18:30] <nmatsakis> Manishearth: find . -name target | xargs rm -rf ?
+[14:18:34] <Manishearth> or that
+[14:18:37] <Manishearth> sure that will work
+[14:18:48] <Manishearth> -type d to be safe
+[14:18:49] <nmatsakis> I guess that's equivalent
+[14:18:50] <eddyb> nmatsakis: it's stage2 at least, right?
+[14:18:52] <nmatsakis> I thought there would be a lot of them
+[14:18:54] <nmatsakis> eddyb: stage2 yes
+[14:19:12] <eddyb> I needed stage3 for some reason, but that might have been a misuse of library paths
+[14:19:26] <nmatsakis> well, I'll try that next if rm -rf doesn't help :)
+[14:19:27] <eddyb> (not in servo, something else)
+[14:19:49] *** Quits: bogdan_maris (Instantbird@moz-662.esi.231.62.IP) (Client exited)
+[14:19:55] <fkaa_> frewsxcv: build failed :o
+[14:20:05] <frewsxcv> fkaa_: https://travis-ci.org/frewsxcv/cgl-rs/builds/65572824
+[14:20:19] <frewsxcv> i forgot to run `cargo update` for that build, so it tried to install rust 0.12.0
+[14:20:22] <fkaa_> ooo
+[14:20:47] <waffles> jgraham: How can we compare both times, since performance.now() measures the page execution time, while Date() measures a totally different time?
+[14:20:52] <nmatsakis> Manishearth: that didn't work :( I'll try stage3 I guess
+[14:21:00] <eddyb> Manishearth, jdm: oh, the chat does start, even if I get the annoying update notice
+[14:21:01] <jgraham> waffles: Yeah, but that's why I suggest comparing a delta so that the zero point doesn't matter
+[14:21:17] <frewsxcv> so it's definitely doable, builds seem to go quick, but i'd rather hear from more official servo people before i go open a dozen pull requests on osx projects
+[14:21:29] <eddyb> can't open the chat pane though
+[14:21:30] <waffles> jgraham: When I did that, I got a timeout error
+[14:21:49] <jgraham> waffles: I guess your test isn't calling done
+[14:21:55] *** Quits: jiojiajiu (Guro@moz-trc2j7.asianet.co.th) (Ping timeout: 121 seconds)
+[14:22:02] <eddyb> I get the top bar on other pages
+[14:22:09] <jgraham> waffles: show me what you have?
+[14:23:06] *** Joins: hatman (Mibbit@moz-juv.9o3.252.72.IP)
+[14:23:48] *** Joins: Nashenas88 (Nashenas88@moz-of81j9.miamfl.sbcglobal.net)
+[14:24:20] <waffles> jgraham: https://pastebin.mozilla.org/8835847
+[14:25:50] <eddyb> Manishearth: is there any easier way to create a named object, than `new eval('function '+j+'(){}')`?
+[14:25:59] *** Quits: dstrbad (dstrbad@moz-smbt6v.cable.xnet.hr) (A TLS packet with unexpected length was received.)
+[14:26:22] <jgraham> waffles: Try something more like https://pastebin.mozilla.org/8835848
+[14:27:03] *** Joins: jviereck (Adium@moz-mpnnn6.g21i.vk5s.0000.2620.IP)
+[14:27:11] <jgraham> waffles: You probably want a better name for the test e.g. "high resolution time has approximately the right relative magnitude"
+[14:27:40] <jgraham> Or "Relative magnitude of high resolution time"
+[14:28:00] <eddyb> Manishearth: my "missing class/method" snooper fails to find anything
+[14:28:26] *** Joins: jiojiajiu (Guro@moz-trc2j7.asianet.co.th)
+[14:30:37] *** Quits: ray (bernhard@moz-vsafmp.dynamic.surfer.at) (Quit: Leaving.)
+[14:31:09] <eddyb> I can't get the pre-login "outdated" thing trigger, hmpf
+[14:31:39] <eddyb> in chrome, somehow it detects that it's fine
+[14:33:13] *** Joins: jincreator (Thunderbird@moz-588.igi.7.59.IP)
+[14:33:32] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[14:33:32] -ghservo- [13servo] 15ecoal95 opened pull request #6293: Implement new WebGL interfaces and methods (06master...06webgl-objects) 02http://git.io/vItFg
+[14:33:32] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[14:33:38] <eddyb> Manishearth: when do userscript run?
+[14:33:45] <eddyb> Manishearth: before or after page load?
+[14:34:30] <Manishearth> eddyb: they're injected at the bottom of <head> iirc
+[14:34:47] <eddyb> wait a second, errors are supressed
+[14:34:51] <eddyb> this wasn't the case last time
+[14:34:53] *** Quits: jiojiajiu (Guro@moz-trc2j7.asianet.co.th) (Connection closed)
+[14:34:56] <waffles> jgraham: It works fine, thanks. But, I have a question. What's this `step_func`?
+[14:35:04] *** Joins: jiojiajiu (Guro@moz-trc2j7.asianet.co.th)
+[14:35:12] <Manishearth> eddyb: oh yeah, env_logger changed i think
+[14:35:15] <eddyb> how can I make servo print all JS errors?
+[14:35:25] <eddyb> Manishearth: I don't recall needing RUST_LOG before
+[14:35:55] <jgraham> waffles: It's a function that returns a function that runs a test step
+[14:36:08] <Manishearth> eddyb: yes, it changed
+[14:36:10] <waffles> ah, okay
+[14:36:12] <Manishearth> eddyb: the loglevel is error
+[14:36:20] *** Quits: cakecatz (cakecatz@moz-rakufn.sannet.ne.jp) (Quit: Textual IRC Client: www.textualapp.com)
+[14:36:29] <waffles> jgraham: Thanks :)
+[14:36:55] <eddyb> DEBUG:script::dom::window: error evaluating JS string
+[14:36:59] <eddyb> that's it?
+[14:37:50] <Manishearth> no there should be an ERROR: level too
+[14:38:05] <eddyb> there's nothing else in the script crate
+[14:38:09] <Manishearth> jdm: what happened to the JS errors? They're still on ERROR:, yes?
+[14:38:16] <Manishearth> eddyb: oh no, it's ERROR:js:...
+[14:38:19] <Manishearth> or something
+[14:38:25] <eddyb> nada, nyet
+[14:39:16] *** Joins: jgallagher (john@moz-d5e8oc.hfc.comcastbusiness.net)
+[14:39:54] <Manishearth> eddyb: just go to ERROR:?
+[14:40:27] <eddyb> there is *nothing* matching /error/i other than what I pasted
+[14:40:47] <eddyb> I enabled so much that I get     Some(Element(HTMLElement(HTMLMetaElement))): changed=true dirty=true dirty_descendants=true
+[14:41:42] <eddyb> Manishearth: it used to be that it required no RUST_LOG and I just got nice errors
+[14:42:28] <eddyb> I still have firefox... so I could use the devtools
+[14:42:33] <Manishearth> yes
+[14:43:39] <eddyb> thread 'Devtools' panicked at 'no entry found for key', /home/larsberg/rust/src/libcore/option.rs:330
+[14:43:41] <eddyb> is this normal?
+[14:44:07] <Manishearth> *shrug*
+[14:45:23] <eddyb> it's in run_server::find_console_actor
+[14:45:32] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[14:45:32] -ghservo- [13servo] 15mukilan opened pull request #6294: Simplify handle_load_start_msg function (06master...06simplify) 02http://git.io/vItxN
+[14:45:32] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[14:46:08] <jdm> there's a PR for that; I thought it merged...
+[14:46:17] <eddyb> jdm: it's not... tested in any way?
+[14:46:28] <jdm> eddyb: nope, there's an issue about that
+[14:46:31] <jdm> https://github.com/servo/servo/pull/6189
+[14:46:31] <crowbot> PR #6189: fix 6058: --devtools panics if there is no console actor - https://github.com/servo/servo/pull/6189
+[14:46:34] <eddyb> okay, taht makes more sense
+[14:47:06] <eddyb> jdm: how do I get errors?
+[14:47:14] <jdm> eddyb: theoretically they just happen
+[14:47:25] <eddyb> I mean, how do I get JS errors to display?
+[14:47:38] <jdm> hmm, https://github.com/servo/servo/issues/6103
+[14:47:38] <crowbot> Issue #6103: JavaScript errors are not reported - https://github.com/servo/servo/issues/6103
+[14:47:45] <jdm> we need to update our log crate
+[14:48:00] <jdm> PRs accepted :)
+[14:48:28] <eddyb> but nothing is logged
+[14:48:35] *** Quits: Witcher (Witcher@moz-65s.g1n.108.213.IP) (Ping timeout: 121 seconds)
+[14:48:38] <eddyb> even if I turn on all the logging ever
+[14:48:49] <waffles> I added *.log to `.gitignore`, because my logs are being added often (which was annoying). And now my PR includes a change in `.gitignore`
+[14:49:11] <eddyb> waffles: use git gui to create commits
+[14:49:17] *** Quits: dinfuehr (dinfuehr@moz-c10hdb.highway.telekom.at) (Connection closed)
+[14:49:23] <eddyb> (you can also use it to amend them, like right now)
+[14:49:35] <jgraham> git add -p also works
+[14:49:40] <abustany> waffles: if you want a local gitignore, use .git/info/exclude
+[14:49:41] <eddyb> git add and git commit -a aren't very useful
+[14:49:42] <abustany> that is not checked in
+[14:49:48] <eddyb> jgraham: is that the TUI?
+[14:49:56] <jgraham> eddyb: yes
+[14:49:58] <waffles> abustany: That's nice :)
+[14:50:11] <jgraham> Anyway, having *.log in the .gitignore doesn't seem obviously bad
+[14:50:13] <eddyb> if you have X11 running, git gui is just nicer :P
+[14:50:41] <waffles> jgraham: Do we need log files for the servo repo anyway?
+[14:50:59] <jdm> eddyb: did you read that issue?
+[14:51:01] <jgraham> I think reasonable people can differ about the niceness of the gui
+[14:51:15] <eddyb> jdm: the log issue was about the defaults
+[14:51:26] <jdm> oh
+[14:51:30] <jdm> I'm not certain what you're asking for, then
+[14:51:32] <eddyb> the fix is also very bad
+[14:51:37] <jgraham> waffles: I don't think we ever have any files named something.log that should be committed. But I might be wrong!
+[14:52:24] <eddyb> jdm: if that vector isn't empty, all logging goes into a slow path
+[14:52:32] <eddyb> which involves matching strings
+[14:52:44] <jgraham> (there don't seem to be any in the repo right now at least)
+[14:52:45] <eddyb> a nicer solution would be to remove the check on error!
+[14:53:23] *** Joins: dstrbad (dstrbad@moz-2no48u.dsl.iskon.hr)
+[14:53:28] *** Joins: Witcher (Witcher@moz-65s.g1n.108.213.IP)
+[14:53:30] <eddyb> or rather have a different kind of check
+[14:54:17] <eddyb> (oh, it's None, so it might not be an issue)
+[14:54:34] <eddyb> jdm: anyways, I get a debug! but nothing else even remotely looking like an error
+[14:54:48] <eddyb> wait wait wait I had a fix for this
+[14:55:18] <eddyb> or did I?
+[14:56:51] <eddyb> no, that only catches script-produced errors
+[14:57:17] <eddyb> oh and I get some "CSS timeouts", it seems
+[14:58:15] *** Quits: jviereck (Adium@moz-mpnnn6.g21i.vk5s.0000.2620.IP) (Quit: Leaving.)
+[14:58:51] *** Quits: deokjinkim (Mibbit@moz-anu.h91.108.114.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[14:59:33] *** Quits: twi (twi@moz-dhvtp3.clients.your-server.de) (A TLS packet with unexpected length was received.)
+[14:59:38] *** Joins: twi (twi@moz-dhvtp3.clients.your-server.de)
+[14:59:38] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[14:59:38] -ghservo- [13servo] 15bors-servo pushed 0 new commits to 06tmp: 02http://git.io/vIqJB
+[14:59:38] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[14:59:40] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[14:59:40] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/vIqJ0
+[14:59:40] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[14:59:41] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[14:59:41] -ghservo- [13servo] 15bors-servo merged 06tmp into 06auto: 02http://git.io/vIqJ0
+[14:59:41] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[15:02:45] *** Quits: tomaka (Pierre@moz-ppjd78.abo.wanadoo.fr) (Ping timeout: 121 seconds)
+[15:03:08] *** Joins: tomaka (Pierre@moz-ppjd78.abo.wanadoo.fr)
+[15:03:16] <waffles> jdm: I think I've done most parts of an easy bug (before you assigned me). I guess you don't mind :)
+[15:03:40] <jdm> waffles: nope! I just set the assigned flag to make it obvious that someone's working on it
+[15:04:04] <waffles> I didn't notice that.
+[15:04:10] <waffles> BTW, can you review my PR?
+[15:05:38] <jdm> yep!
+[15:06:31] <eddyb> jdm: it's not limited to userscript errors, this produces 5 errors or so https://jsfiddle.net/b99y0ja2/show/
+[15:06:44] <eddyb> and I'm only getting DEBUG:script::dom::window: error evaluating JS string
+[15:07:06] <jdm> eddyb: firefox shows me one error
+[15:07:12] <jdm> Error: foobar
+[15:07:50] <eddyb> servo obviously has more issues
+[15:07:55] <eddyb> so this ends in JS_ReportPendingException
+[15:08:00] <waffles> Oh, jgraham has already reviewed a few (I never noticed it)
+[15:08:06] <eddyb> how does that report the error?
+[15:09:02] * frewsxcv is really confused by https://github.com/servo/rust-azure/issues/165
+[15:09:03] <crowbot> Issue #165: Does not currently compile - https://github.com/servo/rust-azure/issues/165
+[15:09:51] *** Quits: jdm (jdm@moz-ilbt2e.cable.teksavvy.com) (Quit: )
+[15:11:12] *** AutomatedTester is now known as AutomatedTester|AFK
+[15:11:22] <waffles> jgraham: Oh, I never knew that Date() would be inaccurate!
+[15:13:37] *** Quits: Witcher (Witcher@moz-65s.g1n.108.213.IP) (Ping timeout: 121 seconds)
+[15:14:37] *** psd is now known as psd|afk
+[15:14:53] *** Quits: duncan (paul@moz-dst.ms6.225.173.IP) (Connection closed)
+[15:15:19] *** Joins: duncan (paul@moz-dst.ms6.225.173.IP)
+[15:15:26] *** Joins: gsingh93 (gulshan@moz-ln1ktu.st3l.iv8o.0004.2601.IP)
+[15:15:57] <eddyb> https://developer.mozilla.org/en-US/docs/Mozilla/Projects/SpiderMonkey/JSAPI_reference/JS_SetErrorReporter
+[15:16:04] <eddyb> I can't find where Servo calls this
+[15:19:00] <eddyb> does it really not?
+[15:19:16] <eddyb> SM doesn't seem to do anything other than clear the pending error if there's no reporter
+[15:20:08] <eddyb> how did this ever work?
+[15:26:30] *** Quits: nicknikolov (nicknikolov@moz-7ep.6g7.220.90.IP) (Connection closed)
+[15:26:51] *** Joins: nicknikolov (nicknikolov@moz-7ep.6g7.220.90.IP)
+[15:28:36] *** Joins: nickniko_ (nicknikolov@moz-7ep.6g7.220.90.IP)
+[15:28:55] *** Quits: nicknikolov (nicknikolov@moz-7ep.6g7.220.90.IP) (Connection closed)
+[15:34:45] *** Joins: jviereck (Adium@moz-lele6a.g21i.vk5s.0000.2620.IP)
+[15:38:43] *** darkowlzz|afk is now known as darkowlzz
+[15:40:23] *** Quits: jiojiajiu (Guro@moz-trc2j7.asianet.co.th) (Connection closed)
+[15:40:34] *** Joins: jiojiajiu (Guro@moz-trc2j7.asianet.co.th)
+[15:40:35] *** Joins: mwu (mwu@moz-na2i93.oi2i.p882.0085.2601.IP)
+[15:40:40] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[15:40:40] -ghservo- [13rust-azure] 15metajack opened pull request #166: Fix dependencies. (06master...06fix-deps) 02http://git.io/vIqlu
+[15:40:40] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[15:41:17] *** darkowlzz is now known as darkowlzz|afk
+[15:41:40] <jack> eddyb: Is it in CodegenRust.py or in rust-mozjs?
+[15:41:49] <jack> servo may call it indirectly.
+[15:42:37] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[15:42:37] -ghservo- [13servo] 15bors-servo merged 06auto into 06master: 02http://git.io/vIqJ0
+[15:42:37] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[15:42:40] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[15:42:40] -ghservo- [13servo] 15bors-servo closed pull request #6294: Simplify handle_load_start_msg function (06master...06simplify) 02http://git.io/vItxN
+[15:42:40] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[15:42:40] <eddyb> jack: there's no result at all
+[15:42:49] <eddyb> maybe I shouldn't use git grep
+[15:43:08] *** Quits: dstrbad (dstrbad@moz-2no48u.dsl.iskon.hr) (A TLS packet with unexpected length was received.)
+[15:44:52] *** Joins: naudtov (naudtov@moz-9fcbja.ca.comcast.net)
+[15:47:17] *** Quits: gsingh93 (gulshan@moz-ln1ktu.st3l.iv8o.0004.2601.IP) (Ping timeout: 121 seconds)
+[15:47:19] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[15:47:19] -ghservo- [13servo] 15metajack opened pull request #6295: Clean up dependencies. (06master...06cargo-cleanup) 02http://git.io/vIqBP
+[15:47:19] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[15:49:08] *** Quits: jviereck (Adium@moz-lele6a.g21i.vk5s.0000.2620.IP) (Quit: Leaving.)
+[15:50:15] *** Joins: dinfuehr (dinfuehr@moz-c10hdb.highway.telekom.at)
+[15:50:56] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[15:52:21] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[15:52:21] -ghservo- [13rust-azure] 15metajack closed pull request #166: Fix dependencies. (06master...06fix-deps) 02http://git.io/vIqlu
+[15:52:21] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[15:52:23] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[15:52:23] -ghservo- [13rust-azure] 15metajack pushed 2 new commits to 06master: 02http://git.io/vIqEn
+[15:52:23] -ghservo- 13rust-azure/06master 144111ddf 15Jack Moffitt: Fix dependencies.
+[15:52:23] -ghservo- 13rust-azure/06master 148ca7e25 15Jack Moffitt: Merge pull request #166 from metajack/fix-deps...
+[15:52:23] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[15:52:24] *** Joins: jviereck (Adium@moz-dcvhl2.g21i.vk5s.0000.2620.IP)
+[15:52:57] *** darkowlzz|afk is now known as darkowlzz
+[15:52:59] *** Joins: eibwen (eibwen@moz-5gg09u.dip0.t-ipconnect.de)
+[15:55:14] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[15:55:14] -ghservo- [13rust-azure] 15frewsxcv closed issue #165: Does not currently compile 02http://git.io/vIL1d
+[15:55:14] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[15:55:17] *** Quits: dinfuehr (dinfuehr@moz-c10hdb.highway.telekom.at) (Ping timeout: 121 seconds)
+[15:55:51] *** Joins: ProgramFOX (ProgramFOX@moz-2qef3h.isp.belgacom.be)
+[15:59:57] *** Joins: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com)
+[16:00:07] *** Quits: je_julie (uid29643@moz-2q4j9e.brockwell.irccloud.com) (Quit: Connection closed for inactivity)
+[16:00:26] *** Quits: laumann (thomas@moz-gqpfnm.science.ku.dk) (Quit: leaving)
+[16:00:33] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[16:00:33] -ghservo- [13rust-layers] 15metajack opened pull request #170: Fix deps (06master...06fix-deps) 02http://git.io/vIqgH
+[16:00:33] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[16:01:06] <jack> frewsxcv: Have you looked at #6295 yet?
+[16:01:06] <crowbot> Issue #6295: Clean up dependencies. - https://github.com/servo/servo/pull/6295
+[16:01:49] <jack> It's not completely finished (for example, needs these rust-azure and rust-layers changes) but hopefully is far enough along you can get the general idea of how I was doing it.
+[16:01:52] <waffles> jgraham: I appreciate the feedback (thanks). Now, what about the function name? (https://github.com/servo/servo/pull/6292/files#diff-18fc96d4e41fc01dc93e0dbdd6fe8bdaR38)
+[16:01:52] <crowbot> PR #6292: window.performance.now values are way too big #5690; r=jdm - https://github.com/servo/servo/pull/6292
+[16:02:07] <jack> The main difference I've seen between our work is that I want the whole dep-tree to use only crates.io or git, but never both.
+[16:02:21] <jack> So core-foundation, core-graphics and cocoa should always be crates.io deps
+[16:03:09] *** Quits: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP) (Ping timeout: 121 seconds)
+[16:03:33] <frewsxcv> jack: SGTM. my PR is just trivial create-name-renaming-fixes and a `./mach cargo-update -a`
+[16:03:47] <frewsxcv> yours is the better solution
+[16:04:01] * frewsxcv is double checking rust-layers
+[16:04:18] <frewsxcv> so i'll close my PR
+[16:04:32] <jack> frewsxcv: If you want to finish off that work, that's fine with me :)
+[16:04:39] *** Joins: Savago (Savago@moz-8hd.3b6.246.162.IP)
+[16:04:40] <Manishearth> jack: hey, think the ifcp paper is good for general consumption? THinking of sharing it around o proggit &c. There have been a lot of great "my experience with rust" posts floating around, but nothing about something as large as Servo.
+[16:05:09] <Manishearth> *on
+[16:05:20] <jack> Manishearth: If larsberg put it up on arxiv, you're free to share it. It's written for an academic audience, but it's short, so maybe people will like it.
+[16:05:37] <Manishearth> yeah
+[16:05:43] <frewsxcv> jack: do you happen to know what the issue was with http://git.io/vIL1d ?
+[16:05:55] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[16:05:55] -ghservo- [13rust-layers] 15metajack pushed 3 new commits to 06master: 02http://git.io/vIqVW
+[16:05:55] -ghservo- 13rust-layers/06master 147b56c83 15Jack Moffitt: Use crates.io dep for core-foundation.
+[16:05:55] -ghservo- 13rust-layers/06master 14981f048 15Jack Moffitt: Warning police.
+[16:05:55] -ghservo- 13rust-layers/06master 142eb4cd2 15Jack Moffitt: Merge pull request #170 from metajack/fix-deps...
+[16:05:55] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[16:06:01] <frewsxcv> i.e. why your PR fixed it
+[16:06:32] <jack> I'm guessing that was the duplicate deps issue.
+[16:06:57] <jack> pulling from crates.io and from git. They would be treated as distinct symbols even though they were logically the same.
+[16:07:11] <jack> Or at least that is my first guess
+[16:07:15] *** Joins: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP)
+[16:07:58] *** darkowlzz is now known as darkowlzz|afk
+[16:10:35] <jgraham> waffles: The test name seems OK
+[16:10:46] <waffles> alright :)
+[16:12:34] *** Joins: gsingh93 (gulshan@moz-ln1ktu.st3l.iv8o.0004.2601.IP)
+[16:12:38] <eddyb> does the build system build SM every time?
+[16:13:02] <eddyb> (every time you build from scratch, I mean)
+[16:13:06] <Manishearth> no
+[16:13:07] <Manishearth> yes
+[16:13:20] <eddyb> is it really that fast? I know v8 used to take ages
+[16:13:30] <eddyb> or maybe I did something while it built and forgot about it for hours
+[16:13:34] <Manishearth> pretty fast yes
+[16:14:24] <eddyb> maybe this wasn't a good idea: grep -r JS_SetErrorReporter .cargo
+[16:14:38] *** Joins: dbaron (dbaron@moz-12jr9n.dynamic.fusionbroadband.com)
+[16:14:44] <Manishearth> huehuehue
+[16:14:59] * frewsxcv respectfully requests someone to approve his mailing list message :)
+[16:15:56] <Manishearth> jack: ^
+[16:16:30] *** ahal is now known as ahal|afk
+[16:18:22] *** Joins: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net)
+[16:19:41] <mbrubeck> eddyb: The SM build is pretty parallelizable, so if you have 4+ cores then it's not too bad.
+[16:19:55] * frewsxcv clarifies there is no urgency, he just is not sure how often the mailing list queue gets checked :P
+[16:20:10] <mbrubeck> unlike Servo's build which spends most of its time in serial bottlenecks
+[16:20:27] *** Quits: nickniko_ (nicknikolov@moz-7ep.6g7.220.90.IP) (Connection closed)
+[16:20:30] <eddyb>     error!("Error at {}:{}: {}\n", fname, lineno, msg);
+[16:20:32] <eddyb> found it!
+[16:20:34] <jack> frewsxcv: probably never. checking now :)
+[16:20:48] *** Joins: nicknikolov (nicknikolov@moz-7ep.6g7.220.90.IP)
+[16:20:51] <eddyb> that would explain ERROR:js
+[16:21:03] <eddyb> but it's not showing up!
+[16:21:23] <jgraham> waffles: You need to squash your PR into a single commit and then someone who is a real reviewer will add an r+
+[16:21:32] *** Quits: till (till@moz-0tejpc.adsl.alicedsl.de) (A TLS packet with unexpected length was received.)
+[16:22:09] <waffles> jgraham: Wow, I'll do it now (At last!)
+[16:22:42] <jgraham> waffles: Thanks for sticking with it :)
+[16:23:42] <waffles> jgraham: Are you kidding me? A part of my vacation is devoted to squashing bugs! :)
+[16:23:49] <eddyb> I can breakpoint js::reportError
+[16:24:01] <eddyb> jack: and it's never called :|
+[16:24:47] <Manishearth> eddyb: perhaps try the smup branch?
+[16:24:50] *** Quits: nicknikolov (nicknikolov@moz-7ep.6g7.220.90.IP) (Ping timeout: 121 seconds)
+[16:24:54] <eddyb> let's see...
+[16:25:15] <eddyb> fatal: Couldn't find remote ref smup
+[16:25:43] <eddyb> smupgrade3?
+[16:26:07] <Manishearth> I meant the smup branch, not the "smup" branch
+[16:26:37] <Manishearth> eddyb: https://github.com/servo/servo/pull/6150
+[16:26:37] <crowbot> PR #6150: Upgrade to Spidermonkey 39 - https://github.com/servo/servo/pull/6150
+[16:26:38] <Manishearth> yes
+[16:26:41] <eddyb> right, it looks fresh, so that must be it
+[16:28:27] *** chmanchester|afk is now known as chmanchester
+[16:30:02] *** tomaka is now known as son_pseudo
+[16:31:54] *** son_pseudo is now known as tomaka
+[16:32:34] *** Joins: acgtyrant_ (acgtyrant@moz-3kd.b79.160.124.IP)
+[16:32:44] *** darkowlzz|afk is now known as darkowlzz
+[16:33:02] <waffles> jgraham: I think I accidentally force-pushed my commit. So, the previous comments won't make any sense now :/
+[16:33:19] <waffles> (Only the squashed commit remains at the end now)
+[16:33:34] *** Quits: acgtyrant_ (acgtyrant@moz-3kd.b79.160.124.IP) (Connection closed)
+[16:34:18] <jgraham> waffles: That's the right thing to do
+[16:34:29] *** Joins: acgtyrant_ (acgtyrant@moz-3kd.b79.160.124.IP)
+[16:34:36] <waffles> Yay!
+[16:34:42] *** Quits: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP) (Ping timeout: 121 seconds)
+[16:35:14] *** Joins: nicknikolov (nicknikolov@moz-7ep.6g7.220.90.IP)
+[16:35:41] <eddyb> /home/eddy/Projects/servo/.cargo/git/checkouts/mozjs-2284529523a8d467/master/mozjs/js/src/configure: line 1665: /home/eddy/Projects/servo/.cargo/git/checkouts/mozjs-2284529523a8d467/master/mozjs/js/src/../../python/mozbuild/mozbuild/milestone.py: Permission denied
+[16:35:44] <eddyb> uhm, what?
+[16:36:12] *** chmanchester is now known as chmanchester|afk
+[16:36:59] <mbrubeck> not executable, maybe?
+[16:37:01] <Manishearth> what did you dooooooooo
+[16:37:03] <eddyb> AssertionError: Filename /nix/store/y6slk1zim9d3xf9ya5my6h0qwsrm0y7w-python-readline-2.7.9/lib/python2.7/site-packages/readline.so does not start with any of these prefixes: ['/nix/store/fzsbv209kna7bz6c89g9h1b2q3hmkaaz-python-2.7.9']
+[16:37:04] <Manishearth> oh eddyb 
+[16:37:05] <Manishearth> nixos
+[16:37:10] <Manishearth> executable
+[16:37:10] <eddyb> there is this
+[16:37:51] <eddyb> now sure if that's the error, or the permission denied thing
+[16:38:27] *** Joins: jdm (jdm@moz-i5m.05u.207.66.IP)
+[16:38:27] *** ChanServ sets mode: +qo jdm jdm
+[16:38:35] <eddyb> why would readline be bundled with python?
+[16:38:57] *** Quits: nicknikolov (nicknikolov@moz-7ep.6g7.220.90.IP) (Connection closed)
+[16:38:59] <jdm> eddyb: rust-mozjs sets the default error reporter
+[16:39:18] *** Joins: nicknikolov (nicknikolov@moz-7ep.6g7.220.90.IP)
+[16:39:24] <eddyb> jdm: yeah, I've found it, but it never gets called
+[16:39:35] <jdm> say what
+[16:39:47] <eddyb> b js::reportError
+[16:39:50] <jdm> eddyb: https://github.com/servo/rust-mozjs/blob/master/src/rust.rs#L62
+[16:39:51] <eddyb> did I do that wrong?
+[16:40:53] <eddyb> maybe gdb is being dumb here
+[16:41:17] *** Joins: nickniko_ (nicknikolov@moz-7ep.6g7.220.90.IP)
+[16:41:27] *** Quits: nicknikolov (nicknikolov@moz-7ep.6g7.220.90.IP) (Connection closed)
+[16:43:32] <Savago> While trying to build rust in ARM, I got this error: https://gist.github.com/anonymous/db137cdbfdfc1c3effa3
+[16:43:40] <Savago> Any ideas of what may be wrong?
+[16:43:49] *** Joins: nefzaoui (nefzaoui@moz-h35.sld.227.41.IP)
+[16:43:53] <eddyb> Savago: your rustc is old
+[16:44:08] <eddyb> you need a matching version
+[16:44:51] <Manishearth> jdm: have you looked at the filereader PR?
+[16:44:55] <Manishearth> I suspect it's doing async wrong
+[16:45:00] <jdm> Manishearth: not much
+[16:45:03] <Manishearth> as in it's not async enough
+[16:45:06] <Savago> eddyb: I got rustc 1.2.0-dev.
+[16:45:19] <jdm> Manishearth: that's not the worst place to start from; we can file followup issues
+[16:45:20] *** darkowlzz is now known as darkowlzz|afk
+[16:45:24] <Manishearth> jdm: could you take a quick look before you leave?
+[16:45:27] <Manishearth> jdm: fair enough
+[16:45:27] <jdm> yes
+[16:45:30] <Manishearth> cool
+[16:45:42] <eddyb> Savago: that's non-descript
+[16:45:45] <Manishearth> I'm just concerned that it will be work in the wrong direction if we don't improve it now
+[16:45:51] <eddyb> Savago: it could be old or it could be new
+[16:45:53] <eddyb> MOZILLA_VERSION=`$PYTHON $srcdir/python/mozbuild/mozbuild/milestone.py --topsrcdir $srcdir`
+[16:46:14] <eddyb> Manishearth: so permission denied errors come from the initialization of 3 variables
+[16:46:21] <eddyb> which I expect don't matter
+[16:46:49] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[16:46:49] -ghservo- [13servo] 15bors-servo pushed 0 new commits to 06tmp: 02http://git.io/vIq5v
+[16:46:49] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[16:46:51] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[16:46:51] -ghservo- [13servo] 15bors-servo merged 06tmp into 06auto: 02http://git.io/vIq5f
+[16:46:51] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[16:46:56] <mwu> eddyb: are you trying to use the updated mozjs bindings?
+[16:47:02] <eddyb> yes
+[16:47:10] <eddyb> the problem is the virtualenv setup
+[16:47:11] <Savago> eddyb: what you mean by it could be old or new?
+[16:47:12] <mwu> do you have it hooked up to a new SM?
+[16:47:38] <mwu> smupgrade2 at https://github.com/servo/mozjs
+[16:47:40] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[16:47:40] -ghservo- [13servo] 15jdm closed pull request #5697: components/script/dom/performance.rs: correctly convert ns to ms. (06master...06jag/performance-now) 02http://git.io/vvEUV
+[16:47:40] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[16:47:53] <eddyb> Savago: that version corresponds to about 6 weeks
+[16:48:02] <eddyb> Savago: it could be anything in that time frame
+[16:48:11] <eddyb> (well, not yet 6 weeks, but still some)
+[16:48:42] <Savago> eddyb: to be more precise, I’m using version 1.2.0-dev (474c6e0ae 2015-05-30) (built 2015-06-05)
+[16:49:15] <Savago> a.k.a. the previous rust hash used by servo.
+[16:49:36] <eddyb> and that doesn't have const fn? huh
+[16:49:48] <eddyb> Savago: is the source tree you're building the exact same hash?
+[16:50:45] <eddyb> that does look like it has const fn, I don't understand how you're getting the errors
+[16:50:46] <Savago> eddyb: I’m trying to build the current hash (which is 474c6e0ae and the commit on top of it is date as May 30).
+[16:51:14] <Savago> I can try to use a even newer rustc.
+[16:51:31] <eddyb> I don't think it's using the rustc version you gave me
+[16:51:42] <eddyb> Savago: run make with VERBOSE=1 and see what compiler it's actually using
+[16:51:52] *** Joins: dinfuehr (dinfuehr@moz-c10hdb.highway.telekom.at)
+[16:52:15] <Savago> eddyb: could it be the g++ version? I got 4.7 here.
+[16:52:36] <eddyb> no, g++ version couldn't affect whether your rustc compiler supports const fn or not
+[16:52:52] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[16:52:52] -ghservo- [13rust-layers] 15ecoal95 opened pull request #171: Fix linux build (06master...06fix-build) 02http://git.io/vIqbM
+[16:52:52] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[16:53:33] <eddyb> mwu: do I need to do anything other than switch to the smupgrade3 branch?
+[16:53:39] <Savago> eddyb: coolio, when it gets to the point of calling rustc I will check (it will take a while…).
+[16:53:42] <eddyb> Manishearth: I'm using the python27Packages.virtualenv package, maybe it's a bad one
+[16:53:50] <eddyb> Savago: huh, why would it?
+[16:53:53] *** Joins: ray (bernhard@moz-vsafmp.dynamic.surfer.at)
+[16:54:13] <mwu> eddyb: just have to stick in a cargo override to switch to that sm
+[16:54:32] <mwu> eddyb: wait, are you building the bindings by themselves or with servo?
+[16:54:41] <eddyb> I'm just using ./mach build -d
+[16:54:47] <mwu> because the cargo locks aren't fully updated, though they should build
+[16:55:08] <mwu> hmmm ok you might need to update the cargo locks for the bindings
+[16:55:11] <eddyb> Savago: run make with -n if you want it to just print what it does and not run anything
+[16:55:33] <eddyb> mwu: why isn't that commmitted?
+[16:55:40] <mwu> eddyb: I'll update and push to the branch
+[16:55:55] *** Quits: dinfuehr (dinfuehr@moz-c10hdb.highway.telekom.at) (Ping timeout: 121 seconds)
+[16:56:02] <mwu> eddyb: it was, but then I started addressing review comments
+[16:56:06] <Savago> eddyb: it will take a while because I’m compiling on the target (i.e. a raspberry pi2).
+[16:56:19] <mwu> and some of the fixes for the review require updates in the binding
+[16:56:28] <eddyb> mwu: thanks
+[16:56:37] * eddyb tries to figure out how virtualenv fails here
+[16:57:06] *** Joins: Jayflux (Jason@moz-3ejd3p.as13285.net)
+[16:57:27] *** Quits: jviereck (Adium@moz-dcvhl2.g21i.vk5s.0000.2620.IP) (Quit: Leaving.)
+[16:57:34] <eddyb> I didn't need virtualenv for SM before, just for WPT
+[16:58:14] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[16:58:14] -ghservo- [13servo] 15michaelwu pushed 1 new commit to 06smupgrade3: 02http://git.io/vIqAz
+[16:58:14] -ghservo- 13servo/06smupgrade3 14aeb53da 15Michael Wu: Update Cargo.lock for SM binding updates
+[16:58:14] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[16:58:21] <mwu> eddyb: pushed
+[16:58:25] <eddyb> and now azure fails? huh
+[16:58:30] *** Quits: nickniko_ (nicknikolov@moz-7ep.6g7.220.90.IP) (Connection closed)
+[16:59:16] *** Quits: bdero (bran@moz-e4f4ei.mit.edu) (Ping timeout: 121 seconds)
+[17:00:32] *** Joins: jviereck (Adium@moz-o3pr0l.g21i.vk5s.0000.2620.IP)
+[17:00:49] <eddyb> src/azure-c.h:8:20: fatal error: skia-c.h: No such file or directory
+[17:00:59] <mwu> fun
+[17:01:22] *** Joins: nickniko_ (nicknikolov@moz-7ep.6g7.220.90.IP)
+[17:01:27] *** Quits: jviereck (Adium@moz-o3pr0l.g21i.vk5s.0000.2620.IP) (Quit: Leaving.)
+[17:01:42] *** Joins: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com)
+[17:02:00] <eddyb> how does this happen?
+[17:02:29] <eddyb> I don't understand where the commands even run, that way I could at least guess
+[17:03:20] <mwu> doesn't seem like it should happen
+[17:03:34] <mwu> no cargo overrides?
+[17:03:48] <eddyb> okay, if I go to .cargo/git/checkouts/rust-azure-03a3575c638f374d/master and run the command, I get the same error
+[17:04:04] <eddyb> mwu: nope
+[17:04:52] *** Quits: jdm (jdm@moz-i5m.05u.207.66.IP) (Connection closed)
+[17:05:12] *** Joins: jdm (jdm@moz-9uppfi.ckpj.s0pt.0450.2001.IP)
+[17:05:12] *** ChanServ sets mode: +qo jdm jdm
+[17:07:14] <eddyb> mwu: unless I'm doing something wrong, it seems to work if I pipe an #include directive to g++
+[17:07:32] <mwu> huh?
+[17:07:34] *** ahal|afk is now known as ahal
+[17:07:55] <mwu> so it's just not finding its way to its include?
+[17:08:42] <eddyb> wait, no, what I give it is completely ignored
+[17:09:37] <eddyb> cc1plus: fatal error: /home/eddy/Projects/servo/components/servo/target/debug/build/azure-cc187b961189251d/out/../../skia-8169a7e09aafcabf/out/include: No such file or directory
+[17:09:49] <eddyb> but that directory exists and it has skia-c.h
+[17:10:19] <eddyb> I'm very confused, something is wrong here
+[17:10:48] <waffles> I shall close a PR once it's been merged, right?
+[17:10:58] <Manishearth> eddyb: delete the azure and skia folders in target and target/build
+[17:11:00] <mwu> it should close itself
+[17:11:05] <Manishearth> you're working off an older rust or somethign
+[17:11:27] *** Joins: rebron (chatzilla@moz-qj8kqc.hfc.comcastbusiness.net)
+[17:11:38] <eddyb> Manishearth: it's passing -iquote skia_dir actual_include_dirX for each X include dir
+[17:11:53] <eddyb> yeah, two arguments
+[17:12:50] <Manishearth> eddyb: perhaps trying the smup was a bad idea :p
+[17:13:03] <eddyb> how does a build script screw up that bad?
+[17:15:12] <eddyb> and we're back to the same virtualenv readline error
+[17:15:20] <waffles> mwu: alright :)
+[17:15:22] <eddyb> why does it even want that :(
+[17:15:27] *** Joins: bdero (bran@moz-6b9.6tj.189.18.IP)
+[17:15:39] *** Joins: Sphinx (Instantbird@moz-9gnpbi.abo.wanadoo.fr)
+[17:16:39] *** Quits: naudtov (naudtov@moz-9fcbja.ca.comcast.net) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[17:16:51] <eddyb> Manishearth: oh, it's using its own virtualenv
+[17:17:40] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[17:17:40] -ghservo- [13rust-layers] 15frewsxcv opened issue #172: Build on travis-ci 02http://git.io/vImfj
+[17:17:40] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[17:19:06] <eddyb>     prefixes = ["/nix/store", sys.prefix]
+[17:19:11] <eddyb> that's what my virtualenv does
+[17:19:48] <eddyb> now who's going to slap SM devs' hands for 1. adding a virtualenv dependency 2. not using the system one?
+[17:20:39] <mwu> gecko devs are probably responsible for that one
+[17:20:54] <mwu> a lot of the build system is synced with the main gecko one
+[17:21:53] <eddyb> it wants *readline*. in *python*
+[17:22:00] *** Joins: till (till@moz-0tejpc.adsl.alicedsl.de)
+[17:22:22] <eddyb> at least cargo doesn't seem to overwrite or complain about a root-owned read-only file in a git/checkouts directory
+[17:22:29] *** Quits: bdero (bran@moz-6b9.6tj.189.18.IP) (Ping timeout: 121 seconds)
+[17:25:23] <eddyb> STOP!  /home/eddy/Projects/servo/.cargo/git/checkouts/mozjs-2284529523a8d467/master/mozjs/js/src/configure.in has changed, and your configure is out of date.
+[17:25:42] <eddyb> but... how? why?
+[17:25:48] <mwu> hmm
+[17:26:00] <mwu> I had a fix for that.. lemme make sure things are pointed to the right commit
+[17:26:33] <eddyb> I touched configure, maybe that's enough
+[17:26:41] <eddyb> (they have very similar timestamps because of cargo)
+[17:26:55] *** Joins: naudtov (naudtov@moz-9fcbja.ca.comcast.net)
+[17:26:56] <mwu> hmm yeah the cargo lock points to the right version
+[17:26:59] *** Quits: till (till@moz-0tejpc.adsl.alicedsl.de) (Ping timeout: 121 seconds)
+[17:27:20] <mwu> git sets the timestamps according to the commit time, so I have a commit just for updating configure
+[17:27:58] *** Quits: rebron (chatzilla@moz-qj8kqc.hfc.comcastbusiness.net) (Connection closed)
+[17:28:58] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[17:28:58] -ghservo- [13servo] 15bors-servo merged 06auto into 06master: 02http://git.io/vIq5f
+[17:28:58] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[17:29:02] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[17:29:02] -ghservo- [13servo] 15bors-servo closed pull request #6292: window.performance.now values are way too big #5690; r=jdm (06master...06timestamp) 02http://git.io/vItLy
+[17:29:02] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[17:30:02] <eddyb> mwu: it's compiling now o/
+[17:30:07] <mwu> \o/
+[17:30:19] <eddyb> might want to figure a way to use system virtualenv
+[17:30:31] <eddyb> because this will break again if the hash changes
+[17:30:51] *** Quits: nickniko_ (nicknikolov@moz-7ep.6g7.220.90.IP) (Connection closed)
+[17:31:33] <mwu> should probably talk to the gecko build people about getting a fix upstream for your case
+[17:31:57] <eddyb> I should check what nixpkgs does
+[17:32:17] <mwu> the good news is we need to hack our copy of SM a lot less now
+[17:32:55] <mwu> the bad news is the bindings generation is much more automated so we can update SM a lot more frequently
+[17:33:27] <jdm> ha
+[17:34:26] <waffles> Um, shouldn't an issue get closed once a PR has been merged?
+[17:34:37] *** Quits: Savago (Savago@moz-8hd.3b6.246.162.IP) (Client exited)
+[17:34:45] <mwu> waffles: link?
+[17:34:50] <mwu> oh, an *issue*
+[17:34:57] <waffles> yeah
+[17:34:58] <eddyb> maybe --with-system-virtualenv exists?
+[17:35:05] *** Joins: bdero (bran@moz-e4f4ei.mit.edu)
+[17:35:30] <waffles> (I was just curious about the working)
+[17:35:44] <mwu> yeah I guess you could wait for someone to close it or ask
+[17:37:35] <waffles> ah
+[17:38:25] <eddyb> In order to build, you will need mozilla-central's virtualenv.
+[17:38:39] <eddyb> uh oh they're doing something weird with it
+[17:40:01] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[17:40:01] -ghservo- [13servo] 15jdm closed issue #5690: window.performance.now values are way too big 02http://git.io/vvB3C
+[17:40:01] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[17:42:42] <waffles> jdm does snoop around :P
+[17:42:50] <jdm> :)
+[17:43:32] *** Joins: ldng (ldng@moz-l3gmiq.abo.bbox.fr)
+[17:44:19] <eddyb> in other news, python (mach?) handles ^Z in an odd way and leaves zombies
+[17:47:26] *** Quits: naudtov (naudtov@moz-9fcbja.ca.comcast.net) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[17:48:15] *** Quits: waffles (Wafflespean@moz-6v0.9s5.23.1.IP) (Quit: C'yall later... :))
+[17:48:36] <abinader> bjz: ping :-)
+[17:49:13] *** Joins: ienzam (enzam@moz-spq.4ra.239.216.IP)
+[17:49:26] <abinader> bjz: quick question: any specific reason to install glfw-rs statically with brew on OS X?
+[17:49:36] *** Quits: capella (chatzilla@moz-vcqob4.res.rr.com) (A TLS packet with unexpected length was received.)
+[17:50:25] *** Parts: Sphinx (Instantbird@moz-9gnpbi.abo.wanadoo.fr) ()
+[17:50:37] *** Joins: capella (chatzilla@moz-vcqob4.res.rr.com)
+[17:51:27] *** Joins: bholley (bholley@moz-qpv0dk.ca.comcast.net)
+[17:52:22] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[17:52:22] *** ChanServ sets mode: +o brson
+[17:52:33] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[17:52:39] *** Joins: dinfuehr (dinfuehr@moz-c10hdb.highway.telekom.at)
+[17:53:39] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[17:54:55] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[17:55:41] <eddyb> jdm, mwu: bad news: error reporting is still broken
+[17:55:53] <mwu> \o/ bug parity
+[17:56:42] *** Quits: dinfuehr (dinfuehr@moz-c10hdb.highway.telekom.at) (Ping timeout: 121 seconds)
+[17:56:54] <eddyb> jdm: I may be wrong about gdb, it might be missing the load of js::reportError
+[17:57:06] <jdm> that would not surprise me at all
+[17:57:36] <eddyb> yeah, I need to find the real symbol
+[17:57:44] <eddyb> why is it that there are no good binary inspection tools?
+[17:58:12] <eddyb> other than radare2, that is
+[17:58:31] *** Quits: jdm (jdm@moz-9uppfi.ckpj.s0pt.0450.2001.IP) (Connection closed)
+[17:58:42] <Tobba> eddyb: there aren't a lot of good inspection tools in general
+[17:58:48] <Tobba> I'm still waiting for a hex editor that doesn't suck
+[17:58:54] *** Joins: jdm (jdm@moz-9uppfi.ckpj.s0pt.0450.2001.IP)
+[17:58:54] *** ChanServ sets mode: +qo jdm jdm
+[17:59:18] *** Joins: sneakyness (textual@moz-tmbr33.biz.rr.com)
+[17:59:54] <eddyb> Tobba: `rabin2 -s binary | grep name` did just save me
+[18:00:15] <eddyb> jdm: okay, so barring debugger/PEBKAC, the function is called but it outputs nothing, no matter what RUST_LOG setting
+[18:00:43] <eddyb> what a waste of time
+[18:01:57] <eddyb> #5  0x00005555566ed172 in script::dom::window::&'a T.ScriptHelpers::evaluate_script_on_global_with_result (self=0x7fffd6858000, code="
+[18:02:04] <eddyb> this actually proceeds to give be a very long string
+[18:02:18] <Tobba> eddyb: do you have a Nix expression for servo?
+[18:02:31] <Tobba> building servo, that is
+[18:02:35] *** Quits: ProgramFOX (ProgramFOX@moz-2qef3h.isp.belgacom.be) (Quit: ChatZilla 0.9.91.1 [Firefox 38.0.5/20150525141253])
+[18:03:12] <eddyb> the message is " \360\035\310\377\177"?
+[18:03:33] <eddyb> Tobba: I wish the gist search wasn't useless
+[18:04:17] <eddyb> https://gist.github.com/eddyb/0b949b1e8143d03c461c
+[18:04:23] <eddyb> Tobba: also needs libXmu now, I think
+[18:05:03] <Tobba> thanks
+[18:05:20] *** Joins: dinfuehr (dinfuehr@moz-c10hdb.highway.telekom.at)
+[18:06:44] <eddyb> js::string::T.ToString::to_string (self="https://jsfiddle.net/js/moo-clientcide-1.3.js?twitterbutton") at /home/larsberg/rust/src/libcollections/string.rs:1047
+[18:06:48] <eddyb> stepping through the code :D
+[18:07:28] <Tobba> eddyb: I'm tempted to try porting servo to my OS as a long-term goal
+[18:07:29] <Tobba> might be fun
+[18:07:29] *** Joins: Caspy7 (chatzilla@moz-tkogmh.stlsmo.sbcglobal.net)
+[18:07:45] *** Quits: jdm (jdm@moz-9uppfi.ckpj.s0pt.0450.2001.IP) (A TLS packet with unexpected length was received.)
+[18:08:09] *** Joins: jdm (jdm@moz-9uppfi.ckpj.s0pt.0450.2001.IP)
+[18:08:09] *** ChanServ sets mode: +qo jdm jdm
+[18:08:47] <eddyb> js::string::T.ToString::to_string (self="TypeError: document.createElement(...).getAttributeNode is not a function") at /home/larsberg/rust/src/libcollections/string.rs:1047
+[18:08:55] <eddyb> okay, so the error is indeed passed
+[18:09:09] <eddyb> is logging *that* broken?
+[18:09:21] <eddyb> it just swallows error! even when explicitely enabled?
+[18:10:48] <Tobba> eddyb: lol I ran out of disk space building servo
+[18:10:50] <eddyb> huh
+[18:10:52] <eddyb> js::rust::reportError (_cx=0x7fffc8024490, msg=0x7fffc81dc210 "TypeError: document.createElement(...).getAttributeNode is not a function", report=0x7fffc81deee0) at <log macros>:7
+[18:10:55] <Tobba> bloody hell
+[18:10:59] <eddyb> Tobba: yeah, me too, the first time. run GC!
+[18:11:08] <Tobba> of course
+[18:11:14] <Tobba> just gotta make these nix-shell envs persistent first
+[18:12:30] <Tobba> eddyb: though I only have a 20GB root partition
+[18:12:38] <Tobba> I meant to set up a separate /home partition and never did :D
+[18:14:09] *** Joins: Savago (Savago@moz-8hd.3b6.246.162.IP)
+[18:14:10] *** Quits: dinfuehr (dinfuehr@moz-c10hdb.highway.telekom.at) (Connection closed)
+[18:14:20] *** Joins: dinfuehr (dinfuehr@moz-c10hdb.highway.telekom.at)
+[18:14:30] <Tobba> huh, style doesn't build
+[18:14:43] <Tobba> oh right, system rustc
+[18:15:11] <Manishearth> > Every cycle is sacred. Every read is great. If a byte is wasted, God gets quite irate.
+[18:15:16] <Manishearth> found on proggit
+[18:15:17] <Manishearth> :D
+[18:15:25] <Tobba> oh terry
+[18:15:26] *** Joins: jviereck (Adium@moz-63h7n6.g21i.vk5s.0000.2620.IP)
+[18:17:29] *** Quits: capella (chatzilla@moz-vcqob4.res.rr.com) (A TLS packet with unexpected length was received.)
+[18:17:30] *** Quits: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[18:18:19] *** Joins: capella (chatzilla@moz-vcqob4.res.rr.com)
+[18:18:24] *** Quits: dinfuehr (dinfuehr@moz-c10hdb.highway.telekom.at) (Ping timeout: 121 seconds)
+[18:18:34] *** Joins: moa (Cedric@moz-5q0u7t.abo.wanadoo.fr)
+[18:18:49] <eddyb> you know what could be happening
+[18:18:52] <Tobba> looks like you need a nightly from a week ago or so for servo to build
+[18:19:01] <Tobba> ah well, Nix has prepared me for this
+[18:19:16] * Tobba adds import ./rust-nightly.nix { date = "2015-05-26" }
+[18:19:25] <eddyb> Tobba: why did you do that?
+[18:19:32] <eddyb> I guess you want full automation
+[18:19:45] <eddyb> log = "*"
+[18:19:47] <Tobba> otherwise I'd have to futz with it constantly
+[18:19:52] <eddyb> jdm: so you know what's happening?
+[18:20:24] <Tobba> it's actually really convenient to be able to bring up any rust nightly on a whim
+[18:21:17] <eddyb> jdm: env_logger isn't mentioned anywhere
+[18:21:20] <eddyb> q_q
+[18:21:46] <eddyb> how is it reacting to RUST_LOG=... if env_logger isn't enabled?
+[18:23:24] <Tobba> eddyb: and obviously; rustc panics on that nightly instead
+[18:23:38] *** Joins: till (till@moz-0tejpc.adsl.alicedsl.de)
+[18:23:50] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[18:23:50] *** ChanServ sets mode: +o pcwalton
+[18:23:51] <Tobba> eddyb: what version of rustc do you compile servo with?
+[18:23:55] <eddyb> Tobba: its own
+[18:23:57] <eddyb> I just patch it
+[18:24:07] <Tobba> bleh
+[18:24:25] <Tobba> servo's build system is really annoying :(
+[18:24:36] <eddyb> it's really just two commands
+[18:25:12] <eddyb> pcwalton: hey. this morning I saw some raw pointers with "fix this when RWArc isn't terribly slow" comments and was wondering whether a custom RwLock based on futexes (on linux) would be a good solution there
+[18:25:24] <pcwalton> possibly, try it and see
+[18:25:27] *** Quits: jincreator (Thunderbird@moz-588.igi.7.59.IP) (Client exited)
+[18:25:58] <eddyb> hmm, do I trust myself to write a rwlock starting from a known-to-work simple futex-based mutex?
+[18:26:09] <Tobba> eddyb: .servobuild with system-rust = false doesn't work
+[18:26:20] <Tobba> argh fuck it, I'll build servo sometime later when it works on mainline rust
+[18:26:22] <eddyb> Tobba: after it downloads the snapshot, patch it
+[18:26:28] <Tobba> yeah well I can't make it use the snapshot
+[18:26:38] <eddyb> find .servo/**/bin | xargs -n1 patchelf --interpreter /run/current-system/sw/lib/ld-linux-x86-64.so.2 --set-rpath /run/current-system/sw/lib/
+[18:26:55] <Tobba> it uses system rustc even if I configure it not to
+[18:26:55] <eddyb> find .servo/**.so | xargs -n1 patchelf --set-rpath /run/current-system/sw/lib/
+[18:27:02] <eddyb> Tobba: I never touched it :|
+[18:27:39] <eddyb> Tobba: do you really not have a .servo directory?
+[18:27:42] *** Quits: till (till@moz-0tejpc.adsl.alicedsl.de) (Ping timeout: 121 seconds)
+[18:27:44] <eddyb> in your servo checkout
+[18:28:27] *** Joins: dinfuehr (dinfuehr@moz-tv7bo0.highway.telekom.at)
+[18:28:30] <eddyb> pcwalton: in other news, I can't find any mention of env_logger anywhere yet RUST_LOG works
+[18:30:32] *** Joins: naudtov (naudtov@moz-9fcbja.ca.comcast.net)
+[18:31:46] *** Quits: Caspy7 (chatzilla@moz-tkogmh.stlsmo.sbcglobal.net) (Ping timeout: 121 seconds)
+[18:32:46] <eddyb> oh boy
+[18:33:18] <eddyb> jdm: you know what it is? you're using the built-in log crate everywhere in Servo
+[18:33:39] <eddyb> which is why it works for your crates
+[18:35:50] <Tobba> eddyb: I do and it has a rustc
+[18:35:53] <Tobba> it just doesn't actually use it
+[18:37:08] <jdm> eddyb: I have no idea what your trying
+[18:37:12] <jdm> *you're
+[18:37:36] *** Quits: jdm (jdm@moz-9uppfi.ckpj.s0pt.0450.2001.IP) (Connection closed)
+[18:38:01] *** Joins: jdm (jdm@moz-9uppfi.ckpj.s0pt.0450.2001.IP)
+[18:38:01] *** ChanServ sets mode: +qo jdm jdm
+[18:38:05] <Tobba> eddyb: there we go, now it's using it
+[18:38:06] <eddyb> jdm: your logging is totally broken
+[18:38:27] <jdm> tell me more :)
+[18:38:33] <eddyb> you're not using the log crate
+[18:38:42] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[18:38:45] <Manishearth> eddyb: All I remember is that env_logger broke some time back and we never fixed it
+[18:38:48] <Manishearth> wha
+[18:38:49] <Manishearth> yes
+[18:38:50] <Manishearth> wha
+[18:38:53] <Manishearth> no
+[18:38:53] <eddyb> yupp
+[18:40:00] <Manishearth> eddyb: so how does error! exist?
+[18:40:11] <eddyb> jsapi uses the log crate
+[18:40:14] <eddyb> servo doesn't
+[18:40:29] <eddyb> servo's logging works because it uses the same thing rustc uses
+[18:40:35] <eddyb> which doesn't need env_logger
+[18:40:38] <pcwalton> is there a way to build servo with debug info?
+[18:40:49] <eddyb> pcwalton: doesn't it already have debug info in debug mode?
+[18:40:51] <pcwalton> oh hmm, I do have it
+[18:40:55] <Tobba> eddyb: current-system lacks zlib
+[18:41:03] <Tobba> even if I install zlib as root, gah
+[18:41:04] <pcwalton> hmm, why doesn't disas/m work in gdb
+[18:42:01] *** Quits: dbaron (dbaron@moz-12jr9n.dynamic.fusionbroadband.com) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[18:44:24] <eddyb> jdm: okay, I think I've fixed it, hopefully I can submit a patch without switching branches :D
+[18:44:52] <jdm> eddyb: so why are you using a patched rust?
+[18:46:44] <eddyb> jdm: I'm not. I'm patching the INTERP and rpath of the snapshots you use so I can run it under NixOS (that's what I was referring to when talking to Tobba)
+[18:46:51] <jdm> oh
+[18:47:08] <eddyb> the last "patch" mention refers to me adding log dependencies
+[18:47:13] <eddyb> and env_logger setup
+[18:48:21] *** Quits: darkowlzz|afk (Elite12883@moz-kue6ah.elitebnc.org) (Ping timeout: 121 seconds)
+[18:51:16] *** Quits: naudtov (naudtov@moz-9fcbja.ca.comcast.net) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[18:52:39] *** Joins: naudtov (naudtov@moz-9fcbja.ca.comcast.net)
+[18:52:50] *** Joins: darkowlzz|afk (Elite12883@moz-kue6ah.elitebnc.org)
+[18:54:06] *** Quits: jonalmeida (sid17545@moz-c167m6.highgate.irccloud.com) (Connection closed)
+[18:54:06] *** Quits: steshaw (sid30841@moz-mij4a1.highgate.irccloud.com) (Connection closed)
+[18:54:06] *** Quits: RJ (sid1@moz-bfakr9.highgate.irccloud.com) (Connection closed)
+[18:54:06] *** Quits: merl (sid17756@moz-n96e6m.highgate.irccloud.com) (Connection closed)
+[18:54:06] *** Quits: jandem (sid16255@moz-2gehe3.highgate.irccloud.com) (Connection closed)
+[18:54:06] *** Quits: pkondzior (sid768@moz-nrgp4s.highgate.irccloud.com) (Connection closed)
+[18:54:06] *** Quits: jack (sid19593@moz-fhlsm9.highgate.irccloud.com) (Connection closed)
+[18:54:06] *** Quits: mihnea_ (sid16310@moz-87gr0i.highgate.irccloud.com) (Connection closed)
+[18:54:06] *** Quits: flaki (sid26072@moz-kltomo.highgate.irccloud.com) (Connection closed)
+[18:59:45] *** AutomatedTester|AFK is now known as AutomatedTester
+[19:02:45] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[19:02:55] *** Parts: duncan (paul@moz-dst.ms6.225.173.IP) ()
+[19:06:19] *** Quits: mukilan (mukilan@moz-inv.v1b.164.122.IP) (Connection closed)
+[19:08:08] *** Quits: jviereck (Adium@moz-63h7n6.g21i.vk5s.0000.2620.IP) (Quit: Leaving.)
+[19:08:30] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[19:08:30] -ghservo- [13servo] 15eddyb opened pull request #6296: Use the correct log crate and setup env_logger in main. (06smupgrade3...06fix-logging) 02http://git.io/vImdB
+[19:08:30] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[19:08:50] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[19:08:50] -ghservo- [13rust-harfbuzz] 15frewsxcv opened pull request #44: Link to documentation (06master...06link-docs) 02http://git.io/vImdP
+[19:08:50] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[19:08:57] <eddyb> jdm: it's on top of the SM upgrade branch. might want to backport it
+[19:09:05] <jdm> heh
+[19:09:14] <eddyb> building it right now (had some fun with removing rustc_private)
+[19:11:07] *** Quits: naudtov (naudtov@moz-9fcbja.ca.comcast.net) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[19:11:39] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[19:11:39] -ghservo- [13servo] 15metajack closed pull request #6288: Update dependencies to reflect new locations, crate names (06master...06update-dep-paths) 02http://git.io/vITR5
+[19:11:39] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[19:14:20] *** Joins: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net)
+[19:15:16] <eddyb> jdm: can I force push?
+[19:15:24] <jdm> eddyb: yes
+[19:17:04] *** Joins: naudtov (naudtov@moz-9fcbja.ca.comcast.net)
+[19:18:02] <eddyb> jdm: my PRECIOUS https://github.com/servo/servo/pull/6296#issuecomment-109409861
+[19:18:03] <crowbot> PR #6296: Use the correct log crate and setup env_logger in main. - https://github.com/servo/servo/pull/6296
+[19:18:12] <eddyb> jdm: no other changes necessary
+[19:19:21] <jdm> eddyb: please run (and interrupt when you see "Compiling foo" appear) `./mach build-cef` and `GONKDIR=/tmp ./mach build-gonk`
+[19:19:29] <jdm> eddyb: that will update the other two Cargo.lock files in the tree
+[19:19:51] <eddyb> nice :D
+[19:20:05] <jdm> eddyb: also fix http://mxr.mozilla.org/servo/source/ports/gonk/src/main.rs#57
+[19:20:38] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[19:20:38] -ghservo- [13rust-layers] 15frewsxcv opened pull request #173: Remove unused image (06master...06rm-unused) 02http://git.io/vImxI
+[19:20:38] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[19:21:42] <jdm> eddyb: the servo/main.rs fix might belong in http://mxr.mozilla.org/servo/source/components/servo/lib.rs#80 ; I'm not sure.
+[19:22:06] <eddyb> jdm: doesn't that run multiple times?
+[19:22:16] <eddyb> s/doesn't/can't
+[19:22:45] <eddyb> jdm: updated btw
+[19:23:08] <jdm> eddyb: the other stuff there appears to believe it's only run once...
+[19:23:24] <eddyb> I don't trust it :P
+[19:23:32] <eddyb> it could run only once on a thread
+[19:23:56] <jdm> eddyb: well that's the entry point for CEF embeddings, afaict
+[19:24:08] <mwu> jdm: are you planning to finish review before leaving? if not I'm going to start rebasing again
+[19:24:15] <jdm> mwu: I am going through it right now
+[19:24:18] <mwu> ok
+[19:24:36] *** Quits: bholley (bholley@moz-qpv0dk.ca.comcast.net) (Quit: Textual IRC Client: www.textualapp.com)
+[19:24:42] <eddyb> jdm: either way, feel free to chop and splice that while I'm gone
+[19:24:47] <eddyb> now to see what's up with facebook...
+[19:26:24] *** Quits: jiojiajiu (Guro@moz-trc2j7.asianet.co.th) (Connection closed)
+[19:26:36] *** Joins: jiojiajiu (Guro@moz-trc2j7.asianet.co.th)
+[19:27:16] *** Quits: tglman (tglman@moz-l8btep.as13285.net) (Ping timeout: 121 seconds)
+[19:28:03] *** Quits: sneakyness (textual@moz-tmbr33.biz.rr.com) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[19:28:23] *** Quits: dinfuehr (dinfuehr@moz-tv7bo0.highway.telekom.at) (Connection closed)
+[19:28:24] *** Quits: akiss (akiss@moz-kij.q96.114.160.IP) (Ping timeout: 121 seconds)
+[19:28:33] <eddyb> /home/eddy/Projects/servo/components/script/dom/window.rs:452:21: 452:38 error: use of undeclared type name `Temporary`
+[19:28:35] <eddyb> heh
+[19:28:37] <eddyb> my patches are getting old
+[19:28:44] *** Joins: dinfuehr (dinfuehr@moz-tv7bo0.highway.telekom.at)
+[19:29:10] <mwu> that's a smupgrade3 change
+[19:29:51] *** Quits: caitp- (caitp@moz-lmogh4.cable.rogers.com) (Quit: Leaving)
+[19:29:54] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[19:29:54] -ghservo- [13rust-layers] 15metajack pushed 2 new commits to 06master: 02http://git.io/vIYeH
+[19:29:54] -ghservo- 13rust-layers/06master 1412b78eb 15Corey Farwell: Remove unused image...
+[19:29:54] -ghservo- 13rust-layers/06master 146ddfd00 15Jack Moffitt: Merge pull request #173 from frewsxcv/rm-unused...
+[19:29:54] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[19:32:46] *** Quits: dinfuehr (dinfuehr@moz-tv7bo0.highway.telekom.at) (Ping timeout: 121 seconds)
+[19:33:52] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[19:33:52] *** ChanServ sets mode: +o pcwalton
+[19:34:02] *** Joins: dbaron (dbaron@moz-7i8mdt.2rkg.9kg1.0101.2620.IP)
+[19:34:28] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[19:34:40] *** Quits: naudtov (naudtov@moz-9fcbja.ca.comcast.net) (Quit: Textual IRC Client: www.textualapp.com)
+[19:35:18] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[19:37:23] *** Joins: dinfuehr (dinfuehr@moz-tv7bo0.highway.telekom.at)
+[19:37:37] <eddyb> className hasn't been implemented yet? huh
+[19:41:25] *** Quits: jiojiajiu (Guro@moz-trc2j7.asianet.co.th) (Connection closed)
+[19:41:48] <eddyb> the Portland page still looks nice. if only scroll wasn't so terribly slow
+[19:42:02] <eddyb> I don't think it's performance related, just intentionally slow
+[19:42:17] <eddyb> pcwalton: can I disable smooth scrolling :D?
+[19:42:29] *** Joins: jiojiajiu (Guro@moz-trc2j7.asianet.co.th)
+[19:45:08] *** Quits: valentin (icecold@moz-9bn.d10.25.188.IP) (Quit: Leaving.)
+[19:45:28] *** Joins: valentin (icecold@moz-9bn.d10.25.188.IP)
+[19:46:26] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[19:46:26] -ghservo- [13rust-harfbuzz] 15jdm pushed 2 new commits to 06master: 02http://git.io/vIYId
+[19:46:26] -ghservo- 13rust-harfbuzz/06master 14669f704 15Corey Farwell: Link to documentation
+[19:46:26] -ghservo- 13rust-harfbuzz/06master 147473119 15Josh Matthews: Merge pull request #44 from frewsxcv/link-docs...
+[19:46:26] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[19:46:26] <mwu> eddyb: should be implemented
+[19:49:29] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[19:49:35] *** Quits: valentin (icecold@moz-9bn.d10.25.188.IP) (Ping timeout: 121 seconds)
+[19:51:45] *** Quits: ahal (ahal@moz-b8e0a0.cpe.pppoe.ca) (Ping timeout: 121 seconds)
+[19:53:02] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[19:53:02] *** ChanServ sets mode: +o pcwalton
+[19:53:40] <pcwalton> eddyb: the fix needs to be in glutin
+[19:53:44] *** Joins: ahal (ahal@moz-b8e0a0.cpe.pppoe.ca)
+[19:55:45] <brson> do i need to do anything to get the js bindings to regenerate after changing CodegenRust?
+[19:55:47] *** Joins: valentin (icecold@moz-9bn.d10.25.188.IP)
+[19:56:00] *** Quits: dinfuehr (dinfuehr@moz-tv7bo0.highway.telekom.at) (Connection closed)
+[19:56:04] <jdm> brson: it should just be a mach build
+[19:56:32] *** Joins: dinfuehr (dinfuehr@moz-tv7bo0.highway.telekom.at)
+[19:56:42] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[19:59:32] *** Quits: valentin (icecold@moz-9bn.d10.25.188.IP) (Quit: Leaving.)
+[20:00:55] *** Quits: ray (bernhard@moz-vsafmp.dynamic.surfer.at) (Quit: Leaving.)
+[20:02:52] *** Quits: dmarcos (sid15240@moz-9ahsin.ealing.irccloud.com) (Connection closed)
+[20:02:52] *** Quits: dherman (sid7996@moz-u0jlif.ealing.irccloud.com) (Connection closed)
+[20:02:52] *** Quits: zwarich (sid63988@moz-402giv.ealing.irccloud.com) (A TLS packet with unexpected length was received.)
+[20:02:52] *** Quits: simme (sid33727@moz-07u411.ealing.irccloud.com) (A TLS packet with unexpected length was received.)
+[20:02:52] *** Quits: bigbluehat (sid632@moz-e9hfd2.ealing.irccloud.com) (Connection closed)
+[20:02:52] *** Quits: bpierre (sid33117@moz-2g65u1.ealing.irccloud.com) (A TLS packet with unexpected length was received.)
+[20:02:52] *** Quits: nox (sid3872@moz-fvvn96.ealing.irccloud.com) (A TLS packet with unexpected length was received.)
+[20:04:56] *** Quits: jiojiajiu (Guro@moz-trc2j7.asianet.co.th) (Ping timeout: 121 seconds)
+[20:05:06] *** Joins: jiojiajiu (Guro@moz-trc2j7.asianet.co.th)
+[20:05:19] *** Joins: dinfuehr_ (dinfuehr@moz-8tc31v.highway.telekom.at)
+[20:06:34] *** Quits: dinfuehr (dinfuehr@moz-tv7bo0.highway.telekom.at) (Ping timeout: 121 seconds)
+[20:09:02] *** Joins: valentin (icecold@moz-9bn.d10.25.188.IP)
+[20:11:54] *** Joins: valentin1 (icecold@moz-9bn.d10.25.188.IP)
+[20:13:04] *** Quits: valentin (icecold@moz-9bn.d10.25.188.IP) (Ping timeout: 121 seconds)
+[20:13:38] *** Quits: bdero (bran@moz-e4f4ei.mit.edu) (Ping timeout: 121 seconds)
+[20:15:34] *** Quits: jgallagher (john@moz-d5e8oc.hfc.comcastbusiness.net) (Client exited)
+[20:16:12] <pcwalton> ok, I got the speedup for selector *matching* (not cascading) better on ARM than on x86 when going from 2 cores to 4
+[20:17:11] *** Joins: bigbluehat (sid632@moz-e9hfd2.ealing.irccloud.com)
+[20:18:38] *** Quits: nmatsakis (nmatsakis@moz-no0.93r.245.63.IP) (Connection closed)
+[20:18:59] *** Joins: nmatsakis (nmatsakis@moz-no0.93r.245.63.IP)
+[20:24:25] *** Joins: jga (jga@moz-n5q.t1q.244.77.IP)
+[20:24:55] <mwu> jdm: a bunch of the comments say it's waiting for a response from ms2ger
+[20:24:58] *** Joins: jack (Adium@moz-ndkgui.nm.comcast.net)
+[20:24:58] *** ChanServ sets mode: +o jack
+[20:25:07] <mwu> is that intentional or some reviewable thing
+[20:25:11] <jdm> mwu: yeah, that's a limitation of reviewable
+[20:25:18] <jdm> I've griped about it in github issues before
+[20:25:24] <mwu> oh ok
+[20:27:19] <mwu> jdm: kinda annoying because I can't dismiss things I've fixed since it's waiting for ms2ger..
+[20:27:32] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[20:27:32] -ghservo- [13servo] 15bors-servo pushed 2 new commits to 06tmp: 02http://git.io/vIYBQ
+[20:27:32] -ghservo- 13servo/06tmp 146d89289 15Ms2ger: Use if let in HTMLTableElement::SetCaption.
+[20:27:32] -ghservo- 13servo/06tmp 140557f7d 15bors-servo: Auto merge of #6291 - Ms2ger:caption, r=nox...
+[20:27:32] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[20:27:33] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[20:27:33] -ghservo- [13servo] 15bors-servo merged 06tmp into 06auto: 02http://git.io/vIYBQ
+[20:27:33] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[20:27:39] <mwu> I'll just comment.
+[20:27:51] *** Joins: larsberg (sid89@moz-1a60qu.0j4i.jtu0.0101.2620.IP)
+[20:27:51] *** ChanServ sets mode: +o larsberg
+[20:28:07] <mwu> wait, so everything that I've acknowledged just switched to waiting for a comment from ms2ger?
+[20:28:17] <jdm> yep
+[20:28:22] <mwu> ohhh
+[20:28:24] <jdm> same for the things that I acknowledged
+[20:28:28] <mwu> this makes so much more sense now.
+[20:30:06] *** Joins: RJ (sid1@moz-bfakr9.highgate.irccloud.com)
+[20:30:25] *** Joins: sneakyness (textual@moz-tmbr33.biz.rr.com)
+[20:30:33] *** Parts: jack (Adium@moz-ndkgui.nm.comcast.net) ()
+[20:30:34] *** Joins: jack (Adium@moz-ndkgui.nm.comcast.net)
+[20:30:35] *** ChanServ sets mode: +o jack
+[20:31:12] *** Joins: pkondzior (sid768@moz-nrgp4s.highgate.irccloud.com)
+[20:31:14] *** Joins: jviereck (Adium@moz-e1p5r6.g21i.vk5s.0000.2620.IP)
+[20:31:53] *** Joins: nox (sid3872@moz-fvvn96.ealing.irccloud.com)
+[20:32:51] *** Quits: jviereck (Adium@moz-e1p5r6.g21i.vk5s.0000.2620.IP) (Quit: Leaving.)
+[20:35:06] *** Quits: dinfuehr_ (dinfuehr@moz-8tc31v.highway.telekom.at) (Connection closed)
+[20:35:11] <mwu> jdm: http://hastebin.com/xiwafuqepe.sm
+[20:35:20] <mwu> adding an "as *mut _" fixes it
+[20:35:27] *** Joins: dinfuehr (dinfuehr@moz-8tc31v.highway.telekom.at)
+[20:35:27] <mwu> are you ok with that
+[20:35:38] *** Joins: jandem (sid16255@moz-2gehe3.highgate.irccloud.com)
+[20:35:41] *** Joins: mihnea_ (sid16310@moz-87gr0i.highgate.irccloud.com)
+[20:36:08] <jdm> mwu: remind me the type of val?
+[20:36:31] <jdm> oh right, &Heap<T>
+[20:36:32] <jdm> bah
+[20:37:20] *** Joins: jviereck (Adium@moz-rsb0fg.g21i.vk5s.0000.2620.IP)
+[20:37:24] *** Joins: dherman (sid7996@moz-u0jlif.ealing.irccloud.com)
+[20:37:35] <mwu> ya, which has an UnsafeCell<T>
+[20:37:39] <jdm> mwu: ok, go back to the val as *const _ as *mut T
+[20:37:42] <jdm> I get why it's ok
+[20:37:47] <mwu> jdm: ok cool
+[20:37:48] <jdm> er, as *mut _
+[20:37:56] * jdm will still grumble every time he sees it
+[20:38:02] <mwu> yeah it's unpleasant
+[20:38:14] <mwu> good thing you pressed me on this one though. had to think about the real consequences
+[20:38:22] *** Quits: Savago (Savago@moz-8hd.3b6.246.162.IP) (Client exited)
+[20:38:33] *** Joins: jonalmeida (sid17545@moz-c167m6.highgate.irccloud.com)
+[20:39:03] *** Quits: jga (jga@moz-n5q.t1q.244.77.IP) (Connection closed)
+[20:39:15] *** Joins: merl (sid17756@moz-n96e6m.highgate.irccloud.com)
+[20:39:30] *** Quits: dinfuehr (dinfuehr@moz-8tc31v.highway.telekom.at) (Ping timeout: 121 seconds)
+[20:40:22] *** Joins: Savago (Savago@moz-8hd.3b6.246.162.IP)
+[20:41:19] *** Quits: Savago (Savago@moz-8hd.3b6.246.162.IP) (Client exited)
+[20:42:00] *** Joins: jack_ (sid19593@moz-fhlsm9.highgate.irccloud.com)
+[20:42:00] *** ChanServ sets mode: +o jack_
+[20:42:21] *** Joins: dmarcos (sid15240@moz-9ahsin.ealing.irccloud.com)
+[20:43:30] *** Quits: jviereck (Adium@moz-rsb0fg.g21i.vk5s.0000.2620.IP) (Quit: Leaving.)
+[20:45:47] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[20:45:47] -ghservo- [13rust-mozjs] 15michaelwu opened issue #153: Make Handle objects take lifetimes 02http://git.io/vIYaN
+[20:45:47] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[20:47:56] *** Quits: jiojiajiu (Guro@moz-trc2j7.asianet.co.th) (Ping timeout: 121 seconds)
+[20:48:16] *** Joins: flaki (sid26072@moz-kltomo.highgate.irccloud.com)
+[20:48:20] *** Quits: jack (Adium@moz-ndkgui.nm.comcast.net) (Quit: Leaving.)
+[20:48:20] *** jack_ is now known as jack
+[20:48:45] <brson> i'm doing some compile time perf tests of removing various inline(always)s in different configs
+[20:49:34] *** Joins: jiojiajiu (Guro@moz-trc2j7.asianet.co.th)
+[20:50:27] *** Joins: bpierre (sid33117@moz-2g65u1.ealing.irccloud.com)
+[20:50:51] *** Joins: simme (sid33727@moz-07u411.ealing.irccloud.com)
+[20:50:57] *** Joins: steshaw (sid30841@moz-mij4a1.highgate.irccloud.com)
+[20:55:56] *** Quits: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[20:57:21] *** Joins: WindowsBunny1 (Peter@moz-vlal7g.east.verizon.net)
+[20:59:35] *** Quits: WindowsBunny (Peter@moz-vlal7g.east.verizon.net) (Ping timeout: 121 seconds)
+[21:02:39] *** Joins: till (till@moz-0tejpc.adsl.alicedsl.de)
+[21:02:47] *** Quits: till (till@moz-0tejpc.adsl.alicedsl.de) (A TLS packet with unexpected length was received.)
+[21:02:49] *** Joins: till (till@moz-0tejpc.adsl.alicedsl.de)
+[21:10:25] *** Quits: jiojiajiu (Guro@moz-trc2j7.asianet.co.th) (Connection closed)
+[21:10:39] *** Joins: jiojiajiu (Guro@moz-trc2j7.asianet.co.th)
+[21:13:18] *** Quits: kmicu (kmicu@moz-uga.edn.218.91.IP) (Client exited)
+[21:20:21] *** Joins: jviereck (Adium@moz-9kj5la.g21i.vk5s.0000.2620.IP)
+[21:23:29] *** Quits: Jackneill (Jackneill@moz-d0suub.pool.digikabel.hu) (A TLS packet with unexpected length was received.)
+[21:32:02] *** Joins: zwarich (sid63988@moz-402giv.ealing.irccloud.com)
+[21:34:01] *** Quits: dbaron (dbaron@moz-7i8mdt.2rkg.9kg1.0101.2620.IP) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[21:34:26] *** Joins: bdero (bran@moz-lbs.91h.47.73.IP)
+[21:34:39] *** Joins: dbaron (dbaron@moz-65o4pd.rgd2.9kg1.0101.2620.IP)
+[21:34:40] <mwu> jdm: seems like any in dictionaries are broken https://gist.github.com/michaelwu/982032c9246b67d93155#file-testbindingbinding-rs-L156
+[21:35:02] <mwu> Handle objects are pretty dangerous without lifetimes.
+[21:35:08] *** Quits: psd|afk (psd@moz-1trfbi.mtnl.net.in) (Ping timeout: 121 seconds)
+[21:35:42] *** Joins: dinfuehr (dinfuehr@moz-8tc31v.highway.telekom.at)
+[21:38:17] <mwu> object values in dictionaries are also a problem, though less so than any
+[21:38:38] <jdm> mwu: oof, yeah
+[21:39:11] <jdm> mwu: is that controlled by the checks for isMember that you removed?
+[21:39:30] <mwu> I dunno
+[21:39:49] *** Quits: dinfuehr (dinfuehr@moz-8tc31v.highway.telekom.at) (Ping timeout: 121 seconds)
+[21:40:01] <mwu> I can't keep much of codegen in my head for very long
+[21:41:27] *** Joins: MrZeus (MrZeus@moz-jf4304.skybroadband.com)
+[21:43:37] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[21:43:37] -ghservo- [13servo] 15michaelwu pushed 1 new commit to 06smupgrade3: 02http://git.io/vIYFB
+[21:43:37] -ghservo- 13servo/06smupgrade3 149cf0374 15Michael Wu: Adjust casting
+[21:43:37] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[21:43:40] *** Quits: jviereck (Adium@moz-9kj5la.g21i.vk5s.0000.2620.IP) (Quit: Leaving.)
+[21:45:23] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[21:45:23] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/vIYbT
+[21:45:23] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[21:45:41] <jack> frewsxcv: What does your nick mean?
+[21:47:58] *** Joins: zz_gsingh93 (gsingh93@moz-uqh.mfp.236.104.IP)
+[21:49:00] *** Quits: jdm (jdm@moz-9uppfi.ckpj.s0pt.0450.2001.IP) (Quit: )
+[21:49:44] *** Joins: jviereck (Adium@moz-d2pmr2.g21i.vk5s.0000.2620.IP)
+[21:51:22] *** Quits: jviereck (Adium@moz-d2pmr2.g21i.vk5s.0000.2620.IP) (Quit: Leaving.)
+[21:51:41] *** Quits: zz_gsingh93 (gsingh93@moz-uqh.mfp.236.104.IP) (Quit: ZNC - http://znc.in)
+[21:52:17] <brson> Here are some tests I ran converting inline(always) to inline https://gist.github.com/brson/b48dd03b06c406be68e6
+[21:52:35] <brson> Doing so for both CodegenRust and jstracable gets some decent compile-time speedup
+[21:53:02] *** Joins: Caspy7 (chatzilla@moz-tkogmh.stlsmo.sbcglobal.net)
+[21:53:56] *** Quits: jiojiajiu (Guro@moz-trc2j7.asianet.co.th) (Ping timeout: 121 seconds)
+[21:54:37] *** Joins: jiojiajiu (Guro@moz-trc2j7.asianet.co.th)
+[21:57:45] <brson> i'll post a patch in case you think it's worth pursuing
+[21:57:45] <Manishearth> ^so that perf drop was my fault :p
+[21:58:03] <Manishearth> well not the codegenrust stuff, but still
+[21:59:04] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[21:59:04] -ghservo- [13servo] 15brson opened pull request #6297: Convert inline(always) to inline in CodegenRust and jstraceable. (06master...06inline) 02http://git.io/vIYhi
+[21:59:04] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[21:59:09] <brson> https://github.com/servo/servo/pull/6297
+[21:59:09] <crowbot> PR #6297: Convert inline(always) to inline in CodegenRust and jstraceable. - https://github.com/servo/servo/pull/6297
+[22:00:10] *** Joins: jviereck (Adium@moz-6h72dd.g21i.vk5s.0000.2620.IP)
+[22:02:54] *** Quits: till (till@moz-0tejpc.adsl.alicedsl.de) (A TLS packet with unexpected length was received.)
+[22:04:43] <frewsxcv> jack: do you use a qwerty keyboard?
+[22:06:12] <frewsxcv> if so, watch the key placement as you type it
+[22:06:33] * frewsxcv is super clever and wasn't indecisive at all when he had to think of a username
+[22:07:00] <Manishearth> its the intellectual version of asdf
+[22:08:43] <frewsxcv> eh
+[22:08:45] <frewsxcv> *heh
+[22:08:51] *** Quits: nefzaoui (nefzaoui@moz-h35.sld.227.41.IP) (Ping timeout: 121 seconds)
+[22:08:53] * frewsxcv is not canadian
+[22:09:40] *** Joins: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net)
+[22:09:53] <Manishearth> I always read your username as: "Hmm, F for Farwell". "Okay, now r ... you a letter there". "e-w. hmm, now you flipped those around" "scxv. hulk smash?"
+[22:10:44] *** Joins: bholley (bholley@moz-qpv0dk.ca.comcast.net)
+[22:10:50] *** Joins: gandi (zbraniecki@moz-cp7c4m.ca.comcast.net)
+[22:12:09] <pcwalton> hmmmm, 9.5% of accesses in matches_simple_selector and 5% of accesses in get_all_matching_rules miss in L1… and L2 is shared among each group of 4 cores :(
+[22:12:14] <pcwalton> I think this may ultimately be the problem
+[22:12:38] <pcwalton> I got the workstealing overhead down to basically zero on ARM but it didn't help scaling much
+[22:13:11] <pcwalton> will need some more investigation but my hypothesis is that our CSS selector matching data structures need to seriously go on a diet
+[22:13:14] <jack> derf, on the daala team, picked his irc nick the same way :)
+[22:13:45] <larsberg> brson: can we only do the inline(always) on release builds? I'd love the perf wins on debug from removing them, but most of the ones that are there were added b/c of profiling output (IIRC)
+[22:13:50] <frewsxcv> we are the few
+[22:13:52] <Manishearth> y'know, I bet I could form a group out of such strings
+[22:13:58] *** Quits: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net) (Ping timeout: 121 seconds)
+[22:14:11] <Manishearth> where by group I mean the mathematical group theory kind
+[22:14:33] <Manishearth> larsberg: the jstraceable one was due to a hunch of mine, no profiling was done there, btw
+[22:14:47] <Manishearth> larsberg: we can do cfg_attr though
+[22:15:03] <Manishearth> Also, I think brson mentioned somewhere else that inline(always) is almsot always a bad thing
+[22:15:12] <SimonSapin>  larsberg #[cfg_attr(something, inline(always))] ?
+[22:15:13] <Manishearth> somewhere on reddit
+[22:15:15] <brson> larsberg: yeah it could be done conditionally
+[22:15:18] <Manishearth> SimonSapin: yes
+[22:15:39] <SimonSapin> not sure what the appropriate something is
+[22:15:51] <brson> probably have to define it in your mach build
+[22:15:53] <Manishearth> SimonSapin: I could write a simple decorator that expands to that + cfg_attr(not(something), inline)
+[22:16:03] <brson> Manishearth: it's only bad because it can slow down compile time badly
+[22:16:08] <Manishearth> brson: ah
+[22:16:25] <Manishearth> brson: but do you think llvm will make the sane choices 99% of the time?
+[22:16:50] *** Joins: ray (bernhard@moz-vsafmp.dynamic.surfer.at)
+[22:16:53] <pcwalton> by contrast, on my Core i7 only 0.6% of accesses in get_all_matching_rules and 0.01% (!!) of accesses in matches_simple_selector miss in L1/L2 (which are per-core)
+[22:17:07] <pcwalton> so I think you rarely ever hit the shared L3 during selector matching
+[22:17:09] <pcwalton> hence, speedups
+[22:17:13] <brson> Manishearth: i wouldn't say that - i've heard the inliner is pretty dumb, but i'd always default to #[inline] unless it shows up in profiling
+[22:17:21] <SimonSapin> brson: do you have opinions on when to use #[inline] (without "always") as opposed to no attribute at all?
+[22:17:41] *** Joins: zz_gsingh93 (gsingh93@moz-uqh.mfp.236.104.IP)
+[22:17:56] <pcwalton> I wouldn't say the inliner is pretty dumb, but I would say that often times if it makes a bad decision it's catastrophic
+[22:18:07] <pcwalton> I do think that it almost never makes sense to use inline(always) on debug builds
+[22:18:20] <brson> pcwalton: we can probably just make that a policy in rustc
+[22:18:28] <brson> there's no reason to be aggressive when optlevel=0
+[22:18:38] <brson> well, idk
+[22:18:51] <pcwalton> inline(always_unless_debugging) :)
+[22:18:52] <SimonSapin> #[inline(almost_alawys)]
+[22:18:52] <brson> i imagine some people expect always to mean always
+[22:18:58] <Manishearth> brson: cool
+[22:19:00] <frewsxcv> jack: i haven't touched any of the rust-clipboard stuff today, so if you have a fix you could open a PR....in case you thought we were going to duplicate work again :P
+[22:19:01] <pcwalton> anyway, it looks like we blow out per-core L1 and have to hit shared L2 all the time on the ARM board during selector matching
+[22:19:13] <brson> SimonSapin: I don't have a good guideline for when to apply #[inline], no
+[22:19:18] <pcwalton> which would explain why our scaling is bad
+[22:19:21] * frewsxcv is finishing work for his paid job
+[22:19:29] <brson> pcwalton: what are you using to find that info?
+[22:19:48] <pcwalton> brson: cachegrind, guided by my fork of Google's ARM profiler
+[22:19:49] *** Joins: Savago (Savago@moz-s4f7da.tmodns.net)
+[22:20:14] <pcwalton> brson: the latter has a rewritten ARM unwinder so it works with Rust and without recompiling your system
+[22:21:44] * pcwalton curses the ARM big.LITTLE for sharing L2 among all cores… 512KB per core would have been so much better
+[22:22:28] <pcwalton> or, y'know, local L2 + shared L3
+[22:22:29] <pcwalton> oh well
+[22:22:44] *** Quits: zz_gsingh93 (gsingh93@moz-uqh.mfp.236.104.IP) (Quit: ZNC - http://znc.in)
+[22:23:39] *** Quits: ray (bernhard@moz-vsafmp.dynamic.surfer.at) (Connection closed)
+[22:27:46] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[22:29:35] *** Quits: fkaa_ (tundmatu@moz-501od2.business.telia.com) (Ping timeout: 121 seconds)
+[22:32:15] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[22:34:09] *** Quits: dbaron (dbaron@moz-65o4pd.rgd2.9kg1.0101.2620.IP) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[22:34:27] *** Joins: dbaron (dbaron@moz-7i8mdt.2rkg.9kg1.0101.2620.IP)
+[22:38:26] *** Quits: Savago (Savago@moz-s4f7da.tmodns.net) (Client exited)
+[22:41:45] *** Quits: mwu (mwu@moz-na2i93.oi2i.p882.0085.2601.IP) (Quit: Leaving)
+[22:44:59] *** Joins: playjax (chatzilla@moz-bqrtim.optusnet.com.au)
+[22:48:05] <jack> frewsxcv: I don't understand. I still get unused attribute if I do that in x11_clipboard.rs
+[22:50:09] <jack> Nice. There's no way to conditionalize it, so it's always going to warn on OS X :(
+[22:51:46] <Manishearth> jack: why not cfg_attr?
+[22:52:10] <jack> Manishearth: never heard of htat.
+[22:54:12] <jack> But that works perfectly. Thanks!
+[22:54:51] <jack> frewsxcv: done
+[22:56:56] *** Quits: jiojiajiu (Guro@moz-trc2j7.asianet.co.th) (Ping timeout: 121 seconds)
+[23:00:43] *** Joins: Jesse (jruderman@moz-7j9qeo.ujol.1ibb.0101.2620.IP)
+[23:03:32] *** Joins: till (till@moz-0tejpc.adsl.alicedsl.de)
+[23:09:37] *** Quits: till (till@moz-0tejpc.adsl.alicedsl.de) (Ping timeout: 121 seconds)
+[23:12:15] *** Quits: eibwen (eibwen@moz-5gg09u.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[23:12:34] *** Quits: gsingh93 (gulshan@moz-ln1ktu.st3l.iv8o.0004.2601.IP) (Quit: WeeChat 1.1.1)
+[23:12:43] *** Joins: gsingh93 (gulshan@moz-ln1ktu.st3l.iv8o.0004.2601.IP)
+[23:15:29] *** Quits: ahal (ahal@moz-b8e0a0.cpe.pppoe.ca) (A TLS packet with unexpected length was received.)
+[23:16:48] <nox> reflector vs reflector_, why?
+[23:18:35] <nox> Manishearth: a clue?
+[23:21:25] <Manishearth> hmm?
+[23:21:47] <Manishearth> nox: 
+[23:21:48] <Manishearth> oh
+[23:21:58] <Manishearth> nox: it clashes with the reflector() method
+[23:22:04] <nox> I see.
+[23:22:11] <Manishearth> though now it may not because traits work better
+[23:22:18] *** Quits: gsingh93 (gulshan@moz-ln1ktu.st3l.iv8o.0004.2601.IP) (Quit: WeeChat 1.2)
+[23:22:20] *** Joins: gsingh93 (gulshan@moz-ln1ktu.st3l.iv8o.0004.2601.IP)
+[23:22:29] <nox> Do I ask for a rename in #6284?
+[23:22:30] <crowbot> Issue #6284: Fix #6242 testbinding add specialoperations - https://github.com/servo/servo/pull/6284
+[23:22:32] <Manishearth> still you'd need to use the <T as Reflector> syntax, ick
+[23:22:47] <Manishearth> yeah
+[23:23:19] *** Quits: gsingh93 (gulshan@moz-ln1ktu.st3l.iv8o.0004.2601.IP) (Quit: WeeChat 1.2)
+[23:23:25] *** Joins: gsingh93 (gulshan@moz-ln1ktu.st3l.iv8o.0004.2601.IP)
+[23:23:29] <nox> Manishearth: I just pinged you in it but I forgot the last 'h' hah.
+[23:24:08] <Manishearth> nox: we can refactor later if it's not going to break anything
+[23:27:39] <mbrubeck> Feeling pretty good about progress on https://github.com/mbrubeck/unicode-bidi this week
+[23:28:23] <nox> mbrubeck: This week?! Come on, it's only one algorithm, it should just take a couple of hours right? :P
+[23:28:32] <mbrubeck> :)
+[23:29:45] <mbrubeck> It's kind of fun writing code with both a (reasonably) detailed spec and a reference implementation available.  Less need to hold a bunch of info in my head, since it's all written down for me.
+[23:30:46] *** Joins: jbomo (dkd@moz-uol4mm.fios.verizon.net)
+[23:30:55] *** Quits: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com) (Quit: quit)
+[23:31:45] *** Quits: gsingh93 (gulshan@moz-ln1ktu.st3l.iv8o.0004.2601.IP) (Quit: WeeChat 1.2)
+[23:36:05] <jack> mbrubeck, nox: no kidding. I mena, everything was already implemented in one directly, so adding another is less than 50% of the work!
+[23:36:10] <jack> :)
+[23:36:28] <jack> s/directly/direction/
+[23:36:50] <nox> jack: You mena?
+[23:37:04] <jack> s/mena/mean/
+[23:37:04] <nox> Your own BiDi algorithm looks like it could use some tweaking.
+[23:37:47] <mbrubeck> git clone http://github.com/servo/servo && find -name "*.rs" servo | xargs rev
+[23:38:39] <nox> Do we do UTF conversions somewhere in Servo? If yes, where?
+[23:38:59] <nox> Manishearth: TIL rev(1).
+[23:39:23] <nox> I still didn't learn to not fail tabbing though. s/Manishearth/mbrubeck/
+[23:39:27] <mbrubeck> nox: If anywhere it's probably in hyper or html5ever
+[23:39:36] * mbrubeck -> errands
+[23:39:46] <sp3d> nox: it's like a charwise tac
+[23:41:09] *** Quits: ldng (ldng@moz-l3gmiq.abo.bbox.fr) (Quit: Leaving)
+[23:43:06] *** Quits: gandi (zbraniecki@moz-cp7c4m.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[23:43:53] *** Joins: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net)
+[23:46:37] *** Quits: jviereck (Adium@moz-6h72dd.g21i.vk5s.0000.2620.IP) (Quit: Leaving.)
+[23:48:22] *** Joins: jgallagher (john@moz-6ge.dhn.131.24.IP)
+[23:51:12] *** Quits: bholley (bholley@moz-qpv0dk.ca.comcast.net) (Quit: Textual IRC Client: www.textualapp.com)
+[23:55:56] *** Joins: Savago (Savago@moz-28o.4t3.247.50.IP)
+[23:58:00] *** Joins: jviereck (Adium@moz-cnl03t.g21i.vk5s.0000.2620.IP)
+[23:59:37] *** Quits: hatman (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)

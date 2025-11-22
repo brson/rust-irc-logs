@@ -1,0 +1,1256 @@
+[00:00:08] <eddyb> like... addresses 0..16
+[00:00:30] <eddyb> each one means "go back 2^value usizes"
+[00:00:50] <eddyb> so it's log n to "unwind" padding
+[00:01:02] <eddyb> O(log n), I mean
+[00:01:15] <WindowsBunny> I'm so sick and tired of Cargo/rustc having filesystem races
+[00:01:21] <eddyb> bk
+[00:01:24] <eddyb> err
+[00:01:35] <WindowsBunny> ar: C:\msys64\home\Peter\winapi-rs\target\debug\deps\libmpr-3fc99212b55b9740.rlib: Permission denied
+[00:01:53] <eddyb> bkoropoff: or just two sentinel values, 0 and 1 or two statics of your choosing
+[00:01:55] *** Quits: ytain (ytain@moz-o0gerq.dsl.teksavvy.com) (Quit: Textual IRC Client: www.textualapp.com)
+[00:02:15] <WindowsBunny> eddyb: We try to fire ar at the rlib before our existing handle is cleaned up
+[00:02:25] <eddyb> bkoropoff: one means "go back one usize" and the other one "the offset is stored before me"
+[00:02:53] <eddyb> bkoropoff: as for const fn... well, some of it "is coming*
+[00:03:32] <eddyb> bkoropoff: &constant_rvalue is already in .rodata, but you need to remove a line of code from borrowck to allow the user to use it as 'static
+[00:03:41] <eddyb> which needs an RFC
+[00:04:14] <eddyb> WindowsBunny: closing a File is not enough?
+[00:04:44] <WindowsBunny> eddyb: CloseHandle doesn't block until all cleanup is done
+[00:04:53] <eddyb> why :(?
+[00:05:14] <WindowsBunny> eddyb: Because there might be another handle open!
+[00:05:21] <WindowsBunny> For example, anti-viruses :D
+[00:05:33] <eddyb> uh oh
+[00:05:36] *** Quits: chc4 (chc4@moz-pdo0at.ma.comcast.net) (Ping timeout: 121 seconds)
+[00:05:48] <eddyb> is that like fd refcounting?
+[00:06:04] <WindowsBunny> eddyb: Only once the refcount goes down to 0, then it gets cleaned up
+[00:06:22] <eddyb> and does that mean there is another File pointing to it?
+[00:06:34] <WindowsBunny> another HANDLE
+[00:06:35] <eddyb> or LLVM internals messing around?
+[00:06:38] <WindowsBunny> potentially in other processes
+[00:06:46] <eddyb> oh, that, right
+[00:06:50] <WindowsBunny> system processes, anti-viruses, whatever
+[00:06:59] <eddyb> pretty sure fd refcounting is process-local
+[00:07:16] <WindowsBunny> HANDLEs can be duplicated and shared between processes
+[00:07:48] <WindowsBunny> its handled by the NT kernel object manager, so it's not process local
+[00:08:33] <eddyb> yay incompatible semantics
+[00:08:51] <eddyb> bkoropoff: I should sleep. but this is really cool stuff!
+[00:08:54] <bkoropoff> eddyb: I think the sentinel value in the padding will work, since the two potential locations will either be padding or the actual metadata, both of which we control
+[00:09:02] *** Joins: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au)
+[00:09:21] <bkoropoff> eddyb: and it doesn't require weird bitpacking or static bloat.  I'll go with that.  Thanks for the idea.
+[00:09:46] <eddyb> bkoropoff: I'm a bit hyped. the ECS crowd in #rust-gamedev will love it :D
+[00:10:22] *** Quits: larsberg (Adium@moz-kmvlue.cable.rcn.com) (Quit: Leaving.)
+[00:10:36] *** Joins: mib_904xk1 (Mibbit@moz-hu6.nja.252.72.IP)
+[00:10:44] <WindowsBunny> eddyb: http://en.wikipedia.org/wiki/Object_Manager_%28Windows%29
+[00:10:50] *** Joins: larsberg (sid89@moz-1a60qu.0j4i.jtu0.0101.2620.IP)
+[00:11:01] <bkoropoff> I'm looking forward to eliminating a bunch of RefCells in rustc that we only use so we can append to a list/map through & refs
+[00:11:47] <eddyb> it's not obvious whether file closing should block or whether every program hoping to run on windows has to handle it manually
+[00:12:40] <WindowsBunny> > In general, CloseHandle invalidates the specified  object handle, decrements the object's handle count, and performs object  retention checks. After the last handle to an object is closed, the  object is removed from the system. 
+[00:14:01] <eddyb> bkoropoff: that would be great!
+[00:14:02] <WindowsBunny> >A small caveat: closing the last handle to a file object counts as a  synchronous I/O operation, and it will synchronize with other  synchronous I/O operations if the file wasn't opened with  FILE_FLAG_OVERLAPPED.
+[00:14:13] <WindowsBunny> eddyb: So the _final_ closing of a handle is synchronous
+[00:14:49] <WindowsBunny> but due to anti-viruses and whatnot, even if rustc closes all the handles, there still might be other handles that are alive
+[00:15:17] <eddyb> (fd refcounting can cross processes if you want it to... but doesn't happen automatically for disjoint opens of the same file)
+[00:16:06] <WindowsBunny> eddyb: It might not even be the same HANDLE, it might be the anti-virus opening a new handle to the file
+[00:16:08] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[00:16:30] <eddyb> yes, that sounds very whacky to me
+[00:16:43] <WindowsBunny> But since ar tries to get presumably exclusive access to the rlib, if there any existing handles, it'll get denied
+[00:16:55] <eddyb> and is, AFAIK, incompatible with the unix (posix? linux?) srmantics
+[00:17:01] <eddyb> semantics even
+[00:17:11] <larsberg> WindowsBunny: true story. We spent more time (when I was at MSFT) dealing with AV software than anything else. They all hook into the driver notification chain, which makes things...complicated.
+[00:17:47] <larsberg> AV (circa 2004) was the major source of file system slowdown on Window.
+[00:17:50] <WindowsBunny> larsberg: Didn't Firefox add a small sleep before operations to ensure that existing file handles are closed before doing the next thing?
+[00:18:02] <eddyb> larsberg: I spent hours today investigating and then patching wine, so that a WS_connect hook would work
+[00:18:04] <WindowsBunny> in firefox's build system because it was such a problem
+[00:18:48] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[00:18:53] <larsberg> WindowsBunny: I wouldn't be surprised if they did. Knowing what events to hook requires "friends at MSFT" so a sleep is probably the easiest solution, unless you own the boxes.
+[00:19:02] <eddyb> larsberg: every time I touch windows internals I see "beware haxx"
+[00:20:03] <eddyb> larsberg: what? waiting on all handles to a file to close is not a publicly documented procedure?!
+[00:20:31] <eddyb> s/waiting on/waiting for
+[00:20:38] <larsberg> eddyb: publicly documented != what people know to do
+[00:21:05] <WindowsBunny> larsberg: Is there an API to ask if all handles to a file have been closed yet?
+[00:21:09] <larsberg> That said, we had some huge problems in the late 90s with really poor documentation, so I can't really point fingers.
+[00:21:15] <eddyb> knowing what buttons to push on a rube goldberg machine?
+[00:21:40] <eddyb> I frankly have had enough for today
+[00:22:06] <larsberg> WindowsBunny: literally, if you are stuck on any specific Windows-related problems, *please* send me mail. Most of my old colleagues are EVPs, but I'm more than happy to try to find a relevant contact for you to get Rust running nicely on Windows
+[00:23:30] <WindowsBunny> larsberg: What is the best way to send you mail?
+[00:23:41] <larsberg> WindowsBunny: larsberg@mozilla.com
+[00:23:49] <WindowsBunny> Manishearth is handling the PDB mission
+[00:24:15] <WindowsBunny> So the only other information that is really needed at the moment is how to ensure all handles are closed
+[00:24:16] <larsberg> WindowsBunny: by contacting my old direct report, doug, who owned debuggers for the first 15 years that Microsoft wrote them :-)
+[00:24:31] <WindowsBunny> o_0
+[00:25:18] <larsberg> srsly I had some people working for me who were at least 10x more awesome than I could ever hope to be
+[00:25:56] <eddyb> 10x programmers not a myth? :P
+[00:26:10] <larsberg> eddyb: basically fact
+[00:27:00] <larsberg> eddyb: true story, I had somebody working for me who had written every version of every developer text editor ever. He wrote a new one on top of windows presentation framework in about 1/100 the time of any other human. It's not even fair.
+[00:27:21] <larsberg> (by every, I mean from MSFT, obviously)
+[00:27:42] <eddyb> have you seen the kOS editor?
+[00:28:33] <cmr> the kOS editor is only impressive if you've never used an array language
+[00:28:42] *** Joins: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP)
+[00:30:24] <larsberg> eddyb: I have not, but realize that I owned the previous and current versions of the Visual Studio editor, so I'm a bit biased :-) (also, I wrote the emacs keybinding specifications for them)
+[00:31:17] <eddyb> http://www.kparc.com/edit.k
+[00:32:38] <eddyb> larsberg: that's really cool. I've only toyed around with primitive stuff in JS. maybe one day there will be a Rust IDE :P
+[00:32:40] <WindowsBunny> larsberg: Here's the exact issue https://github.com/rust-lang/rust/issues/21656
+[00:34:18] <WindowsBunny> eddyb: That is horrifying
+[00:34:46] <eddyb> I have no idea how it even looks
+[00:41:16] *** Joins: aatch (james@moz-c6etfk.fosn.r6an.e000.2406.IP)
+[00:41:24] <huon> acrichto: edunham: is it known that the last nightly seems to be 2015-06-02?
+[00:41:38] <WindowsBunny> huon: yes
+[00:41:47] <WindowsBunny> huon: already investigated and taken care of (probably)
+[00:41:52] <WindowsBunny> we'll find out tonight if the fix worked
+[00:41:56] <huon> ok, thanks
+[00:42:13] <WindowsBunny> huon: but thanks for your concern anyway :D
+[00:42:40] <huon> I wasn't concerned, just incensed
+[00:42:40] <huon> :P
+[00:45:11] *** Quits: mib_904xk1 (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[00:45:55] *** Joins: chc4 (chc4@moz-pdo0at.ma.comcast.net)
+[00:51:39] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[00:55:56] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Ping timeout: 121 seconds)
+[01:19:33] *** Joins: dcb (textual@moz-j72nfe.ca.comcast.net)
+[01:26:06] *** Joins: Quxxy (chatzilla@moz-0nv.jkp.167.59.IP)
+[01:30:30] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Connection closed)
+[01:31:31] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[01:38:00] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[01:42:02] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Ping timeout: 121 seconds)
+[01:46:53] *** Joins: mib_71mbns (Mibbit@moz-hu6.nja.252.72.IP)
+[01:48:37] *** Quits: joh (uid13099@moz-2c7ap3.ealing.irccloud.com) (Quit: Connection closed for inactivity)
+[01:48:52] *** Quits: Astrum|Lap (Astrum|Lap@moz-skcefh.co.comcast.net) (Client exited)
+[01:55:56] *** Joins: genbattle (genbattle@moz-4v0.gkd.16.182.IP)
+[02:02:34] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[02:03:53] *** Quits: dcb (textual@moz-j72nfe.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[02:03:56] *** Joins: Astrum|Lap (Astrum|Lap@moz-skcefh.co.comcast.net)
+[02:08:50] *** Joins: dcb (textual@moz-j72nfe.ca.comcast.net)
+[02:11:59] <bkoropoff> I'm ending up with iterator code like:  self.back_backward = (*backward.fence).backward(backward.forward);
+[02:16:07] <cmr> Noooooo only one debug_struct can exist for a single Formatter at a time :(
+[02:16:58] *** Quits: bjz (bjz@moz-puppgq.tpgi.com.au) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[02:19:39] *** Quits: mib_71mbns (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[02:29:56] *** Joins: bjz (bjz@moz-puppgq.tpgi.com.au)
+[02:36:02] *** Quits: bjz (bjz@moz-puppgq.tpgi.com.au) (Ping timeout: 121 seconds)
+[02:38:29] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[02:39:25] *** Quits: dcb (textual@moz-j72nfe.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[02:39:32] <bkoropoff> ok, it works
+[02:42:43] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Ping timeout: 121 seconds)
+[02:57:34] *** Quits: zz_kimundi (kimundi@moz-qrrgd6.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[03:00:08] *** Joins: zz_kimundi (kimundi@moz-01l8sd.dip0.t-ipconnect.de)
+[03:00:10] *** zz_kimundi is now known as kimundi
+[03:03:53] *** Quits: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[03:05:38] <bkoropoff> eddyb: it seems to work.  I've pushed what I've got so far.
+[03:08:00] *** Joins: p1start (p1start@moz-nftjhe.org)
+[03:11:07] *** Quits: joneshf-laptop (joneshf@moz-l4h.b5s.208.98.IP) (Connection closed)
+[03:11:28] *** Joins: joneshf-laptop (joneshf@moz-l4h.b5s.208.98.IP)
+[03:17:36] *** Joins: yourabi (yourabi@moz-q8dqtg.ca.comcast.net)
+[03:19:38] *** Joins: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP)
+[03:23:39] *** Quits: yourabi (yourabi@moz-q8dqtg.ca.comcast.net) (Quit: Textual IRC Client: www.textualapp.com)
+[03:27:34] *** Joins: semarie (semarie@moz-qpd.aq7.187.37.IP)
+[03:45:38] <sfackler> cmr: why do you want more than one?
+[03:45:58] <cmr> sfackler: nesting structs inside other structs?
+[03:46:14] *** Joins: skeuomorf (skeuomorf@moz-d3l.n1e.32.197.IP)
+[03:47:13] <cmr> I guess I should do it with a wrapper type
+[03:47:50] <cmr> But the precise usecase is pretty-printing around some bitsets that already have their own Debug impl.
+[03:51:50] *** Joins: jgallagher (john@moz-6ge.dhn.131.24.IP)
+[03:52:13] *** Quits: jgallagher (john@moz-6ge.dhn.131.24.IP) (Client exited)
+[03:53:57] <Quxxy> If I have something fail during expansion, but *not* due to the input (i.e. IO failure), should I use span_err or span_bug?
+[03:54:11] <cmr> span_err
+[03:54:26] <cmr> span_bug is for conditions that should be fixed inside the compiler, under the compiler's control.
+[03:54:49] <cmr> (ie, an ICE)
+[03:54:55] <Quxxy> Ok; so failing in span_to_snippet would be a bug, then?
+[03:55:06] <cmr> maybe/probably!
+[03:55:10] <Quxxy> Right
+[03:55:46] <cmr> If the user can't reasonably fix it, span_bug is a good choice.
+[03:55:54] <Quxxy> While you're here; is there an easy way to go from &[TokenTree] to the source text representation?  I want to turn a macro invocation's TTs back into text, but the only thing I've found thus far is span_to_snippet.
+[03:55:58] <Quxxy> Ok
+[03:56:13] *** Quits: johnsoft (johnsoft@moz-69mrig.res.rr.com) (Ping timeout: 121 seconds)
+[03:56:19] <aatch> Quxxy, look at what `stringify` does
+[03:56:34] *** Joins: johnsoft (johnsoft@moz-69mrig.res.rr.com)
+[03:57:12] <cmr> Quxxy: syntax::pp and syntax::pprust probably have what you want.
+[03:57:23] <Quxxy> aatch, cmr: Ah, thanks
+[03:57:36] <Quxxy> Forgot about stringify! :P
+[03:57:42] * Quxxy rubs hands together
+[03:57:45] <cmr> I guess it's just syntax::Print
+[03:57:47] <cmr> ::print
+[03:57:49] <cmr> dammit
+[03:58:13] <Quxxy> Soon, I shall have stable syntax extensions *cackles*
+[03:59:11] <aatch> My impromptu quest to improve our codegen around things like temporaries continues!
+[03:59:25] <cmr> Excellent!
+[03:59:29] <cmr> I continue to work on not-rustc!
+[04:00:58] <aatch> I've already made intrinsics not create a stack slot unless we actually need one, which is only actually for two intrinsics and I'm not sure they need a temporary anyway.
+[04:02:25] *** Joins: adu (ajr@moz-0foa9t.md.comcast.net)
+[04:03:15] <aatch> Now I'm seeing if I can avoid a store/load pair when the load is the only thing that uses the pointer by just grabbing the original value.
+[04:05:06] <cmr> mm, that'd be a nice to avoid.
+[04:05:21] <cmr> I wonder if isel peepholes that in noopt.
+[04:05:27] <aatch> Well we already do it when building returns.
+[04:05:44] <aatch> cmr, it might, but some passes might run before that.
+[04:05:50] <cmr> yeah
+[04:06:03] <aatch> cmr, It's what I found with the expect intrinsic.
+[04:06:25] *** Quits: Diggsey (diggsey@moz-g327vj.dsl.pipex.com) (Ping timeout: 121 seconds)
+[04:06:36] <aatch> cmr, the store-to-temp, load-from-temp stopped LLVM from recognising the hint.
+[04:06:43] <cmr> Ouch!
+[04:08:37] *** Quits: chc4 (chc4@moz-pdo0at.ma.comcast.net) (Quit: AHHHHH BEES)
+[04:09:52] <aatch> cmr, yeah, so now functions that return scalars (anything more complex than that seems to cause errors I can't track down) return their values directly, avoiding the temporary for them.
+[04:12:08] <aatch> cmr, interestingly, trans_intrinsic_call would return either the destination slot, or the temporary slot. In the second case, that pointer isn't even valid anymore because of lifetime intrinsics.
+[04:12:52] <aatch> cmr, it's just luck that the return value wasn't actually used anyway.
+[04:13:13] *** Quits: skeuomorf (skeuomorf@moz-d3l.n1e.32.197.IP) (Ping timeout: 121 seconds)
+[04:15:41] <Manishearth> windowsbunny: If you want to take point on the pdb thing, that works f me
+[04:15:53] <cmr> aatch: that's pretty scary.
+[04:16:36] <Manishearth> If i need to proceed I need approval from a few people to work with the pdb folks on this
+[04:17:26] <Manishearth> but perhaps you emailing Doug and keeping me (t-magor@microsoft) ccd would work
+[04:18:00] *** Joins: skeuomorf (skeuomorf@moz-d3l.n1e.32.197.IP)
+[04:21:43] *** Joins: dcb (textual@moz-j72nfe.ca.comcast.net)
+[04:25:25] *** Quits: dcb (textual@moz-j72nfe.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[04:30:09] *** Joins: nham (nham@moz-lglsfe.il.comcast.net)
+[04:32:55] *** Joins: achanda (achanda@moz-6gu.gg6.21.113.IP)
+[04:39:44] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[04:44:07] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Ping timeout: 121 seconds)
+[04:44:33] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[04:51:14] *** Quits: p1start (p1start@moz-nftjhe.org) (Ping timeout: 121 seconds)
+[04:52:56] <ChrisMorgan> acrichto: https://github.com/rust-lang/rust-playpen/pull/131 may have been merged, but play.rl.o doesn’t appear to have been updated.
+[04:55:00] *** Quits: achanda (achanda@moz-6gu.gg6.21.113.IP) (Connection closed)
+[04:58:10] *** Quits: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[05:02:39] *** Quits: bkoropoff (bkoropoff@moz-kthi5c.wa.comcast.net) (Client exited)
+[05:02:52] *** Joins: andars (andars@moz-bsldst.sntcca.sbcglobal.net)
+[05:03:05] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[05:06:57] *** Joins: zippity (Mibbit@moz-hu6.nja.252.72.IP)
+[05:09:39] *** Joins: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP)
+[05:10:56] *** Quits: zippity (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[05:13:08] *** Joins: achanda (achanda@moz-u9n.81o.66.182.IP)
+[05:15:43] *** Quits: johnsoft (johnsoft@moz-69mrig.res.rr.com) (Ping timeout: 121 seconds)
+[05:16:06] *** Joins: johnsoft (johnsoft@moz-69mrig.res.rr.com)
+[05:16:13] <aatch> Woo, it works!
+[05:22:27] *** Joins: achanda_ (achanda@moz-u9n.81o.66.182.IP)
+[05:22:33] *** Quits: achanda (achanda@moz-u9n.81o.66.182.IP) (Connection closed)
+[05:26:41] *** Quits: achanda_ (achanda@moz-u9n.81o.66.182.IP) (Ping timeout: 121 seconds)
+[05:31:57] <aatch> Ok, now to avoid the slightly annoying zext/trunc pairs from the booleans.
+[05:32:04] *** Quits: cha0s (chaos@moz-0g0.29v.62.178.IP) (Quit: WeeChat 1.1.1)
+[05:33:22] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[05:33:28] *** Joins: cha0s (chaos@moz-ebt9bj.q7tv.7c32.b0c0.2a03.IP)
+[05:34:02] <acrichto> ChrisMorgan: deployed now!
+[05:34:03] *** Quits: O01eg (o01eg@moz-b3rai2.3lcq.3egh.2698.2a02.IP) (Client exited)
+[05:35:34] *** Joins: theme (theme@moz-i3mhhb.asianet.co.th)
+[05:37:40] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Ping timeout: 121 seconds)
+[05:38:57] *** Quits: _Vi (vi@moz-bbs.vhj.131.104.IP) (Ping timeout: 121 seconds)
+[05:41:05] *** Quits: adu (ajr@moz-0foa9t.md.comcast.net) (Client exited)
+[05:41:10] *** Joins: summerlight (summerlight@moz-99k.2mj.130.121.IP)
+[05:42:20] <Quxxy> I've got code which captures a sub-process' output, but only when *not* executed within rustc; anyone have any ideas why that might be?
+[05:49:37] *** Quits: genbattle (genbattle@moz-4v0.gkd.16.182.IP) (Ping timeout: 121 seconds)
+[05:50:36] *** Joins: Dabo (dabo@znc.dabo.guru)
+[05:51:51] *** Joins: James (quassel@moz-8qs8a3.range86-148.btcentralplus.com)
+[05:57:28] *** Quits: elif (chatzilla@moz-ev8m1p.res.rr.com) (Ping timeout: 121 seconds)
+[06:00:36] *** Joins: dinfuehr (dinfuehr@moz-c25.u8s.112.91.IP)
+[06:02:14] *** Joins: dcb (textual@moz-j72nfe.ca.comcast.net)
+[06:02:16] *** Quits: SiegeLord (sl@moz-9jtaei.ca.comcast.net) (Quit: It's a joke, it's all a joke.)
+[06:02:42] *** Quits: dinfuehr (dinfuehr@moz-c25.u8s.112.91.IP) (Connection closed)
+[06:02:43] *** Joins: dinfuehr (dinfuehr@moz-c25.u8s.112.91.IP)
+[06:05:39] *** Quits: Skyler (Skyler@moz-rv949t.sd.cox.net) (Client exited)
+[06:05:45] *** Joins: Skyler (Skyler@moz-rv949t.sd.cox.net)
+[06:05:58] *** Joins: flaper87 (flaper87Moz@moz-gc8je6.ip57.fastwebnet.it)
+[06:06:32] *** Quits: flaper87 (flaper87Moz@moz-gc8je6.ip57.fastwebnet.it) (Quit: 1.1.1)
+[06:07:37] *** Joins: flaper87 (flaper87Moz@moz-gc8je6.ip57.fastwebnet.it)
+[06:09:11] *** Quits: c0170_ (c0170@moz-4stj9o.cable.virginm.net) (Ping timeout: 121 seconds)
+[06:11:40] *** Joins: p1start (p1start@moz-nftjhe.org)
+[06:16:51] <nrc> Manishearth: hey, you were keen on having proper parenting in the ast map, iirc. Was there any reason it was difficult to add?
+[06:17:12] <nrc> I've decided I need it sooner rather than later, wondering how much time I'll need to put aside
+[06:18:53] *** Joins: achanda (achanda@moz-u9n.81o.66.182.IP)
+[06:19:13] <Manishearth> nrc: well ...
+[06:19:16] <Manishearth> nrc: it was easy to add
+[06:19:27] <Manishearth> nrc: it was hard to add so that rustc doesn't crash cryptically
+[06:19:46] <Manishearth> nrc: https://github.com/manishearth/rust/tree/full-ast-map
+[06:20:11] <Manishearth> and then I didn't get time to investigate properly
+[06:20:50] <nrc> heh, 'tis often the way
+[06:23:33] <theme> someone reported an ICE on #rust
+[06:23:45] <theme> This is what I currently have: http://is.gd/wtw9Eq
+[06:23:50] <theme> anybody want to investigate?
+[06:24:58] *** Joins: c0170 (c0170@moz-bb29a4.cambridge.arm.com)
+[06:28:06] <aatch> Manishearth, codegen issues are the worst for that. Since you get random crashes in the last stage of compilation.
+[06:28:23] <Manishearth> aatch: yes
+[06:28:31] <Manishearth> aatch: and get_parent_did is used everywhere
+[06:30:26] *** Joins: woboats (tatterdemal@moz-c1pqg7.ca.charter.com)
+[06:30:32] <aatch> Ah, there we go, now I'm not eliding loads that shouldn't actually be elided.
+[06:30:43] <cmr> theme: Whatever the issue is, it has been fixed since 1.0
+[06:30:55] <cmr> theme: so, WONTFIX
+[06:33:00] <theme> cmr, ???
+[06:33:09] <cmr> theme: it doesn't ICE on beta/nightly.
+[06:33:12] <cmr> there's no bug.
+[06:33:57] <theme> cmr, http://is.gd/PX9BnO
+[06:33:58] <Gankro> ahaha https://github.com/rust-lang/rust/pull/26090/files
+[06:34:00] <theme> ICE :P
+[06:34:12] <Manishearth> Gankro: we were just about to close that :p
+[06:34:42] <Gankro> Manishearth: I win B)
+[06:34:49] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[06:35:24] <Manishearth> Gankro: the notification of you closing it was flagged as spam by gmail
+[06:35:32] <Manishearth> Gankro: are you secretly a nigerian prince?
+[06:36:36] <Gankro> Manishearth: I am not-so-secretly the dutchess of rainbowsworth
+[06:37:09] *** Joins: grant (grant@moz-jfh.0nq.187.64.IP)
+[06:38:15] <swgillespie> theme: I think it might be https://github.com/rust-lang/rust/issues/25793 which the nightly handles somewhat gracefully
+[06:38:28] <swgillespie> at least in some cases
+[06:38:33] <theme> There are 4 issues that seem related to this ICE
+[06:38:54] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Ping timeout: 121 seconds)
+[06:39:16] <theme> gh24761 gh25793 gh25353 gh24761
+[06:39:16] <[o__o]> ICE in span_to_lines, 'capacity_overflow': https://github.com/rust-lang/rust/issues/24761
+[06:39:22] <theme> gh24761
+[06:39:23] <[o__o]> ICE in span_to_lines, 'capacity_overflow': https://github.com/rust-lang/rust/issues/24761
+[06:39:26] <theme> gh 25793
+[06:39:29] <theme> gh25793
+[06:39:29] <[o__o]> ICE in codemap::CodeMap::span_to_lines when error occurs in macro: https://github.com/rust-lang/rust/issues/25793
+[06:39:32] <theme> gh25353
+[06:39:33] <[o__o]> rustc-beta.5 ICE while printing error: https://github.com/rust-lang/rust/issues/25353
+[06:39:36] <theme> gh24761
+[06:39:36] <[o__o]> ICE in span_to_lines, 'capacity_overflow': https://github.com/rust-lang/rust/issues/24761
+[06:44:49] *** Quits: eddyb (eddyb@moz-2fd.hlc.26.188.IP) (Quit: Bye)
+[06:45:10] *** Joins: squiddy (squiddy@moz-md4.pm3.19.178.IP)
+[06:48:31] <Manishearth> nrc: what is your plan for fixing parenting?
+[06:49:45] <theme> swgillespie, filed a bug: gh26093
+[06:49:46] <[o__o]> ICE due to invalid assignment in macro: illegal left-hand side expression / capacity overflow / unprintable span: https://github.com/rust-lang/rust/issues/26093
+[06:54:39] <Dabo> gh26094 is something I've just submitted that may be related to what is being discussed? 
+[06:54:39] <[o__o]> Capacity overflow or unprintable scan ICE when an error occurs when calling a function provided to a macro: https://github.com/rust-lang/rust/issues/26094
+[06:55:10] <Dabo> though it errors with "unprintable scan" instead of capacity overflow on 1.1 beta and 1.2 nightly
+[06:55:18] <nrc> Manishearth: just the obvious really, add another function to ast_map which is something like real_parent or something and have both fns
+[06:56:02] <nrc> I haven't really thought about the details, just that I want it
+[06:56:22] <Dabo> theme, ^
+[06:56:22] *** Quits: James (quassel@moz-8qs8a3.range86-148.btcentralplus.com) (Ping timeout: 121 seconds)
+[06:57:03] <theme> Dabo, definitely related O_o
+[06:57:28] *** Quits: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[06:57:32] <Dabo> theme, it's strange that it doesn't have a backtrace though .-.
+[06:57:37] <Dabo> on nightly/beta
+[06:57:39] <Dabo> do the others do that?
+[06:58:09] <theme> I dunno
+[06:58:21] <Dabo> it seems at least gh25793 does
+[06:58:21] <[o__o]> ICE in codemap::CodeMap::span_to_lines when error occurs in macro: https://github.com/rust-lang/rust/issues/25793
+[06:58:38] <Dabo> running it locally it also doesn't have a backtrace with RUST_BACKTRACE=1 on nightly
+[06:59:24] *** Joins: bjz (bjz@moz-65q0ko.tpgi.com.au)
+[07:00:14] *** Joins: bdero (bran@moz-lbs.91h.47.73.IP)
+[07:02:00] *** Quits: andars (andars@moz-bsldst.sntcca.sbcglobal.net) (Ping timeout: 121 seconds)
+[07:02:22] *** Quits: theme (theme@moz-i3mhhb.asianet.co.th) (Quit: Leaving)
+[07:02:23] *** Quits: achanda (achanda@moz-u9n.81o.66.182.IP) (Connection closed)
+[07:02:42] *** Quits: nham (nham@moz-lglsfe.il.comcast.net) (Quit: leaving)
+[07:02:55] *** Joins: erz (erz@moz-fiq1tl.broadband.corbina.ru)
+[07:05:24] *** Quits: dcb (textual@moz-j72nfe.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[07:06:37] *** Joins: Viewtiful (Viewtiful@moz-eub.afi.30.89.IP)
+[07:08:13] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[07:11:07] *** Joins: achanda (achanda@moz-6gu.gg6.21.113.IP)
+[07:13:17] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[07:13:20] <Manishearth> nrc: and we replace the functionality of get_parent with a recursive/iterative get_real_parent until we reach the top?
+[07:13:51] <Manishearth> s/top/parent item
+[07:14:08] <Manishearth> the thing is, get_parent() is *almost* get_parent_item. not quite. I don't know the difference
+[07:14:24] <Manishearth> nrc: anyway, my branch does just that, though I renamed get_parent which you may not want to do
+[07:17:39] *** Quits: achanda (achanda@moz-6gu.gg6.21.113.IP) (Connection closed)
+[07:17:56] *** Joins: kushal (kdas@moz-so4.f0d.244.121.IP)
+[07:18:01] *** Quits: flaper87 (flaper87Moz@moz-gc8je6.ip57.fastwebnet.it) (Quit: 1.1.1)
+[07:19:07] *** Joins: flaper87 (flaper87Moz@moz-gc8je6.ip57.fastwebnet.it)
+[07:19:50] *** Quits: bdero (bran@moz-lbs.91h.47.73.IP) (Ping timeout: 121 seconds)
+[07:21:32] *** Quits: grant (grant@moz-jfh.0nq.187.64.IP) (Client exited)
+[07:25:36] *** Joins: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de)
+[07:29:32] <nrc> I was going to leave get_parent alone. I'm not sure how to define "the top", so I'd rather skip the question
+[07:30:50] <Manishearth> nrc: so you're not editing get_parent iether?
+[07:30:55] <Manishearth> nrc: making two maps?
+[07:31:08] <nrc> I think so
+[07:31:34] <Manishearth> nrc: actually, not two maps
+[07:31:47] <Manishearth> nrc: we can do this by adding an extra real_parent field to the node enum
+[07:31:58] <Manishearth> nrc: but, I was hoping to avoid that because it bloats memory
+[07:32:12] <nrc> sgtm
+[07:32:51] <nrc> how much bloat?
+[07:32:52] <Manishearth> nrc: my idea was to reuse the existing parent field and have it set properly, and then traversing up the tree until we find an "acceptable legacy parent" in get_parent
+[07:33:11] <nrc> 4 bytes per AST node, doesn't seem much to me
+[07:33:27] <Manishearth> except I don't know what consists of an acceptable legacy parent. looking at the code, it is just an item/impl item/trait item/something-something-fn-something
+[07:33:33] <Manishearth> but that didn't work out for me
+[07:33:36] <Manishearth> nrc: okay
+[07:33:41] <Manishearth> felt like a lot to me
+[07:34:02] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[07:35:21] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[07:36:42] <nrc> it could be. I'll measure it when I tru
+[07:36:45] <nrc> *try
+[07:38:37] <Manishearth> cool
+[07:39:34] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Ping timeout: 121 seconds)
+[07:42:01] *** Joins: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se)
+[07:42:13] *** Joins: pheleas_frog (Mibbit@moz-hu6.nja.252.72.IP)
+[07:42:39] *** Quits: bjz (bjz@moz-65q0ko.tpgi.com.au) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[07:45:38] *** Quits: pheleas_frog (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[07:47:33] *** Quits: flaper87 (flaper87Moz@moz-gc8je6.ip57.fastwebnet.it) (Connection closed)
+[07:52:15] *** Joins: hyunsik (hyunsik@moz-3qgjl9.ca.comcast.net)
+[07:52:56] *** Joins: flaper87 (flaper87Moz@moz-gc8je6.ip57.fastwebnet.it)
+[07:53:22] *** Quits: Kxepal (Miranda@moz-mmj01e.pppoe.mtu-net.ru) (Ping timeout: 121 seconds)
+[07:57:53] *** Joins: vhbit (textual@moz-u66.qv5.65.95.IP)
+[08:04:44] *** Joins: kermit (Mibbit@moz-hu6.nja.252.72.IP)
+[08:04:58] *** Quits: kermit (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[08:05:20] *** Joins: laumann (thomas@moz-1f0.hq0.225.130.IP)
+[08:09:01] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[08:11:06] *** Joins: zmack (zmack@moz-htpein.home.aster.pl)
+[08:12:29] *** Quits: Astrum|Lap (Astrum|Lap@moz-skcefh.co.comcast.net) (Client exited)
+[08:14:39] *** Joins: achanda (achanda@moz-6gu.gg6.21.113.IP)
+[08:18:56] *** Quits: summerlight (summerlight@moz-99k.2mj.130.121.IP) (Ping timeout: 121 seconds)
+[08:19:40] *** Quits: Kingsquee (kingsley@moz-3fm07c.bchsia.telus.net) (Quit: Konversation terminated!)
+[08:27:53] *** Quits: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua) (Connection closed)
+[08:28:44] *** Quits: akawaka (akawaka@moz-0bb8q8.irvnca.sbcglobal.net) (Ping timeout: 121 seconds)
+[08:29:41] *** Joins: akawaka (akawaka@moz-0bb8q8.irvnca.sbcglobal.net)
+[08:29:42] *** Quits: achanda (achanda@moz-6gu.gg6.21.113.IP) (Connection closed)
+[08:30:07] *** Joins: achanda (achanda@moz-goj.qjv.66.182.IP)
+[08:31:03] *** Quits: kushal (kdas@moz-so4.f0d.244.121.IP) (Ping timeout: 121 seconds)
+[08:31:21] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[08:34:26] *** Quits: achanda (achanda@moz-goj.qjv.66.182.IP) (Ping timeout: 121 seconds)
+[08:36:08] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[08:39:31] *** Quits: blaenk (blaenkdenum@moz-ggnkpd.res.rr.com) (Quit: Leaving)
+[08:40:20] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Ping timeout: 121 seconds)
+[08:41:41] <Manishearth> nrc: btw, what do you need the better parenting for? /me is going to use it to write an unused-clone lint
+[08:42:37] <nrc> save-analysis API - it does its own tracking of scopes atm, but I want to be able to get data for a random node, including its scope without walking the whole AST
+[08:42:54] <Manishearth> nrc: save-analysis?
+[08:43:06] <Manishearth> oh, scopes, beautiful
+[08:43:25] <nrc> -Zsave-analysis dumps a tonne of analysis info as a CSV file
+[08:43:39] <nrc> I want to make that available as an API for compiler-based tools
+[08:43:45] <nrc> see librustc_trans/save
+[08:44:07] <Manishearth> cool
+[08:44:26] <Manishearth> nrc: but what do you intend to use that api for? :)\
+[08:44:38] <Manishearth> or is it just a "lets make an api and see what we can use it for" thing?
+[08:44:53] <nrc> DXR, rustdoc, refactoring, rustfix, etc.
+[08:45:12] <Manishearth> ah
+[08:45:47] *** Quits: Viewtiful (Viewtiful@moz-eub.afi.30.89.IP) (Connection closed)
+[08:45:54] *** Quits: aatch (james@moz-c6etfk.fosn.r6an.e000.2406.IP) (Connection closed)
+[08:48:57] *** Joins: achanda (achanda@moz-5av.06e.66.182.IP)
+[08:55:11] *** Joins: madmalik (uid13697@moz-lfin5p.brockwell.irccloud.com)
+[08:56:07] *** Quits: achanda (achanda@moz-5av.06e.66.182.IP) (Ping timeout: 121 seconds)
+[08:57:28] *** Joins: achanda (achanda@moz-5av.06e.66.182.IP)
+[09:01:05] *** Joins: Viewtiful (Viewtiful@moz-eub.afi.30.89.IP)
+[09:03:30] *** Quits: achanda (achanda@moz-5av.06e.66.182.IP) (Ping timeout: 121 seconds)
+[09:06:06] *** Quits: vhbit (textual@moz-u66.qv5.65.95.IP) (Quit: Textual IRC Client: www.textualapp.com)
+[09:12:25] *** Joins: eddyb (eddyb@moz-f0d.iqr.166.109.IP)
+[09:20:27] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[09:26:23] <aatch> I wonder if my attempt at doing some basic function-local optimisation passes is at all sensible...
+[09:27:19] *** Quits: johnsoft (johnsoft@moz-69mrig.res.rr.com) (Quit: Leaving)
+[09:27:28] *** Joins: johnsoft (johnsoft@moz-69mrig.res.rr.com)
+[09:29:51] <eddyb> aatch: pre-monomorphization would be cool
+[09:30:39] <eddyb> less metadata, faster codegen, less wasted time in LLVM, etc.
+[09:30:53] <aatch> eddyb, nah, this is on the LLVM. Just trying to make the initial IR less dumb.
+[09:31:29] *** Joins: achanda (achanda@moz-5av.06e.66.182.IP)
+[09:31:29] <eddyb> the one thing that I always try to do but get stuck refactoring trans is using SSA where possible
+[09:31:44] <eddyb> instead of allocas
+[09:31:58] <aatch> eddyb, I actually improved that a little. I had to to get the likely/unlikely intrinsics to work.
+[09:32:12] <eddyb> nice :D
+[09:32:22] <aatch> eddyb, since lowering the expect intrinsic is really early in the pipeline
+[09:32:39] <eddyb> a compact const storage format is wanted fwiw
+[09:32:48] <eddyb> large arrays especially
+[09:33:27] <eddyb> we don't want users avoiding consts because they are large
+[09:33:41] <eddyb> that leads to deoptimization
+[09:34:01] *** Quits: achanda (achanda@moz-5av.06e.66.182.IP) (Connection closed)
+[09:36:45] *** Quits: eddyb (eddyb@moz-f0d.iqr.166.109.IP) (Quit: Bye)
+[09:36:54] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[09:37:44] *** Joins: achanda (achanda@moz-6gu.gg6.21.113.IP)
+[09:41:06] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Ping timeout: 121 seconds)
+[09:52:36] *** Joins: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP)
+[09:53:47] *** Quits: achanda (achanda@moz-6gu.gg6.21.113.IP) (Ping timeout: 121 seconds)
+[09:55:57] *** Joins: achanda (achanda@moz-6gu.gg6.21.113.IP)
+[10:05:12] <aatch> Man, I can't wait for LLVM to remove pointer typing.
+[10:05:21] <aatch> So much of our code is just pointer casts
+[10:05:59] <simukis> there’s plans for that?
+[10:06:04] <aatch> simukis, yep
+[10:06:27] <simukis> coulnd't we, you know, just use `void *`?
+[10:07:11] *** Joins: aepsil0n (eduard@moz-6491ha.mv2h.pepi.8071.2a02.IP)
+[10:07:55] <aatch> simukis, heh, unfortunately no. Right now, the type of, for example, a load is based on the pointer type you pass it.
+[10:10:46] *** Joins: ytain (ytain@moz-o0gerq.dsl.teksavvy.com)
+[10:11:46] <kimundi> Aaron: Do you have a link for that?
+[10:11:58] <kimundi> (the llvm plans to remove pointer typing stuff)
+[10:13:47] <huon> kimundi: http://lists.cs.uiuc.edu/pipermail/llvmdev/2015-February/081853.html
+[10:13:52] <simukis> kimundi: another failed nick autocompletion detected :)
+[10:14:06] <kimundi> ah damnit
+[10:14:26] <kimundi> And here I thought LL(2) tab completion would be foolproof :P
+[10:15:01] <kimundi> huon: thx
+[10:15:05] <huon> there's quite a few nicks for which that fails, it's very unfortunate
+[10:16:26] *** Joins: eddyb (eddyb@moz-2fd.hlc.26.188.IP)
+[10:16:50] *** Quits: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com) (Ping timeout: 121 seconds)
+[10:18:06] <kimundi> huon: If I weren't that darn lazy, I'd now start writing a tool for calculating the minimum prefix length that will unabigiosly tab-complete :P
+[10:19:06] <simukis> just make your autocompleters to not autocomplete on ambiguous cases and you're good to go
+[10:19:51] <aatch> Aha, and i've figured out why my load elision wasn't working properly. The `get_dominating_store` method was wrong. It would detect stores *of* the value instead of just stores *to* the value.
+[10:20:02] <eddyb> heh
+[10:20:17] <eddyb> aatch: wait, load elision? is this for &T or something?
+[10:20:41] <eddyb> please tell me it's not load elision of allocas :P
+[10:21:14] <aatch> eddyb, just avoiding a load from a location that's stored to in the same basic block.
+[10:21:32] <eddyb> not &T, sorry, &mut T
+[10:21:57] <eddyb> aatch: doesn't LLVM do that and much crazier things, too?
+[10:23:25] <aatch> eddyb, sure, but this reduces the amount of code we're handing off to LLVM. It does full memory-dependence analysis and stuff for it. I'm just handling a really common case as we go along. I've got a test function that's like 20% smaller in unoptimised IR.
+[10:23:40] *** Joins: Sho (sho@moz-c5i8dh.cust.telecolumbus.net)
+[10:24:10] <eddyb> aatch: can you check how many of those are allocas?
+[10:24:41] <eddyb> and how many of them are initializations of said allocas? (i.e. you know for certain there's no previous store)
+[10:25:49] *** Quits: Viewtiful (Viewtiful@moz-eub.afi.30.89.IP) (Connection closed)
+[10:27:00] *** Joins: summerlight (summerlight@moz-99k.2mj.130.121.IP)
+[10:28:00] *** Quits: achanda (achanda@moz-6gu.gg6.21.113.IP) (Ping timeout: 121 seconds)
+[10:28:17] <aatch> eddyb, in my test, all of them.
+[10:28:44] <aatch> eddyb, but this is only when the load is in the same block, after the store.
+[10:29:18] <eddyb> how many are immutable locals and don't have drop glue?
+[10:31:08] <aatch> eddyb, in my case? I think all of them. What are you getting at?
+[10:31:21] <aatch> eddyb, if there's something I need to be aware of, just tell me.
+[10:31:36] <eddyb> well, that's the optimization I have in five branches or something
+[10:31:42] <eddyb> just don't emit the alloca at all
+[10:32:32] <eddyb> https://github.com/eddyb/rust/commit/69d8ff1e7f9e96426e60a66a58a10751f9a848b7
+[10:32:35] <eddyb> this is one instance of it
+[10:33:02] <aatch> eddyb, oh, well, yeah, that'd be good too. But this is literally a piece of code inside `load_ty` that just doesn't do the load if it doesn't need to.
+[10:33:14] <eddyb> and the commit after it shows how I went crazy with refactoring trans: https://github.com/eddyb/rust/commit/1bcbec0d58c1e2c9d8b03bcbba9d6a7d86f1194c
+[10:33:18] <eddyb> which killed the branch
+[10:33:21] *** Joins: achanda (achanda@moz-6gu.gg6.21.113.IP)
+[10:33:52] <eddyb> aatch: okay, I suppose that's not bad. I already added a hack there for constants, I think
+[10:34:37] <eddyb> aatch: do you require the store and load to be exactly one after another, nothing in between?
+[10:34:49] <aatch> eddyb, nothing relevant inbetween.
+[10:35:47] <aatch> eddyb, the store has to be the only user of the location being loaded from and in the block we're currently in.
+[10:35:47] <eddyb> whitelist or blacklist? only stores and calls could alias?
+[10:35:56] <eddyb> oh
+[10:36:34] <eddyb> aatch: hmm, that wouldn't prevent a "parent" of the location being sent off in a call
+[10:36:44] <eddyb> but I'm hoping you just disallow calls in between
+[10:37:51] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[10:38:16] *** Joins: Viewtiful (Viewtiful@moz-eub.afi.30.89.IP)
+[10:41:55] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Ping timeout: 121 seconds)
+[10:42:24] *** Quits: achanda (achanda@moz-6gu.gg6.21.113.IP) (Ping timeout: 121 seconds)
+[10:43:32] *** Joins: achanda (achanda@moz-6gu.gg6.21.113.IP)
+[10:45:49] <aatch> eddyb, aha, yes, that does cause the codegen to be wrong. I mean, it's pretty convoluted to actually achieve, but it is possible.
+[10:48:15] <eddyb> the bad thing about the "frozen copyable local" optimizations I've tried is that they will silently create as many allocas as borrows
+[10:49:06] <eddyb> the easiest way to handle that would be to make sure check_const (yes :P) marks locals as borrowed, and you just check that before optimizing
+[10:49:54] <eddyb> aatch: might also want to keep around both the alloca pointer (if needed) and the value. or save the alloca pointer the first time it's needed
+[10:50:18] <eddyb> but we have no way of telling how a local is going to be used, in trans::expr
+[10:50:27] <eddyb> aatch: I think it's a mess any way you do this
+[10:52:01] <aatch> eddyb, ok, so now I have a check that any means if instruction that has side effects is between the store and the potential load, it doesn't elide the load.
+[10:52:10] *** Quits: achanda (achanda@moz-6gu.gg6.21.113.IP) (Connection closed)
+[10:52:40] <eddyb> I wonder how well that does on a large crate
+[10:53:02] <eddyb> aatch: what bugs me is that we have so many integer and &T values being thrown around and they end up in allocas
+[10:53:13] <eddyb> even &mut T - it's not Copy, but it doesn't drop, either
+[10:53:47] <eddyb> the alloca by itself is not bad, but uses of the value bloat the IR and we allocate a lot and it's a mess
+[10:53:56] <aatch> eddyb, yeah. I've managed to reduce the number of allocas a lot simply by not using a temporary for every single function call.
+[10:54:15] <eddyb> aatch: are you sure that's correct?
+[10:54:38] <eddyb> I know doener tried to optimize something around calls and he had to take a step back
+[10:55:20] <eddyb> and we don't really document who owns moved and copied values which are passed by reference
+[10:55:52] <aatch> eddyb, I'm not sure what would be incorrect. This avoids the temporary in the case where we immediately load from it anyway.
+[10:56:22] <eddyb> hmm
+[10:56:48] <eddyb> aatch: usually you know when you try to bootstrap and stage2 starts segfaulting :D
+[10:57:13] <aatch> eddyb, I'm aware..
+[10:57:47] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[10:58:06] <eddyb> I would be more comfortable with an actual fuzzer, but this works... for now
+[10:58:25] <eddyb> aatch: so what temporary are you talking about, exactly?
+[10:58:58] <eddyb> an alloca where an immediate return value is placed? sounds like something done for FFI corner cases
+[10:59:51] <aatch> eddyb, say you have a `fn foo() -> bool`, right now we create a temporary, store the bool to it, then immediately load from it, if you just use `expr::trans`.
+[11:00:16] <eddyb> oh! is it just that all calls are considered DPS?
+[11:00:21] <aatch> eddyb, yep.
+[11:00:26] <eddyb> that's another thing that needs to be entirely refactored
+[11:00:33] <eddyb> aatch: I completely forgot about that q_q
+[11:00:47] <aatch> eddyb, I'd like to do it a less hacky way, but that's quite a lot of work...
+[11:01:27] <aatch> eddyb, it's what I needed to do to get branch hinting to actually work.
+[11:01:29] <eddyb> no kidding. I would use generics but then generating more than one instance of some trans functions doesn't seem very appealing
+[11:02:08] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Ping timeout: 121 seconds)
+[11:02:59] <eddyb> nmatsakis changed typeck functions to take trait objects at some point and that took me by surprise, but apparently there's no observable overhead from it :/
+[11:04:35] <aatch> it's kinda nice that doing `if foo(x) { ... }` doesn't create any temporaries now.
+[11:05:26] <eddyb> aatch: I also don't know what to do with datums. there's lots of tables that store ValueRef and the type could be obtained from the ID which is the key of the table. if you store the type, you trade having normalized types for space (one extra pointer for each entry)
+[11:06:31] <eddyb> may be a good idea to split get_item_val into lvalues and rvalues (only `static` and `static mut` are lvalues AFAIK)
+[11:07:10] <eddyb> immediate rvalues, to be precise
+[11:12:18] <aatch> What's scary is that several places have been returning temporary allocas that have been marked with lifetime-end.
+[11:13:13] <aatch> Fortunately nothing was actually using those pointers, but still...
+[11:17:33] *** Joins: munksgaard (munksgaard@moz-3v9.hq0.225.130.IP)
+[11:18:47] <aatch> I did find it amusing that my first version dead instruction elimination loop removed block terminators.
+[11:19:24] <aatch> since they had no users...
+[11:21:39] *** Joins: flaper87_ (flaper87@moz-fnn.1e9.132.209.IP)
+[11:27:18] <eddyb> hahaha
+[11:27:37] <eddyb> aatch: lifetime intrinsics are very scary. I've explicitely avoided their use in a couple places
+[11:27:52] <eddyb> because they were wrecking havoc. I wonder if those situations have been fixed
+[11:28:01] <eddyb> (might be all in trans::expr)
+[11:28:48] <eddyb> aatch: I should try enum Mode<'f> { InPlace(ValueRef<'f>), Return, Discard }
+[11:29:05] <eddyb> or Datum<'f, Lvalue>, but that holds the type and you might not want the type
+[11:30:23] <eddyb> oh and an unsized lvalue points to the fat pointer so... we can totally implement in-place [x; n] for runtime values of n and in-place struct -> trait
+[11:31:12] <eddyb> even const n, just not limited to a [T; n] type when producing [T] from the start is possible
+[11:31:36] <eddyb> it's harder in typeck where you have to track an "in-place context"
+[11:32:29] <aatch> Almost at stage2, now I get to see what I've fucked up.
+[11:33:00] <eddyb> or do you? you have to treat constructors specially, but... just allow unsized rvalues except in places where it's impossible to have them
+[11:33:52] <eddyb> trans will know how to instantiate them in the places where it's possible, and the unsize type bubbles up to the point where you do in-place initialization (or an unsized rvalue isn't allowed)
+[11:34:44] *** Joins: bjz (bjz@moz-65q0ko.tpgi.com.au)
+[11:34:54] <eddyb> aatch: so we can handle let a = &mut [0; n]; for a runtime n. do we want to allow it?
+[11:35:30] <aatch> eddyb, I think it'd be confusing for people.
+[11:35:38] <eddyb> I know cmr is preaching against VLAs because of stack frame analysis. but if you don't use the feature, it should be fine, riight?
+[11:36:05] <eddyb> aatch: what, the fact that you get a &mut [T] sometimes and &mut [T; N] at other times?
+[11:36:22] <eddyb> oh, wait, I wrote that somewhat wrong, given how I'd implement it
+[11:36:37] <eddyb> let a: &mut [_] = &mut [0; n];
+[11:36:50] <eddyb> otherwise it would complain n isn't constant
+[11:37:16] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[11:37:24] <aatch> eddyb, oh right, you'd have to allocate it on the stack either way.
+[11:37:39] *** Quits: bjz (bjz@moz-65q0ko.tpgi.com.au) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[11:37:43] <eddyb> I want this more for box [0; n] TBQH
+[11:38:05] <aatch> eddyb, yeah, that would be useful.
+[11:38:09] <eddyb> and even more for in arena { [0; n] }
+[11:38:27] *** kimundi is now known as zz_kimundi
+[11:38:29] <aatch> eddyb, though Ramp could make use of dynamic alloca for scratch space.
+[11:38:55] <aatch> eddyb, rather than use the heap for it.
+[11:39:10] <bluss> eddyb: why doesn't Cell impl Copy?
+[11:39:46] <eddyb> bluss: because someone thought it was a good idea to prevent accidental copies by disabling them in the typesystem
+[11:40:01] <eddyb> and it's somewhat harder to fix now
+[11:40:09] <bluss> aha, ok, just that.
+[11:40:30] <bluss> Putting a cell inside a cell was probably not something I should do anyway
+[11:41:28] <eddyb> Range annoys me the most because it's so useful to do something like self.remove(caret1..caret2)
+[11:41:44] <eddyb> and I can't write selection: Cell<Range<Caret>>
+[11:42:00] <eddyb> such a waste of a nice type
+[11:43:30] <aatch> Sigh, I screwed something up...
+[11:44:41] <eddyb> I am considering turning Block into a monad
+[11:45:04] <eddyb> Block<Datum>, Block<Mode>
+[11:50:26] *** Quits: laumann (thomas@moz-1f0.hq0.225.130.IP) (Ping timeout: 121 seconds)
+[11:52:06] *** Joins: laumann (thomas@moz-1f0.hq0.225.130.IP)
+[11:55:42] <aatch> So it turns out that the temporary is still needed for `fn foo<T>() -> T` where T is an immediate, but also has a destructor.
+[11:56:15] <eddyb> huh?
+[11:56:23] <eddyb> aatch: in what situations does that break?
+[11:56:35] <aatch> eddyb, something related to closures.
+[11:56:37] <eddyb> producing e.g. an rvalue Box<T> should work
+[11:57:48] <aatch> eddyb, I have no idea why it breaks, it shouldn't, by rights, but it seems to.
+[11:59:55] <benh> programming.txt
+[12:01:12] <eddyb> aatch: it sounds like a bug elsewhere in trans
+[12:02:38] <aatch> eddyb, probably. But I want this in a working state. I'll investigate later.
+[12:04:54] <eddyb> nrc was also looking into something to do with closures, but that was specific to parallel codegen, I believe
+[12:08:38] *** Quits: johnsoft (johnsoft@moz-69mrig.res.rr.com) (Ping timeout: 121 seconds)
+[12:08:52] *** Joins: johnsoft (johnsoft@moz-69mrig.res.rr.com)
+[12:09:37] *** Joins: bdero (bran@moz-91hi89.mit.edu)
+[12:13:33] *** Quits: bdero (bran@moz-91hi89.mit.edu) (Connection closed)
+[12:14:56] *** Joins: bdero (bran@moz-91hi89.mit.edu)
+[12:15:37] <eddyb> playbot: static A: &'static [i32] = &[0]; static B: i32 = (&A)[0];
+[12:15:38] -playbot- ()
+[12:15:40] <eddyb> :|
+[12:15:46] <eddyb> aatch: look at this
+[12:16:19] <eddyb> now we have to support this broken usage in stable
+[12:16:28] <eddyb> playbot: static mut A: &'static [i32] = &[0]; static B: i32 = (&A)[0];
+[12:16:29] -playbot- <anon>:9:64: 9:65 error: use of mutable static requires unsafe function or block [E0133]
+[12:16:29] -playbot- <anon>:9         static mut A: &'static [i32] = &[0]; static B: i32 = (&A)[0];
+[12:16:29] -playbot- output truncated; full output at: http://bit.ly/1dXyXBc
+[12:16:36] <eddyb> playbot: static mut A: &'static [i32] = &[0]; static B: i32 = unsafe { (&A)[0] };
+[12:16:38] -playbot- ()
+[12:16:39] <eddyb> :|
+[12:16:41] <eddyb> :|
+[12:17:17] <eddyb> playbot: static mut A: &'static [i32] = &[0]; static B: i32 = unsafe { (&A)[0] }; unsafe { A = &[]; B }
+[12:17:18] -playbot- Illegal instruction (core dumped)
+[12:17:18] -playbot- playpen: application terminated with error code 132
+[12:17:28] <eddyb> yay
+[12:17:36] <aatch> wat
+[12:17:38] <ChrisMorgan> … ouch.
+[12:17:46] <eddyb> aatch: because the semantics are broken
+[12:18:02] <aatch> The rest of the cases aren't too bad. that last one is.
+[12:18:06] <eddyb> I have no idea what the implementation is
+[12:18:16] <eddyb> aatch: yeah, but, they're also wrong
+[12:18:43] <eddyb> the only such operation that should be allowed in static is taking the address of another static *and not using it for anything inside the static*
+[12:19:21] <eddyb> but we've never tracked "this value is tainted"
+[12:19:55] <eddyb> aatch: we could allow borrows of statics in constants if we disallow these cases
+[12:23:04] <eddyb> aatch: I'm sorry for oli_obk, they didn't realize that the crazy semantics they had to put up with regarding statics weren't actually sane or intended https://github.com/rust-lang/rust/pull/25570
+[12:23:19] <eddyb> and I didn't notice it very well until I saw the one test
+[12:24:06] *** Quits: p1start (p1start@moz-nftjhe.org) (Ping timeout: 121 seconds)
+[12:25:38] *** Quits: flaper87 (flaper87Moz@moz-gc8je6.ip57.fastwebnet.it) (Quit: 1.2)
+[12:27:29] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[12:40:14] <eddyb> playbot: static mut A: i32 = 0; static B: i32 = unsafe { *&A }; unsafe { A = 2; B }
+[12:40:14] -playbot- Illegal instruction (core dumped)
+[12:40:15] -playbot- playpen: application terminated with error code 132
+[12:40:20] <eddyb> playbot: static mut A: i32 = 0; static B: i32 = unsafe { *&A }; unsafe { B }
+[12:40:21] -playbot- <anon>:9:64: 9:76 warning: unnecessary `unsafe` block, #[warn(unused_unsafe)] on by default
+[12:40:21] -playbot- <anon>:9         static mut A: i32 = 0; static B: i32 = unsafe { *&A }; unsafe { B }
+[12:40:21] -playbot- output truncated; full output at: http://bit.ly/1FEmpW3
+[12:40:57] <eddyb> playbot: static A: i32 = 0; static B: i32 = *&A; B
+[12:40:58] -playbot- Illegal instruction (core dumped)
+[12:40:58] -playbot- playpen: application terminated with error code 132
+[12:40:59] <eddyb> aatch: haha
+[12:41:07] <eddyb> is this the smell of UB?
+[12:41:20] <eddyb> why can't I get the IR?
+[12:41:35] <eddyb> aatch: wait, this aborts the compiler O_O
+[12:41:58] <eddyb> we can fix it then
+[12:42:04] <eddyb> oli_obk: ping
+[12:45:29] <eddyb> aatch: wait, that doesn't happen if I move the statics outside of main :|
+[12:54:29] *** Joins: achanda (achanda@moz-6gu.gg6.21.113.IP)
+[13:11:52] *** Quits: squiddy (squiddy@moz-md4.pm3.19.178.IP) (Quit: Leaving)
+[13:19:39] *** Quits: achanda (achanda@moz-6gu.gg6.21.113.IP) (Ping timeout: 121 seconds)
+[13:20:47] *** Joins: achanda (achanda@moz-jgn.23m.66.182.IP)
+[13:25:02] *** Quits: achanda (achanda@moz-jgn.23m.66.182.IP) (Ping timeout: 121 seconds)
+[13:28:32] *** Joins: panitaliemom (Mibbit@moz-hu6.nja.252.72.IP)
+[13:29:22] *** Quits: panitaliemom (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[13:40:47] *** Joins: mukilan (mukilan@moz-5ke.d4s.164.122.IP)
+[13:44:05] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[13:44:47] *** Joins: mib_ny50ns (Mibbit@moz-fttgjj.members.linode.com)
+[13:45:27] *** Quits: mib_ny50ns (Mibbit@moz-fttgjj.members.linode.com) (Quit: http://www.mibbit.com ajax IRC Client)
+[13:49:43] *** Joins: arielb1 (Mibbit@moz-dl1.0uv.67.132.IP)
+[13:49:51] <arielb1> nmatsakis: ping
+[13:51:47] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Ping timeout: 121 seconds)
+[13:59:56] *** Quits: arielb1 (Mibbit@moz-dl1.0uv.67.132.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[14:00:33] *** Quits: rovar (rovar@moz-96effg.dyn.optonline.net) (NickServ (RECOVER command used by rovar_))
+[14:00:33] *** rovar_ is now known as rovar
+[14:00:46] *** Joins: rovar_ (rovar@moz-96effg.dyn.optonline.net)
+[14:01:11] *** Joins: bdero1 (bran@moz-6b9.6tj.189.18.IP)
+[14:01:20] *** Quits: bdero1 (bran@moz-6b9.6tj.189.18.IP) (Quit: Leaving.)
+[14:01:21] *** Joins: bdero1 (bran@moz-91hi89.mit.edu)
+[14:01:25] *** Quits: bdero (bran@moz-91hi89.mit.edu) (Connection closed)
+[14:06:08] *** Joins: jgallagher (john@moz-6ge.dhn.131.24.IP)
+[14:12:08] *** Joins: achanda (achanda@moz-jgn.23m.66.182.IP)
+[14:13:04] <WindowsBunny> Manishearth: I don't know how to contact Doug though
+[14:13:11] <Manishearth> WindowsBunny: talk to Lars
+[14:13:21] *** Joins: bombless (_@moz-qji.piv.41.59.IP)
+[14:13:42] <WindowsBunny> But that involves asking people questions D:
+[14:18:26] <Manishearth> heh
+[14:18:26] *** Quits: achanda (achanda@moz-jgn.23m.66.182.IP) (Connection closed)
+[14:25:35] * bombless wonders if he is the only one who cannot open this link https://buildbot.rust-lang.org/homu/queue/rust
+[14:26:01] <bombless> nvm this is fine https://buildbot.rust-lang.org/homu/queue/rust
+[14:26:18] <eddyb> those links are identical
+[14:26:44] <WindowsBunny> hmmm
+[14:26:55] <WindowsBunny> does the homu queue not support SSL?
+[14:26:59] *** Quits: hyunsik (hyunsik@moz-3qgjl9.ca.comcast.net) (Ping timeout: 121 seconds)
+[14:27:19] <WindowsBunny> hmmm
+[14:27:31] <WindowsBunny> there's not a lot of approved stuff on the queue
+[14:27:49] <bombless> that "crate a rollup" freaks me ... like a pandora box... I always want to click it with on reason
+[14:28:04] <WindowsBunny> playbot: println!{"hi"}
+[14:28:06] -playbot- hi
+[14:28:06] -playbot- ()
+[14:28:13] <WindowsBunny> playbot: println!["hi"]
+[14:28:14] -playbot- hi
+[14:28:14] -playbot- ()
+[14:28:22] <eddyb> bombless: it just creates a branch on your github fork
+[14:28:26] <WindowsBunny> I'm always weirded out by being able to do that
+[14:28:32] <eddyb> bombless: it's harmless :)
+[14:28:40] <WindowsBunny> eddyb: Does it also create a PR?
+[14:29:02] <bombless> I think on December last year you cannot miss braces and brackets
+[14:29:08] <bombless> but I'm not sure
+[14:29:20] <eddyb> WindowsBunny: I think so
+[14:29:47] <bombless> nvm 1.0 is out so I don't have to think it this way until 2.0 unless I want to fix some old code
+[14:30:25] <bombless> https://github.com/pcwalton/sprocketnes like this project in the faq while it no longer compiles
+[14:30:54] *** Quits: bdero1 (bran@moz-91hi89.mit.edu) (Ping timeout: 121 seconds)
+[14:31:12] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[14:31:30] <bombless> is it good for a random person to do the merge?
+[14:32:25] <eddyb> bombless: what merge and what random person?
+[14:32:39] <bombless> eddyb: I mean the roll up
+[14:32:46] <eddyb> bombless: it's harmless
+[14:32:51] <eddyb> it just creates a branch on *your* account
+[14:32:54] <eddyb> and a PR
+[14:33:03] <eddyb> you can do that yourself without hitting the button
+[14:33:45] <bombless> yes I guess I should try to merge myself without clicking the button if I really want to do the roll up
+[14:35:37] <eddyb> bombless: "merge"?
+[14:35:59] <WindowsBunny> bombless: just press the button >:(
+[14:36:07] <eddyb> WindowsBunny: don't condone spam
+[14:36:49] *** Joins: jaspertrex (Mibbit@moz-hu6.nja.252.72.IP)
+[14:37:02] <bombless> eddyb: Doesn't rollup mean merging branchs?
+[14:38:00] <eddyb> no
+[14:38:03] <steveklabnik> there's no point in doing a rollup right now because there are only two PRs in the queue
+[14:38:14] <eddyb> bombless: rollup creates a branch on your fork that contains a bunch of merged branches
+[14:38:21] <eddyb> bombless: it still has to be approved by a human
+[14:38:36] <eddyb> there's nothing the rollup button does that you couldn't do
+[14:39:07] *** Quits: jaspertrex (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[14:41:53] *** zz_kimundi is now known as kimundi
+[14:42:48] *** Joins: dinfuehr_ (dinfuehr@moz-c25.u8s.112.91.IP)
+[14:45:37] *** Quits: dinfuehr (dinfuehr@moz-c25.u8s.112.91.IP) (Ping timeout: 121 seconds)
+[14:46:23] <bombless> at first I want to change that "http://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png" to "//www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png" as a way to solve the http/https problem, but that wont work for local HTML files... they should make a new httpx protocal to solve that, although I guess some people may just want to abandon http
+[14:46:36] *** Quits: pauls (pauls@moz-e5p333.ccs.neu.edu) (Connection closed)
+[14:46:52] *** Quits: dinfuehr_ (dinfuehr@moz-c25.u8s.112.91.IP) (Ping timeout: 121 seconds)
+[14:48:42] *** Joins: bdero (bran@moz-3au5rc.dyn.MIT.EDU)
+[14:52:09] *** Joins: Diggsey (diggsey@moz-v5rln7.dsl.pipex.com)
+[14:52:54] *** Joins: Astrum|Lap (Astrum|Lap@moz-skcefh.co.comcast.net)
+[14:53:16] *** Joins: pauls (pauls@moz-e5p333.ccs.neu.edu)
+[14:55:31] <eddyb> bombless: where is this?
+[14:55:37] <eddyb> like, what page is it on?
+[14:56:01] <bombless> eddyb: every api page like https://doc.rust-lang.org/stable/std/collections/struct.BTreeMap.html
+[14:56:08] *** Joins: achanda (achanda@moz-qo1.5g1.66.182.IP)
+[14:56:09] <bombless> Chrome reports warning for it.
+[14:57:02] <eddyb> funny
+[14:57:19] <eddyb> bombless: there's a straight-forward solution, methinks
+[14:57:31] <steveklabnik> bombless: you link to // instead of http://
+[14:57:34] <eddyb> well, there's an easy one, but
+[14:57:39] <eddyb> steveklabnik: that won't work on local copies
+[14:57:41] <steveklabnik> yeah
+[14:57:43] <steveklabnik> thats true
+[14:57:46] <bombless> I thought the right way is refusing to display the whole page.
+[14:57:48] * bombless runs
+[14:57:50] <eddyb> just use https all the time
+[14:57:50] <steveklabnik> alternative: data-uri ;)
+[14:57:56] <eddyb> or, haha, yeah
+[14:58:00] <eddyb> steveklabnik: how big is it?
+[14:58:04] <steveklabnik> unsure tbh
+[14:58:09] <steveklabnik> let's see...
+[14:58:13] <eddyb> tomaka did that, he has a very very very long line in glium's lib.rs
+[14:58:19] <eddyb> it's kinda crazy
+[14:58:44] <eddyb> 6KB
+[14:59:01] <eddyb> steveklabnik: I'm not sure if I still have the PNG optimization tools around
+[14:59:08] <steveklabnik> https://gist.github.com/steveklabnik/90ab0bb475bfd7cba236
+[14:59:26] <bombless> a gif might be good enough since the background is white
+[14:59:33] <steveklabnik> 7.52kb?
+[14:59:35] <steveklabnik> apparently
+[14:59:45] <eddyb> bombless: PNGs can be small
+[15:00:39] <bombless> we need an 8-bit artist here to paint it in png using hex editor
+[15:00:42] * bombless runs
+[15:01:07] <sp3d> paletted PNGs are really small ;)
+[15:01:08] <steveklabnik> http://make8bitart.com/ <-
+[15:01:12] *** Quits: achanda (achanda@moz-qo1.5g1.66.182.IP) (Ping timeout: 121 seconds)
+[15:01:23] <eddyb> I'm going to try bot pngcrush and optipng
+[15:01:27] <eddyb> sp3d: that's wasteful
+[15:01:33] <eddyb> this can be encoded with K1
+[15:01:49] <eddyb> i.e 1 bit per pixel
+[15:02:05] <eddyb> sp3d: oh, wait, 1-bit pallettes exist?
+[15:02:11] <sp3d> presumably?
+[15:02:36] <eddyb> still more efficient to use K1 where possible :P
+[15:03:19] <sp3d> "a.png: PNG image data, 10 x 308, 1-bit colormap, non-interlaced"
+[15:03:25] <eddyb> Output file size = 5758 bytes (no change)
+[15:03:43] <eddyb> 128x128 pixels, 2x8 bits/pixel, grayscale+alpha
+[15:03:49] <eddyb> optipng, what are you doing?
+[15:05:31] <SimonSapin> Can we make the logo and favicon be relative URLs? https://github.com/rust-lang/rust/issues/26075
+[15:06:54] <steveklabnik> SimonSapin: see the scrollback over the last 15 mins or so :)
+[15:07:19] <SimonSapin> yeah, that’s what I’m responding to
+[15:07:21] <steveklabnik> oh
+[15:07:36] <steveklabnik> sigh, i got confused with https vs local
+[15:07:45] <steveklabnik> honestly, i think the data-uri approach is probably the best one
+[15:07:50] <steveklabnik> but i do think we need to address this
+[15:08:39] <eddyb> no tool I find lets me reduce the bit depth down from 8 bits
+[15:08:40] <sp3d> does <picture> exist/help?
+[15:08:54] * eddyb fires up gimp
+[15:08:55] <sp3d> eddyb: mtpaint lets you manage palette interactively...
+[15:09:36] <sp3d> "- The color palette reductions are implemented only partially." - optipng(1)
+[15:09:39] <bombless> copy the file to doc directory might be better, since the uri is hard coded in different crates for about 10 times
+[15:11:29] <bombless> ffmpege also have 2 filters that handle palette which were introduced in March
+[15:11:32] *** Joins: SiegeLord (sl@moz-9jtaei.ca.comcast.net)
+[15:11:37] <bombless> ffmpeg*
+[15:11:58] <eddyb> "Pngrewrite is command-line utility that reduces the unnecessarily large palettes that some programs write into PNG files. It also optimizes transparency data, and reduces the bits-per-pixel if possible. Handy for post-processing PNG files before putting them on a web site."
+[15:12:34] <sp3d> ooh
+[15:13:46] *** Quits: Luqman (laden@moz-bjmiqc.csclub.uwaterloo.ca) (Quit: leaving)
+[15:14:12] <eddyb> Image doesn't fit into 256 color entries; try /c4 (Gray+Alpha) instead
+[15:14:13] <eddyb> lol
+[15:15:26] <eddyb> that's just weird
+[15:15:41] <sp3d> look at the colors present using e.g. mtpaint?
+[15:15:49] <eddyb> what is even mtpaint?
+[15:16:02] <sp3d> a somewhat pixel-art-oriented image editor for Linux
+[15:16:26] <sp3d> http://mtpaint.sourceforge.net/
+[15:16:34] *** Joins: Luqman (laden@moz-qhp202.csclub.uwaterloo.ca)
+[15:16:59] <eddyb> oh dear
+[15:17:02] <eddyb> sp3d: it's anti-aliased
+[15:17:06] <eddyb> of course it is
+[15:17:23] <eddyb> I just disabled transparency and zoomed in, in GIMP
+[15:17:26] <sp3d> mm
+[15:18:21] <eddyb> and it doesn't fit in KA4
+[15:18:45] <eddyb> yeah, I give up
+[15:19:48] *** Joins: mib_9vgrlp (Mibbit@moz-hu6.nja.252.72.IP)
+[15:22:22] *** Joins: Binero (jeroen@moz-91joat.69vi.s4ge.1810.2a02.IP)
+[15:23:14] *** Quits: mib_9vgrlp (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:35:14] *** Quits: Astrum|Lap (Astrum|Lap@moz-skcefh.co.comcast.net) (Client exited)
+[15:36:28] *** Quits: SiegeLord (sl@moz-9jtaei.ca.comcast.net) (Quit: It's a joke, it's all a joke.)
+[15:37:25] *** Joins: c0170_ (c0170@moz-bb29a4.cambridge.arm.com)
+[15:39:44] *** Quits: c0170 (c0170@moz-bb29a4.cambridge.arm.com) (Ping timeout: 121 seconds)
+[15:40:05] <SimonSapin> steveklabnik: how do you feel about adding ~500 lines of base64 at the top of every crate?
+[15:42:27] <SimonSapin> like this https://github.com/rust-lang/rust/compare/master...SimonSapin:data-url-logo
+[15:43:42] *** Joins: dinfuehr (dinfuehr@moz-45rcaq.highway.telekom.at)
+[15:43:56] <eddyb> lol
+[15:44:25] <eddyb> SimonSapin: surely it can be compressed better
+[15:44:28] <Manishearth> SimonSapin: macro pls
+[15:44:36] <eddyb> it's not even used at full size
+[15:44:46] <eddyb> width=100
+[15:44:54] *** Quits: zmack (zmack@moz-htpein.home.aster.pl) (Connection closed)
+[15:44:59] <XMPPwocky> if we're going to pad crates out, can we at least shape the base-64d data into, say, an ascii velociraptor or something
+[15:45:26] <Amaranth> Can't have lovecraft quotes but you can shove a logo in :P
+[15:45:53] <kimundi> SimonSapin: The first string fragments I saw there where long streams of "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA". Seemed appropiate
+[15:46:04] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[15:46:05] *** ChanServ sets mode: +o brson
+[15:46:55] <brson> today i'm going to catch up on twir
+[15:46:59] <SimonSapin> kimundi: I think ICO is uncompressed, and AAAA is encoding NUL bytes
+[15:47:04] <XMPPwocky> woo twir
+[15:47:13] *** Quits: bombless (_@moz-qji.piv.41.59.IP) (Ping timeout: 121 seconds)
+[15:47:31] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[15:47:49] *** Quits: dinfuehr (dinfuehr@moz-45rcaq.highway.telekom.at) (Ping timeout: 121 seconds)
+[15:48:30] *** Joins: zmack (zmack@moz-htpein.home.aster.pl)
+[15:48:36] <steveklabnik> SimonSapin: :/
+[15:48:43] <steveklabnik> bummer
+[15:49:09] <Manishearth> SimonSapin: can't we just ... use a file?
+[15:49:36] <Manishearth> oh
+[15:49:36] *** Joins: hyunsik (hyunsik@moz-3qgjl9.ca.comcast.net)
+[15:49:57] <SimonSapin> Manishearth: that’d be ideal, but I don’t know if #![doc(html_logo_url = "...")] supports relative URLs
+[15:50:12] <luzie> add support for it
+[15:50:26] <eddyb> how do I reduce quality?
+[15:50:37] <SimonSapin> well, I suspect it just puts that value in src="{}", so it doesn’t work with various nesting levels
+[15:50:47] <eddyb> or maybe flatten it
+[15:50:49] *** Quits: zmack (zmack@moz-htpein.home.aster.pl) (Connection closed)
+[15:51:10] <SimonSapin> eddyb: let’s just not do data URLs :)
+[15:51:12] *** Joins: kushal (kdas@moz-snu.ovr.78.106.IP)
+[15:52:24] <Manishearth> SimonSapin: anyway the image doesn't load for me when I put it in the url bar
+[15:52:36] *** Quits: madmalik (uid13697@moz-lfin5p.brockwell.irccloud.com) (Quit: Connection closed for inactivity)
+[15:52:36] <eddyb> if I flatten the image I get 233 colors
+[15:52:37] *** Quits: kushal (kdas@moz-snu.ovr.78.106.IP) (Quit: Leaving)
+[15:52:47] <eddyb> how can it be using that many shades of gray?!
+[15:53:12] <SimonSapin> Manishearth: what image?
+[15:53:26] <SimonSapin> Manishearth: if you’re copy-pasting from my commit you need to remove the \
+[15:53:47] <Manishearth> SimonSapin: I did, I copied it into a js console first
+[15:54:05] <SimonSapin> oh, right, I need ;base64 in there
+[15:54:31] <Manishearth> ah, works now
+[15:54:38] <Manishearth> I goit it to work by piping through base64 -d
+[15:55:11] <Manishearth> which was hard. because I'm on windows. putty ftw
+[15:55:43] *** Joins: yjv (yjv@moz-j0cdis.fios.verizon.net)
+[15:56:50] *** Quits: Viewtiful (Viewtiful@moz-eub.afi.30.89.IP) (Connection closed)
+[15:57:34] *** Joins: Astrum|Lap (Astrum|Lap@moz-7enfbr.co.comcast.net)
+[15:58:10] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[15:58:10] *** ChanServ sets mode: +ao erickt erickt
+[15:59:04] *** Joins: elif (chatzilla@moz-ev8m1p.res.rr.com)
+[15:59:05] *** Joins: larsberg1 (Adium@moz-kmvlue.cable.rcn.com)
+[15:59:11] *** Quits: larsberg1 (Adium@moz-kmvlue.cable.rcn.com) (Quit: Leaving.)
+[16:06:45] *** Joins: Viewtiful (Viewtiful@moz-eub.afi.30.89.IP)
+[16:10:14] *** Quits: bdero (bran@moz-3au5rc.dyn.MIT.EDU) (Ping timeout: 121 seconds)
+[16:10:43] *** Quits: hugod (user@moz-885.jmo.24.70.IP) (Ping timeout: 121 seconds)
+[16:11:04] *** Joins: hugod (user@moz-885.jmo.24.70.IP)
+[16:14:16] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[16:15:19] *** Quits: Binero (jeroen@moz-91joat.69vi.s4ge.1810.2a02.IP) (Client exited)
+[16:16:06] *** Joins: achanda (achanda@moz-qo1.5g1.66.182.IP)
+[16:18:10] *** Quits: meteredsection (meteredsect@moz-k1pkr3.wa.comcast.net) (Ping timeout: 121 seconds)
+[16:23:27] <Gankro> hmm pnkfelix once the drop flags are For Reals Dead, there will be no way to prevent recursive drop of one's fields during `drop` short of an Option, yes?
+[16:25:45] <eddyb> Gankro: or a saner Drop trait
+[16:26:42] <XMPPwocky> maybe some sort of marker that wraps another type and doesn't run its destructor?
+[16:27:32] <Gankro> Yeah huon's ManuallyDrop wrapper type is ostensibly the solution
+[16:27:50] <Gankro> But that's been stuck for months
+[16:28:05] <WindowsBunny> acrichto: I have a question
+[16:28:18] <WindowsBunny> acrichto: Why was the decision made to have OpenOptionsExt takes i32 on Windows
+[16:28:19] <bluss> NoDrop just uses the Option solution. An enum similar to option.
+[16:28:28] *** Joins: Binero (jeroen@moz-9quuoa.access.telenet.be)
+[16:28:39] <acrichto> WindowsBunny: what function are you referring to?
+[16:28:39] <WindowsBunny> even though everything is actually using DWORD for that
+[16:28:44] *** Joins: arielb1 (Ariel@moz-53k.mgl.67.109.IP)
+[16:28:48] <eddyb> Gankro: also known as Interior
+[16:28:58] <WindowsBunny> for example
+[16:28:58] <WindowsBunny> fn flags_and_attributes(&mut self, access: i32) -> &mut OpenOptions
+[16:29:15] <eddyb> Gankro: see my discussions on internals with apcully
+[16:29:26] <acrichto> WindowsBunny: it was probably just done and no one checked it?
+[16:29:30] <WindowsBunny> it takes an i32 even though all that function actually does is just convert it to DWORD
+[16:29:35] <WindowsBunny> and every call to it has to do as i32
+[16:29:49] <WindowsBunny> And its stable too Q_Q
+[16:30:03] *** Quits: laumann (thomas@moz-1f0.hq0.225.130.IP) (Ping timeout: 121 seconds)
+[16:30:07] <eddyb> Gankro: you might want to get Own first
+[16:30:11] <WindowsBunny> wait
+[16:30:11] <WindowsBunny> no
+[16:30:15] <WindowsBunny> the docs tricked me
+[16:30:17] <WindowsBunny> its not stable!
+[16:30:18] <WindowsBunny> :D
+[16:31:32] <WindowsBunny> acrichto: I'll write a PR to adjust it then
+[16:32:57] <acrichto> WindowsBunny: thanks!
+[16:33:16] <acrichto> WindowsBunny: now that we have std::os::windows::raw it may even be most appropriate to just take a raw::DWORD
+[16:38:11] *** Quits: c0170_ (c0170@moz-bb29a4.cambridge.arm.com) (Ping timeout: 121 seconds)
+[16:38:18] <simukis> we should totally think up how to merge docs for all platforms and make that visible on our hosted documentation.
+[16:38:29] *** Joins: nham (nham@moz-lglsfe.il.comcast.net)
+[16:38:40] <simukis> because I have to go and read sources to see what’s in std::os::windows::raw 😃
+[16:39:00] <WindowsBunny> simukis: I just use locally built docs :D
+[16:39:26] <simukis> WindowsBunny: are you suggesting me to download windows’ exe and then invent a way to extract it on linux?
+[16:40:00] <simukis> (obviously reading source is much easier)
+[16:40:38] <WindowsBunny> simukis: Well all you have to do is get mingw and cross compile rust to that target
+[16:41:06] *** Quits: achanda (achanda@moz-qo1.5g1.66.182.IP) (Connection closed)
+[16:43:30] <simukis> do we have a Decimal (a la https://docs.python.org/3/library/decimal.html?highlight=decimal#module-decimal) in crates?
+[16:43:41] <simukis> interestingly `num` doesn’t have one
+[16:44:00] *** Joins: joh (uid13099@moz-2c7ap3.ealing.irccloud.com)
+[16:44:34] *** Joins: dinfuehr (dinfuehr@moz-45rcaq.highway.telekom.at)
+[16:45:34] *** Joins: achanda (achanda@moz-6gu.gg6.21.113.IP)
+[16:48:42] *** Quits: dinfuehr (dinfuehr@moz-45rcaq.highway.telekom.at) (Ping timeout: 121 seconds)
+[16:50:00] *** Joins: c0170 (c0170@moz-4stj9o.cable.virginm.net)
+[16:51:06] *** Joins: bdero (bran@moz-favltl.dyn.mit.edu)
+[16:51:11] *** Joins: zmack (zmack@moz-htpein.home.aster.pl)
+[16:52:53] *** Quits: hyunsik (hyunsik@moz-3qgjl9.ca.comcast.net) (Ping timeout: 121 seconds)
+[16:55:07] *** Quits: bdero (bran@moz-favltl.dyn.mit.edu) (Ping timeout: 121 seconds)
+[16:56:14] *** Quits: zmack (zmack@moz-htpein.home.aster.pl) (Ping timeout: 121 seconds)
+[16:57:43] <pnkfelix> Gankro: yes, short term the soln is Option.  But I think we will probably be looking more carefully at huon's ManualDrop now that we're past the 1.0 hurdle.
+[16:58:07] <pnkfelix> Gankro: or as eddyb notes, perhaps a different Drop trait / API
+[16:58:55] *** Joins: dinfuehr (dinfuehr@moz-45rcaq.highway.telekom.at)
+[16:59:01] *** Joins: elif_ (chatzilla@moz-ev8m1p.res.rr.com)
+[16:59:43] *** Quits: elif (chatzilla@moz-ev8m1p.res.rr.com) (Ping timeout: 121 seconds)
+[16:59:43] *** elif_ is now known as elif
+[17:00:05] <eddyb> ManualDrop seems like it has a bad default. it's not unsafe anymore though
+[17:00:39] <Gankro> pnkfelix: Sorry if I've already asked you this, what's the timeline on stack-only flags looking like? 1.4?
+[17:01:05] <pnkfelix> Gankro: I'm working on an incremental approach, I'm cleaning up its branch now
+[17:01:14] <pnkfelix> Gankro: its not stack-only, but its step towards it
+[17:01:34] <pnkfelix> Gankro: (and certainly will cause things that *are* relying on solely embedded drop-flags to break)
+[17:01:43] <pnkfelix> Gankro: I'm planning to write a blog post about it this week
+[17:01:45] <Gankro> pnkfelix: stack-only is on the roadmap though, right?
+[17:01:58] <Gankro> like I know we're doing the incremental thing
+[17:01:59] <pnkfelix> (for my personal blog, that is, not blog.rust-lang.org)
+[17:02:09] *** Joins: O01eg (o01eg@moz-ske7gn.t702.4n8f.2698.2a02.IP)
+[17:02:13] *** Joins: imperio (Mibbit@moz-8otf3a.fbx.proxad.net)
+[17:02:40] <pnkfelix> Gankro: yes, stack-only is on the road map.  We probably wouldn't bother with incremental, based on how little of a perf change I am observing, if that were not the end goal
+[17:02:53] *** Joins: bdero (bran@moz-favltl.dyn.mit.edu)
+[17:03:04] <pnkfelix> (when I say "is on the road map", I just mean "is planned" ... I don't think we have a release number attached to it.  Just ASAP, really...
+[17:03:26] *** Parts: imperio (Mibbit@moz-8otf3a.fbx.proxad.net) ()
+[17:03:30] <Gankro> pnkfelix: Yeah I was more hoping for your expectation on when it would be reached
+[17:03:44] <Gankro> e.g. is this looking like a really bad 6 weeks or more like 6 months
+[17:03:47] <pnkfelix> Gankro: I don't know. I  have a lot of things on my plate.
+[17:04:00] <Gankro> kk, no worries
+[17:04:29] <Gankro> pnkfelix: I'm working on documenting low-level nonsense for unsafe users, and was wondering if it would be necessary/worthwhile to discuss all the zeroing-drop stuff
+[17:04:32] <pnkfelix> Gankro: if you interested in trying to do it, I am hoping the forthcoming blog post will have enough information that someone else could do it instead.
+[17:04:34] <Gankro> It's sounds like definitely yes
+[17:04:37] *** Joins: harrisonclarke (harrisoncla@moz-6v8.jf9.227.142.IP)
+[17:05:23] *** Quits: munksgaard (munksgaard@moz-3v9.hq0.225.130.IP) (Ping timeout: 121 seconds)
+[17:05:28] <Gankro> pnkfelix: My biggest compiler change to date is a 10-liner in the stability lint system... I'm probably not qualified (unless we really are shooting for like 6 months...)
+[17:08:08] *** Quits: Murarth (Murarth@moz-jpotpi.phnx.qwest.net) (Quit: brb, washing the cat)
+[17:08:40] *** Joins: Murarth (Murarth@moz-lh27vv.dyn.nltelcom.net)
+[17:12:05] *** Quits: Binero (jeroen@moz-9quuoa.access.telenet.be) (Connection closed)
+[17:13:18] <arielb1> nmatsakis: ping
+[17:17:21] *** Joins: Binero (jeroen@moz-91joat.69vi.s4ge.1810.2a02.IP)
+[17:20:11] *** Quits: Sho (sho@moz-c5i8dh.cust.telecolumbus.net) (A TLS packet with unexpected length was received.)
+[17:20:46] *** Joins: Sho (sho@moz-c5i8dh.cust.telecolumbus.net)
+[17:22:45] *** Joins: avikpal (avikpal@moz-vbt.mde.194.117.IP)
+[17:24:09] <arielb1> acrichto: what do you think of gh26080 and friends?
+[17:24:09] <[o__o]> No error despite of multiple applicable methods in scope: https://github.com/rust-lang/rust/issues/26080
+[17:26:37] *** Quits: jgallagher (john@moz-6ge.dhn.131.24.IP) (Client exited)
+[17:27:07] *** Joins: jgallagher (john@moz-6ge.dhn.131.24.IP)
+[17:28:02] *** Quits: Viewtiful (Viewtiful@moz-eub.afi.30.89.IP) (Connection closed)
+[17:28:37] <acrichto> arielb1: I just wanted to nominate it for discussion as it seems somewhat serious, but I haven't looked too much into the issue yet
+[17:28:58] <Gankro> pnkfelix: Oh actually, are you still working on allocator stuff in tandem?
+[17:29:06] <arielb1> acrichto: some part of it is essential
+[17:29:28] <arielb1> I mean, gh26096
+[17:29:29] <[o__o]> Regression because of #26008: https://github.com/rust-lang/rust/issues/26096
+[17:30:23] <arielb1> we should probably write deref-order down somewhere
+[17:32:05] <bluss> I thought it was a bug, I've known about method priorizations w.r.t deref but not multiple traits like this
+[17:32:23] <arielb1> multiple traits?
+[17:32:33] *** chmanchester|afk is now known as chmanchester
+[17:32:39] *** Quits: Quxxy (chatzilla@moz-0nv.jkp.167.59.IP) (Ping timeout: 121 seconds)
+[17:33:02] <bluss> arielb1: the "no error despite" bug is about having one trait in scope, then importing another trait, and the method selected changes
+[17:33:31] <arielb1> what would you expect?
+[17:33:38] <arielb1> traits you don't import shouldn't cause ambiguity
+[17:33:52] <bluss> ambiguity, because both traits are imported
+[17:33:55] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[17:34:13] <arielb1> but no ambiguity in <Rc<T>>::clone vs <T>::clone?
+[17:34:25] <arielb1> because it's the trait Clone in both cases?
+[17:34:32] <bluss> I didn't think so much about that
+[17:34:46] *** Joins: munksgaard (munksgaard@moz-478pev.u.parknet.dk)
+[17:34:49] <arielb1> of course *that* should work
+[17:35:07] <bluss> if Buf is in trait, it selects Buf::bytes(&RingBuf), if you import both Buf and Read, it selects Read::bytes(&RingBuf)
+[17:35:10] <bluss> if Buf is in trait, it selects Buf::bytes(&RingBuf), if you import both Buf and Read, it selects Read::bytes(RingBuf)
+[17:35:22] <arielb1> one of ^
+[17:35:26] *** Joins: mib_fats3r (Mibbit@moz-hu6.nja.252.72.IP)
+[17:35:36] <bluss> not one of
+[17:35:40] <arielb1> the latte
+[17:35:43] <arielb1> *latter
+[17:36:15] <arielb1> the as_ref case is isomorphic to the clone case
+[17:36:27] <bluss> yes
+[17:36:34] *** Quits: mib_fats3r (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[17:37:01] *** Joins: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP)
+[17:37:34] <arielb1> actually, a rule "there must be a single matching trait for all possible autoderefs" kind of makes sense
+[17:38:01] <arielb1> actually, there might be a problem
+[17:38:02] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[17:38:02] *** ChanServ sets mode: +o pcwalton
+[17:38:04] <arielb1> if you have Rc<_>
+[17:38:22] <arielb1> and some random trait in scope implements clone
+[17:38:26] <arielb1> *provides
+[17:38:30] *** Joins: Kxepal (Miranda@moz-l8kpna.pppoe.mtu-net.ru)
+[17:38:32] <arielb1> but I don't think *that* is too bad
+[17:39:32] <arielb1> need to run it through crater
+[17:39:39] <arielb1> see how much breaks
+[17:39:57] <elif> pnkfelix, Gankro stack-based drop flags wip at https://github.com/rust-lang/rust/compare/master...eefriedman:dynamic-drop , if you're interested; it's currently blocked on figuring out how to deal with deref on Box
+[17:41:22] <arielb1> elif: wow
+[17:41:37] <Gankro> elif: !
+[17:42:39] *** Quits: harrisonclarke (harrisoncla@moz-6v8.jf9.227.142.IP) (Connection closed)
+[17:44:43] <elif> i looked into it as an experiment to understand the compiler
+[17:45:09] <elif> the core change is just adding a field to Datum to track drop flags
+[17:45:42] *** Quits: Binero (jeroen@moz-91joat.69vi.s4ge.1810.2a02.IP) (Ping timeout: 121 seconds)
+[17:46:00] *** Quits: avikpal (avikpal@moz-vbt.mde.194.117.IP) (Connection closed)
+[17:46:11] <elif> and then there are a whole bunch of nasty details...
+[17:46:15] *** Joins: c0170_ (c0170@moz-4stj9o.cable.virginm.net)
+[17:46:21] *** Joins: Binero (jeroen@moz-9quuoa.access.telenet.be)
+[17:47:06] *** Quits: c0170 (c0170@moz-4stj9o.cable.virginm.net) (Ping timeout: 121 seconds)
+[17:47:10] *** Joins: avikpal (avikpal@moz-vbt.mde.194.117.IP)
+[17:47:46] <elif> like the fact that trans doesn't currently generate code for "(*box).field" correctly
+[17:50:23] *** Quits: johnsoft (johnsoft@moz-69mrig.res.rr.com) (Ping timeout: 121 seconds)
+[17:50:47] *** Joins: johnsoft (johnsoft@moz-69mrig.res.rr.com)
+[17:51:38] *** Quits: avikpal (avikpal@moz-vbt.mde.194.117.IP) (Ping timeout: 121 seconds)
+[17:53:01] <elif> http://is.gd/cFZfii
+[17:58:24] *** Joins: eibwen (eibwen@moz-psvn8p.dip0.t-ipconnect.de)
+[17:59:19] *** Joins: achanda_ (achanda@moz-krs.qjv.66.182.IP)
+[17:59:53] <Gankro> elif: Well, I mean you could *argue* that that's *a* correct behaviour
+[17:59:59] *** Joins: rkruppe_ (chatzilla@moz-3nj.rnu.131.95.IP)
+[18:00:01] <Gankro> DerefMove is not the best specified
+[18:01:13] *** Quits: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP) (Ping timeout: 121 seconds)
+[18:01:25] *** rkruppe_ is now known as rkruppe
+[18:01:36] *** Quits: achanda (achanda@moz-6gu.gg6.21.113.IP) (Ping timeout: 121 seconds)
+[18:02:45] <elif> whether it's "correct" or not, it's very difficult to replicate with purely stack-based drop flags
+[18:07:56] *** Joins: avikpal (avikpal@moz-vbt.mde.194.117.IP)
+[18:10:25] <bluss> elif: did you look at any performance numbers? Either just compile time of rustc itself or something else
+[18:11:55] *** Quits: pauls (pauls@moz-e5p333.ccs.neu.edu) (Connection closed)
+[18:13:44] <elif> no, haven't looked at numbers yet; it doesn't bootstrap at the moment
+[18:14:04] *** Joins: swgillespie (swgillespie@moz-o29.3un.220.167.IP)
+[18:16:23] <elif> the code panics if you try to move out of a field of a boxed struct, because i haven't figured out how to handle it
+[18:17:16] *** Joins: grant (grant@moz-jfh.0nq.187.64.IP)
+[18:20:56] *** Quits: jincreator (Thunderbird@moz-d7i.i1g.195.175.IP) (Ping timeout: 121 seconds)
+[18:26:17] <Eridius> So. Swift 2. Open source (by the end of the year), targeting Linux.
+[18:26:32] <Eridius> sounds like they're moving a lot faster than expected with regards to making Swift viable for more than just iOS/OS X app development
+[18:26:53] <bluss> so june 7 nightly built, that's nice finally
+[18:26:55] *** Joins: pauls (pauls@moz-2c0.hj0.10.129.IP)
+[18:27:24] *** Quits: swgillespie (swgillespie@moz-o29.3un.220.167.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[18:32:23] *** Quits: achanda_ (achanda@moz-krs.qjv.66.182.IP) (Ping timeout: 121 seconds)
+[18:32:30] *** Quits: dinfuehr (dinfuehr@moz-45rcaq.highway.telekom.at) (Connection closed)
+[18:32:33] *** Joins: jincreator (Thunderbird@moz-d7i.i1g.195.175.IP)
+[18:41:03] *** Joins: achanda (achanda@moz-krs.qjv.66.182.IP)
+[18:42:16] *** Quits: avikpal (avikpal@moz-vbt.mde.194.117.IP) (Connection closed)
+[18:45:18] *** Quits: achanda (achanda@moz-krs.qjv.66.182.IP) (Ping timeout: 121 seconds)
+[18:45:58] <nathan7> weren't we making bets on this the other day?
+[18:46:13] <arielb1> are you supposed to pass unnormalized types to selection?
+[18:54:06] *** Quits: Sho (sho@moz-c5i8dh.cust.telecolumbus.net) (Quit: Konversation terminated!)
+[18:57:02] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Quit: Leaving.)
+[18:57:28] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[18:57:29] *** Quits: summerlight (summerlight@moz-99k.2mj.130.121.IP) (Ping timeout: 121 seconds)
+[18:58:50] *** Joins: harrisonclarke (harrisoncla@moz-g1kp2c.ns.bellaliant.net)
+[18:59:05] *** Joins: dinfuehr (dinfuehr@moz-45rcaq.highway.telekom.at)
+[18:59:19] *** Quits: Amaranth (travis@moz-1raqsl.cpe.cableone.net) (Quit: So long!)
+[19:00:36] *** Joins: Amaranth (travis@moz-1raqsl.cpe.cableone.net)
+[19:03:13] *** Quits: harrisonclarke (harrisoncla@moz-g1kp2c.ns.bellaliant.net) (Ping timeout: 121 seconds)
+[19:05:45] *** Joins: erickt (erickt@moz-e9g.jg6.129.64.IP)
+[19:05:45] *** ChanServ sets mode: +ao erickt erickt
+[19:05:56] *** Joins: zmack (zmack@moz-htpein.home.aster.pl)
+[19:06:09] *** Quits: zmack (zmack@moz-htpein.home.aster.pl) (Connection closed)
+[19:07:31] *** Joins: rkruppe_ (chatzilla@moz-3nj.rnu.131.95.IP)
+[19:09:13] *** Quits: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP) (Ping timeout: 121 seconds)
+[19:09:19] <arielb1> nmatsakis: ping
+[19:09:26] *** rkruppe_ is now known as rkruppe
+[19:10:08] *** Quits: grant (grant@moz-jfh.0nq.187.64.IP) (Client exited)
+[19:10:14] *** Astrum|Lap is now known as jackh
+[19:10:37] *** jackh is now known as Astrum|Lap
+[19:11:35] *** Quits: mukilan (mukilan@moz-5ke.d4s.164.122.IP) (A TLS packet with unexpected length was received.)
+[19:13:21] *** Quits: dinfuehr (dinfuehr@moz-45rcaq.highway.telekom.at) (Connection closed)
+[19:14:02] *** Joins: dinfuehr (dinfuehr@moz-45rcaq.highway.telekom.at)
+[19:21:17] *** Joins: p1start (p1start@moz-nftjhe.org)
+[19:24:26] *** Joins: harrisonclarke (harrisoncla@moz-g1kp2c.ns.bellaliant.net)
+[19:27:52] <nmatsakis> arielb1: pong
+[19:28:06] <arielb1> nmatsakis: I am having some problems with selection and unnormalized types
+[19:28:26] <arielb1> how should they interact?
+[19:28:42] <nmatsakis> selection should be fed normalized types
+[19:28:52] <nmatsakis> but it must do normalization at various times
+[19:29:11] <arielb1> there's the problem of normalization and late-bound regions
+[19:29:15] <nmatsakis> (I've been wanting to change this; to make normalization lazy all the time; not yet sure if this is a good idea; seems to require some refactoring first)
+[19:30:04] <nmatsakis> yeah, we could improve that case, I could believe that would cause problems, though as I said I think I prefer to experiment with making normalization be done lazilly during type equality checking (and probably a few other places)
+[19:30:08] <arielb1> is it a problem because we don't have where-clauses on late-bound regions?
+[19:30:17] *** Quits: untitaker (untitaker@moz-rtvb9i.highway.telekom.at) (Ping timeout: 121 seconds)
+[19:30:35] <arielb1> currently we kind of have to normalize each time we specialize late-bound regions
+[19:30:48] <nmatsakis> I seem to recall I wrote the code to do it at some point (normalization and late-bound regions) but threw it out because it didn't actually solve the problem I was having and it seemed complicated, but I guess I have to go revisit
+[19:31:09] <nmatsakis> (that is, revisit to answer your question properly)
+[19:31:23] <nmatsakis> do you have a specific example you're looking at?
+[19:31:23] *** Joins: Simplebrain (Simplebrain@moz-6h4u6b.skybroadband.com)
+[19:33:01] *** Joins: davebettin (textual@moz-qihdsk.hfc.comcastbusiness.net)
+[19:33:21] <arielb1> I have gh23958
+[19:33:21] <[o__o]> ICE fictitious type in sizing_type_of(): https://github.com/rust-lang/rust/issues/23958
+[19:33:33] <arielb1> that can be fixed by normalizing everywhere through
+[19:34:01] *** Quits: p1start (p1start@moz-nftjhe.org) (Ping timeout: 121 seconds)
+[19:34:01] *** Quits: harrisonclarke (harrisoncla@moz-g1kp2c.ns.bellaliant.net) (Connection closed)
+[19:34:39] *** Joins: untitaker (untitaker@moz-d1qj3q.highway.telekom.at)
+[19:39:47] *** Quits: Murarth (Murarth@moz-lh27vv.dyn.nltelcom.net) (Quit: Mani Mani is always Mani Mani at Mani Mani with all Mani Mani Mani)
+[19:40:04] *** Joins: Murarth (Murarth@moz-jpotpi.phnx.qwest.net)
+[19:40:14] *** Quits: erickt (erickt@moz-e9g.jg6.129.64.IP) (Ping timeout: 121 seconds)
+[19:42:36] *** Joins: harrisonclarke (harrisoncla@moz-g1kp2c.ns.bellaliant.net)
+[19:43:23] *** Quits: davebettin (textual@moz-qihdsk.hfc.comcastbusiness.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[19:45:01] *** Quits: semarie (semarie@moz-qpd.aq7.187.37.IP) (A TLS packet with unexpected length was received.)
+[19:48:26] *** Joins: larhat1 (Adium@moz-vlo5br.cable.virginm.net)
+[19:52:19] *** Joins: erickt (erickt@moz-e9g.jg6.129.64.IP)
+[19:52:19] *** ChanServ sets mode: +ao erickt erickt
+[19:58:59] *** chmanchester is now known as chmanchester|afk
+[20:02:16] *** Joins: genbattle (genbattle@moz-4v0.gkd.16.182.IP)
+[20:02:19] *** Quits: Rusky1 (russell@moz-tebhci.slkc.qwest.net) (Quit: Leaving.)
+[20:06:56] *** Joins: Rusky (russell@moz-tebhci.slkc.qwest.net)
+[20:08:04] *** Quits: dinfuehr (dinfuehr@moz-45rcaq.highway.telekom.at) (Ping timeout: 121 seconds)
+[20:08:05] *** Joins: imperio (Mibbit@moz-8otf3a.fbx.proxad.net)
+[20:08:23] <imperio> I just built rustdoc, where do I link it to the stdlib please ?
+[20:13:33] *** Joins: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at)
+[20:14:32] *** Quits: harrisonclarke (harrisoncla@moz-g1kp2c.ns.bellaliant.net) (Connection closed)
+[20:15:26] *** Joins: madmalik (uid13697@moz-lfin5p.brockwell.irccloud.com)
+[20:16:01] *** Quits: skeuomorf (skeuomorf@moz-d3l.n1e.32.197.IP) (Ping timeout: 121 seconds)
+[20:21:09] *** Quits: erz (erz@moz-fiq1tl.broadband.corbina.ru) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[20:21:14] *** Joins: erz (erz@moz-fiq1tl.broadband.corbina.ru)
+[20:21:27] *** Joins: davebettin (textual@moz-hde.5e5.136.67.IP)
+[20:21:39] *** Quits: munksgaard (munksgaard@moz-478pev.u.parknet.dk) (Ping timeout: 121 seconds)
+[20:23:42] *** Joins: munksgaard (munksgaard@moz-478pev.u.parknet.dk)
+[20:23:53] *** Quits: gavin (gavin@irc.mozilla.org) (Ping timeout: 121 seconds)
+[20:26:33] *** Joins: Kingsquee (kingsley@moz-3fm07c.bchsia.telus.net)
+[20:29:11] *** Joins: mib_mg3t6l (Mibbit@moz-hu6.nja.252.72.IP)
+[20:36:22] *** Quits: erz (erz@moz-fiq1tl.broadband.corbina.ru) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[20:36:27] *** Joins: erz (erz@moz-fiq1tl.broadband.corbina.ru)
+[20:38:04] *** Joins: rkruppe_ (chatzilla@moz-3nj.rnu.131.95.IP)
+[20:39:44] *** Quits: mib_mg3t6l (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[20:40:14] *** Quits: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP) (Ping timeout: 121 seconds)
+[20:40:14] *** rkruppe_ is now known as rkruppe
+[20:42:00] <gleb> imperio: I don't understand the question. does it fail to find the libs or is it something else?
+[20:42:15] <imperio> gleb: it fails to find the lib
+[20:42:24] <imperio> I didn't link correctly I guess...
+[20:42:33] <gleb> how did you build it?
+[20:42:37] <imperio> make
+[20:42:43] <imperio> and that's all
+[20:43:05] *** Quits: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at) (Connection closed)
+[20:43:40] <gleb> so you're calling it from stage2/bin?
+[20:45:09] <imperio> it copied the rustdoc binary in x86.../stage1/lib/rustlib./x86../bin/
+[20:45:32] <gleb> that's more involved than just make
+[20:46:10] <gleb> if you `make check-stage1-rustdocck`
+[20:46:31] <gleb> you can use the one from x86.../stage1/bin with LD_LIBRARY_PATH pointing into x.../stage1/lib
+[20:46:43] <imperio> serioulsy ?
+[20:46:44] <imperio> erf
+[20:47:10] <imperio> then I just rebuild
+[20:47:18] <imperio> it'll be easier
+[20:47:25] *** Quits: bdero (bran@moz-favltl.dyn.mit.edu) (Ping timeout: 121 seconds)
+[20:48:09] *** chmanchester|afk is now known as chmanchester
+[20:48:55] <imperio> thanks ^^
+[20:50:28] <bluss> I haven't gotten stage1 rustdoc to work like that
+[20:50:52] *** Joins: achanda (achanda@moz-krs.qjv.66.182.IP)
+[20:50:59] <bluss> hm don't remember actually. either stage1 or stage2 works with LD_LIBRARY_PATH set
+[20:55:10] <imperio> bluss: I'll try
+[20:55:54] <imperio> it's been a while since I said that I was gonna make an unbelievable rustc --explain colorizer
+[20:55:57] <imperio> it's time to do it
+[20:56:00] *** Quits: achanda (achanda@moz-krs.qjv.66.182.IP) (Ping timeout: 121 seconds)
+[20:56:07] <bluss> nice!
+[20:57:14] <imperio> I already made a first step PR
+[20:57:26] <imperio> (I look for it if you wanna have a preview)
+[20:57:54] <imperio> gh25033
+[20:57:54] <[o__o]> Beginning of more beautiful rustc --explain: https://github.com/rust-lang/rust/pull/25033
+[21:00:10] *** Joins: harrisonclarke (harrisoncla@moz-g1kp2c.ns.bellaliant.net)
+[21:01:48] <gleb> bluss: I'll double check but after you advice to use check-stage1-rustdocck I think that's what I'd settled on after some failures
+[21:02:23] <imperio> bluss: it seems to be working for now, thanks !
+[21:02:29] *** Quits: arielb1 (Ariel@moz-53k.mgl.67.109.IP) (Quit: Ex-Chat)
+[21:03:18] <bluss> gleb: I can't believe I've already forgotten :)
+[21:06:25] *** Quits: imperio (Mibbit@moz-8otf3a.fbx.proxad.net) (Ping timeout: 121 seconds)
+[21:12:25] * Gankro really wants to disable unwinding forever to just simplify basically everything
+[21:12:52] <gleb> bluss: yes, rustdoc from x86_64-unknown-linux-gnu/stage1 works for me
+[21:13:31] <gleb> after make check-stage1-rustdocck
+[21:14:49] <bluss> nice
+[21:15:53] *** Joins: imperio (Mibbit@moz-8otf3a.fbx.proxad.net)
+[21:16:03] <imperio> is that normal that the rustdoc json output is broken ?
+[21:18:44] *** Quits: munksgaard (munksgaard@moz-478pev.u.parknet.dk) (Ping timeout: 121 seconds)
+[21:21:45] *** Joins: swgillespie (swgillespie@moz-o29.3un.220.167.IP)
+[21:23:43] *** Quits: larhat1 (Adium@moz-vlo5br.cable.virginm.net) (Quit: Leaving.)
+[21:25:26] *** Quits: mib_q9jp5e (Mibbit@moz-g6k.oht.161.46.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[21:25:38] *** Quits: untitaker (untitaker@moz-d1qj3q.highway.telekom.at) (Ping timeout: 121 seconds)
+[21:39:58] *** Quits: imperio (Mibbit@moz-8otf3a.fbx.proxad.net) (Ping timeout: 121 seconds)
+[21:40:21] *** Quits: swgillespie (swgillespie@moz-o29.3un.220.167.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[21:41:46] *** Joins: gavin (gavin@irc.mozilla.org)
+[21:42:04] *** Joins: bdero (bran@moz-lbs.91h.47.73.IP)
+[21:42:50] *** Joins: swgillespie (swgillespie@moz-o29.3un.220.167.IP)
+[21:43:43] *** Joins: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at)
+[21:47:27] *** Joins: untitaker (untitaker@moz-d1qj3q.highway.telekom.at)
+[21:47:46] *** Quits: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at) (Ping timeout: 121 seconds)
+[21:51:30] *** Joins: achanda (achanda@moz-krs.qjv.66.182.IP)
+[21:52:02] *** Quits: Binero (jeroen@moz-9quuoa.access.telenet.be) (Client exited)
+[21:52:32] *** Quits: woboats (tatterdemal@moz-c1pqg7.ca.charter.com) (Ping timeout: 121 seconds)
+[21:56:34] *** Quits: achanda (achanda@moz-krs.qjv.66.182.IP) (Ping timeout: 121 seconds)
+[21:59:03] *** Joins: achanda (achanda@moz-krs.qjv.66.182.IP)
+[21:59:39] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[22:05:59] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[22:08:27] *** Quits: achanda (achanda@moz-krs.qjv.66.182.IP) (Connection closed)
+[22:12:42] *** Quits: Simplebrain (Simplebrain@moz-6h4u6b.skybroadband.com) (Quit: Leaving)
+[22:16:17] *** Quits: harrisonclarke (harrisoncla@moz-g1kp2c.ns.bellaliant.net) (Connection closed)
+[22:17:03] <nrc> if I use `self` in a macro definition, when it expands, the error message refers to being in a static method. That seems very wrong. Is this a known issue?
+[22:19:06] *** Joins: summerlight (summerlight@moz-99k.2mj.130.121.IP)
+[22:21:22] *** Quits: erz (erz@moz-fiq1tl.broadband.corbina.ru) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[22:24:12] *** Joins: harrisonclarke (harrisoncla@moz-g1kp2c.ns.bellaliant.net)
+[22:28:49] *** Quits: dasch (david@moz-euhrpk.cust.bredbandsbolaget.se) (Ping timeout: 121 seconds)
+[22:32:40] *** Quits: summerlight (summerlight@moz-99k.2mj.130.121.IP) (Ping timeout: 121 seconds)
+[22:34:08] *** Quits: swgillespie (swgillespie@moz-o29.3un.220.167.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[22:35:09] *** Joins: swgillespie (swgillespie@moz-o29.3un.220.167.IP)
+[22:35:28] *** Quits: eibwen (eibwen@moz-psvn8p.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[22:40:23] *** Quits: harrisonclarke (harrisoncla@moz-g1kp2c.ns.bellaliant.net) (Connection closed)
+[22:44:28] *** Joins: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at)
+[22:45:54] <nrc> Are there macros for doing saturating arithmetic on regular integers?
+[22:47:18] <WindowsBunny> acrichto: If you decide to go that way, I give permission for using winapi in a subtree in rust
+[22:48:30] <acrichto> WindowsBunny: thanks :)
+[22:49:06] <WindowsBunny> acrichto: And if that happens, I'm going to remake my libc related PR to just remove everything winapi from libc entirely and make everything use winapi
+[22:49:30] *** Quits: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at) (Ping timeout: 121 seconds)
+[22:51:04] *** Quits: johnsoft (johnsoft@moz-69mrig.res.rr.com) (Ping timeout: 121 seconds)
+[22:51:26] *** Joins: johnsoft (johnsoft@moz-69mrig.res.rr.com)
+[22:53:53] <kimundi> nmatsakis: r? https://github.com/rust-lang/rust/pull/26058
+[22:54:11] *** Joins: bjz (bjz@moz-eq3.ka9.21.120.IP)
+[23:00:38] *** Joins: njn (chatzilla@moz-c6c476.iinet.net.au)
+[23:01:46] *** Quits: bjz (bjz@moz-eq3.ka9.21.120.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[23:01:48] <sfackler> acrichto: do you remember how close_accept worked in the old version of stdio?
+[23:02:14] <acrichto> sfackler: yes
+[23:02:32] *** Quits: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua) (Ping timeout: 121 seconds)
+[23:02:39] <acrichto> sfackler: (a self-pipe)
+[23:02:41] <sfackler> ah
+[23:02:43] <sfackler> thanks
+[23:06:15] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[23:06:44] *** Joins: brson (brson@moz-esl.4cu.229.94.IP)
+[23:06:44] *** ChanServ sets mode: +o brson
+[23:08:43] *** Joins: harrisonclarke (harrisoncla@moz-g1kp2c.ns.bellaliant.net)
+[23:10:18] *** Quits: Astrum|Lap (Astrum|Lap@moz-7enfbr.co.comcast.net) (Client exited)
+[23:16:39] *** Quits: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP) (Connection closed)
+[23:17:00] *** Joins: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP)
+[23:17:01] *** Joins: dasch (david@moz-euhrpk.cust.bredbandsbolaget.se)
+[23:21:02] *** Quits: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP) (Ping timeout: 121 seconds)
+[23:21:30] *** Joins: bombless (_@moz-s000ci.0v2u.0v40.0da8.2001.IP)
+[23:25:47] *** Quits: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP) (Quit: ChatZilla 0.9.91.1 [Firefox 38.0.5/20150525141253])
+[23:32:07] *** Quits: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de) (Ping timeout: 121 seconds)
+[23:32:24] <WindowsBunny> yay!
+[23:32:27] <WindowsBunny> msvc dist bots!
+[23:43:41] *** Quits: yjv (yjv@moz-j0cdis.fios.verizon.net) (Connection closed)
+[23:44:36] *** Quits: genbattle (genbattle@moz-4v0.gkd.16.182.IP) (Ping timeout: 121 seconds)
+[23:45:59] *** Joins: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at)
+[23:50:07] *** Quits: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at) (Ping timeout: 121 seconds)

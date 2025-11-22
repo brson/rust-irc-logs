@@ -1,0 +1,1307 @@
+[00:00:00] *** Joins: jdm (jdm@F2E651E2.2E53F4B8.47C41102.IP)
+[00:00:00] *** ChanServ sets mode: +o jdm
+[00:04:45] <SimonSapin> pcwalton: how does the percentage trick work?
+[00:05:02] *** Quits: brendan (brendaneic@777B9EEC.C030CAFC.1EF54B18.IP) (Quit: brendan)
+[00:05:12] <pcwalton> SimonSapin: multiply the percentage in decimal by INT_MAX and then convert to int
+[00:06:09] <pcwalton> now when you want to compute percentage P of X, we take advantage of the fact that (P/INT_MAX) * X == (P*X)/INT_MAX
+[00:06:22] <pcwalton> and /INT_MAX is the same as a right shift by 32
+[00:07:19] <kmc> fixed point arithmetic :)
+[00:07:22] <pcwalton> this gives you 9 or so decimal places of precision? assuming log_10(4000000000) is how you compute that
+[00:07:33] <pcwalton> which should be enough for CSS, I would think
+[00:07:46] <kmc> did you try 64-bit ints too? i'm curious about the performance diff
+[00:08:02] *** Quits: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: jet)
+[00:08:06] <pcwalton> I only tried 32 bit ints (i.e. Au) vs. 32 bit int + float
+[00:08:25] <pcwalton> I think what makes it expensive is not the floating point multiplication but having to convert from Au -> float -> Au
+[00:08:37] <pcwalton> saving the conversion is what makes the fixed point arith faster
+[00:09:04] *** Quits: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net) (Quit: bholley)
+[00:09:21] *** Joins: CaseyBecking (CaseyBecki@moz-2E1C9654.lightspeed.irvnca.sbcglobal.net)
+[00:12:26] *** Joins: brendan (brendaneic@777B9EEC.C030CAFC.1EF54B18.IP)
+[00:13:03] *** Quits: CaseyBecking (CaseyBecki@moz-2E1C9654.lightspeed.irvnca.sbcglobal.net) (Client exited)
+[00:13:16] *** Joins: CaseyBecking (CaseyBecki@moz-2E1C9654.lightspeed.irvnca.sbcglobal.net)
+[00:14:54] <pcwalton> SimonSapin: text-decoration propagation seems to be problematic for our model. do you think a hacky solution that propagates a flag down on flows that says "treat 'none' as 'underline'/etc for my boxes during display list construction" will work?
+[00:15:42] <pcwalton> the problem is that we can't propagate it down until assign-widths since that's the first top-down traversal, but TextRuns are created before then
+[00:16:15] <SimonSapin> what do you mean, propagate?
+[00:16:36] <pcwalton> http://www.w3.org/TR/CSS21/text.html#lining-striking-props
+[00:16:39] <pcwalton> there are special rules here
+[00:17:04] <SimonSapin> this bit of spec was discussed as recently as this year
+[00:17:06] <pcwalton> text-decoration for parent blocks overrides text-decoration of "none" for kids, IF those kids have position:static
+[00:17:23] <SimonSapin> there is a handful of ways to do this, with different results
+[00:17:38] <SimonSapin> I don’t remember the details, but does http://dev.w3.org/csswg/css-text-decor/#line-decoration help?
+[00:18:10] <pcwalton> well, I understand what needs to be done, but it doesn't fit that well into our algorithm
+[00:18:30] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[00:18:30] <ghservo> [13servo] 15deokjinkim opened pull request #1397: Fix incorrect onload event. (06master...06onload_event) 02http://git.io/fi8-Ew
+[00:18:30] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[00:18:30] <SimonSapin> eg., if you have text-decoration on an element that has inline children…
+[00:18:45] <pcwalton> however I think we can hack around it by just adding an "override text-decoration of 'none' during display list construction" flag to flows
+[00:18:46] <SimonSapin> you could have the children each draw their own decoration
+[00:18:56] <pcwalton> and having assign-widths push that flag down if appropriate
+[00:19:05] <SimonSapin> or you could have the element that has it specified draw one underline under the whole thing
+[00:19:21] <SimonSapin> and it looks different if the children have a different font size…
+[00:19:29] <pcwalton> hmm, yeah.
+[00:19:32] <jdm> deokjinkim: why is dispatching the load event after compositing better?
+[00:19:37] <pcwalton> I think that hack will work either way.
+[00:20:04] <SimonSapin> with the latter, as I understand it, there is no propagation
+[00:20:26] <pcwalton> oh, I see
+[00:20:40] <pcwalton> that would be nicer for Servo for sure :)
+[00:20:45] <pcwalton> otherwise it's hack time
+[00:20:57] <pcwalton> it's not *devastating* hack time but it's "eww, that's ugly" hack time
+[00:21:00] <SimonSapin> I don’t remember what was the conclusion, so definitely look at the new spec
+[00:21:07] <pcwalton> ok
+[00:21:57] <pcwalton> looks like the new spec has the problematic behavior too
+[00:21:57] <pcwalton> bah.
+[00:21:58] <pcwalton> ok
+[00:22:05] <pcwalton> I'll add the hack
+[00:23:14] <SimonSapin> yeah, I’d say having some approximation of text-underline that is not conformant in some subtle corner cases is good enough for now
+[00:23:30] <pcwalton> I think it'll be spec conformant
+[00:23:35] <pcwalton> with enough work anyway
+[00:23:38] <pcwalton> it's just not… beautiful :)
+[00:23:48] <SimonSapin> oh, well
+[00:23:50] <pcwalton> and oh, it could impact ligatures
+[00:23:54] <pcwalton> that's the biggest problem I guess
+[00:23:59] <SimonSapin> how?
+[00:24:12] <pcwalton> let me make an example
+[00:24:34] <deokjinkim> jdm: Actually I want to use load event to measure elapsed time for web page loading. So I think load event have to be dispached after compositing.
+[00:25:04] <pcwalton> <style>div { text-decoration: underline; } p { text-decoration: none; } span { text-decoration: underline; }</style> <div><p>I like truf<span>fles</span></p></div>
+[00:25:09] <pcwalton> won't ligature ffl
+[00:25:22] <pcwalton> we probably *could* fix this with enough work
+[00:25:29] <jdm> hmm
+[00:25:41] <deokjinkim> Is it incorrect? 
+[00:26:04] <pcwalton> even though it's supposed to look like I like truffles
+[00:26:51] *** Joins: jet (jet@moz-C07D5168.p2p.sfo1.mozilla.com)
+[00:26:58] <jdm> deokjinkim: I would be inclined to create a new event instead of reusing the load event
+[00:27:45] <jdm> it's not like load is correct right now, but I think making a ServoCompositingDone event is a better choice
+[00:31:42] <deokjinkim> jdm: You're right. I misunderstood load event. I'll modify code according to your advice. 
+[00:31:52] <deokjinkim> Thank you for your advice~
+[00:32:01] <jdm> deokjinkim: also, that looks like it will fire the load event after every single time we composite :)
+[00:34:58] <deokjinkim> jdm: Yes. Do you know why current "load" event can't be dispatched in proper time?
+[00:35:35] <jdm> deokjinkim: because we do not keep track of all network requests right now.
+[00:36:24] <jdm> when an image is requested during the first parse, we should not dispatch the load event until it is finished.
+[00:36:51] <jdm> it's just work that someone needs to do :)
+[00:36:58] <jdm> it's also quite complicated
+[00:38:42] *** kimundi is now known as zz_kimundi
+[00:39:24] <jdm> http://www.whatwg.org/specs/web-apps/current-work/multipage/browsers.html#delaying-load-events-mode
+[00:39:59] <jdm> since it's described with the concept of "browsing context", it makes sense to implement it properly when we implement BrowserContext
+[00:42:16] <deokjinkim> ok. I need more investigation on it. thank you for kind explanation ^^
+[00:42:17] *** Joins: ibnc (ibnc@moz-718F3037.client.mchsi.com)
+[00:44:07] <SimonSapin> r? anyone https://github.com/mozilla-servo/rust-cssparser/pull/33 and https://github.com/mozilla/servo/pull/1377
+[00:44:11] <kmc> so in the world without linked task failure, there's no way to implicitly catch failure within some deeply nested spawns
+[00:44:27] <kmc> we have to connect the "send a constellation message on failure" plumbing to every spawn in Servo :/
+[00:44:47] <kmc> is linked failure coming back one day?
+[00:45:04] <pcwalton> probably not
+[00:45:12] <pcwalton> it's not clear how to make it not racy and fast
+[00:45:25] <pcwalton> without locking on every message send
+[00:45:30] <pcwalton> and every context switch
+[00:45:39] <kmc> sometimes I feel like Rust is getting less nice over time :/
+[00:45:52] <pcwalton> well, it was never implemented correctly
+[00:45:54] <pcwalton> it was always racy
+[00:45:55] <kmc> I don't mean that as a dig at the designers because I realize the changes are motivated
+[00:45:59] <pcwalton> sure
+[00:46:13] <kmc> just a vague complainy feeling :)
+[00:46:22] <kmc> and yeah
+[00:46:31] <kmc> if the old feature was fundamentally buggy then I can't complain too hard :)
+[00:46:32] *** Quits: jet (jet@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: jet)
+[00:46:46] <pcwalton> yeah, it was causing a lot of random failures on the bots
+[00:46:49] *** dbaron_ is now known as dbaron
+[00:46:51] <pcwalton> and eventually all the tests were turned off
+[00:47:05] <kmc> SimonSapin: looking
+[00:47:13] <SimonSapin> encodings :)
+[00:47:15] <jdm> it's like people complaining about removing JS_THREADED from spidermonkey
+[00:47:25] <jdm> it was never actually safe
+[00:47:27] * pcwalton shrugs -- linked failure WOULD be nice
+[00:47:34] <pcwalton> it's just that we don't know how to implement it
+[00:47:41] <pcwalton> probably the feature was too general
+[00:47:48] <pcwalton> and maybe some more targeted thing could hit our use cases and make them nice
+[00:49:10] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[00:49:10] <ghservo> [13servo] 15deokjinkim closed pull request #1397: Fix incorrect onload event. (06master...06onload_event) 02http://git.io/fi8-Ew
+[00:49:10] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[00:49:51] <kmc> implicit / dynamically scoped vars would do it I think
+[00:50:07] <kmc> if they pass through to spawned tasks
+[00:51:39] *** Quits: jdm (jdm@F2E651E2.2E53F4B8.47C41102.IP) (Quit: Lost terminal)
+[00:55:51] *** Quits: CaseyBecking (CaseyBecki@moz-2E1C9654.lightspeed.irvnca.sbcglobal.net) (Client exited)
+[00:56:20] <kmc> it would eliminate some of the args from {Script,Render,Layout}Task::create() as well
+[00:56:26] <kmc> which are getting kind of out of hand
+[00:57:26] <kmc> maybe I should move everything that holds for a whole pipeline into a single clonable struct
+[00:59:31] *** Quits: brendan (brendaneic@777B9EEC.C030CAFC.1EF54B18.IP) (Quit: brendan)
+[01:00:07] *** Joins: sankha93 (Instantbir@C1F990D3.82E7DDFE.EFB84E89.IP)
+[01:11:42] *** Joins: jaebaek_ (jaebaek@30FA813.D609C3EB.8C90971.IP)
+[01:18:44] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: Lost terminal)
+[01:19:19] <kmc> woah I didn't know we had &'static Trait, awesome
+[01:20:10] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[01:20:11] *** ChanServ sets mode: +o brson
+[01:23:11] <kmc> SimonSapin: i'm done with comments on rust-cssparser; it looks good otherwise
+[01:23:15] <kmc> will look at the servo pr notw
+[01:23:16] <kmc> now*
+[01:23:22] <SimonSapin> replying there
+[01:28:49] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[01:28:49] <ghservo> [13servo] 15pcwalton opened pull request #1398: layout: Perform text decoration propagation per CSS 2.1 § 16.3.1 without (06master...06propagate-text-decoration) 02http://git.io/FSmJbw
+[01:28:49] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[01:29:37] <pcwalton> SimonSapin: r? https://github.com/mozilla/servo/pull/1398
+[01:29:59] <SimonSapin> pcwalton: I’m going to bed, I’ll look at this tomorrow if nobody hasn’t in the meantime.
+[01:30:02] <pcwalton> ok
+[01:30:06] <pcwalton> feel free to look at it, anyone
+[01:30:12] <pcwalton> have a good evening!
+[01:32:29] *** Joins: mauricioc (mauricioc@C3FC2F41.FA3957AA.7C06F980.IP)
+[01:33:47] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[01:33:47] <ghservo> [13rust-cssparser] 15kmcallister closed pull request #33: Add parsing from bytes, with rust-encoding. (06master...06master) 02http://git.io/6mcmTg
+[01:33:47] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[01:39:59] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Client exited)
+[01:47:44] *** Joins: CaseyBecking (CaseyBecki@moz-29F30CC3.lsanca.fios.verizon.net)
+[01:51:56] *** Quits: dzbarsky (Adium@BC1B0569.D5562F02.B5C6E82B.IP) (Quit: Leaving.)
+[01:52:45] *** Joins: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP)
+[01:52:45] <ghservo> [13servo] 15pcwalton opened pull request #1399: layout: Store image dimensions inside image boxes instead of going to (06master...06store-image-dimensions) 02http://git.io/KqdZ8w
+[01:52:45] *** Parts: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP) ()
+[01:52:49] <pcwalton> kmc: r? https://github.com/mozilla/servo/pull/1399
+[01:53:08] <pcwalton> sorry for the flood of commits
+[01:53:27] <pcwalton> the goal here is to get AbstractNode noncopyable ASAP
+[01:53:58] <kmc> np, looking
+[01:54:59] *** Quits: maxli (maxli@moz-4D28BA20.student.cs.uwaterloo.ca) (Ping timeout)
+[01:55:48] *** Quits: CaseyBecking (CaseyBecki@moz-29F30CC3.lsanca.fios.verizon.net) (Ping timeout)
+[01:57:10] *** Joins: CaseyBecking (CaseyBecki@moz-29F30CC3.lsanca.fios.verizon.net)
+[01:57:47] *** Joins: maxli (maxli@moz-4D28BA20.student.cs.uwaterloo.ca)
+[01:58:09] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[01:58:15] *** Joins: brson_ (brson@6A848D32.C1B840DD.76F66111.IP)
+[01:58:23] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[01:58:23] <ghservo> 01[13servo01] 15bors-servo pushed 3 new commits to 06auto: 02http://git.io/CoWRAw
+[01:58:23] <ghservo> 13servo/06auto 14a2e91d2 15Patrick Walton: layout: Perform text decoration propagation per CSS 2.1 § 16.3.1 without...
+[01:58:23] <ghservo> 13servo/06auto 1442cc046 15Patrick Walton: layout: GC unused box methods
+[01:58:23] <ghservo> 13servo/06auto 1403269a8 15bors-servo: auto merge of #1398 : pcwalton/servo/propagate-text-decoration, r=pcwalton...
+[01:58:25] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[01:58:57] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[01:59:38] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Client exited)
+[02:05:05] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: pcwalton)
+[02:11:12] *** Quits: canhtak (canhtak@moz-1D882009.wl.t.ulaval.ca) (Quit: canhtak)
+[02:15:48] *** Quits: doomlord_ (servitor@moz-D40D68D6.range86-184.btcentralplus.com) (Ping timeout)
+[02:19:20] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[02:19:21] <ghservo> 01[13servo01] 15bors-servo merged 06auto into 06master: 02http://git.io/CoWRAw
+[02:19:21] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[02:19:23] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[02:19:23] <ghservo> [13servo] 15bors-servo closed pull request #1398: layout: Perform text decoration propagation per CSS 2.1 § 16.3.1 without (06master...06propagate-text-decoration) 02http://git.io/FSmJbw
+[02:19:23] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[02:22:19] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[02:22:19] <ghservo> 01[13servo01] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/AyhEfQ
+[02:22:19] <ghservo> 13servo/06auto 14dc8504f 15Patrick Walton: layout: Store image dimensions inside image boxes instead of going to...
+[02:22:19] <ghservo> 13servo/06auto 14c168e04 15bors-servo: auto merge of #1399 : pcwalton/servo/store-image-dimensions, r=kmcallister...
+[02:22:20] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[02:26:26] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[02:26:38] *** Quits: CaseyBecking (CaseyBecki@moz-29F30CC3.lsanca.fios.verizon.net) (Quit: Leaving...)
+[02:31:38] *** Joins: canhtak (canhtak@moz-1D882009.wl.t.ulaval.ca)
+[02:33:34] *** Quits: fabrice (fabrice@moz-7B0110AD.mv.mozilla.com) (Ping timeout)
+[02:33:41] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[02:33:41] *** ChanServ sets mode: +o brson
+[02:34:29] *** Joins: fabrice (fabrice@moz-7B0110AD.mv.mozilla.com)
+[02:35:11] *** Quits: brson_ (brson@6A848D32.C1B840DD.76F66111.IP) (Ping timeout)
+[02:36:26] *** Quits: fabrice (fabrice@moz-7B0110AD.mv.mozilla.com) (Ping timeout)
+[02:37:34] *** Quits: jaebaek_ (jaebaek@30FA813.D609C3EB.8C90971.IP) (Client exited)
+[02:40:16] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[02:40:16] <ghservo> 01[13servo01] 15bors-servo merged 06auto into 06master: 02http://git.io/AyhEfQ
+[02:40:16] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[02:40:18] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[02:40:18] <ghservo> [13servo] 15bors-servo closed pull request #1399: layout: Store image dimensions inside image boxes instead of going to (06master...06store-image-dimensions) 02http://git.io/KqdZ8w
+[02:40:18] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[02:43:08] *** Quits: sankha93 (Instantbir@C1F990D3.82E7DDFE.EFB84E89.IP) (Ping timeout)
+[02:45:53] *** Joins: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net)
+[02:58:00] *** Joins: pradeep (pradeep@5AB4884B.FCC4549.14D5B978.IP)
+[02:59:12] *** Joins: dbaupp (Thunderbir@1D1B1F7A.D5A1DCF.37681C44.IP)
+[03:00:55] *** Quits: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Ping timeout)
+[03:03:40] *** Joins: fabrice (fabrice@moz-94F028C6.hsd1.ca.comcast.net)
+[03:04:00] *** Quits: zz_kimundi (kimundi@moz-B3388EAA.dip0.t-ipconnect.de) (Ping timeout)
+[03:07:39] *** Joins: zz_kimundi (kimundi@moz-553526BA.dip0.t-ipconnect.de)
+[03:07:40] *** zz_kimundi is now known as kimundi
+[03:08:40] *** Quits: maxli (maxli@moz-4D28BA20.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[03:10:42] *** Quits: dbaupp (Thunderbir@1D1B1F7A.D5A1DCF.37681C44.IP) (Ping timeout)
+[03:18:55] *** Quits: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net) (Quit: bholley)
+[03:21:06] <jack> pradeep, deokjinkim, patrickkim: I will be availble for office hours soon if any of you have questions, etc.
+[03:32:03] *** Quits: TimAbraldes (quassel@125EF623.B2666F0E.66399531.IP) (Input/output error)
+[03:39:56] *** Quits: mauricioc (mauricioc@C3FC2F41.FA3957AA.7C06F980.IP) (Ping timeout)
+[03:58:51] <patrickkim> thank you jack!
+[04:03:52] <jack> patrickkim: having trouble joining, but should be online momentarily.
+[04:04:00] *** Quits: canhtak (canhtak@moz-1D882009.wl.t.ulaval.ca) (Quit: canhtak)
+[04:06:11] *** Joins: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net)
+[04:08:32] <jack> patrickkim, pradeep, deokjinkim: i am in the room now
+[04:30:09] <pradeep> jack: Hi! I had some questions regarding debugging the race in parallel selector matching. Is that ok for discussion?
+[04:30:26] <jack> Sure. Happy to help with whatever I can 
+[04:32:33] *** Quits: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net) (Quit: bholley)
+[04:33:19] <pradeep> Thanks :) I'm working on issue #1319, and after a bunch of other fixes, it comes down to the last error in that thread
+[04:33:19] <crowbot> Issue #1319: Fix race in parallel selector matching - https://github.com/mozilla/servo/issues/1319
+[04:34:55] <pradeep> do you have any ideas how I could confirm or disconfirm whether it is the @mut Attr in Element that is causing the error?
+[04:35:39] <jack> You could prevent the attr from being destroyed
+[04:35:44] <jack> when does it happen?
+[04:36:18] <jack> I'm guessing while the page is still live
+[04:36:20] <pradeep> it generally happens halfway down the Yellow River wikipedia page
+[04:36:25] <jack> since selector matching isn't deleting elements.
+[04:37:04] <jack> So basically none of hte DOM should disappear from any task during selector matching
+[04:37:25] <jack> You could add debugging to the destructor of Nodes to see if they are getting reclaimed while selector matching is happening
+[04:37:48] <pradeep> oh ok... will try that... it works correctly when selector matching is sequential
+[04:38:38] <jack> Does the selector matching code trasmute the attrs?
+[04:39:35] <pradeep> it calls get_attr() after doing with_imm_element_like
+[04:40:54] <jack> hmm. it's defintely doing a transmute there.
+[04:40:55] <pradeep> which does transmute
+[04:42:32] <jack> Trying to figure out what it transmutes to
+[04:42:44] *** Joins: jdm (jdm@moz-78156D60.dsl.teksavvy.com)
+[04:42:45] *** ChanServ sets mode: +o jdm
+[04:44:38] <jack> I don't really see anything suspicious in the transmutes. It doesn't seem to make a @Attr anywhere
+[04:44:43] <pradeep> I think it is transmuting Node (self.obj) to Element
+[04:44:47] <jack> It calls f with &Element, which should be ok
+[04:45:18] <jack> if you transmute to a @Foo and then that goes out of scope, the refcount will go to zero and it will be freed early
+[04:45:37] <jack> So you have to be careful when you transmute to a managed thing
+[04:46:03] <pradeep> in Element, get_attr() calls get_attribute(), which does find() on a list of @mut Attr and does map(|x| *x)
+[04:47:18] <jack> ok
+[04:47:20] <pradeep> I'm wondering if you do that from another task, whether it will give the error I got
+[04:47:31] <jack> so I think what happen si that you get a ref to @mut Attr, and then it goes out of scope
+[04:47:40] <jack> so it will have hte refcount incremented and decremented
+[04:47:47] <jack> so this will race 
+[04:47:59] <jdm> yes, that was my line of thought too
+[04:48:02] <jack> you could try calling cast::forget() which will not decrememtn the refcount
+[04:48:11] <jack> if that fixes it then we know that's the problem
+[04:48:18] <jack> but it's not a real fix, because you can't touch the refcount.
+[04:48:40] <jack> But at least it will narrow down the issue.
+[04:50:28] <pradeep> ok, so should I do cast::forget() in the transmute fn in node.rs or in the selector-matching code?
+[04:54:10] *** Joins: sankha93 (Instantbir@B9FDF8F0.328EAA2C.EFB84E89.IP)
+[04:54:23] <jack> in the get_attribute i think
+[04:54:47] <jdm> yeah, the @mut Attr doesn't actually make its way to the selector matching code
+[04:54:47] <jack> inside the do where it gets a ref to Attr
+[04:54:57] <jdm> it's just returned as a temporary and has a value extracted from it
+[04:55:02] <jack> jdm: oh. is it just getting &mut Attr?
+[04:55:10] <jdm> jack: no, it's @mut Attr
+[04:55:13] <jack> it's calling find()
+[04:55:22] <jdm> jack: there's the map
+[04:55:29] <jdm> |a| *a
+[04:55:36] <jdm> find returns &@mut Attr
+[04:56:09] <jack> Yes, so you need to do cast::forget in that map i guess
+[04:56:12] <jack> or something like that.
+[04:56:23] <jack> let x = *a; cast::forget(x); x
+[04:57:26] <pradeep> ok, I will try that out on a non-Nvidia machine and get back to you.. thanks
+[04:58:10] <pradeep> jdm: is your proposed JSManaged type going to replace this code?
+[04:58:28] <jdm> pradeep: yes; we won't be using @ types for DOM objects any longer.
+[04:58:44] <jdm> pradeep: it would still be good to check whether this is actually the problem here, though
+[04:58:59] <pradeep> yup
+[04:59:16] <pradeep> Young-il wants us to debug parallel selector matching and re-enable it :)
+[04:59:54] <jack> The real fix is probably to move @mut Attr to JSManaged<Attr>
+[05:04:32] <jdm> and that would actually be quite easy
+[05:04:43] <jdm> it could be converted without changing anything else, I think
+[05:04:58] <jdm> we could probably merge the jsmanaged branch to master
+[05:23:39] <jack> I saw no negative feedback on your proposal, so +1
+[05:23:53] <jack> What you showed definitely seemed like a big improvement.
+[05:24:40] * jdm rebases
+[05:35:43] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: leaving)
+[05:52:41] *** Joins: brendan (brendaneic@35E90EE3.B8B12C49.396B22AD.IP)
+[05:54:41] <jdm> grr
+[05:57:40] *** Quits: brendan (brendaneic@35E90EE3.B8B12C49.396B22AD.IP) (Ping timeout)
+[06:07:13] <jdm> is there a trait that enforces that a type can't be sent?
+[06:07:30] <jdm> in this case what I really care about is that it contains a @ member
+[06:18:52] *** Quits: ibnc (ibnc@moz-718F3037.client.mchsi.com) (Client exited)
+[06:31:09] *** Quits: sankha93 (Instantbir@B9FDF8F0.328EAA2C.EFB84E89.IP) (Ping timeout)
+[06:34:40] *** Quits: pauls (pauls@moz-7140CF01.ccs.neu.edu) (Ping timeout)
+[06:35:15] *** Joins: pauls (pauls@moz-7140CF01.ccs.neu.edu)
+[06:39:17] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Leaving...)
+[06:48:20] *** Quits: alfredo|desktop (alfredo@moz-99690620.hinet-ip.hinet.net) (Input/output error)
+[06:50:58] *** Joins: eddyb (eddy@moz-68E0B7D0.residential.rdsnet.ro)
+[06:53:56] *** Quits: rusti (rusti@moz-61B073BC.cpe.net.cable.rogers.com) (Ping timeout)
+[07:03:06] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[07:03:06] <ghservo> [13servo] 15jdm opened pull request #1400: Start of JSManaged conversions (06master...06jsmanaged) 02http://git.io/19kweg
+[07:03:06] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[07:03:42] <eddyb> JSGc sounds nicer :3
+[07:04:02] <jdm> perhaps
+[07:11:02] *** Joins: rusti (rusti@moz-61B073BC.cpe.net.cable.rogers.com)
+[07:11:12] *** Joins: vky (chatzilla@moz-4F2E17BF.dsl.dynamic.sonic.net)
+[07:14:04] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[07:14:04] *** ChanServ sets mode: +qo dherman dherman
+[07:22:57] *** Joins: alfredoyang (alfredo@moz-99690620.hinet-ip.hinet.net)
+[07:26:12] *** Joins: Debloper (debloper@moz-88FF8AE8.redhat.com)
+[07:35:10] *** Joins: dbaupp (Thunderbir@moz-EB2EFE6F.lns20.syd6.internode.on.net)
+[07:36:29] *** Quits: dbaupp (Thunderbir@moz-EB2EFE6F.lns20.syd6.internode.on.net) (Quit: dbaupp)
+[07:36:31] *** Joins: dbaupp (Thunderbir@moz-EB2EFE6F.lns20.syd6.internode.on.net)
+[07:36:52] *** Quits: madmoose (Hat@moz-E1973371.nerp.net) (Ping timeout)
+[07:52:45] *** Joins: madmoose (Hat@moz-E1973371.nerp.net)
+[07:57:45] *** Quits: jaebaek (jaebaek@moz-BF74898.kaist.ac.kr) (Client exited)
+[08:00:15] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[08:01:09] <pradeep> jdm: I'm not able to reproduce the error now :P
+[08:01:18] <jdm> heh
+[08:01:25] <jdm> pradeep: wait, with or withou tthe change?
+[08:01:30] <pradeep> Have been trying different ways but it doesn't crash
+[08:01:38] <pradeep> (with parallel selector matching enabled)
+[08:01:53] <jdm> fun
+[08:02:26] * pradeep will be back in 10m
+[08:06:22] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[08:06:22] *** ChanServ sets mode: +qo dherman dherman
+[08:08:29] *** Joins: jaebaek (jaebaek@moz-BF74898.kaist.ac.kr)
+[08:17:54] <pradeep> jdm: you had said that you had seen some crashes with parallel matching enabled, right?
+[08:18:02] <jdm> yes
+[08:18:36] <pradeep> was it something like 'double free or corruption'?
+[08:19:16] <jdm> that depends
+[08:19:21] <jdm> I see that a lot on shutdown on linux
+[08:19:43] <jdm> I think that's #1097
+[08:19:44] <crowbot> Issue #1097: Error while trying to close the application window - https://github.com/mozilla/servo/issues/1097
+[08:20:11] <jdm> I don't recall if I've seen that before shutdown
+[08:21:01] <pradeep> hmmm... I find that I get this after I have C-c-ed servo
+[08:22:16] <jdm> I would expect ctr-c to kill the app immediately, leaving no opportunity to crash
+[08:22:36] <pradeep> I meant the next time I run servo
+[08:26:17] <jdm> that seems like a coincidence to me
+[08:27:00] <pradeep> jdm: I just got the 'live_allocations > 0' crash again
+[08:27:13] <pradeep> and the bactrace shows Element::get_attr
+[08:27:22] <jdm> this is with the forget addition?
+[08:27:29] <eddyb> is rust-png still --opt-level=0?
+[08:27:31] <pradeep> will try now with the cast::forget and post on the issue
+[08:27:34] <jdm> ah, ok
+[08:27:46] <eddyb> maybe I should just check the source. I want to start throwing PRs at you guys, watch out :P
+[08:28:05] * jdm braces for impact
+[08:31:47] <eddyb> hmm, if I want to add tests at some point, is it preferable to find a git repo and make it a submodule?
+[08:31:59] <eddyb> like, tests for hundreds of PNGs
+[08:34:19] <eddyb> whose is this? https://github.com/Ogeon/rust-png/commit/117a9501b19e8600809a0a3f99394e47ec5026c4
+[08:35:03] <eddyb> I guess my changes will go under that
+[08:37:11] *** Quits: jaebaek (jaebaek@moz-BF74898.kaist.ac.kr) (Client exited)
+[08:41:10] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[08:48:33] <pradeep> jdm: am not even able to reproduce the crash reliably (without any forget() addition)...
+[08:48:54] <jdm> good times
+[08:49:13] * pradeep will try again on monday
+[08:49:28] * jdm goes to bed
+[08:49:36] *** Quits: pradeep (pradeep@5AB4884B.FCC4549.14D5B978.IP) (Quit: Lost terminal)
+[08:50:09] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[08:50:25] * patrickkim is going home for the weekend
+[08:50:27] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[08:50:35] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Client exited)
+[08:50:37] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[08:51:42] *** Quits: jdm (jdm@moz-78156D60.dsl.teksavvy.com) (Quit: Lost terminal)
+[09:01:51] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[09:02:29] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[09:25:16] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[09:25:16] <ghservo> 01[13servo01] 15bors-servo pushed 6 new commits to 06auto: 02http://git.io/qBnoMg
+[09:25:16] <ghservo> 13servo/06auto 14bc36ca8 15Simon Sapin: Remove obsolete makefile lines about Netsurf’s libcss.
+[09:25:16] <ghservo> 13servo/06auto 14b98acc2 15Simon Sapin: Add rust-encoding as a submodule....
+[09:25:16] <ghservo> 13servo/06auto 142d6ac33 15Simon Sapin: Add support for non-UTF8 CSS stylesheets, with rust-encoding.
+[09:25:18] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[09:38:20] <eddyb> jack: can I use this as a test image? https://upload.wikimedia.org/wikipedia/commons/thumb/b/b3/Wikipedia-logo-v2-en.svg/1000px-Wikipedia-logo-v2-en.svg.png
+[09:38:50] <eddyb> erm, the copyright section looks kinda bad https://commons.wikimedia.org/wiki/File:Wikipedia-logo-v2-en.svg
+[09:39:03] <eddyb> I just want a large PNG *with* transparency in it
+[09:39:08] <dbaupp> why not rust's logo, or something mozilla-y?
+[09:39:10] <dbaupp> oh
+[09:39:49] <eddyb> dbaupp: do you have a link to a large PNG of the rust logo?
+[09:40:50] <dbaupp> eddyb: https://github.com/graydon/rust-www/blob/gh-pages/logos/rust-logo-512x512-blk.png is kinda large
+[09:41:03] <dbaupp> I guess you can render https://github.com/graydon/rust-www/blob/gh-pages/logos/rust-logo-blk.svg as large as you like
+[09:41:11] <eddyb> dbaupp: not bigger than the test.png rust-core has
+[09:41:36] <eddyb> yes! https://upload.wikimedia.org/wikipedia/commons/5/5c/Mozilla_dinosaur_head_logo.png
+[09:41:43] <eddyb> I surely can use that, right?
+[09:43:51] *** Quits: vky (chatzilla@moz-4F2E17BF.dsl.dynamic.sonic.net) (Quit: ChatZilla 0.9.90.1 [Firefox 27.0/20131209204824])
+[09:44:22] <eddyb> well, you can tell me in the PR
+[09:46:36] <dbaupp> eddyb: http://www.ug.it.usyd.edu.au/~hwil7821/huge-rust-logo.png 8000x8000
+[09:48:39] *** Quits: eddyb (eddy@moz-68E0B7D0.residential.rdsnet.ro) (Ping timeout)
+[09:48:44] <cmr> lol, firefox crashed trying to open that.
+[09:49:01] * dbaupp 's firefox handles it fine
+[09:49:02] <dbaupp> :P
+[09:49:13] <cmr> my X server probably crapped itself
+[09:49:20] * cmr really needs to upgrade the netbook
+[09:49:23] * dbaupp possibly crashed eddyb's computer too
+[09:49:35] * dbaupp makes a smaller one
+[09:50:53] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[09:51:01] *** Joins: eddyb (eddy@moz-68E0B7D0.residential.rdsnet.ro)
+[09:54:20] <eddyb> *swapping. hence the reconnect :D
+[09:57:09] <dbaupp> eddyb: http://www.ug.it.usyd.edu.au/~hwil7821/less-huge-rust-logo.png 4000x4000
+[09:57:26] <eddyb> nah, the first one is perfect, thanks :D
+[09:57:40] <eddyb> I just happen to have a ton of tabs in my chrome
+[09:57:51] * dbaupp can do 16000 square too...
+[09:58:10] <eddyb> it's good for now :P
+[09:58:59] <eddyb> this is useless, I need utime http://static.rust-lang.org/doc/master/extra/time/fn.precise_time_ns.html
+[09:59:41] <eddyb> as in, user time
+[10:00:19] <eddyb> wait, no, it's called something else
+[10:00:34] <eddyb> something like getrusage
+[10:00:46] <cmr> what you really want is cgroups
+[10:00:51] <cmr> the others are innacurate
+[10:01:09] <eddyb> but... cgroups doesn't sound like what I want
+[10:01:32] <dbaupp> are you measuring cpu time and/or memory usage?
+[10:01:33] <eddyb> and this isn't related, I presume http://static.rust-lang.org/doc/master/std/libc/funcs/posix88/unistd/ffi.getgroups.html
+[10:01:58] <eddyb> dbaupp: I need user CPU time, as returned by the `time` tool
+[10:02:01] <cmr> you want the cpuacct one
+[10:02:40] <eddyb> wait, is this related or not? http://static.rust-lang.org/doc/master/std/libc/types/os/arch/posix01/struct.utimbuf.html
+[10:02:45] <dbaupp> eddyb: cgroups records everything that linux knows about a program
+[10:03:01] <dbaupp> eddyb: that's for the utime file system stuff.
+[10:03:06] <eddyb> (used by this http://static.rust-lang.org/doc/master/std/libc/funcs/posix88/unistd/ffi.utime.html )
+[10:03:13] <cmr> eddyb: you want times(2)
+[10:03:15] <eddyb> dbaupp: ok, I didn't see "file", I'm blind
+[10:03:41] <eddyb> cmr: okay, that sounds good. not in std::libc though :(
+[10:03:46] <cmr> you *really* want cgroups, but times(2) will suffice.
+[10:04:03] <cmr> eddyb: extern { fn times(*tms); } :P
+[10:04:12] <eddyb> tms isn't either
+[10:04:30] <eddyb> aaand I don't want to have that in my rust-png test code :(
+[10:04:50] <eddyb> oh, look, clock_t is in libc. good
+[10:04:58] <dbaupp> why not #[bench]?
+[10:05:07] <eddyb> because it's broken
+[10:05:14] <dbaupp> oh, this takes longer than 1ms?
+[10:05:32] <eddyb> yeah
+[10:06:05] <dbaupp> just make it faster. :P
+[10:06:26] * dbaupp will attempt to fix that bug now.
+[10:07:16] <eddyb> what does bench use?
+[10:07:50] <cmr> extra::stat and precise_time_ns
+[10:08:10] <eddyb> that can't be right, can it?
+[10:08:49] <cmr> why?
+[10:08:59] <eddyb> is that user time?
+[10:09:08] <cmr> it's clock_gettime with CLOCK_MONOTONIC
+[10:09:25] <eddyb> I guess it has to include IO sometimes
+[10:09:40] <eddyb> well, I don't want that here
+[10:13:23] <eddyb> All times reported are in clock ticks. // great, how do I conver to ns?
+[10:14:08] <dbaupp> divide by some macro
+[10:14:16] <eddyb> in rust >_>
+[10:14:23] <dbaupp> yay, cpp
+[10:14:29] <eddyb> sysconf(_SC_CLK_TCK);
+[10:14:48] <cmr> you can't get ns
+[10:14:53] <cmr> it's in 10th of a second
+[10:14:58] <eddyb> what...
+[10:15:04] <cmr> (even with cgroups)
+[10:15:04] <eddyb> that's how bad the clock is?
+[10:15:12] <cmr> it's not the clock
+[10:15:17] <cmr> it's just how it works.
+[10:15:20] <eddyb> it can't be, I've used this stuff before in C++
+[10:15:41] <eddyb> it was better than a 10th or 100th of a millisecond
+[10:17:10] <cmr> 100ths of a second, sorry.
+[10:18:03] <cmr> it measures scheduler slices, iirc, so it depends on your CONFIG_HZ I imagine
+[10:19:25] *** Quits: Cork (Cork@moz-352B7E7B.a370.priv.bahnhof.se) (Ping timeout)
+[10:19:51] <cmr> if you're forking a process it looks like you can use wait3/wait4
+[10:20:45] <eddyb> cmr: you're right >_>
+[10:21:12] <eddyb> getrusage(RUSAGE_SELF, &tm);
+[10:21:20] <eddyb> that gave me microsecond resolution
+[10:21:58] <eddyb> 10ms is not enough, since that's how long it takes to decode the current test.png
+[10:22:01] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[10:22:44] *** Joins: Ms2ger (Ms2ger@moz-97D6582B.adsl-dyn.isp.belgacom.be)
+[10:23:29] <cmr> microsecond resolution in ru_utime?
+[10:24:56] <eddyb> yeah
+[10:25:29] <cmr> does it actually, or are the least significant digits zeros?
+[10:25:34] <eddyb> well, maybe it was multiples of a microsecond (less than a millisecond), but time is in seconds and microseconds
+[10:25:50] <cmr> right
+[10:29:37] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[10:31:53] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[10:37:15] <eddyb> I... broke the test. somehow
+[10:38:25] <dbaupp> fix it \o/
+[10:39:31] <eddyb> dbaupp: just using the wrong filenames causes some condition errors
+[10:39:51] <eddyb> though I'm matching on the result of File::open
+[10:41:47] <dbaupp> yeah
+[10:42:13] <dbaupp> the conditions through, which means that, by default, Some is the only possible return value of those functions.
+[10:42:28] <Ms2ger> Sounds useful
+[10:42:31] <cmr> eddyb: they only return None ifthe condition is handled.
+[10:43:02] <eddyb> wait, it's None? I thought, for some reason, it was an Ok/Err match
+[10:43:16] <eddyb> libpng load 'test/rust-huge-logo.png': 575ms
+[10:43:34] <eddyb> that takes 50 seconds, maybe I should tune it down to 10 loads :P
+[10:44:00] <cmr> it's that slow?
+[10:44:04] <cmr> that seems really bad to me
+[10:44:53] <Ms2ger> Weren't we killing conditions?
+[10:45:05] <eddyb> cmr: 8000x8000 pixels
+[10:45:06] <cmr> Ms2ger: open question
+[10:45:15] <eddyb> that's 64MP
+[10:45:31] <eddyb> 256MB to keep in RAM as RGBA
+[10:45:50] <eddyb> so yeah, it can't be fast
+[10:46:15] <eddyb> dbaupp: holy shit it's big o_O
+[10:46:35] <eddyb> no wonder I disconnected when attempting to load that in chrome
+[10:46:35] *** Joins: Cork (Cork@moz-352B7E7B.a370.priv.bahnhof.se)
+[10:46:51] <dbaupp> I did say 8k x 8k :P
+[10:47:07] <cmr> oh I thought you were using the 4k one
+[10:47:26] <eddyb> dbaupp: I only now realize how big it is
+[10:47:47] <eddyb> libpng load 'test/rust-huge-logo.png': 1028.6ms
+[10:48:05] <eddyb> RGBA is twice as slow as libpng, but I know how to optimize it
+[10:49:22] <eddyb> dbaupp: almost twice as fast as libpng for servo-screenshot.png
+[10:49:27] <eddyb> (the current test.png)
+[10:49:36] <eddyb> I guess time wasn't accurate enough
+[10:49:52] <eddyb> cmr: btw, rutimes is multiples of 10us
+[10:50:06] <cmr> eddyb: ok, that's good.
+[10:50:17] <eddyb> it's perfect for displaying :P
+[10:50:29] <eddyb> skipping unrecognized PNG chunk `pHYs` (size=9)
+[10:50:30] <eddyb> skipping unrecognized PNG chunk `gAMA` (size=4)
+[10:50:32] <eddyb> skipping unrecognized PNG chunk `cHRM` (size=32)
+[10:50:50] <eddyb> I'm not sure what to do about that... I guess I'll keep a list of "safely ignorable" PNG chunks
+[10:51:53] <eddyb> oh, right, the output filter. I can send the data to that, if it wants to keep anything fancy
+[10:57:52] <eddyb> http://www.w3.org/TR/PNG/#11pHYs hires?
+[10:57:52] <crowbot> eddyb: that's probably not the spec you want. Please read https://github.com/mozilla/servo/wiki/Relevant-spec-links .
+[10:57:53] <crowbot> Issue #11: Implemented a parser for a subset of css. - https://github.com/mozilla/servo/pull/11
+[10:58:05] <eddyb> oh wow
+[10:58:16] <Ms2ger> Actually, that probably is the right spec for PNG
+[10:58:28] <eddyb> it should really ignore # in links
+[10:58:54] *** Quits: Cork (Cork@moz-352B7E7B.a370.priv.bahnhof.se) (Ping timeout)
+[10:59:05] <Ms2ger> No, it should tell you to stay away from /TR, in general :)
+[10:59:30] <Ms2ger> Oh, nvm
+[10:59:30] <dbaupp> Ms2ger: the second message is from a dumb regex match on #<numbers>, right?
+[10:59:35] <cmr> I read the spec from libpng.org
+[10:59:42] <cmr> But why is PNG a TR?
+[10:59:47] <eddyb> libpng is just an implementation
+[10:59:58] <cmr> libpng is *the* implementation
+[11:00:14] <cmr> and the site hosts (a copy of) the spec
+[11:00:19] <Ms2ger> It's an implementation :)
+[11:00:42] <Ms2ger> PNG is on TR/ because it's an old, finished spec
+[11:02:13] <eddyb> range_step(0, data.len(), 4) this isn't safe, is it?
+[11:02:33] <cmr> eddyb: why not?
+[11:02:36] <eddyb> inclusive and data.len() - 4 would work better, I guess
+[11:02:59] <eddyb> cmr: because it can give you data.len() - 1, which doesn't have 4 bytes after it
+[11:03:12] <cmr> oh, are *uses* of it safe :)
+[11:03:36] *** Joins: Cork (Cork@moz-352B7E7B.a370.priv.bahnhof.se)
+[11:03:39] <eddyb> erm, yeah. it's my "strict chunks" thing
+[11:04:07] <eddyb> because we don't have an iterator which always gives you the same number of vector elements every time
+[11:04:22] <eddyb> might need numbers in generics for that
+[11:07:37] <eddyb> hmm, will range_step_inclusive only differ if end-start is divisible by step?
+[11:07:50] <eddyb> i.e. if it can actually give you the last value
+[11:08:18] <eddyb> rusti: range_step(0, 9-4, 4).collect()
+[11:08:19] -rusti- pastebinned 7 lines of output: http://sprunge.us/PJJj
+[11:08:51] <eddyb> rusti: ::std::iter::range_step(0, 9-4, 4).to_owned_vec()
+[11:08:53] -rusti- ~[0, 4]
+[11:09:06] <eddyb> rusti: ::std::iter::range_step(0, 11-4, 4).to_owned_vec()
+[11:09:07] -rusti- ~[0, 4]
+[11:09:12] <eddyb> rusti: ::std::iter::range_step_inclusive(0, 11-4, 4).to_owned_vec()
+[11:09:13] -rusti- ~[0, 4]
+[11:09:17] <eddyb> rusti: ::std::iter::range_step_inclusive(0, 12-4, 4).to_owned_vec()
+[11:09:18] -rusti- ~[0, 4, 8]
+[11:09:22] <eddyb> rusti: ::std::iter::range_step(0, 12-4, 4).to_owned_vec()
+[11:09:23] -rusti- ~[0, 4]
+[11:14:32] <eddyb> dbaupp: you changed the color type for the 4k x 4k one!
+[11:14:39] <eddyb> task 'test::test_load_perf' failed at 'assertion failed: `(left == right) && (right == left)` (left: `KA8`, right: `RGBA8`)', png.rs:978
+[11:16:43] <dbaupp> eddyb: I just did `convert ....png -geometry 4000x4000 ....png` with imagemagick
+[11:16:48] <dbaupp> don't blame me! :P
+[11:18:06] <eddyb> at least I get to optimize grayscale, too, so thanks :)
+[11:20:07] <eddyb> I have to do the groceries, but... optimizations!
+[11:22:47] <eddyb> jack: Arc<Image> or pixels: Arc<~[u8]> in Image?
+[11:23:24] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[11:27:49] *** kimundi is now known as zz_kimundi
+[11:38:47] <eddyb> hah, you've got to be kidding me
+[11:38:52] *** Quits: deokjinkim (Mibbit@B4104EBB.3CC170B1.1E14B209.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[11:39:31] <eddyb> I'm two times slower than libpng for RGBA8 and KA8 because I spend time to allocate the scanline buffer
+[11:39:56] <eddyb> it's weird, because making the pixel buffer uninitialized changes... nothing. and that's waaay bigger
+[11:42:38] <eddyb> yeah, perf was just being silly
+[11:50:46] <eddyb> erm, it's not faster :(
+[11:50:53] <eddyb> I need to really use a hack
+[11:52:11] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[11:52:29] <jgraham> I guess it is impossible to benchmark, but I think old opera had its own png decoder that I expect was rather fast
+[11:54:53] <eddyb> I moved dx (an overused interlacing param) to the length of a type param, and it's still not faster
+[11:56:07] <eddyb> maybe I should wrap some of the loop machinery into "if dx == 1 { memcpy } else {...}"
+[11:57:47] <eddyb> or even specialize the scanline filter application function for the case where dx == 1 and the image color_type is RGBA8 or KA8, because then it can do that in place
+[11:58:15] <eddyb> (which is what libpng does, I think. that would explain why I'm twice as fast for RGB8)
+[12:00:06] <eddyb> cmr: I need a mut_windows() iter right now :/
+[12:02:04] <eddyb> could an iterator prevent you from keeping more than one returned value at any time?
+[12:02:21] <eddyb> because I think that's why mut_windows() isn't in std right now
+[12:02:36] <cmr> not really afaik
+[12:02:55] <cmr> would require returning something with a lifetime and &'a mut self
+[12:03:16] <eddyb> well, yeah
+[12:04:02] <eddyb> cmr: can you keep multiple chunks returned by .mut_chunks() right now?
+[12:04:11] <cmr> eddyb: dunno, never used it
+[12:04:25] <dbaupp> eddyb: yes
+[12:04:31] <dbaupp> eddyb: they're disjoint
+[12:04:44] <eddyb> dbaupp: couldn't it be prevented (for mut_windows)?
+[12:04:50] <dbaupp> eddyb: no
+[12:05:00] <dbaupp> eddyb: the iteration wouldn't work at all
+[12:05:02] <eddyb> like, consider the returned slice as a mutable borrow of the original
+[12:05:21] <dbaupp> if you can do `for x in it { ... }` you can do `it.to_owned_vec()`
+[12:05:44] <eddyb> so you can't call it.next() is you have the previous result
+[12:05:47] <eddyb> dbaupp: eeeeeh
+[12:06:02] <dbaupp> that'd be pretty weird
+[12:06:14] <dbaupp> and is basically, aiui, the one use case of internal iterators
+[12:06:42] <eddyb> except for loops already work like that, it's just the protocol that's lacking
+[12:06:51] <eddyb> I really need this. and I don't want more unsafe abstractions in my png code :(
+[12:07:11] <dbaupp> mut_windows(v, 4, |window| ...)
+[12:07:28] <dbaupp> is the safest you'll get easily, I think.
+[12:07:32] <eddyb> hmm, that would work
+[12:07:52] <eddyb> but I'm not sure bound checks would go away
+[12:08:10] <dbaupp> no, but it restricts your unsafe to one function
+[12:08:21] <dbaupp> which is (relatively) easily tested.
+[12:09:44] <eddyb> mut_windows(v, N, |window| {let (ref prev, ref mut current) = (v[0], v[N-1]); ... }); that would still have bound checks, and I hate LLVM at this point
+[12:09:57] <eddyb> even with the fat pointer repr, it still can't do it right
+[12:10:25] <eddyb> (though I suspect trans makes the length aliasable even in that repr)
+[12:10:30] <dbaupp> ah, right
+[12:10:46] <dbaupp> do you always need v[0] and v[N-1] like that?
+[12:10:55] <eddyb> yeah
+[12:11:10] <dbaupp> can you have mut_windows pass |prev, middle, current|?
+[12:11:23] <dbaupp> and again have the unsafety in the one function
+[12:11:25] <eddyb> if it's not a generic mut_windows, sure
+[12:11:36] <eddyb> but N isn't exactly constant
+[12:11:41] <cmr> eddyb: llvm isn't perfect, gcc still has sometimes-better codegen. just a matter of time andcontributions.
+[12:11:45] <dbaupp> you only need N >= 2
+[12:12:07] <dbaupp> and if it's specific to the png decoder that's perfectly ok (assuming that that is always true for it)
+[12:12:19] <eddyb> N varies, it's one of a few constants, so if I need I can use the [u8, ..N] trick and generics to move the specialization to an outer function
+[12:14:00] <dbaupp> that sounds perfect then?
+[12:15:52] <eddyb> maybe, I'll see what I can do
+[12:16:23] <eddyb> well, N = pixel_bytes_raw + 1, so yeah, it would always work
+[12:17:08] <dbaupp> do you even need the middle between the prev and current?
+[12:18:14] <eddyb> nope
+[12:18:22] <eddyb> task 'test::test_load_perf' failed at 'index out of bounds: the len is 2493 but the index is 18446744073709551613', png.rs:279
+[12:18:24] <eddyb> gaah
+[12:19:17] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[12:20:18] <dbaupp> 'mut_separated_pairs(N, |prev, current| { ... })'
+[12:20:37] <dbaupp> ?
+[12:21:13] <eddyb> dbaupp: hmm, you can make it an iterator because only current is mut
+[12:21:26] <dbaupp> no
+[12:21:30] <eddyb> why?
+[12:21:40] <eddyb> oh, right, not disjunct
+[12:21:47] <dbaupp> yeah, exactly
+[12:24:05] <eddyb> oooh, 10% in Paeth
+[12:24:41] <eddyb> 10-20%
+[12:24:42] <dbaupp> Paeth?
+[12:24:50] <eddyb> dbaupp: the fanciest filter function
+[12:25:08] <eddyb> dbaupp: http://www.w3.org/TR/PNG/#9Filter-type-4-Paeth
+[12:25:08] <crowbot> eddyb: that's probably not the spec you want. Please read https://github.com/mozilla/servo/wiki/Relevant-spec-links .
+[12:25:08] <crowbot> Issue #9: Added css datastructures, pretty-printing, and a lexer - https://github.com/mozilla/servo/pull/9
+[12:25:15] <eddyb> crowbot: screw you
+[12:25:59] <dbaupp> heh
+[12:26:13] <dbaupp> (what a peculiar name...)
+[12:26:27] * dbaupp thought it was a typo of Path
+[12:27:43] <eddyb> okay, I can specialize on 8-bit + no interlacing, even RGB8 -> RGBA8 can reuse the pixels array for scanline decoding
+[12:27:57] <eddyb> which means I'll be always as fast as libpng, or faster
+[12:30:57] <dbaupp> is that the fastest png decoder in common use?
+[12:33:24] <eddyb> I'm not sure. it *is* the most commonly used one
+[12:33:33] *** Joins: canhtak (canhtak@moz-1D882009.wl.t.ulaval.ca)
+[12:34:15] <eddyb> aaaah, I'm so late
+[12:34:58] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[12:34:58] <ghservo> [13rust-png] 15eddyb opened pull request #17: Added a new test to test PNG loading performance and two large test PNGs. (06master...06test-perf) 02http://git.io/RZ9n-Q
+[12:34:58] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[12:35:37] <eddyb> there. I meant to finish today, but I still have perf issues to fix
+[12:36:55] <dbaupp> eddyb: btw, you can replace https://github.com/mozilla-servo/rust-png/pull/17/files#diff-8c13b5c367b1a0d3dc04da468ea844bdR296 with a fixme pointing at https://github.com/mozilla/rust/pull/10952 (or the underlying issue #9532)
+[12:38:04] <eddyb> does this look ok? mozilla/rust#9532
+[12:38:29] <eddyb> (because it's not in rust itself)
+[12:39:30] <dbaupp> fine by me
+[12:39:43] <eddyb> done
+[12:44:13] *** Joins: maxli (maxli@moz-4D28BA20.student.cs.uwaterloo.ca)
+[12:52:43] <eddyb> dbaupp: if you can, get someone to review that PR for me. thanks :P
+[13:00:23] <dbaupp> eddyb: I almost certainly know less about servo than you :)
+[13:09:21] *** bhearsum|afk is now known as bhearsum|buildduty
+[13:10:30] *** Quits: vodik___ (simon@moz-FD4ADBC6.cable.teksavvy.com) (Ping timeout)
+[13:11:07] *** Joins: vodik___ (simon@moz-FD4ADBC6.cable.teksavvy.com)
+[13:22:57] *** Quits: alex-abreu (alex@moz-4B4D75AD.rev.sfr.net) (Connection reset by peer)
+[13:23:43] *** Quits: dbaupp (Thunderbir@moz-EB2EFE6F.lns20.syd6.internode.on.net) (Quit: dbaupp)
+[13:24:01] *** Joins: alex-abreu (alex@moz-4B4D75AD.rev.sfr.net)
+[13:24:09] *** Joins: dbaupp (Thunderbir@moz-EB2EFE6F.lns20.syd6.internode.on.net)
+[13:24:55] *** Quits: dbaupp (Thunderbir@moz-EB2EFE6F.lns20.syd6.internode.on.net) (Quit: dbaupp)
+[13:25:07] *** Joins: dbaupp (Thunderbir@moz-EB2EFE6F.lns20.syd6.internode.on.net)
+[13:41:08] <Ms2ger> force_box_layout: @int
+[13:41:09] <Ms2ger> Ugh
+[14:00:44] <eddyb> dbaupp: meh, I'm back
+[14:01:05] <eddyb> jack: would you mind taking a look at https://github.com/mozilla-servo/rust-png/pull/17?
+[14:18:45] *** Quits: rusti (rusti@moz-61B073BC.cpe.net.cable.rogers.com) (Ping timeout)
+[14:18:53] *** Joins: rusti (rusti@moz-61B073BC.cpe.net.cable.rogers.com)
+[14:25:15] *** Joins: jaebaek (jaebaek@4D10E9F2.E551553C.7544CABF.IP)
+[14:31:54] *** Joins: jdm (jdm@CC0122E6.8F96AEA7.2D179A7D.IP)
+[14:31:54] *** ChanServ sets mode: +o jdm
+[14:39:40] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[14:39:40] <ghservo> [13rust-png] 15eddyb opened pull request #18: Build with --opt-level=3. (06master...06opt-level-3) 02http://git.io/jRiQKQ
+[14:39:40] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[14:40:00] <eddyb> jack: also ^^^^
+[14:40:05] <eddyb> have a nice weekend, I'm off
+[14:42:35] *** Quits: eddyb (eddy@moz-68E0B7D0.residential.rdsnet.ro) (Ping timeout)
+[14:43:20] *** Quits: canhtak (canhtak@moz-1D882009.wl.t.ulaval.ca) (Quit: canhtak)
+[14:50:11] *** Joins: canhtak (canhtak@moz-1D882009.wl.t.ulaval.ca)
+[14:52:04] *** Joins: nathanic (nathan@D050B401.452FF057.EE6E63A5.IP)
+[14:52:14] *** Joins: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP)
+[14:52:14] <ghservo> [13servo] 15saneyuki opened pull request #1401: Remove unused import for fix compile warning (06master...06unused) 02http://git.io/KjqnHQ
+[14:52:14] *** Parts: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP) ()
+[14:53:09] <dhedlund> can anyone explain why Pipeline is cloneable?  all cloned pipelines share the same set of render/layout/script tasks and pipeline.exit() on only one pipeline would create bad side effects for the other cloned pipelines.  It's explicitly being cloned in FrameTree.to_sendable and the NewLayer matcher in run_compositor().
+[14:56:56] *** zz_kimundi is now known as kimundi
+[14:56:56] <jdm> hmm
+[14:57:21] <dhedlund> For the NewLayer matcher, it feels like it should be ref counted or something and for the to_sendable(), that just feels like it might've been a hack.
+[14:57:30] *** Quits: crowbot (nodebot@moz-F5F7AC36.scl3.mozilla.com) (Input/output error)
+[14:58:23] *** Joins: crowbot (nodebot@moz-F5F7AC36.scl3.mozilla.com)
+[14:58:44] <jdm> http://mxr.mozilla.org/servo/source/src/components/main/constellation.rs#147
+[14:58:50] <jdm> issue 147
+[14:59:07] <jdm> darn, I think I broke crowbot
+[15:00:07] <jdm> jack may have some idea about the pipeline cloning
+[15:01:26] <jack> dhedlund: I don't know offhand. I'll take a look in a bit. tikue wrote that code originally.
+[15:01:34] *** Joins: ibnc (ibnc@moz-718F3037.client.mchsi.com)
+[15:01:38] <dhedlund> jdm: I haven't traced through code to see what FrameTree are yet.  Can you give a quick description?
+[15:03:01] <jdm> dhedlund: FrameTree is the tree of frames. The primary document is the root, and any iframes have child entries.
+[15:03:41] *** Quits: crowbot (nodebot@moz-F5F7AC36.scl3.mozilla.com) (Input/output error)
+[15:06:10] *** Joins: d70 (Joriel@1C220914.1308B8F8.BB9306BC.IP)
+[15:06:18] <dhedlund> jdm jack: Okay.  I was trying to store a Port in the pipeline so I can wait for the tasks spawned for *Task objects to shutdown; they're created by the pipeline so should be managed by the pipeline.  Moving it out of the pipeline would put it in the constellation and would require me to store the ports with the pipeline vector.
+[15:07:05] *** Joins: crowbot (nodebot@moz-F5F7AC36.scl3.mozilla.com)
+[15:08:19] *** Joins: mcepl (mcepl@moz-C3892E61.broadband10.iol.cz)
+[15:09:24] <mcepl> when ./servo ../src/test/html/about-mozilla.html displayed page correctly but then crashed when I killed the window, how to get backtrace? The binary seems to be stripped.
+[15:09:33] *** Joins: jackneill (jackneill@moz-75A52361.pool.digikabel.hu)
+[15:09:41] <dhedlund> jdm jack: I find it interesting though that FrameTree's Clone implementation says "Need to clone the FrameTrees, but _not_ the Pipelines"
+[15:09:55] <dhedlund> mcepl: are you running linux?
+[15:10:18] <jdm> dhedlund: gdb's backtrace is usually fine on the brinaries
+[15:10:50] <mcepl> yes
+[15:11:21] <mcepl> right, I had to explicitly state the binary and then I got http://paste.fedoraproject.org/61529/94747513/
+[15:11:23] <dhedlund> mcepl: if you rerun configure with --enable-debug and then remake everything, it should show the source
+[15:12:31] <mcepl> (running RHEL-7 ATM, roughly like Fedora 19 ... which components' versions could be interesting?)
+[15:12:32] <crowbot> Issue #19: Refactored color into a separate module and added support for input types. - https://github.com/mozilla/servo/pull/19
+[15:12:47] <dhedlund> mcepl: the issue you're having is probably this: https://github.com/mozilla/servo/issues/1097
+[15:13:21] <dhedlund> mcepl: I've been slowly working on a fix as I learn my way around the code base.
+[15:14:02] <jdm> fedora 19
+[15:14:06] <crowbot> Issue #19: Refactored color into a separate module and added support for input types. - https://github.com/mozilla/servo/pull/19
+[15:14:13] <jdm> crowbot: what are you on
+[15:14:53] *** Quits: Debloper (debloper@moz-88FF8AE8.redhat.com) (Quit: Leaving.)
+[15:14:54] * jdm is dumb, regexes are hard
+[15:17:47] <Ms2ger> jdm, is crowbot yours?
+[15:17:55] <jdm> crowbot: source
+[15:17:55] <crowbot> jdm: https://github.com/jdm/fennecbot
+[15:17:57] <jdm> yep
+[15:18:08] *** Quits: crowbot (nodebot@moz-F5F7AC36.scl3.mozilla.com) (Input/output error)
+[15:18:40] *** Joins: crowbot (nodebot@moz-F5F7AC36.scl3.mozilla.com)
+[15:20:04] <Ms2ger> Ah, I see you fixed png
+[15:21:15] *** Quits: d70 (Joriel@1C220914.1308B8F8.BB9306BC.IP) (Quit: Use PGP|GPG - Privacy matters)
+[15:21:21] *** Joins: d70 (Joriel@1C220914.1308B8F8.BB9306BC.IP)
+[15:22:00] <jdm> correct
+[15:22:32] *** Joins: abinader (abinader@D8B9C081.E820043D.D4C04133.IP)
+[15:25:03] <mcepl> dhedlund: I have in stderr this http://fpaste.org/61533/38694828/ ... this looks a bit different than the one in #1097
+[15:26:01] <dhedlund> mcepl: It's the same issue.  The stack trace is a little difference since you have the intel graphics chipset.
+[15:26:33] <mcepl> ok
+[15:26:42] <mcepl> I'll add myself to CC list
+[15:32:27] *** Quits: maxli (maxli@moz-4D28BA20.student.cs.uwaterloo.ca) (Ping timeout)
+[15:33:20] *** Joins: maxli (maxli@moz-4D28BA20.student.cs.uwaterloo.ca)
+[15:35:57] *** Joins: doomlord_ (servitor@moz-D40D68D6.range86-184.btcentralplus.com)
+[15:36:30] <Ms2ger> Well, that was nicer than what they usually say
+[15:36:59] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[15:38:03] *** Joins: sankha93 (Instantbir@F2A28FE4.82E7DDFE.EFB84E89.IP)
+[15:38:15] *** Parts: mcepl (mcepl@moz-C3892E61.broadband10.iol.cz) ()
+[15:38:25] *** Quits: sankha93 (Instantbir@F2A28FE4.82E7DDFE.EFB84E89.IP) (Connection reset by peer)
+[15:40:39] <jack> Ms2ger: ?
+[15:40:56] <Ms2ger> #rust 
+[15:42:01] <jack> I feel welcome!
+[15:42:30] *** Joins: ahal (ahal@FCCEA34F.7672369.D8E68FF6.IP)
+[15:44:00] <Ms2ger> jdm, -m? :)
+[15:44:14] <Ms2ger> +m mutes everyone who doesn't have voice
+[15:44:31] <jdm> ok, at least I was correct about that one
+[15:44:48] * jdm wishes these modes were standard across different ircds
+[15:45:10] *** Ms2ger is now known as Ms2ger`
+[15:49:46] *** Joins: eholk (eholk@moz-F70D5031.hsd1.in.comcast.net)
+[15:50:19] *** Ms2ger` is now known as Ms2ger
+[15:59:50] *** Quits: jaebaek (jaebaek@4D10E9F2.E551553C.7544CABF.IP) (Ping timeout)
+[16:00:03] *** Quits: bstrie (ben@moz-D5A1D0F5.members.linode.com) (Ping timeout)
+[16:03:12] *** Quits: jdm (jdm@CC0122E6.8F96AEA7.2D179A7D.IP) (Quit: Lost terminal)
+[16:08:17] *** Quits: fabrice (fabrice@moz-94F028C6.hsd1.ca.comcast.net) (Ping timeout)
+[16:08:47] *** Joins: fabrice (fabrice@moz-94F028C6.hsd1.ca.comcast.net)
+[16:10:32] *** Quits: fabrice (fabrice@moz-94F028C6.hsd1.ca.comcast.net) (Ping timeout)
+[16:11:56] *** Joins: CaseyBecking (CaseyBecki@ED8170C4.82E507D6.C334098E.IP)
+[16:17:44] *** Quits: eholk (eholk@moz-F70D5031.hsd1.in.comcast.net) (Quit: eholk)
+[16:22:46] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[16:22:46] <ghservo> [13servo] 15dhedlund closed pull request #1369: Move glfw::terminate() out of destructor, is hanging app under linux (06master...06issue_1097) 02http://git.io/T1G4mg
+[16:22:46] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[16:24:05] *** Joins: doomlord__ (servitor@moz-D40D68D6.range86-184.btcentralplus.com)
+[16:24:13] *** Quits: doomlord__ (servitor@moz-D40D68D6.range86-184.btcentralplus.com) (Client exited)
+[16:27:30] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[16:27:30] *** ChanServ sets mode: +o brson
+[16:40:04] *** Joins: fabrice (fabrice@moz-7B0110AD.mv.mozilla.com)
+[16:41:08] <jack> um, bors?
+[16:43:15] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[16:43:15] <ghservo> 01[13servo01] 15bors-servo 04force-pushed 06auto from 141591372 to 14c168e04: 02http://git.io/c8GovQ
+[16:43:15] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[16:43:17] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[16:43:17] <ghservo> 01[13servo01] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/FVB0iw
+[16:43:17] <ghservo> 13servo/06auto 140f98647 15Tetsuharu OHZEKI: Remove unused import.
+[16:43:17] <ghservo> 13servo/06auto 142ecafee 15bors-servo: auto merge of #1401 : saneyuki/servo/unused, r=metajack...
+[16:43:17] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[16:44:08] *** Quits: abinader (abinader@D8B9C081.E820043D.D4C04133.IP) (Ping timeout)
+[16:44:19] *** Joins: abinader (abinader@D8B9C081.E820043D.D4C04133.IP)
+[16:46:06] *** Joins: fabrice1 (fabrice@moz-BBE3ABD.mv.mozilla.com)
+[16:46:16] *** Quits: fabrice (fabrice@moz-7B0110AD.mv.mozilla.com) (Ping timeout)
+[16:46:23] *** Quits: canhtak (canhtak@moz-1D882009.wl.t.ulaval.ca) (Quit: canhtak)
+[16:47:05] *** Joins: eholk (eholk@moz-2820171B.hfc.comcastbusiness.net)
+[16:48:46] *** Joins: canhtak (canhtak@moz-1D882009.wl.t.ulaval.ca)
+[16:50:11] *** Joins: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net)
+[16:52:41] *** Joins: azita (Azita@moz-BBE3ABD.mv.mozilla.com)
+[16:55:07] *** Joins: jdm (jdm@moz-AC9499B2.cable.teksavvy.com)
+[16:55:07] *** ChanServ sets mode: +o jdm
+[16:56:30] *** Joins: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net)
+[16:58:44] *** Quits: rusti (rusti@moz-61B073BC.cpe.net.cable.rogers.com) (Ping timeout)
+[16:58:56] *** Parts: canhtak (canhtak@moz-1D882009.wl.t.ulaval.ca) ()
+[16:59:07] *** Joins: canhtak (canhtak@moz-1D882009.wl.t.ulaval.ca)
+[16:59:30] *** Joins: dherman (dherman@moz-BBE3ABD.mv.mozilla.com)
+[16:59:31] *** ChanServ sets mode: +qo dherman dherman
+[17:00:58] *** Joins: dzbarsky (Adium@BC1B0569.D5562F02.B5C6E82B.IP)
+[17:02:43] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[17:02:43] <ghservo> [13servo] 15mcepl opened issue #1402: Strange 'incorrect license' error on make check 02http://git.io/Y8DhKA
+[17:02:43] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[17:03:38] *** Joins: mcepl (mcepl@moz-C3892E61.broadband10.iol.cz)
+[17:03:47] <mcepl> jdm: it's https://github.com/mozilla/servo/issues/1402
+[17:03:53] <jdm> thanks
+[17:03:56] <mcepl> any more questions?
+[17:04:13] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[17:04:13] <ghservo> 01[13servo01] 15bors-servo merged 06auto into 06master: 02http://git.io/FVB0iw
+[17:04:13] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[17:04:14] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[17:04:14] <ghservo> [13servo] 15bors-servo closed pull request #1401: Remove unused import for fix compile warning (06master...06unused) 02http://git.io/KjqnHQ
+[17:04:14] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[17:05:08] <jdm> mcepl: oh, are you building in a separate build directory?
+[17:05:53] <jdm> actually I'm super confused by your results
+[17:05:59] <jdm> tidy.py explicitly avoids src/compiler
+[17:06:33] <mcepl> jdm: yes, rm -rf build && mkdir build && cd build && ../configure && make && make check
+[17:06:41] <jdm> weird
+[17:07:13] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[17:07:13] <ghservo> 01[13servo01] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/dCCL0A
+[17:07:13] <ghservo> 13servo/06auto 14555e044 15Daniel Hedlund: InlineFlow should always inherit text-width from base style...
+[17:07:13] <ghservo> 13servo/06auto 14c67669f 15bors-servo: auto merge of #1349 : dhedlund/servo/issue_222, r=jdm,me...
+[17:07:13] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[17:07:20] <jdm> yeah, python version would be useful
+[17:07:21] <mcepl> glad not be the only one who is confused ;)
+[17:07:36] <mcepl> python-2.7.5-10.el7.x86_64
+[17:07:38] <jdm> oh, um
+[17:07:44] *** Joins: eddyb (eddy@moz-68E0B7D0.residential.rdsnet.ro)
+[17:07:49] <jdm> mcepl: you have a lot of files from before the big directory reshuffle
+[17:07:50] <jdm> that's why
+[17:07:57] <jdm> mcepl: look at git status
+[17:08:00] <jdm> remove everything that doesn't belong
+[17:08:17] <mcepl> OK, let's try it again
+[17:08:21] <mcepl> I'll reclone
+[17:08:30] <mcepl> see yea in an hour or so ;)
+[17:08:31] <jack> git clean will do it too :)
+[17:08:45] <cmr> (also git-new-workdir)
+[17:09:03] <mcepl> jack: no it didn't ... I tried couple of times
+[17:09:03] <jack> cmr: never heard of that one
+[17:09:08] <mcepl> something weird about submodules
+[17:10:01] <mcepl> jack: git clean -f -d doesn't remove submodules ... http://paste.fedoraproject.org/61570/69545831/
+[17:10:01] *** Joins: d70_ (Joriel@1C220914.1308B8F8.BB9306BC.IP)
+[17:10:29] <jack> even after you've done git submodule sync and git submodule update?
+[17:10:31] *** Quits: secretrobotron (secretrobo@moz-E9501591.members.linode.com) (Ping timeout)
+[17:10:31] *** Quits: ivan (ivan@moz-531C3EC9.members.linode.com) (Ping timeout)
+[17:10:38] *** Quits: Luqman (laden@moz-AB7945E9.csclub.uwaterloo.ca) (Ping timeout)
+[17:10:41] <cmr> eugh submodules
+[17:11:02] *** Quits: kimundi (kimundi@moz-553526BA.dip0.t-ipconnect.de) (Ping timeout)
+[17:11:02] *** Quits: qlkzy (qlkzy@moz-A97B5CE9.members.linode.com) (Ping timeout)
+[17:11:03] *** Quits: victorporof (victorporo@C8C495F5.E3195F0D.9B1E38F4.IP) (Ping timeout)
+[17:11:03] <mcepl> I'll try sync
+[17:11:12] *** Quits: d70 (Joriel@1C220914.1308B8F8.BB9306BC.IP) (Ping timeout)
+[17:11:24] *** Joins: victorporof (victorporo@C8C495F5.E3195F0D.9B1E38F4.IP)
+[17:11:28] *** Quits: nielsle (nielsle@moz-C46DA772.boa.fiberby.dk) (Ping timeout)
+[17:11:43] <jack> i am investigating repo as an alternative
+[17:11:44] *** Quits: rhodesd (none@3646D136.4C5731DA.F395EA5B.IP) (Ping timeout)
+[17:11:49] <mcepl> yeah, git submodule sync && git submodule update && git clean -f -d
+[17:11:51] <mcepl> no change
+[17:12:08] *** Joins: ivan (ivan@moz-531C3EC9.members.linode.com)
+[17:12:32] <mcepl> git submodule deinit .
+[17:12:38] <mcepl> seems to work, but that's really brutal
+[17:13:07] <Ms2ger> Fuck git
+[17:13:50] <jack> mcepl: i assume you need hte clean option that hits the ignored files
+[17:14:08] <mcepl> no it doesn't help
+[17:14:16] <mcepl> ah
+[17:14:19] <mcepl> that may help
+[17:14:24] <mcepl> let me try
+[17:15:04] <mcepl> no, neither -f -d -x nor -f -d -X helps
+[17:15:12] <mcepl> recloning it is
+[17:16:25] <Ms2ger> That's my usual response to git
+[17:16:48] <mcepl> Hmm, I will try to ask
+[17:17:51] *** Joins: Luqman (laden@moz-AB7945E9.csclub.uwaterloo.ca)
+[17:18:17] *** Quits: dzbarsky (Adium@BC1B0569.D5562F02.B5C6E82B.IP) (Quit: Leaving.)
+[17:19:43] *** Joins: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP)
+[17:19:43] <ghservo> 01[13rust-png01] 15metajack pushed 2 new commits to 06master: 02http://git.io/oZ5I-w
+[17:19:43] <ghservo> 13rust-png/06master 1407ab72c 15Eduard Burtescu: Build with --opt-level=3.
+[17:19:43] <ghservo> 13rust-png/06master 149fcb3a8 15Jack Moffitt: Merge pull request #18 from eddyb/opt-level-3...
+[17:19:44] *** Parts: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP) ()
+[17:19:46] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[17:19:46] <ghservo> [13rust-png] 15metajack closed pull request #18: Build with --opt-level=3. (06master...06opt-level-3) 02http://git.io/jRiQKQ
+[17:19:46] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[17:21:49] *** Joins: kimundi (kimundi@moz-553526BA.dip0.t-ipconnect.de)
+[17:22:48] *** kimundi is now known as zz_kimundi
+[17:25:12] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[17:25:12] <ghservo> [13servo] 15bors-servo closed pull request #1349: InlineFlow should always inherit text-width from base style (06master...06issue_222) 02http://git.io/NMqNmw
+[17:25:12] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[17:27:30] *** Joins: nielsle (nielsle@moz-C46DA772.boa.fiberby.dk)
+[17:34:33] *** Joins: pcwalton (pcwalton@moz-7B0110AD.mv.mozilla.com)
+[17:34:33] *** ChanServ sets mode: +o pcwalton
+[17:35:29] *** Joins: dzbarsky (Adium@BC1B0569.D5562F02.B5C6E82B.IP)
+[17:35:59] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[17:35:59] <ghservo> [13servo] 15Ms2ger opened pull request #1403: Mark some rust files as non-executable. (06master...06exec) 02http://git.io/XVmMvw
+[17:35:59] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[17:36:17] <eddyb> jack: rebased my rust-png test PR, any comments?
+[17:38:22] *** zz_kimundi is now known as kimundi
+[17:38:55] *** Quits: eddyb (eddy@moz-68E0B7D0.residential.rdsnet.ro) (Ping timeout)
+[17:40:26] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[17:40:26] <ghservo> 01[13servo01] 15bors-servo pushed 0 new commits to 06auto: 02http://git.io/TtaWug
+[17:40:26] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[17:40:30] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[17:40:30] <ghservo> 01[13servo01] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/Cx4ToQ
+[17:40:30] <ghservo> 13servo/06auto 149e2af4a 15Ms2ger: Mark some rust files as non-executable.
+[17:40:30] <ghservo> 13servo/06auto 14499aa97 15bors-servo: auto merge of #1403 : Ms2ger/servo/exec, r=metajack
+[17:40:31] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[17:41:16] *** Joins: eddyb (eddy@moz-68E0B7D0.residential.rdsnet.ro)
+[17:42:37] *** Joins: rhodesd (none@3646D136.4C5731DA.F395EA5B.IP)
+[17:42:50] *** Joins: qlkzy (qlkzy@moz-A97B5CE9.members.linode.com)
+[17:43:41] *** kimundi is now known as zz_kimundi
+[17:44:42] *** Joins: secretrobotron (secretrobo@moz-E9501591.members.linode.com)
+[17:58:10] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[17:58:14] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[17:58:14] <ghservo> 01[13servo01] 15bors-servo merged 06auto into 06master: 02http://git.io/Cx4ToQ
+[17:58:14] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[17:58:14] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[17:58:14] <ghservo> [13servo] 15bors-servo closed pull request #1403: Mark some rust files as non-executable. (06master...06exec) 02http://git.io/XVmMvw
+[17:58:14] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[17:58:56] *** Parts: canhtak (canhtak@moz-1D882009.wl.t.ulaval.ca) ()
+[17:59:05] *** Joins: canhtak (canhtak@moz-1D882009.wl.t.ulaval.ca)
+[18:00:56] <pcwalton> there's a lot of opportunity for SIMD in layout
+[18:01:16] <pcwalton> I'll file an issue with what I've noticed
+[18:02:13] *** Quits: dherman (dherman@moz-BBE3ABD.mv.mozilla.com) (Quit: dherman)
+[18:03:15] <eddyb> pcwalton: more perf wins?
+[18:03:23] <pcwalton> eddyb: quite possibly
+[18:05:32] <eddyb> pcwalton: I don't think you were around... twice as fast as libpng for RGB8, twice as slow for KA8 and RGBA8 - but I know why :P
+[18:05:39] <pcwalton> eddyb: whoa, awesome
+[18:06:09] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[18:06:09] <ghservo> [13servo] 15pcwalton opened issue #1404: Use SSE2/SSE4 in layout 02http://git.io/mTE_bw
+[18:06:09] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[18:06:18] <eddyb> I use a scanline buffer to apply the "add value to the pixel above or to the left" per-line filter methods
+[18:07:10] <eddyb> I realized today I only need it for input bit sizes different than 8, everything else can retrieve the original byte value of the pixel from the output pixels vector
+[18:07:46] <eddyb> even with interlacing, I can still do that. OH, I remembered something important
+[18:08:05] <eddyb> pcwalton: can you give OpenGL some kind of texture stride/pixel-spacing information?
+[18:08:16] <pcwalton> eddyb: yup! look for glPixelStorei
+[18:08:29] <eddyb> because I believe you can use that to make interlacing work :D
+[18:08:42] <eddyb> without any special rendering support, just the right parameters
+[18:09:02] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[18:09:03] *** ChanServ sets mode: +o brson
+[18:09:21] <eddyb> well, I still have to provide those parameters in rust-png, for servo to use, but it's just a match against the interlacing stage
+[18:10:07] <eddyb> pcwalton: I can't wait until I can see servo slowly loading a PNG image with interlacing, and watch the fuzziness decreasing :D
+[18:10:53] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[18:10:55] *** Joins: dherman (dherman@moz-BBE3ABD.mv.mozilla.com)
+[18:10:55] *** ChanServ sets mode: +qo dherman dherman
+[18:11:11] <pcwalton> yeah!
+[18:11:30] *** Quits: canhtak (canhtak@moz-1D882009.wl.t.ulaval.ca) (Ping timeout)
+[18:11:32] *** Quits: dherman (dherman@moz-BBE3ABD.mv.mozilla.com) (Quit: dherman)
+[18:11:53] <eddyb> I need to find a big test suite for (non-broken) PNGs, and optimize every possible combination - I already know I should specialize ([u8, ..N] in generics :P) the scanline decoding function for every combination of interlacing stage/filter function
+[18:12:07] <eddyb> and then some of those combinations can be optimized by LLVM as memcpys
+[18:12:22] *** Joins: canhtak (canhtak@moz-1D882009.wl.t.ulaval.ca)
+[18:12:41] <eddyb> pcwalton: can rustc+LLVM vectorize adding two vectors together?
+[18:12:54] <eddyb> because that's one of the filters
+[18:13:09] <eddyb> like, element-wise addition
+[18:13:17] <pcwalton> I think there are intrinsics
+[18:13:32] <eddyb> eh, I would rather keep the code idiomatic
+[18:13:34] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[18:14:06] <pcwalton> intrinsics are fine
+[18:14:46] <eddyb> I already have a few instances of "unsafe", I want to turn them into generic vector operations rather than adding more inpromptu hacks
+[18:15:01] *** Joins: hoverbear (hoverbear@EBFA78B5.F19E5E7B.E74D50F2.IP)
+[18:15:14] <eddyb> what good is beating libpng at speed if my code can still segfault :P
+[18:16:00] <Ms2ger> Can or does? :)
+[18:16:04] <eddyb> (but asserts keep it from doing something stupid if it doesn't segfault then. and the problems occured because of logic errors)
+[18:16:08] <eddyb> Ms2ger: nah, I fixed those
+[18:16:39] <eddyb> with a proper strict_chunks iterator, it would be a non-problem
+[18:16:51] <pcwalton> eddyb: it's not about preventing all segfaults, it's about reducing the trusted computing base to a tiny fraction of what it was
+[18:17:27] <eddyb> well, yeah. it should be easy to restrict all unsafety to the zlib bindings
+[18:18:24] <eddyb> which I hope to remove at some point. whenever closures are more reliably optimized, I can just make "append_output_byte" from inflate go to the PNG decoding machinery
+[18:18:44] <dhedlund> Currently, All pipelines for a page (parents and iframes, etc) share the same {Render,Layout,Script}Task.  Is this desirable design-wise, or just "hasn't been optimized for parallel rendering yet"?
+[18:19:03] <eddyb> you end up with 32 inflate specializations, but it's safe and fast :D
+[18:19:57] <jdm> dhedlund: are you certain that's true?
+[18:20:01] <jdm> script, definitely
+[18:20:05] <jdm> (unless the iframe is sandboxed)
+[18:20:13] <jdm> I thought we had parallel rendering, though
+[18:20:15] <eddyb> dhedlund: do you still have problems with the PNG ref outputs?
+[18:20:36] *** Joins: dherman (dherman@moz-BBE3ABD.mv.mozilla.com)
+[18:20:36] *** ChanServ sets mode: +qo dherman dherman
+[18:20:36] <jdm> and I think there may be constraints on laying out children that force sharing a layout task, but I could definitely be wrong
+[18:20:46] <jdm> seamless iframes, perhaps
+[18:20:50] <eddyb> dhedlund: you could help by providing information about identical-content-but-different-metadata files - see https://github.com/mozilla/servo/issues/1178#issuecomment-30518246
+[18:21:51] <dhedlund> I might be wrong, but if so then I still haven't figured out the FrameTree stuff yet.  I believe we have parallel rendering if we create multiple separate pipelines objects, but we don't if we clone them via the FrameTree system.
+[18:22:39] *** Quits: abinader (abinader@D8B9C081.E820043D.D4C04133.IP) (Quit: Fui!)
+[18:23:35] <dhedlund> I tried converting the FrameTree and related structs to use Rc<Pipeline> instead of cloning Pipeline objects, but ran into an issue with the fact that Pipeline.load(...) is mutable.
+[18:24:19] <dhedlund> so most all pipeline objects need to be mutable, even though the only thing that changes is the url.
+[18:25:07] *** Quits: dzbarsky (Adium@BC1B0569.D5562F02.B5C6E82B.IP) (Quit: Leaving.)
+[18:25:50] <pcwalton> dhedlund: use a Slot
+[18:25:54] <pcwalton> or RefCell in new rust
+[18:26:00] <pcwalton> then make pipeline take &self
+[18:27:24] <eddyb> pcwalton: question: Arc<Image> or pixels: Arc<~[u8]> inside Image?
+[18:27:33] <pcwalton> I would Arc<Image>.
+[18:28:14] <dhedlund> pcwalton: thanks, will try that.  I'm trying to make pipelines own the destruction of their *Task objects they create, so I can block application shutdown for a short time until those objects have been successfully destructed.  This is to avoid the race condition for glfw::terminate().  The other option is simply to remove glfw::terminate() since it doesn't seem to cause any problems except...
+[18:28:15] <dhedlund> ...more valgrind warnings.
+[18:28:19] <eddyb> wait... there's a problem
+[18:28:23] <pcwalton> ah
+[18:28:29] <eddyb> pcwalton: if I do that, I can't borrow pixels as mutable
+[18:30:26] <eddyb> pcwalton: there's an invariant that incomplete pixels are fully transparent, so I'd rather not deal with mutexes or other crazy things
+[18:30:59] <pcwalton> ah, hmm
+[18:32:39] <eddyb> it's safe to read from the array in any direction, at any time (though I don't recommend non-linear access) -wait, it isn't
+[18:32:46] <eddyb> we really need strcat on this
+[18:33:26] <eddyb> if you read at the same time as it's written, there's a race condition if you get 0 for R/G/B (before it was written) and 0xff for A (after it was written)
+[18:33:41] <dhedlund> eddyb: yes, it's still broken for me, but I believe it's also due to the bug I'm working on where the main thread calls glfw::terminate.  I remember seeing something about switching to cpu rendering for tests.  is that in master yet?
+[18:33:44] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[18:33:44] *** ChanServ sets mode: +o brson
+[18:34:02] <eddyb> dhedlund: are the images visually identical?
+[18:34:38] *** Joins: azakai (alon@moz-BBE3ABD.mv.mozilla.com)
+[18:35:19] <eddyb> pcwalton: even with atomic instructions - unless the entire pixel is written atomically - which isn't hard, because it's either 4 bytes or 2 - but it should be costlier. I might try mutexes and see how that goes
+[18:35:39] <dhedlund> eddyb: with a quick visual inspection, they appear so (but they're still corrupt looking).  However, at the filesystem level w/ diff, they say they differ.
+[18:35:41] <eddyb> pcwalton: though I'm not sure how the rendering pipeline handles images
+[18:36:08] <eddyb> dhedlund: try converting to ppm and comparing then (I have no idea how to do that, though)
+[18:39:48] <dhedlund> eddyb: I found a couple images that were identical, and some that were truncated.  The thread that controls the native gl context closes out before the png is rendered or something.  again, related to the same bug I'm looking at.
+[18:40:24] *** Joins: veddan (viktor@moz-C79BC80B.csbnet.se)
+[18:40:56] <eddyb> those identical ones we're curious about, if there is still a metadata issue, it should be found
+[18:41:22] <dhedlund> eddyb: truncated, as in one comparison has two files, one that is 8k and another than is 20k with the 8k file reporting a ReadError on the console when viewing it.
+[18:41:59] <eddyb> hmm, ok
+[18:42:06] <dhedlund> eddyb: I also have two images that are supposed to be identical that are the same size but diff says are different.  I could send those to you maybe
+[18:42:46] <eddyb> can you run `identify -verbose file.png` on each of them?
+[18:43:23] <pcwalton> anyone want to review removal of Future from servo?
+[18:43:26] <dhedlund> eddyb: what library is the command part of?
+[18:43:43] <eddyb> dhedlund: ImageMagick
+[18:44:57] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[18:44:57] <ghservo> [13servo] 15pcwalton opened pull request #1405: constellation: Stop using futures for frame sizes. (06master...06defuture) 02http://git.io/6e2xhg
+[18:44:57] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[18:45:00] <pcwalton> kmc: r? https://github.com/mozilla/servo/pull/1405
+[18:45:45] <eddyb> pcwalton: are you past-eurizing servo :P?
+[18:45:55] <pcwalton> yup
+[18:45:56] * eddyb will show himself out
+[18:46:01] <pcwalton> :)
+[18:46:08] <eddyb> such a "cheesy" joke
+[18:46:09] <pcwalton> the point is to make AbstractNode (soon to be JSManaged) noncopyable
+[18:46:34] <eddyb> I mentioned already that JSGc looks kinda nicer (mostly because it's way shorter)
+[18:47:04] <eddyb> but if it's not a generic, then it doesn't matter (is it?)
+[18:47:52] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[18:47:53] <ghservo> [13servo] 15ibnc opened issue #1406: Implement box offsets top, bottom, left, and right for position elements 02http://git.io/VrchSw
+[18:47:53] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[18:47:56] <pcwalton> Jsgc might be better
+[18:48:11] <eddyb> pcwalton: I have no clue about layout and anything else browsers do to render HTML content :P
+[18:48:28] <eddyb> though, I didn't have any clues about PNG internals either
+[18:48:39] <pcwalton> "it's complicated" :)
+[18:48:46] <eddyb> s/clues/clue
+[18:48:49] <pcwalton> the nice thing is that there is a LOT of room for improvement in current browser layout
+[18:49:12] <eddyb> before I had to write a tool which takes CSS from a site, parses it, finds colors and matches them against a "color scheme", specific to that site
+[18:49:37] <dhedlund> eddyb: both files are the same size, but they're actually both corrupt and identify --verbose just tells me they're corrupt and nothing else.  Might not be an issue.
+[18:49:53] <eddyb> then it generates code to convert a new main HSL color to all the individual colors that make up that "color scheme"
+[18:50:43] <eddyb> and if you use the original color, as HSL, all the individual colors are as in the original. this is real-time with a colorpicker in the browser, btw
+[18:50:59] <eddyb> imagine making deviantart pink without writing a single line of CSS
+[18:51:08] <eddyb> (that's just one site)
+[18:51:25] <eddyb> but then, it has images for gradients. guess what I did :D
+[18:51:34] <Ms2ger> Mm, deviantart
+[18:51:49] <eddyb> (I just remembered I have that tool. it's so powerful and it just sits there)
+[18:52:56] <eddyb> I then wrote another tool to take PNG images, find (obvious) horizontal or vertical gradients (with multiple "pinned" points at varying positions, linear in between), and then output CSS background-color gradients to replace the image
+[18:53:11] <eddyb> and then those gradients can be customized by the previous tool
+[18:54:04] <eddyb> (I don't think there was anything in CSS at the time which could do this for a background-image)
+[18:54:21] <eddyb> now we have shaders and (soon!!!) kitchen sinks
+[18:54:31] <eddyb> pcwalton: </cool_story>
+[18:55:51] *** Quits: d70_ (Joriel@1C220914.1308B8F8.BB9306BC.IP) (Connection reset by peer)
+[18:56:19] <pcwalton> :)
+[18:58:13] <eddyb> I feel like looking at inflate (yay compression algorithms - the non-theoretical version) and JPEG. the latter I know has some weird (de)quantization scheme (DCT, IIRC) which may require DSP-like primitives, meh
+[18:59:44] <eddyb> oh, there's APNG. I know of a tiny-ish reference implementation I can look at, but I can't do anything with it until I know more about servo
+[18:59:55] <eddyb> pcwalton: GIFs aren't animated, are they?
+[19:00:00] <eddyb> in servo, atm, that is
+[19:00:04] <pcwalton> not at the moment
+[19:00:15] <jdm> correct
+[19:00:19] <pcwalton> how to handle gif animation is going to require some thought
+[19:00:36] <pcwalton> but possibly the script task will handle most of the heavy lifting since it already deals with timeouts, kicking off layout, etc.
+[19:00:49] <Ms2ger> Just make sure that the multiple occurrences of the same gif play in sync
+[19:00:53] <pcwalton> of course that means that animated gifs could be janky, but I don't really care.
+[19:03:17] <jdm> one task per gif
+[19:05:38] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[19:08:53] *** Quits: maxli (maxli@moz-4D28BA20.student.cs.uwaterloo.ca) (Ping timeout)
+[19:09:57] *** Quits: eholk (eholk@moz-2820171B.hfc.comcastbusiness.net) (Quit: eholk)
+[19:11:08] <larsberg> pcwalton: re: #1405, does the summit demo still work? I seem to recall a bunch of that future stuff was in place for handling async layout of nested iframes. I assume so because you edited summit2.html, but wanted to check.
+[19:11:08] <crowbot> Issue #1405: constellation: Stop using futures for frame sizes. - https://github.com/mozilla/servo/pull/1405
+[19:11:18] <pcwalton> larsberg: yes, it works
+[19:11:37] <larsberg> Then I'm fine with it. Want me to r+ or did you want kmc to look at it too?
+[19:11:52] *** Joins: maxli (maxli@moz-4D28BA20.student.cs.uwaterloo.ca)
+[19:12:12] *** Joins: dzbarsky (Adium@moz-DCBF27E9.wlan.wireless-resnet.upenn.edu)
+[19:12:14] *** Quits: ahal (ahal@FCCEA34F.7672369.D8E68FF6.IP) (Ping timeout)
+[19:12:30] *** Joins: ahal (ahal@FCCEA34F.7672369.D8E68FF6.IP)
+[19:15:53] <larsberg> and that's hilarious on the animated gifs. I have been hanging on #gfx for the last couple of weeks, and got to see one afternoon of debugging framerate issues with them. A glimpse of our future selves...
+[19:16:56] <jdm> heh
+[19:22:12] *** Joins: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[19:24:05] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[19:24:05] *** ChanServ sets mode: +o brson
+[19:25:02] <pcwalton> larsberg: you can r+
+[19:25:28] <larsberg> pcwalton: will do - thanks!
+[19:26:25] <larsberg> btw, think I finally have a handle on what's going wrong on nvidia after talking to some gfx folks and writing lots of example code in C
+[19:26:35] <larsberg> it's okay to do the pixmap stealing thing and shuffle it across threads
+[19:26:44] <larsberg> but you have to use the same Display connection it was created with (which we do not)
+[19:26:48] <larsberg> There are a few other side conditions
+[19:27:01] <larsberg> like that you have to glxMakeCurrent on the same physical pthread it was created on
+[19:27:08] <larsberg> but those we don't run into
+[19:27:44] <larsberg> Should be fine to use the X objects across threads, as glfw calls XInitThreads() at startup (and it returns true) anyway already
+[19:28:12] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[19:28:12] <ghservo> 01[13servo01] 15bors-servo pushed 0 new commits to 06auto: 02http://git.io/vO-9Mw
+[19:28:12] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[19:28:13] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[19:28:13] <ghservo> 01[13servo01] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/16m25w
+[19:28:13] <ghservo> 13servo/06auto 1421e8c72 15Patrick Walton: constellation: Stop using futures for frame sizes....
+[19:28:13] <ghservo> 13servo/06auto 14aa1ebbb 15bors-servo: auto merge of #1405 : pcwalton/servo/defuture, r=larsbergstrom...
+[19:28:14] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[19:28:36] <pcwalton> larsberg: ahh, ok
+[19:28:48] <dhedlund> pcwalton: a RefCell/Slot doesn't have a Send trait.  The FrameTree (w/ pipelines) ultimately gets sent from constellation via compositor_chan (constellation.rb:787).  Will back out from trying to fix pipeline sharing and try wrapping the non-cloneable Port<()> I've been trying to keep with the pipeline inside an Rc instead (a little more of a code smell, but not horrible).
+[19:28:59] <pcwalton> dhedlund: it doesn't have Send? o_O
+[19:29:01] <pcwalton> it should.
+[19:29:08] <pcwalton> it's not Freeze but it should be Send.
+[19:29:17] *** Joins: eholk (eholk@52FA4950.203A7E5B.51B6877.IP)
+[19:29:52] <dhedlund> Do things get a Send trait implicitly?
+[19:30:37] <pcwalton> yes
+[19:31:58] *** Quits: azita (Azita@moz-BBE3ABD.mv.mozilla.com) (Quit: azita)
+[19:33:42] *** Quits: eholk (eholk@52FA4950.203A7E5B.51B6877.IP) (Ping timeout)
+[19:34:49] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[19:35:10] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[19:35:28] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[19:36:10] <dhedlund> pcwalton: thanks! sorry, I'm trying to find documentation for some things and it's usually pretty scant at times (I saw Send trait mentioned in Rc docs but not RefCell); code isn't always better unless you really know your way around.
+[19:36:36] *** Joins: eholk (eholk@5D6EF1E7.48D4C455.51B6877.IP)
+[19:37:14] <jack> larberg: um, the texture stealing thing is to send the texture cross-process not cross thread
+[19:37:22] <jack> so using hte same display connection isn't really doable
+[19:38:32] <jdm> dhedlund: see http://static.rust-lang.org/doc/master/tutorial.html#ownership
+[19:38:40] <jdm> If an object doesn't contain any non-Send types, it consists of a single ownership tree and is itself given the Send trait which allows it to be sent between tasks.
+[19:38:53] *** Quits: eholk (eholk@5D6EF1E7.48D4C455.51B6877.IP) (Ping timeout)
+[19:41:04] <kmc> you can't explicitly write instances for Send (or Freeze) either, and they're sometimes called "kinds" instead of "traits" due to this specialness
+[19:41:54] <larsberg> jack: then we need to send something other than X pixmaps. I guess I should get deeper in how they're doing the OMTC work
+[19:42:19] *** Quits: dzbarsky (Adium@moz-DCBF27E9.wlan.wireless-resnet.upenn.edu) (Connection reset by peer)
+[19:42:20] *** Joins: dzbarsky1 (Adium@moz-DCBF27E9.wlan.wireless-resnet.upenn.edu)
+[19:43:43] <larsberg> (I'm assuming that is tied into multi-process because it supposedly requires e10s turned on to work, though I'm not deep enough to know details)
+[19:44:44] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[19:44:50] <Ms2ger> I don't think that's correct?
+[19:46:52] <jack> larsberg: they use a separate compositor process for FFOX
+[19:46:55] <jack> FFOS
+[19:47:32] <jack> the basic detach the texture from the FBO got the thumbs up from jgilbert when i presented it to him
+[19:47:36] *** Joins: eholk (eholk@5D6EF1E7.48D4C455.51B6877.IP)
+[19:47:42] <jdm> jack: it's just a compositor thread, not a process, afaik
+[19:47:52] <jack> the issue is more how do we wrap it natively on X systems such that we can send it across processes
+[19:48:08] <jack> jdm: they use all the IPC for threads?
+[19:48:18] <jdm> jack: in some cases yes.
+[19:48:31] <jack> I completely misunderstood their designs then
+[19:48:44] <jdm> IPDL can abstract over threads or processes
+[19:49:11] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[19:49:11] <ghservo> 01[13servo01] 15bors-servo merged 06auto into 06master: 02http://git.io/16m25w
+[19:49:11] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[19:49:12] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[19:49:12] <ghservo> [13servo] 15bors-servo closed pull request #1405: constellation: Stop using futures for frame sizes. (06master...06defuture) 02http://git.io/6e2xhg
+[19:49:12] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[19:51:16] *** Quits: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: jet)
+[19:54:54] *** Quits: eholk (eholk@5D6EF1E7.48D4C455.51B6877.IP) (Ping timeout)
+[19:59:39] *** Joins: eholk (eholk@52FA4950.203A7E5B.51B6877.IP)
+[19:59:49] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[19:59:49] <ghservo> [13servo] 15jdm closed issue #1402: Strange 'incorrect license' error on make check 02http://git.io/Y8DhKA
+[19:59:49] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[20:01:27] *** Quits: jdm (jdm@moz-AC9499B2.cable.teksavvy.com) (Quit: Lost terminal)
+[20:03:23] *** Quits: maxli (maxli@moz-4D28BA20.student.cs.uwaterloo.ca) (Ping timeout)
+[20:05:36] *** Joins: maxli (maxli@moz-4D28BA20.student.cs.uwaterloo.ca)
+[20:08:11] *** Joins: d70 (Joriel@1C220914.1308B8F8.BB9306BC.IP)
+[20:08:33] *** Quits: d70 (Joriel@1C220914.1308B8F8.BB9306BC.IP) (Quit: Use PGP|GPG - Privacy matters)
+[20:15:11] *** Joins: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[20:30:35] *** Quits: doomlord_ (servitor@moz-D40D68D6.range86-184.btcentralplus.com) (Ping timeout)
+[20:51:09] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[20:53:47] *** Quits: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: jet)
+[20:58:46] *** Quits: victorporof (victorporo@C8C495F5.E3195F0D.9B1E38F4.IP) (Quit: victorporof)
+[21:00:17] *** Joins: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[21:07:40] *** Joins: azita (Azita@moz-BBE3ABD.mv.mozilla.com)
+[21:09:09] *** Quits: dherman (dherman@moz-BBE3ABD.mv.mozilla.com) (Quit: dherman)
+[21:09:53] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Leaving...)
+[21:11:04] <jack> pcwalton: for the dead code elimination, would you rather I: 1) remove unused constants 2) comment them out 3) use allow(dead_code) or 4) namespace them and make that mod pub or scope allow(dead_code)
+[21:11:08] <jack> this is for things like rust-cocoa
+[21:14:44] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[21:20:19] *** Quits: azita (Azita@moz-BBE3ABD.mv.mozilla.com) (Quit: azita)
+[21:23:14] *** Joins: dherman (dherman@moz-BBE3ABD.mv.mozilla.com)
+[21:23:14] *** ChanServ sets mode: +qo dherman dherman
+[21:23:27] *** bhearsum|buildduty is now known as bhearsum|afk
+[21:23:45] *** Joins: azita (Azita@moz-BBE3ABD.mv.mozilla.com)
+[21:27:50] *** Quits: jackneill (jackneill@moz-75A52361.pool.digikabel.hu) (Ping timeout)
+[21:32:32] *** ahal is now known as ahal|cantina
+[21:32:53] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[21:34:49] *** Joins: doomlord_ (servitor@moz-D40D68D6.range86-184.btcentralplus.com)
+[21:37:23] *** Quits: maxli (maxli@moz-4D28BA20.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[21:37:57] <eddyb> pcwalton: hmm... how is an Image rendered? is the pixels backing storage "loaded into" OpenGL by reference? what happens if that vector is modified between redraws?
+[21:38:59] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[21:40:07] *** Quits: pcwalton (pcwalton@moz-7B0110AD.mv.mozilla.com) (Quit: pcwalton)
+[21:40:42] *** Joins: maxli (maxli@moz-4D28BA20.student.cs.uwaterloo.ca)
+[21:41:43] *** Joins: pcwalton (pcwalton@moz-7B0110AD.mv.mozilla.com)
+[21:41:43] *** ChanServ sets mode: +o pcwalton
+[21:42:57] <pcwalton> eddyb: it's copied one way or anothre
+[21:42:58] <pcwalton> another
+[21:43:18] <pcwalton> no attempt is generally made to have the GPU access the underlying buffer directly because that usually doesn't work on desktop anyway.
+[21:43:38] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[21:47:47] *** Quits: azita (Azita@moz-BBE3ABD.mv.mozilla.com) (Quit: azita)
+[21:54:17] *** Quits: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net) (Quit: bholley)
+[22:02:26] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[22:02:26] <ghservo> [13servo] 15ibnc opened pull request #1407: Added recognition of positioned offsets: top, bottom, right, and left (06master...06positioned_box_offsets) 02http://git.io/FcdZpg
+[22:02:26] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[22:04:42] <jack> pcwalton: so far upgrade is going pretty fast.
+[22:04:56] <Ms2ger> What's wrong? :)
+[22:05:01] <jack> pcwalton: did you see my question earlier?
+[22:05:15] <jack> Ms2ger: i probably won't find out until it tries to link servo :)
+[22:07:36] <jack> ibnc: ping
+[22:07:51] <ibnc> jack: pong
+[22:07:56] <kmc> jack: I'm working on the linked task failure thing btw
+[22:08:04] <jack> why are the position offsets in a Slot?
+[22:08:05] <kmc> let me know if you are blocking on that
+[22:08:12] <jack> kmc: not yet. still in the submodules.
+[22:09:11] <ibnc> Honestly, I was just being consistent with the other attributes. Should they be individual attributes?
+[22:10:17] <jack> Hmm. I didn't notice that. Nevermind then :)
+[22:10:53] <ibnc> :)
+[22:11:42] <jack> ibnc: what is containing_block_width for?
+[22:11:50] <jack> that seems an odd default for every side
+[22:12:25] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[22:12:27] <ibnc> wait, yeah that doesn't make any sense for the top and bottom :/
+[22:13:04] <jack> Or the sides really. I think you want specified_or_zero
+[22:13:11] <jack> and you don't need to pass in the containingn width at all
+[22:13:23] <jack> but it depends on what the spec says.
+[22:13:31] <jack> I assume the default are zero. /me goes to check
+[22:14:22] <ibnc> Well, it's positioned relative to the containing block. Which the containing block is contextual to the position property. Example: elements with position: fixed always use the window as the containing black
+[22:15:08] <jack> ibnc: default is 'auto' which is not really helpful
+[22:15:35] <jack> where does a position: fixed block go if it sets no offsets?
+[22:16:04] <ibnc> it inherits the position from the nearest ancestor, I think
+[22:17:05] <ibnc> I think you're right about the containing block. That bit comes later 
+[22:17:34] <jack> in any case, the offsets are relative to the containing block, but nto bounded by it
+[22:17:42] <jack> they can be negative or huge or whatever
+[22:17:52] <ibnc> right
+[22:18:10] <jack> so I think specified_or_zero() makes the most sense there.
+[22:18:21] <jack> in position: relative, auto is going to be the same as 0s
+[22:19:15] <jack> otherwise your patch looks good.
+[22:19:32] <ibnc> Thanks for the feedback :)
+[22:20:11] *** Joins: Jayflux (Jason@moz-F61678AB.as13285.net)
+[22:20:14] <jack> oh i just found that you used parsed_non_negative
+[22:20:41] <jack> that probably also needs to change.
+[22:21:16] <ibnc> Yep, any idea what that should be? the properties.rs.mako file is kinda a monster to work with
+[22:21:55] <jack> looking
+[22:22:06] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[22:22:09] *** Joins: jensnock_ (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[22:23:35] <jack> ibnc: you just want parse
+[22:23:53] <ibnc> Which is the default. I'll remove that then
+[22:24:28] *** Quits: pcwalton (pcwalton@moz-7B0110AD.mv.mozilla.com) (Quit: pcwalton)
+[22:25:02] *** Joins: pcwalton (pcwalton@moz-7B0110AD.mv.mozilla.com)
+[22:25:02] *** ChanServ sets mode: +o pcwalton
+[22:30:36] *** Quits: dherman (dherman@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[22:34:51] *** Joins: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[22:37:29] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[22:41:16] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[22:43:15] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[22:43:46] *** Quits: jensnock_ (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[22:51:31] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[22:52:37] *** Quits: CaseyBecking (CaseyBecki@ED8170C4.82E507D6.C334098E.IP) (Ping timeout)
+[23:01:31] <kmc> jack: do you know if there's any way to test the new task failure behavior before upgrading?
+[23:01:38] <kmc> would I need to change every spawn to call .unlinked() first?
+[23:07:46] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[23:07:46] <ghservo> [13servo] 15pcwalton opened pull request #1408: layout: Stop going to the DOM for iframe sizes (06master...06stop-going-to-dom-for-iframes) 02http://git.io/PRd_EA
+[23:07:46] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[23:08:07] <pcwalton> jack: generally we've been commenting out unused constants.
+[23:08:15] <pcwalton> larsberg: r? https://github.com/mozilla/servo/pull/1408
+[23:09:30] <larsberg> pcwalton: on it
+[23:09:36] <pcwalton> larsberg: just updated, refresh
+[23:09:48] <larsberg> k
+[23:10:10] <pcwalton> and again, sorry :)
+[23:10:12] <pcwalton> this should be last one
+[23:10:22] <pcwalton> I kept finding traces of the old iframe code
+[23:10:54] *** Quits: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[23:15:51] <larsberg> pcwalton: Does this work with the summit example?
+[23:15:55] <pcwalton> yes
+[23:15:58] *** Quits: eholk (eholk@52FA4950.203A7E5B.51B6877.IP) (Quit: eholk)
+[23:16:09] <larsberg> I need to ressurect my code for inline iframes, but I think it'll be easier with your refactoring. 
+[23:16:14] <larsberg> Looks good; I'll r+ now.
+[23:16:16] <pcwalton> I think they may just work now :)
+[23:16:27] <pcwalton> doing it in the Box makes it much easier.
+[23:16:42] <pcwalton> also floated iframes.
+[23:16:45] <larsberg> That would be nice - in the previous model, there was a bunch of mess required to get the timing right on when the dimensions were available for layout
+[23:17:04] <pcwalton> this does it in display list building so it should always be right.
+[23:17:09] <larsberg> e.g., line break would happen while the size was still 0,0,0,0
+[23:17:12] <pcwalton> ah
+[23:17:24] <pcwalton> this happens during DL building when everything should already be laid out.
+[23:17:30] <larsberg> excellent
+[23:19:02] <pcwalton> only 3 places left where we go to the DOM during layout with that patch
+[23:19:18] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[23:19:18] <ghservo> 01[13servo01] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/ZT8Dbg
+[23:19:18] <ghservo> 13servo/06auto 14971f77d 15Patrick Walton: layout: Stop going to the DOM for iframe sizes
+[23:19:18] <ghservo> 13servo/06auto 14a9980b9 15bors-servo: auto merge of #1408 : pcwalton/servo/stop-going-to-dom-for-iframes, r=larsbergstrom...
+[23:19:19] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[23:19:20] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[23:19:20] <ghservo> 01[13servo01] 15bors-servo pushed 0 new commits to 06auto: 02http://git.io/8ZrYiA
+[23:19:20] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[23:28:03] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[23:33:05] *** Quits: Ms2ger (Ms2ger@moz-97D6582B.adsl-dyn.isp.belgacom.be) (Quit: nn)
+[23:33:28] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[23:34:31] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[23:37:18] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[23:37:18] <ghservo> 01[13servo01] 15bors-servo merged 06auto into 06master: 02http://git.io/ZT8Dbg
+[23:37:18] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[23:37:19] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[23:37:19] <ghservo> [13servo] 15bors-servo closed pull request #1408: layout: Stop going to the DOM for iframe sizes (06master...06stop-going-to-dom-for-iframes) 02http://git.io/PRd_EA
+[23:37:19] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[23:38:46] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Leaving...)
+[23:40:12] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[23:40:13] <ghservo> 01[13servo01] 15bors-servo pushed 0 new commits to 06auto: 02http://git.io/c6nWWg
+[23:40:13] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[23:40:18] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[23:40:18] <ghservo> 01[13servo01] 15bors-servo pushed 3 new commits to 06auto: 02http://git.io/r1LfxQ
+[23:40:18] <ghservo> 13servo/06auto 14a786549 15HyunJune Kim: Fixed this issue (https://github.com/mozilla/rust/issues/10683)
+[23:40:18] <ghservo> 13servo/06auto 14cf53746 15HyunJune Kim: add FIX comments
+[23:40:18] <ghservo> 13servo/06auto 14c5d81f1 15bors-servo: auto merge of #1388 : hyunjunekim/servo/cssissues, r=kmcallister...
+[23:40:20] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[23:44:50] *** Quits: Jayflux (Jason@moz-F61678AB.as13285.net) (Quit: Leaving)
+[23:45:43] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[23:47:38] <jack> kmc: we have a test page for the i tried start, but nothing else tests that stuff to my knowledge
+[23:51:31] <kmc> ok
+[23:53:36] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[23:58:17] *** Joins: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP)
+[23:58:17] <ghservo> 01[13servo01] 15bors-servo merged 06auto into 06master: 02http://git.io/r1LfxQ
+[23:58:17] *** Parts: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP) ()
+[23:58:19] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[23:58:19] <ghservo> [13servo] 15bors-servo closed pull request #1388: Fixed this issue (https://github.com/mozilla/rust/issues/10683) (06master...06cssissues) 02http://git.io/pkHjMg
+[23:58:19] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()

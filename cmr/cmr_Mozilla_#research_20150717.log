@@ -1,0 +1,525 @@
+[00:17:05] *** Quits: pcwalton (pcwalton@moz-vst.p2i.254.50.IP) (Client exited)
+[00:21:13] *** Quits: jweathersby1 (Adium@moz-djc.9vm.130.40.IP) (Quit: Leaving.)
+[00:21:45] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[00:21:46] *** ChanServ sets mode: +o pcwalton
+[00:28:17] *** Quits: m_khvoinitsky (quassel@moz-c4esiv.mp2c.6dnu.04f8.2a01.IP) (A TLS packet with unexpected length was received.)
+[00:32:17] *** Quits: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com) (Connection closed)
+[00:34:30] *** khuey|away is now known as khuey
+[00:36:31] *** Joins: azakai|2 (alon@moz-l3ofdg.sntcca.sbcglobal.net)
+[00:43:30] *** Joins: roc (chatzilla@moz-ktd.539.250.103.IP)
+[00:56:33] *** Joins: mccr8 (mccr8@moz-m84lpe.ca.comcast.net)
+[01:10:14] *** Quits: till (till@moz-1mj0dg.adsl.alicedsl.de) (Ping timeout: 121 seconds)
+[01:27:25] *** Quits: mchang (mchang@moz-q472sa.res.rr.com) (Client exited)
+[01:35:47] *** Joins: glandium (glandium@moz-ansou8.ocn.ne.jp)
+[01:38:00] <glandium> roc: I'm getting this when reverse-continuing on an old firefox build (where by old I mean firefox 18): https://pastebin.mozilla.org/8839786
+[01:38:32] <glandium> when I attach as indicated, and show all backtraces from all threads, I see nothing related to signals
+[01:38:59] <glandium> (this happens both with 3.2 and current master)
+[01:41:58] <roc> pastebin the backtraces?
+[01:43:17] <glandium> roc: https://pastebin.mozilla.org/8839787
+[01:44:16] *** Quits: mccr8 (mccr8@moz-m84lpe.ca.comcast.net) (Quit: quit)
+[01:46:03] <roc> are we hitting "Forced to PTRACE_INTERRUPT tracee" in task.cc?
+[01:47:23] <glandium> roc: Haven't seen this message
+[01:47:41] <glandium> roc: I'm getting "Undefined maintenance set command: "target-async 0"" at the beginning, though
+[01:48:27] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (Client exited)
+[01:52:00] <glandium> oh, signal 16 is used internally by rr
+[01:53:20] <glandium> roc: LOG(warn) are displayed by default, right?
+[01:54:55] <roc> no
+[01:55:02] <roc> try setting a breakpoint there in gdb
+[01:56:00] <glandium> roc: I could rebuild with logging enabled?
+[01:58:41] <glandium> roc: nope, not hitting task.cc:3182
+[01:58:58] <roc> er
+[01:59:02] <roc> it's line 1908 for me
+[01:59:31] <glandium> gah, read the wrong number. facepalm
+[02:01:44] <glandium> roc: nope, task.cc:1908 is not hit
+[02:03:50] <glandium> ok, running with rr replay -V
+[02:05:18] <glandium> nothing noteworthy :(
+[02:05:29] <glandium> only messages are "[WARN ~Task() errno: 3 'No such process'] 11599 is unstable; not blocking on its termination"-type messages
+[02:11:14] *** Quits: gavin (gavin@irc.mozilla.org) (A TLS packet with unexpected length was received.)
+[02:12:39] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[02:15:07] <roc> I'm wondering what sent signal 16 to the tracee
+[02:16:09] <roc> in Task::resume_execution, can you verify that 'sig' is always zero?
+[02:16:21] *** Joins: gavin (gavin@irc.mozilla.org)
+[02:16:25] <roc> er wait
+[02:17:29] <glandium> other places check that child_sig is not TIME_SLICE_SIGNAL, shouldn't emulate_deterministic_signal do the same?
+[02:17:36] <roc> yeah probably
+[02:17:38] <roc> before we try that
+[02:17:58] <roc> can you rr dump the trace and pastebin the region around global_time:245168?
+[02:19:02] <glandium> roc: how much of it do you want?
+[02:19:13] <roc> +/- 50 lines
+[02:19:49] <glandium> https://pastebin.mozilla.org/8839788
+[02:21:37] <glandium> I'm actually reverse-continuing from there
+[02:29:31] <roc> hmmmm
+[02:29:41] <roc> all those gettimeofday calls should be syscall-buffered
+[02:29:51] <roc> but that's a different issue
+[02:30:01] <glandium> roc: https://pastebin.mozilla.org/8839789 this seems to work, although I still haven't hit my watchpoint so far
+[02:30:17] <glandium> just copied that from somewhere else in the file
+[02:32:13] <roc> can you give me the rr stack trace when you hit the assertion in the unmodified rr?
+[02:33:16] <glandium> roc: I have to go now, I'll do that in the evening. I'll open an issue I guess
+[02:33:21] <roc> sure
+[02:33:23] <roc> thanks
+[02:33:27] <glandium> np
+[02:33:59] <roc> another thing that'd be useful is to log in Task::resume_execution via fprintf(stderr) usage of non-zero tick_period
+[02:34:22] <roc> and enable DEBUG_TAG in GdbConnection.cc and ReplayTimeline.cc and dump the results
+[02:36:43] <glandium> fwiw, the run with that patch failed with
+[02:36:54] <glandium> https://pastebin.mozilla.org/8839791
+[02:37:03] * glandium is off for real
+[02:49:53] *** khuey is now known as khuey|away
+[03:10:39] *** Joins: jweathersby (Adium@moz-djc.9vm.130.40.IP)
+[03:21:23] *** Quits: laleh (Adium@moz-h8636h.mobile.uci.edu) (Quit: Leaving.)
+[03:58:19] *** Quits: jweathersby (Adium@moz-djc.9vm.130.40.IP) (Quit: Leaving.)
+[04:29:09] *** Joins: jweathersby (Adium@moz-djc.9vm.130.40.IP)
+[05:06:14] *** khuey|away is now known as khuey
+[05:16:01] *** Joins: ddamjano (Instantbird@moz-3aku88.dynamic.surfer.at)
+[05:28:10] *** Quits: ddamjano (Instantbird@moz-3aku88.dynamic.surfer.at) (Ping timeout: 121 seconds)
+[05:40:24] *** Quits: jweathersby (Adium@moz-djc.9vm.130.40.IP) (Quit: Leaving.)
+[05:45:29] *** Joins: jweathersby (Adium@moz-djc.9vm.130.40.IP)
+[05:48:20] *** Joins: ScottMichaud_ (ScottMichau@moz-i4mljt.cpe.pppoe.ca)
+[05:51:10] *** Quits: ScottMichaud (ScottMichau@moz-i4mljt.cpe.pppoe.ca) (Ping timeout: 121 seconds)
+[06:02:44] *** Joins: ScottMichaud__ (ScottMichau@moz-i4mljt.cpe.pppoe.ca)
+[06:05:40] *** Quits: ScottMichaud_ (ScottMichau@moz-i4mljt.cpe.pppoe.ca) (Ping timeout: 121 seconds)
+[06:06:54] *** khuey is now known as khuey|away
+[06:37:57] *** Joins: ddamjano (Instantbird@moz-3aku88.dynamic.surfer.at)
+[06:40:44] *** Quits: roc (chatzilla@moz-ktd.539.250.103.IP) (Ping timeout: 121 seconds)
+[06:46:20] *** Quits: jweathersby (Adium@moz-djc.9vm.130.40.IP) (Quit: Leaving.)
+[06:51:07] *** Joins: m_khvoinitsky (quassel@moz-c4esiv.mp2c.6dnu.04f8.2a01.IP)
+[07:16:24] *** khuey|away is now known as khuey
+[07:20:47] *** Quits: ddamjano (Instantbird@moz-3aku88.dynamic.surfer.at) (Ping timeout: 121 seconds)
+[07:22:58] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[07:22:59] *** ChanServ sets mode: +o pcwalton
+[07:23:14] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (Client exited)
+[07:31:34] *** Joins: fitzgen (sid92847@moz-0p91jt.charlton.irccloud.com)
+[07:32:36] <fitzgen> gotta hand it to the rr folks; really appreciating it so far
+[07:35:14] *** khuey is now known as khuey|away
+[07:36:33] *** Joins: ddamjano (Instantbird@moz-3aku88.dynamic.surfer.at)
+[09:17:58] *** Joins: Dexter (Alessio@moz-a5dth6.retail.telecomitalia.it)
+[09:24:21] *** Joins: Elaine (Elaine@moz-35s2fm.members.linode.com)
+[10:12:49] *** Joins: mukilan (mukilan@moz-mu4.o0o.164.122.IP)
+[10:28:24] *** Joins: bjz (bjz@moz-puppgq.tpgi.com.au)
+[11:07:47] *** Joins: till (till@moz-alincr.adsl.alicedsl.de)
+[11:50:43] <pnkfelix> nrc: I did indeed book a room (at the Nikko)
+[11:51:11] <pnkfelix> nrc: it was only a little more expensive than the Whitcomb, and certainly much less expensive than most of the hotels
+[11:53:22] *** Joins: roc (chatzilla@moz-nd2.3k8.98.121.IP)
+[12:11:49] <Manishearth> pnkfelix: btw, did you get a chance to see the rust-mods thread?
+[12:12:03] <Manishearth> oh wait you did
+[12:12:15] <pnkfelix> Manishearth: heh, I was about to say "no, I didn't"
+[12:12:23] <pnkfelix> Manishearth: (was assuming it was something very recent)
+[12:12:41] <Manishearth> for some reason I thought we were missing someone there
+[12:12:58] <Manishearth> pnkfelix: haven't seen your talk yet, but didya get to chat with Stroustrup?
+[12:13:27] <pnkfelix> Manishearth: no not 1:1
+[12:13:30] <Manishearth> aw
+[12:13:38] <pnkfelix> Manishearth: I did make references to his talk in my own talk
+[12:13:44] <pnkfelix> Manishearth: (a number of times...)
+[12:13:47] <Manishearth> he has some really nice opinions about Rust and other similar things
+[12:14:02] <Manishearth> yeah, his talk resonated well for me as a Rustacean
+[12:14:07] *** Joins: jdm (jdm@moz-ilbt2e.cable.teksavvy.com)
+[12:14:19] <pnkfelix> Manishearth: he has opinions about Rust?
+[12:14:33] <pnkfelix> Manishearth: someone asked him at the end of his talk what he thought of other languages
+[12:14:50] <pnkfelix> Manishearth: and he basically evaded it.  That, and said "C++ isn't going anywhere."
+[12:14:51] <Manishearth> pnkfelix: not that he has said these publicly. We talked about Rust a bit in a 1:1 :)
+[12:14:59] <pnkfelix> Manishearth: ah I see
+[12:15:53] <Manishearth> Before that 1:1 we were havign lunch with some CS profs and one of them asked what he thought of Rust/Nim/Go
+[12:16:20] <Manishearth> and he gave a diplomatic but nice answer about them, he likes where they're going and thinks C++ could learn some stuff from it IIRC
+[12:16:54] <pnkfelix> Manishearth: hmm.  Did you get the impression that it was just diplomacy?  Or did he appear actually knowledgable of what they are doing?
+[12:17:27] <pnkfelix> Manishearth: for example, during his own talk (*perhaps* after the video taped portion, not sure) there was a part where someone brought up returning a dangling pointer to the stack frame
+[12:17:30] <Manishearth> no his standard way of answering questions is a bit diplomatic. Nothing to do with the question. And he seemed to know stuff.
+[12:17:50] <Manishearth> Not exactly diplomatic, rather, guarded
+[12:17:57] <pnkfelix> Manishearth: and he basically said "Yes.  Don't do that.  In my experience, this is not a serious source of actual bugs."
+[12:18:13] <Manishearth> He did mention elsewhere that he's been bitten by misquoting in the past
+[12:18:23] <pnkfelix> (to which I looked around to see if anyone else was as shocked by this as I was)
+[12:19:12] <pnkfelix> Anyway, I did consider *saying* during my talk, in the "goals" section
+[12:19:28] <pnkfelix> that a sidegoal for the presentation was to convince the audience to go tell Bjarne to switch to Rust.  :)
+[12:19:33] <Elaine> haha
+[12:19:36] <Manishearth> lol
+[12:20:08] <pnkfelix> but i chickened out.  In a more intimate smaller audience maybe I would have gone for it.  :)
+[12:20:17] <Manishearth> My impression from talking with him was that he's not going to ever switch to Rust (not that I asked), but he'd rather like to C++ grow
+[12:20:22] <Manishearth> *see C++ grow
+[12:20:29] <Manishearth> and use that
+[12:20:29] <pnkfelix> makes sesne
+[12:20:38] <pnkfelix> he certainly has a lot of things he wants to add to it
+[12:20:55] <Elaine> Precisely what we all need: a larger, ever more complicated C++!
+[12:20:59] <Manishearth> Of course, I'm not sure how much programming he himself does these days, so "use" is a nebulous term
+[12:21:31] <shu`pto> pnkfelix: wait, are you saying that returning pointers to stack things *is* a major source of bugs?
+[12:21:46] <pnkfelix> shu`pto: well
+[12:21:52] <shu`pto> pnkfelix: in my experience it is not a big source of bugs
+[12:21:54] <Manishearth> shu`pto: https://bugzilla.mozilla.org/show_bug.cgi?id=1051989#c5
+[12:21:55] <pnkfelix> shu`pto: data allocated on the stack itself, no
+[12:22:00] <pnkfelix> shu`pto: but data *owned* by the stack frame
+[12:22:08] <pnkfelix> shu`pto: i.e. stuff that is freed via RAII
+[12:22:44] <pnkfelix> shu`pto: I think that is a larger attack surface.  Of course those will tend to also be caught via runtime checks e.g. memory poisoning, if you're lucky. 
+[12:22:47] <Manishearth> a beautiful drawing of why stack pointers are bad
+[12:23:12] <shu`pto> Manishearth: i'm not contending that it's bad
+[12:23:29] <shu`pto> Manishearth: i'm contending in practice it doesn't seem as bad as other classes of bugs
+[12:23:29] <pnkfelix> shu`pto: or that "its not bad", even?
+[12:23:37] <shu`pto> err, yes
+[12:23:42] <shu`pto> i am agreeing that it's bad
+[12:23:48] <shu`pto> it's not that frequent
+[12:23:56] <Manishearth> I agree with shu`pto , that's probably what bjarne meant
+[12:24:09] <shu`pto> pnkfelix: stuff owned by RAII...
+[12:24:30] <shu`pto> pnkfelix: so like, passing a UniquePtr around or something?
+[12:24:31] <pnkfelix> shu`pto: I agree that there are other classes of bugs that are more important to tackle
+[12:25:18] <pnkfelix> shu`pto: precisely because they are not caught by the standard state-of-the-art tooling
+[12:25:55] <pnkfelix> shu`pto: I was thinking e.g. of passing around a reference into something that is owned by a uniq_ptr.
+[12:26:21] <shu`pto> i see
+[12:26:42] <pnkfelix> shu`pto: but in any case, memory poisoning on `free` should help catch it.  Though that may still be super nasty to actually track down to the source.
+[12:27:14] <shu`pto> yeah
+[12:28:18] <shu`pto> what do europeans have against AC
+[12:28:20] <shu`pto> it's like 40C outside
+[12:29:05] <glandium> shu`pto: and that's a rare event. You don't need AC for rare events
+[12:29:05] <pnkfelix> shu`pto: find a starbucks.  A little taste of america, including AC.  :)
+[12:29:36] <shu`pto> glandium: that's not the american spirit!
+[12:29:55] <glandium> whereby I mean, what's the point of having an AC for once in a while, especially considering how much that costs upfront
+[12:30:19] * till isn't opposed to AC per se, but to turning every room into a freezer when it's really hot outside
+[12:30:34] <glandium> that too
+[12:31:00] <glandium> 20C inside is _not_ right when it's 40C outside
+[12:31:00] <shu`pto> i will wear a coat inside
+[12:39:31] <larsberg> shu`pto: These things are super hard to quantify because we've been stymied by lack of security bug access every time we've tried to do a real study of "what kinds of memory safety errors actually happen?" Such a study (say, over the last 10 years of gecko bugs) would be a very useful piece of research, as today these conversations often devolve into
+[12:39:31] <larsberg> arguments of opinions and personal anecdotes.
+[12:40:37] <glandium> larsberg: you can watch 15 years of declassified mozilla sec bugs
+[12:41:38] <larsberg> glandium: I did not know that! Every time we've asked internal security people for pointers, they've steered us away. I will almost definitely follow up on this.
+[12:42:09] <glandium> larsberg: all bugs with a released fix are declassified after a few months iirc
+[12:42:29] <glandium> you should be able to do a bugzilla query with some keyword or whiteboard
+[12:43:37] <larsberg> pnkfelix: My C++ standards committee friends say that Rust comes up all the time in their meetings (more than all other languages combined). They were telling me that when somebody ratholes on why something super useful and expected by users like total ordering over pointer addresses can't be done due to {dead architecture X}, somebody else will say, "f***
+[12:43:37] <larsberg> it! let's just quit this and go use Rust instead," which I found hilarious.
+[12:45:47] <pnkfelix> larsberg: ah that's an interesting anecdote
+[12:47:21] <larsberg> pnkfelix: I wouldn't want to share or name people it in a logged IRC channel, but the standards folks I meet - both language and library - definitely are following Rust closely. Lots of them are employed here in Chicago at finance firms, where I've been doing a bunch of intro-to-rust talks.
+[12:48:39] <pnkfelix> larsberg: good, get us all set up for a solid consulting career for us to retire off of
+[12:49:51] <roc> just the other day I had an rr crash where I'd accidentally created a dangling reference to a stack object 
+[12:53:25] <pnkfelix> hey roc, I meant to ask you last time we talked: Had you heard of and/or played with urdb ?
+[12:53:37] <roc> no
+[12:54:06] <pnkfelix> roc: "universal reversible debugger"; its based on checkpointing rather than traces
+[12:54:25] <pnkfelix> roc: It was only a research product, I suspect its harder to try to get it working than rr is
+[12:54:56] <roc> actually I think I've seen this
+[12:55:17] <pnkfelix> roc: but I was wondering if the checkpointing aspect of it could be useful.  In particular, at least the way I use `rr`, you still need to replay the trace from the start
+[12:55:36] <glandium> pnkfelix: rr supports checkpoints
+[12:55:52] <pnkfelix> glandium: oh really?  okay then I just need to educate myself then.
+[12:56:41] <roc> ah
+[12:56:49] <roc> urdb doesn't have deterministic replay
+[12:57:58] <roc> so basically your program has to take no input and be deterministic
+[12:58:54] <roc> pnkfelix: rr supports explicit checkpoints, but not persistent checkpoints. Then again, most people now are using reverse execution mainly.
+[12:59:13] <roc> but it's all based on checkpoints internally.
+[12:59:57] <roc> the problem with C++ is that it's a mountain of complexity and there's no way it can ever come back from that
+[13:00:19] <pnkfelix> roc: maybe I am not using it properly: Do people typically run the program once until it e.g. hits a segfault, and then replay the trace from the start?
+[13:00:35] <roc> yes, but you only have to do that replay once.
+[13:00:58] <pnkfelix> roc: okay.  But you cannot get into reverse execution during that *first* run, right?
+[13:01:19] <roc> yeah
+[13:01:25] <pnkfelix> roc: I ask mostly because some of the bugs I was looking at recently took many minutes before they hit the segfault
+[13:01:39] *** Quits: Gankro (sid71432@moz-sc2bd6.charlton.irccloud.com) (Ping timeout: 121 seconds)
+[13:01:41] <roc> once you hit the segfault during replay you should be able to use reverse execution (mainly), plus forward execution as necessary, without having to restart again from scratch
+[13:01:45] <pnkfelix> roc: so I was curious if there was a way to avoid that (single) replay.  
+[13:01:53] <roc> not yet, but it's on the roadmap
+[13:01:55] *** Quits: dmarcos (sid15240@moz-9ahsin.ealing.irccloud.com) (Ping timeout: 121 seconds)
+[13:02:31] <pnkfelix> roc: (admittedly I also was having some difficulty using the tool properly.  I think I need to get more experience using it on simpler programs before jumping into the guts of sketchy Rust stuff)
+[13:02:45] *** Joins: dmarcos (sid15240@moz-9ahsin.ealing.irccloud.com)
+[13:03:05] <roc> it should work just like gdb
+[13:03:19] *** Joins: Gankro (sid71432@moz-sc2bd6.charlton.irccloud.com)
+[13:03:32] <roc> except that replay is deterministic and reverse execution is available.
+[13:04:00] <glandium> roc: and info checkpoints doesn't list checkpoints
+[13:04:10] <roc> true
+[13:04:23] <roc> that's because the rr checkpoint support is hacked into gdb using some macros
+[13:04:38] <roc> the gdb remote protocol doesn't let us hook into gdb checkpoints properly
+[13:04:55] <glandium> can't "info" be macroed?
+[13:04:59] <roc> then again, checkpoints are not that useful once you get into using reverse execution
+[13:05:05] <roc> info can probably be macroed
+[13:05:11] <roc> but getting the list of checkpoints from rr would be tricky
+[13:05:19] <roc> there's no way I know of for macros to talk to the remote target directly
+[13:05:35] <roc> currently we're using hacks where reads and writes to magic memory addresses trigger rr behavior
+[13:05:49] <roc> but it'd be hard to implement a protocol to extract the list of checkpoints
+[13:05:54] *** jandem-away is now known as jandem
+[13:06:43] <roc> pnkfelix: so I think using rr as a deterministic gdb replacement should be easy. Learning to use it *optimally* definitely takes time, and I don't think anyone really has yet.
+[13:06:56] <roc> I'm still learning
+[13:07:27] <roc> actually we're unlearning old debugging strategies that are no longer optimal, and learning new ones
+[13:07:58] <pnkfelix> roc: so, as an example, should `reverse-next` and `reverse-step` work?
+[13:08:03] <roc> yes
+[13:08:27] <pnkfelix> roc: okay.  next time i'm at that linux machine I'll see why these didn't seem to work for me
+[13:08:39] <roc> the real magic combo is hardware watchpoints and reverse-continue
+[13:09:04] <glandium> roc: is it possible to get the number of ticks of the current "when" ?
+[13:09:21] <roc> no. I should probably add that
+[13:09:31] <roc> or you could add it :-)
+[13:09:59] <glandium> roc: when is a rr macro, right?
+[13:10:29] <roc> yes
+[13:10:35] <roc> it uses the magic address trick
+[13:10:36] <glandium> yay, 3rd different assertion
+[13:14:40] <Elaine> larsberg: your advice about focusing on the REU was excellent... harder work than I was expected. We're almost finished polishing our first conference paper though :)
+[13:14:46] <Elaine> (after producing 50 pages of notes!)
+[13:14:59] <glandium> roc: so, how would you go about this? make it show a struct?
+[13:15:52] <larsberg> Elaine: fantastic - I'm glad to hear it! Good luck with the submission :-)
+[13:15:58] <roc> I'd just add another command to show the ticks
+[13:17:34] <glandium> roc: when_ticks?
+[13:17:46] *** Quits: jdm (jdm@moz-ilbt2e.cable.teksavvy.com) (Connection closed)
+[13:17:54] *** Joins: jdm (jdm@moz-ilbt2e.cable.teksavvy.com)
+[13:21:49] <roc> I think when-ticks is more gdb-ish
+[13:37:41] <shu`pto> larsberg: wait, the thing that's holding you back is lack of s-s access
+[13:37:49] <shu`pto> larsberg: surely that can be remedied easily
+[13:39:11] <glandium> roc: how do you run one test?
+[13:39:26] <roc> shu`pto: it's not, really
+[13:39:54] <roc> shu`pto: s-s is only needed for the bugs whose fixes haven't been released yet. You don't need those to do research.
+[13:39:56] <larsberg> shu`pto: if what glandium said is true and I can just look at them all after they're declassified, that should be totally fine
+[13:40:30] <larsberg> shu`pto: we had been led to believe in previous conversations that many of them *never* are, which appears untrue?
+[13:40:37] <shu`pto> roc: larsberg: right, ok
+[13:40:47] <roc> in fact it's better to not have s-s since then you can't accidentally leak anything sensitive in your research
+[13:40:53] <glandium> larsberg: some might, but that should be the exception, not the rule
+[13:41:22] <roc> in the past some methodogical details have been withheld, e.g. how the fuzzers work
+[13:41:28] <larsberg> I agree. There are some powers I'd rather not have because at the very least I'd want to have other people double-check for exactly that.
+[13:41:32] <roc> but that doesn't really concern you
+[13:41:47] <shu`pto> larsberg: i'd be more concerned with weeding out false positives, i suppose
+[13:42:34] <shu`pto> larsberg: there are many bugs that are filed default s-s (JIT crashes), and often we don't take the time to reason through how exploitable it really is, so it's just easier to leave as s-s
+[13:42:52] <roc> glandium: I have sources in ~/rr/rr and objs in ~/rr/obj. Then I cd to ~/rr/rr/src/test and run "bash blah_blah.run -b ~/rr/rr ''"
+[13:44:46] <glandium> roc: mmm interesting... if you have objs in the source dir, it still searches an obj/ directory
+[13:45:20] <roc> glandium: BTW, should I try using "hg watchman"?
+[13:45:33] <glandium> roc: gps recommends it
+[13:45:37] <roc> ok
+[13:47:23] <larsberg> shu`pto: I'd assume that to be true for many security bugs (it certainly was when I had the equivalent of "s-s" access at MS). I'm happy to use such weaselly phrases as "potentially exploitable crashes."
+[13:49:38] <glandium> roc: what's the simplest test I can run to check that running tests works? because running the when test is just stuck
+[13:49:49] <shu`pto> larsberg: sure :)
+[13:49:57] <roc> bash basic_test.run -b ~/rr/rr '' simple
+[13:51:36] <glandium> roc: mmmm so basic_test works, but when is stuck
+[13:51:50] <roc> do you have pexpect installed?
+[13:52:03] <roc> pyexpect
+[13:52:19] <glandium> looks like I do
+[13:52:57] <glandium> maybe all that DEBUG_TAG logging is not helping
+[13:53:09] <roc> yeah that can muck it up
+[13:53:15] <Elaine> larsberg: https://bugzilla.mozilla.org/buglist.cgi?component=Security&component=Security%20Stubs&component=Security%3A%20CAPS&component=Security%3A%20Process%20Sandboxing&component=Security%3A%20PSM&component=Security%3A%20S%2FMIME&component=Security%3A%20UI&list_id=12401075&query_format=advanced&resolution=FIXED&order=priority%2Cbug_severity&limit=0 may be a start.
+[13:53:25] <glandium> roc: same happens with unmodified master
+[13:54:12] <larsberg> Elaine: thanks! "3962 bugs found." = I see soliciting a master's student from a Friendly Neighborhood Security Researcher in my future.
+[13:54:20] <Elaine> :)
+[13:54:46] <Elaine> A lot of them are crashes, but a bunch are also logic errors.
+[13:55:12] <Elaine> There are roughly that many new/uncomfirmed bugs in the various Security components as well.
+[13:55:30] <glandium> roc: ah I get a failure after a while
+[13:55:50] <glandium> roc: https://pastebin.mozilla.org/8839815
+[13:56:47] <roc> look at /tmp/rr-test-when-BxqigJzd8/gdb_rr.log 
+[13:57:47] *** Joins: jweathersby (Adium@moz-djc.9vm.130.40.IP)
+[13:57:55] <glandium> roc: huh https://pastebin.mozilla.org/8839816
+[13:59:05] <roc> do I want to know where the Japanese gdb output comes from?
+[13:59:21] <roc> oh dear
+[13:59:29] <glandium> roc: from my environment being japanese
+[13:59:33] <roc> the address space consistency checker, -K
+[13:59:41] <roc> I hate those bugs
+[14:01:46] <glandium> roc: test passes when I remove --check-cached-mmaps from DEFAULT_FLAGS in util.sh
+[14:01:46] <roc> rr record -K ~/rr/obj/bin/simple and then rr replay -a -K should reproduce the bug
+[14:01:57] <roc> ok
+[14:02:00] <roc> we should fix that bug though
+[14:03:17] <glandium> roc: that record/replay testcase reproduced it
+[14:03:59] <roc> ok
+[14:04:13] *** Joins: jweathersby1 (Adium@moz-rdgotg.ip.windstream.net)
+[14:04:59] <roc> basically we have an internal representation of /proc/maps and we verify that it matches the kernel's /proc/maps
+[14:05:13] <roc> but the verification is complicated because it's fuzzy
+[14:06:00] *** Quits: jweathersby (Adium@moz-djc.9vm.130.40.IP) (Ping timeout: 121 seconds)
+[14:11:30] <glandium> the comment for that assert starts with "// XXX not-so-pretty hack"
+[14:15:22] <glandium> roc: so, all the conditions in that assert are false
+[14:15:29] <glandium> starting with kr == vas->r
+[14:19:39] <glandium> roc: kr.str() is "00:21 8069874    /tmp/rr-emptyfile-L4G0B6 (deleted)" and vas->r.str() is "00:21 1846531    /tmp/rr/lib/librrpreload.so"
+[14:20:51] *** Joins: tadh (quassel@moz-pg51s5.CWRU.Edu)
+[14:31:42] <glandium> roc: so it would seem to be due to MREMAP_FIXED
+[14:31:54] <glandium> which rr doesn't support
+[14:35:33] <glandium> err, no I'm too tired to read correctly. it's another flag, but I don't know what
+[14:36:53] *** Joins: Dexter_ (Alessio@moz-a5dth6.retail.telecomitalia.it)
+[14:37:04] *** Quits: Dexter (Alessio@moz-a5dth6.retail.telecomitalia.it) (NickServ (RECOVER command used by Dexter_))
+[14:37:04] *** Dexter_ is now known as Dexter
+[14:37:51] *** Quits: ddamjano (Instantbird@moz-3aku88.dynamic.surfer.at) (Ping timeout: 121 seconds)
+[15:00:29] *** Joins: mchang (mchang@moz-q472sa.res.rr.com)
+[15:18:07] *** gregglind_HAIRCUT is now known as gregglind
+[15:34:28] *** Joins: pcwalton (pcwalton@moz-nh2.o1i.216.216.IP)
+[15:34:28] *** ChanServ sets mode: +o pcwalton
+[16:00:05] *** Quits: Dexter (Alessio@moz-a5dth6.retail.telecomitalia.it) (Quit: Leaving)
+[16:00:33] *** Quits: azakai|2 (alon@moz-l3ofdg.sntcca.sbcglobal.net) (Quit: Ex-Chat)
+[16:09:15] *** Quits: pcwalton (pcwalton@moz-nh2.o1i.216.216.IP) (Ping timeout: 121 seconds)
+[16:13:33] *** gregglind is now known as gregglind_bbIn120
+[16:14:30] *** Joins: pcwalton (pcwalton@moz-nh2.o1i.216.216.IP)
+[16:14:30] *** ChanServ sets mode: +o pcwalton
+[16:14:54] *** Quits: jdm (jdm@moz-ilbt2e.cable.teksavvy.com) (Quit: )
+[16:29:35] *** Quits: pcwalton (pcwalton@moz-nh2.o1i.216.216.IP) (Ping timeout: 121 seconds)
+[16:54:44] *** Joins: laleh (Adium@moz-h8636h.mobile.uci.edu)
+[16:55:08] *** Joins: azakai (alon@moz-h8f91t.mh2d.1ibb.0101.2620.IP)
+[17:08:48] *** Joins: jdm (jdm@moz-9n7g0e.ckpj.s0pt.0450.2001.IP)
+[17:19:31] *** Quits: mukilan (mukilan@moz-mu4.o0o.164.122.IP) (A TLS packet with unexpected length was received.)
+[17:27:51] *** Joins: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com)
+[17:46:33] *** Joins: ddamjano (Instantbird@moz-3aku88.dynamic.surfer.at)
+[17:54:37] *** Quits: ddamjano (Instantbird@moz-3aku88.dynamic.surfer.at) (Ping timeout: 121 seconds)
+[18:06:03] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[18:06:03] *** ChanServ sets mode: +o brson
+[18:07:13] *** Quits: azakai (alon@moz-h8f91t.mh2d.1ibb.0101.2620.IP) (Ping timeout: 121 seconds)
+[18:12:31] *** gregglind_bbIn120 is now known as gregglind
+[18:57:16] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[18:57:16] *** ChanServ sets mode: +o pcwalton
+[19:56:23] *** Joins: azakai (alon@moz-403p1q.ujol.1ibb.0101.2620.IP)
+[20:44:45] <Gankro> Trying to better grok the full consequences of parametricity for Rust wrt to drop check, generics, and lifetimes. Anyone have any recommended resources? cc nmatsakis pnkfelix aturon 
+[20:45:40] <aturon> Gankro: the dropck rfc covers the tradeoff there pretty clearly
+[20:46:04] <aturon> Gankro: (and note that parametricity is completely wiped out by specialization)
+[20:46:06] <nmatsakis> Gankro: don't bother, I suspect it'll be rippe out ;)
+[20:46:08] <Gankro> aturon: yeah I just started re-reading it. Maybe it will click better now
+[20:46:15] <nmatsakis> j/k of course
+[20:46:25] <Gankro> uhhh
+[20:46:30] <nmatsakis> since even the replacement is still about paramtricity, just that you're manually assering it
+[20:46:43] <Gankro> nmatsakis: can you elaborate?
+[20:46:48] <nmatsakis> oh, you don't know about our evil plans
+[20:46:58] <nmatsakis> :)
+[20:47:12] <aturon> Basically all about: what can 'fn foo<T>(t: T)' do with its argument
+[20:47:12] <nmatsakis> well, we've been contemplating backing off from the current parametricity analysis, which is known to be buggy
+[20:47:28] <nmatsakis> and making it more of a manual thing
+[20:47:48] <nmatsakis> so that destructors (like vec) assert that they (and their callees) only move/drop instances of T as an opaque entity
+[20:47:56] <Gankro> nmatsakis: manual in what sense? Programmers need to do more annotations, or it's just some bespoke hand-rolled analysis?
+[20:48:00] <nmatsakis> (at least temporarily)
+[20:48:03] <nmatsakis> annotations.
+[20:48:07] <Gankro> booooo
+[20:48:26] <nmatsakis> in exchange, we get soundness (or at least ... we know who to blame) and specialization:)
+[20:48:31] <Gankro> nmatsakis: Isn't that a catastrophic breaking change?
+[20:48:35] <aturon> Gankro: oh did I not full you in in this? Specialization does indeed fully break dropck. No way to prevent bad interaction while keeping specialization useful
+[20:48:39] <nmatsakis> well, that's what we're trying to evaluate, but I doubt it
+[20:48:45] <aturon> Gah typing on phone sorry
+[20:48:56] <Gankro> nmatsakis: ... it breaks Vec!
+[20:49:00] <nmatsakis> Gankro: in particular if we add those annotations to the collection types
+[20:49:02] <nmatsakis> well, duh.
+[20:49:06] <nmatsakis> I mean, we're going to annotate our own types :0
+[20:49:18] <nmatsakis> so what would break is if somebody wrote their own Vec and they're using it in the new way
+[20:49:21] <nmatsakis> er, in a aprticular way
+[20:49:26] <Gankro> nmatsakis: it breaks all generic drop types, no?
+[20:49:35] <aturon> Gankro: you only need the annotation if you want to create cycles with that type
+[20:49:40] <nmatsakis> Gankro: "generic drop types"?
+[20:49:45] <nmatsakis> not at all
+[20:49:50] <Gankro> nmatsakis: anything that would have unsafe_no_drop_flag
+[20:49:53] <Gankro> wait not
+[20:49:54] <nmatsakis> no, not at all
+[20:49:57] <aturon> Generics are still ok but by default you get "strict outlives"
+[20:49:58] <Gankro> unsafe_destructor?
+[20:50:01] <Gankro> was it called?
+[20:50:10] <aturon> No we are not going back to that
+[20:50:25] <aturon> pnkfelix outlines this option in the rfc
+[20:50:36] <aturon> Basically generic drop is fine,
+[20:50:44] <nmatsakis> Gankro: so most of dropck still applies
+[20:50:47] <aturon> But imposes a strict outlives condition by default
+[20:50:48] <nmatsakis> this is basically taking a small part
+[20:50:57] <nmatsakis> that was automatically (and incorrectly) finding times when it could be more liberal
+[20:50:59] <nmatsakis> and rolling that back
+[20:51:01] <nmatsakis> but it's a narrow case
+[20:51:03] <aturon> Which prevents making arena-like cycles through a type
+[20:51:11] <nmatsakis> it applies primarily to arenas, as aturon just said
+[20:51:20] <nmatsakis> and we would be saying that in place of the automatic analysis, you can assert to get back that extra bit
+[20:51:34] <nmatsakis> the main thing this matter to was the use of lifetimes in rustc and trans
+[20:51:41] <Gankro> nmatsakis: Ok so this is mostly getting rid of the crazy cycle rules and rolling back to "only" let's make new scopes
+[20:51:42] <aturon> Our conjecture is that if we annotate just the collections in std, there will be no breakage
+[20:51:42] <nmatsakis> but I don't know what the impact across crater will be, that's why we plan to test
+[20:51:54] <Gankro> Which is exactly what I wanted from the dropck RFC anyway :)
+[20:51:55] <nmatsakis> Gankro: well, at least by default, unless you opt in
+[20:52:06] <nmatsakis> that said
+[20:52:09] <nmatsakis> I think the opt-in will not be stable
+[20:52:14] <nmatsakis> if we can get away with it :)
+[20:52:22] <nmatsakis> because we hope to find something safer
+[20:52:29] * Gankro eyes the dozen collections they maintain outside std
+[20:52:31] <aturon> Like #[fundamental]
+[20:52:33] <nmatsakis> (and we could discuss the ideas we have there, but not this second )
+[20:52:49] <aturon> Gankro: unless people make lifetime cycles through them, you're fine
+[20:52:51] <nmatsakis> yes, those collections likely wouldn't work if people tried to use them on conjunction with an arena
+[20:53:47] <Gankro> Will there be any kind of syntax for strict outlives? Or is it strictly an implicit relationship?
+[20:53:54] <nmatsakis> no.
+[20:54:10] <nmatsakis> at least I don't see a need for it yet
+[20:54:16] <nmatsakis> and it adds some complexity around erasure
+[20:54:23] <nmatsakis> kind of makes erasure not work :)
+[20:54:32] <aturon> Gankro: that part will continue to work exactly as today
+[20:54:33] <nmatsakis> dropck doesn't really "use" strictly outlives
+[20:54:38] <nmatsakis> that is, in terms of how the type system works
+[20:54:46] <nmatsakis> it says: if you live for scope X
+[20:54:52] <nmatsakis> then your data must outlive scope Parent(X)
+[20:55:08] <nmatsakis> so yes you strictly outlive X, but that's not a notion in the type rules
+[20:55:53] <Gankro> Should I endeavour to document dropck today or your proposed dropck in tarpl?
+[20:56:07] <Gankro> (I just started trying to flesh it out in earnest)
+[20:56:16] <Gankro> (which is why I asked about this in the first place)
+[20:57:19] <aturon> Gankro: you can document the part of dropck that doesn't need parametricity
+[20:57:22] <nmatsakis> Gankro: well, 99% of dropck still applies, the only difference is how we decide if a type is "parametric"
+[20:57:29] <nmatsakis> whcih in a way
+[20:57:35] <nmatsakis> makes it much *more* important to document
+[20:57:40] <nmatsakis> since now unsafe authors might be responsible for declaring it
+[20:57:43] <nmatsakis> vs us figuring it out
+[20:57:46] <Gankro> Right
+[20:58:15] <aturon> But probably best to wait on that part till we are more sure on the change
+[20:58:39] <Gankro> I mean in principle I am just documenting the intersection, right?
+[20:58:44] <aturon> In any case the RFc makes the distinction quite clear
+[20:58:53] <aturon> Yeah the strict
+[20:59:05] <aturon> Outlives bit will always be there
+[20:59:25] <aturon> Just a question of when it's not applied
+[21:00:19] <Gankro> One thing I'm not clear on; what is the analysis done when T *does* have explicit bounds. e.g. if I say struct Foo<T: Eq>(T)
+[21:00:47] <aturon> Then T has the strict outlives requirement
+[21:01:00] <Gankro> Oh that's it?
+[21:01:22] <aturon> Yep. Basically that's the requirement by default. Parametricity is the "opt out"
+[21:01:36] <Gankro> Ok this won't be too bad to write up, then
+[21:01:51] <aturon> Yeah dropck is actually not so complicated
+[21:02:05] <Gankro> The RFC makes it seem pretty complicated
+[21:02:15] <Gankro> But I imagine that's all the parametricity stuff, then
+[21:03:10] <aturon> I think most of the rfc is examples :)
+[21:06:28] <Gankro> Part of me is mildly disappointed I don't get to try to explain parametricity, but honestly I should quit while I'm ahead :P
+[21:07:32] <aturon> Gankro: don't worry you will get too soon enough
+[21:07:42] <Gankro> wait what
+[21:07:57] <aturon> Because the attribute we want to add,
+[21:08:13] <aturon> Basically means "I treat T parametrically"
+[21:08:28] <aturon> Which basically means I only
+[21:08:35] <aturon> Move or drop values of type T
+[21:09:15] <Gankro> aturon: presumably you also have T: Sized
+[21:09:26] <Gankro> Which means you can minimally reflect on it
+[21:09:59] <aturon> Gankro: make sense? Basically the point is we can't let you deref out of scope regions. Either we get it through strict
+[21:10:02] <Gankro> aturon: is it an unsafe attribute?
+[21:10:15] <aturon> Outlives, or promise not to access the innards
+[21:10:20] <aturon> Gankro: yes
+[21:10:28] <Gankro> hmm
+[21:11:05] <aturon> Note that the difference between using the attribute or not isn't apparent to you - it affects your clients
+[21:11:17] <aturon> And whether they can create cycles through you
+[21:12:02] <Gankro> How does a type even enforce parametricity with specialization?
+[21:12:21] <aturon> Gankro: well you're talking about what your destructor does only
+[21:12:59] <Gankro> aturon: Right but any function you "move" a value into can be specialized to not be parametric
+[21:13:11] <aturon> Indeed
+[21:13:24] <aturon> Better not call unknown generic fns in your dtor
+[21:13:30] <Gankro> Oh geez
+[21:13:43] <aturon> This should not be onerous at all
+[21:13:55] <Gankro> It's... probably fine...
+[21:14:13] <Gankro> Also even if you mess up it *still* only matter if someone does something kind of stupid with the type
+[21:14:15] <aturon> It's a bit like exception safety in unsafe code
+[21:14:17] <Gankro> like in practical terms
+[21:14:23] <Gankro> You don't instantly get segfaults
+[21:14:48] <aturon> Well it could be innocent enough if you happen to be in an arena-like cycle
+[21:15:19] <Gankro> I don't gather that arena is very common
+[21:15:48] <aturon> But I'm pretty sure in container code (the main place you'd ever want this attribute) you're not passing your T values to unknown fns
+[21:15:57] *** gregglind is now known as gregglind_away
+[21:16:18] <aturon> Or known fns that make use of blanket specializable impls
+[21:16:43] <aturon> Though... Look at arielb1's final example of the specialization thread
+[21:17:06] <Gankro> Yeah I think that's the only thing you need to worry about. debug code
+[21:17:15] <aturon> Which shows that calling a 'extend' with T data is a problem
+[21:17:24] <Gankro> wat
+[21:17:25] <aturon> If extend is specializable
+[21:17:35] <aturon> (From your dtor)
+[21:18:17] <Gankro> As in when you get dropped you instead extend some other collection...?
+[21:18:24] <Gankro> that's... not a thing I'm worried about
+[21:18:39] <aturon> Lol
+[21:18:44] <aturon> Just an example
+[21:19:17] <aturon> Anyway...
+[21:22:04] <Gankro> Is there an example where this matters that's *not* Arena?
+[21:29:13] <aturon> Gankro: it comes up in interning in the compiler
+[21:29:25] <aturon> nmatsakis could tell you more
+[21:29:37] <Gankro> Like... String interning...?
+[21:29:46] <Gankro> Or something fancier
+[21:29:59] *** Quits: jdm (jdm@moz-9n7g0e.ckpj.s0pt.0450.2001.IP) (Quit: )
+[21:30:34] <aturon> Gankro: fancier
+[21:30:44] <aturon> Involving recursive data structures
+[21:30:53] <aturon> The rfc also gives an example
+[21:31:02] <aturon> Though it's contrived
+[21:31:11] <aturon> But maybe based on something
+[21:52:09] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[21:57:25] <nmatsakis> Gankro: so the places this came up in the compiler were things like the arena we use for storing types
+[21:57:31] <nmatsakis> where each type is allocated with lifetime 'tcx
+[21:57:36] <nmatsakis> but those types have vectors of other types
+[21:57:38] <nmatsakis> which also have lifetime 'tcx
+[21:57:45] <nmatsakis> so that means that without this reasoning
+[21:57:53] <nmatsakis> we can't be sure that the vectors, while being dropped, won't inspect the types they contain
+[21:57:56] <nmatsakis> which may already have been dropped
+[21:58:31] <Gankro> Ok so all examples are arenas
+[21:58:36] <nmatsakis> Gankro: something similar arose in trans, where you have function and block contexts with distinct lifetimes, but I think it was precisely the same
+[21:58:38] <nmatsakis> yes, basically
+[22:02:25] <Gankro> nmatsakis: Will PhantomData<T> at all be necessary for dropck then?
+[22:03:10] <nmatsakis> Gankro: I was wondering this, I'm actually not sure, I have to review, pnkfelix thought yes
+[22:04:28] <Gankro> It would be nice if not since it's a rare place where you can accidentally give insufficiently conservative information without knowing it
+[22:11:24] *** Quits: tadh (quassel@moz-pg51s5.CWRU.Edu) (Connection closed)
+[22:34:54] *** Joins: reqshark (reqshark@moz-942p6h.static.wiline.com)
+[22:35:04] *** Quits: reqshark (reqshark@moz-942p6h.static.wiline.com) (Connection closed)
+[22:39:51] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[22:39:51] *** ChanServ sets mode: +o pcwalton
+[23:28:36] *** Quits: cimes (cimes@moz-sfmbhq.il.comcast.net) (Ping timeout: 121 seconds)
+[23:28:45] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[23:32:38] *** Quits: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com) (Quit: quit)
+[23:41:31] *** Joins: cimes (cimes@moz-sfmbhq.il.comcast.net)

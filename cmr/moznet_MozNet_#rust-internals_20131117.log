@@ -1,0 +1,675 @@
+[00:13:25] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Connection reset by peer)
+[00:13:53] *** Joins: Jesse_ (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[00:41:55] *** Quits: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net) (Quit: tikue)
+[00:58:19] *** Joins: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net)
+[01:06:36] *** kimundi is now known as zz_kimundi
+[01:18:34] *** Quits: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net) (Quit: tikue)
+[01:31:48] *** Quits: jaeholee (uid4856@moz-31ABA2C0.irccloud.com) (Ping timeout)
+[01:32:42] *** Quits: whitglint (uid15486@moz-31ABA2C0.irccloud.com) (Ping timeout)
+[01:32:56] *** Joins: whitglint (uid15486@moz-31ABA2C0.irccloud.com)
+[01:34:01] *** Joins: jaeholee (uid4856@moz-31ABA2C0.irccloud.com)
+[02:10:07] *** Joins: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net)
+[02:46:30] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[02:46:30] *** ChanServ sets mode: +qo brson brson
+[03:06:40] <sfackler> bors seems wedged
+[03:07:10] <strcat> brson: around?
+[03:12:51] <brson> strcat: yes
+[03:14:51] <strcat> brson: would it be okay if we had special rules about checking the C errno? I'm trying to figure out how we can copy with the LLVM math changes
+[03:15:08] <strcat> they're going to make it so that the functions are readnone but may set errno on some platforms
+[03:15:22] <strcat> so LLVM will reorder them between a check of errno and a call that may set errno
+[03:15:50] <strcat> call_foo() /* sets errno */; check_errno(); sqrt(5.5)
+[03:15:53] <strcat> it can reorder that to
+[03:16:01] <strcat> call_foo() /* sets errno */; sqrt(5.5); check_errno();
+[03:16:09] <strcat> and on some platforms sqrt can set errno ;\
+[03:16:15] <strcat> I guess this is unlikely to happen but it's bad
+[03:16:43] <strcat> (in fact, our sqrt has this issue *right now*, but they are going to do it with the other functions)
+[03:16:47] <brson> why is llvm going to do this thing that's wrong?
+[03:17:35] <strcat> brson: some C libraries never set errno
+[03:17:44] <strcat> OS X doesn't, musl doesn't, bsds don't
+[03:17:46] <strcat> glibc does
+[03:18:05] <strcat> and those math functions only fall back to libc on non-x86_64 (for the most part)
+[03:18:12] <strcat> math intrinsics*
+[03:18:26] <strcat> they need them readnone to vectorize them, etc.
+[03:19:16] <brson> is there a thread on llvmdev about this? it sounds odd
+[03:19:43] <brson> sfackler: i started another build on the bots to try to kick bors
+[03:19:46] <strcat> brson: http://lists.cs.uiuc.edu/pipermail/llvmdev/2013-November/067450.html
+[03:19:57] <strcat> I was talking to them on irc though
+[03:20:27] <strcat> brson: atm, the situation is that the sqrt intrinsic is readnone and has undef behaviour for inputs causing the error case
+[03:20:32] <strcat> the others aren't
+[03:26:35] <brson> strcat: are all the parts of libm that llvm optimizes inluded in compiler-rt?
+[03:26:52] <strcat> brson: no, that's the issue
+[03:26:59] <strcat> it uses libm, which may or may not set errno
+[03:27:18] <strcat> but it's likely going to assume it doesn't, possibly reordering one of these between an FFI call and an errno check
+[03:27:32] <brson> is there a standalone libm we can pack in to normalize our behavior?
+[03:27:55] <strcat> it's possible this is only an issue with glibc and we could ship musl's libm
+[03:28:44] <brson> would be great to just switch to musl completely
+[03:29:18] <strcat> brson: the issue would be that the symbols will have the same names as the platform libc I guess
+[03:29:29] <strcat> so it would have to be statically linked to every rust binary
+[03:30:45] <strcat> an alternative would be adding a lint for os::errno telling you to contain the call + errno check in an inline(never) function because of the float functions
+[03:30:52] <strcat> it's only something bindings have to deal with
+[03:31:27] <strcat> or we could stop using the LLVM intrinsics but... the float performance will be bad
+[03:31:49] <brson> i didn't really see any conclusion about what llvm was going to do in that thread
+[03:32:30] <brson> what i read seemed to indicate that they want llvm.sqrt to be equivalent to sqrt
+[03:32:54] <strcat> brson: well, atm it's undef behaviour if you call it with a parameter < -0.0
+[03:33:03] <strcat> they want to make it work like libm sqrt and return NaN
+[03:33:14] <strcat> and then document the errno issue
+[03:33:28] <strcat> and also do this for all the other intrinsics, in all likelihood
+[03:34:26] <brson> can we also just say that errno is undefined for libm calls?
+[03:34:48] <brson> it sounds like that is what they are going to have to do for clang?
+[03:35:03] <strcat> brson: the issue is that it's going to be considered readnone but may clobber errno
+[03:35:12] <strcat> brson: clang has -fno-math-errno (it's on by default on some platforms)
+[03:35:47] *** Quits: zz_kimundi (kimundi@moz-8E17C911.dip0.t-ipconnect.de) (Ping timeout)
+[03:36:04] <strcat> brson: ah nvm looks like that *wasn't* the plan for the other intrinsics
+[03:36:16] * strcat will deal with it in #llvm more before worrying ;p
+[03:37:40] <strcat> brson: alright, looks like they are actually fixing https://github.com/mozilla/rust/issues/9987 for us without introducing new problems
+[03:37:41] <strcat> so nvm :)
+[03:39:58] *** Joins: zz_kimundi (kimundi@moz-A47A651A.dip0.t-ipconnect.de)
+[03:39:59] *** zz_kimundi is now known as kimundi
+[04:04:03] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[04:08:26] *** Joins: brson (brson@6A848D32.C1B840DD.76F66111.IP)
+[04:08:26] *** ChanServ sets mode: +qo brson brson
+[04:10:43] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[04:13:28] *** Quits: blank_name (blank_name@FAB53C88.7071B2C8.31EC03F3.IP) (Ping timeout)
+[04:14:42] *** Joins: blank_name (blank_name@FAB53C88.7071B2C8.31EC03F3.IP)
+[04:34:24] *** Quits: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net) (Quit: tikue)
+[05:21:37] *** Quits: brson (brson@6A848D32.C1B840DD.76F66111.IP) (Ping timeout)
+[05:37:45] *** Joins: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net)
+[05:47:03] <acrichto> bors is back in action
+[05:48:45] <dbaupp> \o/
+[05:52:10] <cmr> finally!
+[06:28:32] *** Joins: Axord (xord@moz-1B228827.lsanca.dsl-w.verizon.net)
+[06:34:40] *** Quits: Sharp (Sharp@moz-7B61DF4.dsl.static.sonic.net) (Ping timeout)
+[06:45:14] <klutzy> #10527 says `extern "stdcall" fn func() { ... }` currently ignores "stdcall", right?
+[06:46:27] <strcat> klutzy: no
+[06:46:39] <strcat> klutzy: if you have a pub extern "stdcall" in a crate
+[06:46:48] <strcat> and you call it from another crate
+[06:47:19] <klutzy> aha
+[06:47:48] <klutzy> I was confused why my hello.exe has been working well
+[06:51:05] <klutzy> strcat: uh, but the function has no x86_stdcallcc in llvm ir
+[06:51:21] <strcat> ah maybe it is the same bug then
+[06:51:44] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[06:51:44] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/aR7yEQ
+[06:51:44] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[06:51:50] <strcat> anyway calling conventions and ABI conventions are similar enough that tests aren't going to catch the bugs
+[06:51:59] <klutzy> right
+[06:52:00] <strcat> unless you write it based on the specs
+[06:52:12] <strcat> to verify cases where they pass differently
+[06:54:06] * strcat is stuck on naming once again
+[06:54:18] <strcat> concurrent queue, hashmap, etc. - what to call them? ;p
+[06:54:29] <klutzy> my program registers cdecl fn as stdcall callback but it works well
+[06:54:32] <klutzy> and it would happen
+[06:55:08] <klutzy> we even had misused "WinMain@16" entry point with wrong callconv
+[06:55:42] <andrew-d> strcat: collection?
+[06:56:30] <strcat> I mean naming for the concurrent versions vs. the ones owned by one task
+[06:56:39] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[06:56:39] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/9arORA
+[06:56:39] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[06:56:41] <andrew-d> Ah, sorry :P
+[06:56:47] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[06:56:47] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/RNoxDA
+[06:56:47] <ghrust> 13rust/06auto 14a39a9cc 15Alex Crichton: Forbid privacy in inner functions...
+[06:56:47] <ghrust> 13rust/06auto 14876d7e9 15bors: auto merge of #10443 : alexcrichton/rust/meaninless-pub-priv, r=cmr...
+[06:56:47] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[06:57:23] <strcat> I could make a comm module and put Queue in it but as soon as I make something else I'll need another scheme :P
+[06:57:46] <andrew-d> Hmmm, how about Shared*?  Or just Concurrent*?
+[06:58:49] <strcat> ConcurrentXXX works I guess, just kind of verbose :)
+[06:58:58] <andrew-d> Yeah, kinda >_<
+[06:59:01] <strcat> concurrent_queue::ConcurrentQueue gets annoying
+[06:59:09] <strcat> maybe all containers should be exported from one module
+[06:59:34] <strcat> container::HashMap, container::Deque, container::Vec, container::ConcurrentQueue, etc.
+[06:59:37] * strcat shrugs
+[06:59:59] <andrew-d> You could also have container::concurrent::*
+[07:00:05] <andrew-d> I like it :P
+[07:00:57] <strcat> well if it's nested in a concurrent namespace I would just call it a Queue
+[07:01:07] <strcat> perhaps I'll start by putting them in a Concurrent module
+[07:01:21] <strcat> because Queue is going to be tiny. doesn't need fine-grained locking, just has to wrap Deque
+[07:30:19] *** Joins: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net)
+[07:31:20] *** Quits: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net) (Quit: tikue)
+[07:38:09] *** Joins: eddyb (eddy@336E3A7F.D51DAF03.FB866788.IP)
+[07:46:39] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[07:46:39] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14876d7e9 to 14b0e1318: 02http://git.io/N3iJvQ
+[07:46:39] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[07:46:42] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[07:46:43] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/ML-4SQ
+[07:46:43] <ghrust> 13rust/06auto 145748699 15Zack Corr: Add build_lib_with_cfgs, build_bin_with_cfgs to rustpkg API. Closes #9944.
+[07:46:43] <ghrust> 13rust/06auto 140a577f3 15bors: auto merge of #10454 : z0w0/rust/issue-9944, r=cmr...
+[07:46:43] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[08:32:38] *** Joins: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net)
+[08:37:59] *** Quits: blank_name (blank_name@FAB53C88.7071B2C8.31EC03F3.IP) (Ping timeout)
+[08:40:12] *** Quits: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net) (Quit: tikue)
+[09:06:56] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[09:16:38] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[09:16:38] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/ML-4SQ
+[09:16:38] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[09:21:38] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[09:21:38] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/wpMwhQ
+[09:21:38] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[09:21:45] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[09:21:45] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/3Jbr7w
+[09:21:45] <ghrust> 13rust/06auto 147bc092f 15Alex Crichton: Introduce an io::Buffer trait...
+[09:21:45] <ghrust> 13rust/06auto 1401343d3 15Alex Crichton: Implement read_char on the Buffer trait
+[09:21:45] <ghrust> 13rust/06auto 1466df86a 15bors: auto merge of #10466 : alexcrichton/rust/issue-10334, r=cmr...
+[09:21:47] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[09:25:37] *** Joins: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net)
+[09:27:54] *** Quits: Kxepal (Miranda@moz-A25B204D.pppoe.mtu-net.ru) (Ping timeout)
+[09:30:56] *** Joins: Kxepal (Miranda@moz-A25B204D.pppoe.mtu-net.ru)
+[09:31:50] *** Quits: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net) (Quit: tikue)
+[09:58:44] *** Joins: w3lcome (Mibbit@moz-FE6BEF26.home.otenet.gr)
+[10:10:37] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[10:18:14] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[10:26:40] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[10:26:40] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/3Jbr7w
+[10:26:40] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[10:27:32] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[10:31:39] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[10:31:39] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/u6rxbw
+[10:31:39] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[10:31:44] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[10:31:44] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/dzvEGA
+[10:31:44] <ghrust> 13rust/06auto 1411fc055 15Alex Crichton: Implement a native mutex type...
+[10:31:44] <ghrust> 13rust/06auto 1456b3ec2 15Alex Crichton: Remove the C++ lock_and_signal type...
+[10:31:45] <ghrust> 13rust/06auto 1459b0f7e 15Alex Crichton: Move runtime files to C instead of C++...
+[10:31:47] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[10:41:02] <dbussink> acrichto: ah, wanted to take a stab at that perhaps this week, but looks like you did it already :)
+[10:41:41] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[10:41:41] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14644fd6d to 1466df86a: 02http://git.io/N3iJvQ
+[10:41:41] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[10:41:43] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[10:41:43] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/hbOrUw
+[10:41:43] <ghrust> 13rust/06auto 148e59c5d 15Chris Morgan: Don't make tags for our dependencies and tests....
+[10:41:43] <ghrust> 13rust/06auto 145f69005 15bors: auto merge of #10508 : chris-morgan/rust/tags-improvements, r=cmr...
+[10:41:44] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[10:41:52] <dbussink> acrichto: i was wondering, would it be nice to also define the types like how the other pthread_ stuff work? so the _size helps etc. aren't necessary?
+[10:44:11] <strcat> well that involves looking at freebsd, linux and OS X headers and adds more fragile stuff to maintain ;p
+[10:44:19] <strcat> we really need libclang-based FFI support
+[10:44:57] <strcat> not only would it remove all those hard-wired definitions, making rust more portable/maintainable, it could deal with the gcc extension attributes for performance improvements
+[10:49:24] <dbussink> that would be even better yeah
+[10:49:28] <dbussink> not having to do that at all
+[10:50:10] <dbussink> strcat: i guess the idea is to then just generate it with clang?
+[10:50:18] <strcat> as-needed though
+[10:50:19] <strcat> not like bindgen
+[10:50:34] <strcat> hard-wired definitions are really bad, they tie us to a specific libc on linux for example
+[10:50:45] <dbussink> right
+[10:51:33] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[10:52:36] <dbaupp> strcat: is anyone working on it?
+[10:52:36] <dbussink> strcat: how is as needed determined then? based on type references in the rust code
+[10:52:37] <dbussink> ?
+[10:52:59] <strcat> dbussink: don't need anything in the rust code
+[10:53:06] <strcat> it can look at the C headers
+[10:53:17] <strcat> and turn them into modules of type definitions
+[10:53:25] <dbussink> strcat: right, but you would still have to refer to platform types from rust code then
+[10:53:30] <strcat> #[header = "stdio.h"] mod stdio;
+[10:53:40] <dbussink> right
+[10:53:59] <strcat> stdio::fflush(stdio::stdout);
+[10:54:13] <dbaupp> (would it be sane to do the reverse: generate a .h file from the extern "C" functions in a crate?)
+[10:54:20] <strcat> dbaupp: doubt anyone is working on it
+[10:54:26] <strcat> dbaupp: no, it wouldn't be sane to do the reverse
+[10:54:37] <strcat> hard-wired definitions in crates are not okay, it's not portable and is very error-prone
+[10:54:51] <strcat> writing out the definitions by hand is very wrong
+[10:55:09] <strcat> bionic doesn't have ABI compatibility with glibc
+[10:55:18] <strcat> are we going to write out definitions for each libc?
+[10:55:22] <strcat> and what about a lib like gmp
+[10:55:26] <dbaupp> no, I mean given a Rust lib, create the .h file that allows a C library to call the functions
+[10:55:29] <strcat> it has configure options changing the ABI (the header)
+[10:55:32] <strcat> dbaupp: oh, sure
+[10:55:44] <strcat> that's a good idea
+[10:55:55] * dbaupp files a bug
+[10:56:59] <dbaupp> strcat: btw, is https://github.com/mozilla/rust/issues/8106 fixed? (and do you know if we have a bug for "use libclang to read .h files"?)
+[10:57:11] <strcat> no not fixed
+[10:57:46] <dbaupp> ok, it just came up in my search just then
+[11:00:08] <eddyb> so much goodness this morning :D
+[11:01:21] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[11:02:20] * strcat thinks https://github.com/thestinger/rust-core/commit/7aec52679cbb7666e5a6bc95bfadcb53e720b0b1 is right
+[11:02:26] <strcat> haven't tested it yet ;p
+[11:02:49] <strcat> (unlike rustc, that's just a debug assert with --cfg debug)
+[11:02:58] <strcat> none of those return non-logic errors
+[11:03:29] <strcat> and... needs to be shoved in an Arc to make it useful without data parallelism
+[11:03:52] <strcat> I wonder if there's any reason to not always wrap it behind an Arc
+[11:03:52] <eddyb> strcat: the lack of abstractions is disturbing me :P
+[11:03:56] <strcat> eddyb: later
+[11:04:06] <strcat> Deque is an abstraction ;p
+[11:04:17] <strcat> I need to make a nice RAII mutex
+[11:04:19] <strcat> like C++
+[11:04:29] <eddyb> a custom Heap was an abstraction... pffft
+[11:04:49] <eddyb> oh, and pcwalton (or someone else) wanted to see benchmarks of Slam/Blam Allocator
+[11:05:04] <eddyb> I need some huge whiteboard for everything
+[11:05:18] <eddyb> or a third display
+[11:05:45] <strcat> condition variables are weird
+[11:05:58] <strcat> I don't really understand why they have to cause spurious wakeups
+[11:05:59] <strcat> ;p
+[11:06:09] <strcat> ("have to", it's a performance thing)
+[11:06:33] <strcat> eddyb: isn't Queue an abstraction? :)
+[11:06:39] <eddyb> [13:06] [Notice] -rusti- <anon>:9:22: 9:24 error: expected one of `, )` but found `'s`
+[11:06:52] <strcat> I guess I'll just make it always arc-based
+[11:07:21] <dbaupp> https://github.com/mozilla/rust/issues/10530 (fwiw)
+[11:07:52] <strcat> hm
+[11:07:54] <strcat> I wonder how to do it
+[11:08:03] <strcat> #[no_freeze] + transmutes I guess :(
+[11:08:09] <eddyb> strcat: I'm still bugged about the allocator thing
+[11:08:14] <strcat> eddyb: what about it?
+[11:08:35] <strcat> I don't have a general solution that will also work when rust-core becomes a crate
+[11:09:57] <eddyb> what about allowing some freedom when it's not used as a crate?
+[11:10:38] <strcat> eddyb: I'll make it a configure option eventually
+[11:10:47] <strcat> changes need to land to how symbol visibility works
+[11:13:11] <eddyb> I'm feeling better. now back to the craziness
+[11:15:08] <strcat> https://github.com/thestinger/rust-core/commit/aafdbda293f6ec3d78ad120000e26f3bcc54c700 beautiful! ;p
+[11:15:52] <dbaupp> strcat: any particular reason you didn't add Mutex and ConditionVar as Rust types? (just out of interest.)
+[11:15:59] <strcat> dbaupp: I will
+[11:16:15] <strcat> no premature abstraction! ;p
+[11:16:38] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[11:16:38] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 145f69005 to 1466df86a: 02http://git.io/N3iJvQ
+[11:16:38] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[11:16:45] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[11:16:45] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/Yr7wnw
+[11:16:45] <ghrust> 13rust/06auto 1451bdec1 15Jaemin Moon: Show the name of the trait in the error message
+[11:16:45] <ghrust> 13rust/06auto 14ab9e3a6 15Corey Richardson: Adjust error message for method type mismatch...
+[11:16:46] <ghrust> 13rust/06auto 14dff4f52 15bors: auto merge of #10509 : cmr/rust/trait_name, r=alexcrichton...
+[11:16:48] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[11:16:54] <strcat> the pthread API is >100 functions
+[11:16:57] <strcat> I'm serious
+[11:17:07] <strcat> so... I don't really want to just start binding the whole thing :)
+[11:17:13] <strcat> I'll factor out stuff as-needed
+[11:18:08] <dbaupp> yeah, of course
+[11:18:32] <dbaupp> (I'd assume that init, destroy, lock and unlock would be definites for reuse though ;P )
+[11:19:08] <strcat> dbaupp: and trylock, and timedlock
+[11:19:23] <strcat> getprioceiling/setprioceiling are probably for rare cases
+[11:19:26] <strcat> I've never used them
+[11:19:35] <strcat> and then there are the 10 pthread_mutexattr functions
+[11:20:07] <strcat> cond vars have broadcast (notify_all) in addition to signal (notify_one)
+[11:20:10] <strcat> cond vars are weird though
+[11:20:23] <strcat> notify_one wakes *at least* one and you are allowed to get arbitrary spurious wakes ;p
+[11:20:41] <strcat> anyway RAII works well for this stuff
+[11:20:44] <strcat> C++11 has a really nice API.
+[11:21:03] <strcat> http://en.cppreference.com/w/cpp/thread/unique_lock
+[11:21:18] <eddyb> strcat: I should know, I've worked with this stuff in a kernel
+[11:21:36] <strcat> don't kernels use spin locks?
+[11:21:40] <eddyb> you only had to put a LockGuard at the top of the block
+[11:21:47] <strcat> yeah
+[11:21:51] <strcat> in C++11 it's
+[11:21:56] <strcat> std::unique_lock lock(mutex);
+[11:22:01] <eddyb> strcat: a spinlock is just disabling interrupts, isn't it?
+[11:22:10] <strcat> although they could easily make 'auto lock = mutex.lock();' work
+[11:22:22] <eddyb> I'd like guard :/
+[11:22:41] <strcat> eddyb: yeah
+[11:23:23] <eddyb> we've also had semaphores (which I think we used for a delay(ns) trick) and mutexes
+[11:23:26] <strcat> eddyb: linux mostly uses atomics and spin locks afaik
+[11:23:57] <eddyb> hmm, I think we never used atomics to their full potential. I only know there were in the C++ version of SlamAllocator
+[11:23:58] <strcat> dbaupp: what I wanted was a nice threading abstraction
+[11:24:03] <strcat> so I wanted a concurrent Queue
+[11:24:06] <eddyb> but the virtual memory allocator was spinlocked
+[11:24:09] <strcat> so I had to make a new fast deque
+[11:24:13] <strcat> and a new fast arc
+[11:24:21] <strcat> and now finally.... Queue! ;p
+[11:24:31] <strcat> can factor a lot out now, there's a whole lot of ugly
+[11:24:57] * strcat tests it
+[11:26:01] <eddyb> strcat: pcmattman might know more than me about pedigree's locking and whatnot
+[11:26:18] <pcmattman> hm?
+[11:26:30] <strcat> it doesn't leak! ;p
+[11:26:48] <eddyb> he did rewrite my initial usb-hcd implementation to use a thread and it was hard for me to understand how it all worked at first :P
+[11:27:48] <eddyb> pcmattman: I was trying to compare the C++11 APIs to what pedigree has
+[11:27:57] <pcmattman> ah
+[11:28:14] <pcmattman> spinlocks don't actually have to disable interrupts, for what it's worth
+[11:28:42] <pcmattman> and in the kernel spinlocks are typically used in places where you can't sleep a thread (eg, scheduler)
+[11:28:45] <eddyb> but they don't need to do much more than that, right?
+[11:28:59] <pcmattman> they need to... spin on the lock, if it's held? hence the name
+[11:29:07] <pcmattman> regardless of interrupts, due to SMP
+[11:29:32] <eddyb> I thought all Spinlock was doing in pedigree was clearing interrupts, heh. maybe my memory is fuzzy
+[11:29:49] <pcmattman> a spinlock is as simple as while(locked); while a mutex is more like if(locked) { sleep_thread(); } (and the wake of the mutex awakens thread(s))
+[11:30:04] <pcmattman> no, it definitely does not just do that
+[11:30:27] <eddyb> ooh, I see
+[11:30:30] <eddyb> and a semaphore?
+[11:30:34] <pcmattman> c++11's apis for this are indeed nice though
+[11:30:46] <strcat> meh it infinite loops
+[11:30:49] <strcat> hm
+[11:30:58] <strcat> I should have tested it without the Arc first ;p
+[11:31:05] <eddyb> strcat: having fun?
+[11:31:10] <strcat> I guess!
+[11:32:11] <pcmattman> eddyb: same thing more or less with extra compare logic
+[11:32:15] <eddyb> strcat: do we have a I-FUN yet?
+[11:32:46] <pcmattman> (but looking at a kernel's locks to understand userspace locks is not necessarily wise)
+[11:33:48] <strcat> ha I see the issue!
+[11:33:53] <strcat> dumb
+[11:34:09] <strcat> I implemented the dtor on Queue.
+[11:34:10] <strcat> not QueueBox.
+[11:38:23] <strcat> beautiful!
+[11:38:56] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[11:41:11] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[11:41:11] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[11:41:24] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[11:48:45] <strcat> dbaupp: https://github.com/thestinger/rust-core/blob/dev/test/thread.rs#L46 works ;p
+[11:49:11] <dbaupp> strcat: that's pretty cool
+[11:49:34] <dbaupp> wait, what's spawn returning?
+[11:49:48] <strcat> dbaupp: the thread
+[11:49:51] <dbaupp> ah, right.
+[11:49:52] <strcat> dbaupp: it's joined in the dtor
+[11:50:01] <strcat> or, earlier if you call 'join'
+[11:50:16] <strcat>     pub fn join(self) -> ~A {
+[11:50:30] <dbaupp> yup
+[11:50:43] <strcat> dbaupp: I could add detached threads but meh ;p
+[11:59:19] <strcat> dbaupp: concurrent map! maybe
+[12:00:05] <dbaupp> strcat: the compiler doesn't expand macros concurrently (in fact, it doesn't do anything concurrently). :P
+[12:00:24] <strcat> :)
+[12:00:29] <dbaupp> Does rust-core have iterators?
+[12:00:35] <strcat> not yet
+[12:00:40] <strcat> doing the interesting things first
+[12:00:52] <dbaupp> so no iterator.par_map(...) yet
+[12:00:57] <strcat> right
+[12:01:18] <strcat> dbaupp: need to expose new kinds for data parallelism
+[12:01:32] <strcat> so I can have threads with lifetimes bounded by closures
+[12:01:37] <strcat> and they can share data with &
+[12:01:40] <strcat> or share disjoint &mut
+[12:01:47] <strcat> that's the fun part.
+[12:02:12] <dbaupp> isn't Freeze enough?
+[12:02:16] <strcat> no
+[12:02:31] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[12:02:31] <strcat> dbaupp: &mut isn't Freeze
+[12:02:37] <strcat> Rc is Freeze and not thread-safe
+[12:03:07] <dbaupp> Freeze+Send then?
+[12:03:26] <strcat> if you require Send it's no better than the existing tasks :)
+[12:03:29] <strcat> Send is enough alone
+[12:04:06] <strcat> the point is to allow sharing &[T], &mut [T], &T, &mut T safely
+[12:04:18] <strcat> &T would be Isolate if T is Isolate
+[12:04:20] <strcat> etc.
+[12:04:25] <strcat> nmatsakis has a blog post about it
+[12:04:34] <strcat> maybe out of date with the current thinking on TypeContents, maybe not
+[12:04:47] <dbaupp> I don't remember one about fork-join? I remember one mentioning it
+[12:04:51] * dbaupp cheks the archives
+[12:05:13] <dbaupp> oh, right, http://smallcultfollowing.com/babysteps/blog/2013/06/11/data-parallelism-in-rust/
+[12:05:16] <dbaupp> I do remember that one
+[12:05:39] * dbaupp even commented on it... :S
+[12:07:29] <strcat> dbaupp: drop flags make me unhappy though ;p
+[12:07:40] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[12:08:40] <dbaupp> strcat: just wait for niko to work his magic :P
+[12:09:02] <dbaupp> or live life on the edge with #[unsafe_no_drop_flag] on everything :P
+[12:09:27] <strcat> yeah but not everything has a nice invalid state
+[12:09:33] <dbaupp> s/on/over/
+[12:09:42] <strcat> I don't want to write out the pthread initialized state functions
+[12:09:45] <strcat> really don't.
+[12:09:52] <strcat> s/functions/constants/
+[12:21:45] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[12:21:45] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/Yr7wnw
+[12:21:45] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[12:26:38] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[12:26:38] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/9no58g
+[12:26:38] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[12:26:39] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[12:26:39] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/rMiYoA
+[12:26:39] <ghrust> 13rust/06auto 149fa32c0 15Chris Morgan: Fix the `num_lit` grammar in the reference manual....
+[12:26:39] <ghrust> 13rust/06auto 146c8e337 15bors: auto merge of #10510 : chris-morgan/rust/fix-num_lit-grammar-in-the-reference-manaul, r=cmr...
+[12:26:39] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[12:27:32] *** Joins: mizar99 (onur@A1DE5CDF.38EBB44D.1F67DEBC.IP)
+[12:29:58] *** Quits: mizar99 (onur@A1DE5CDF.38EBB44D.1F67DEBC.IP) (Quit: Leaving)
+[12:30:32] *** Joins: mizar99 (onur@A1DE5CDF.38EBB44D.1F67DEBC.IP)
+[12:56:43] <strcat> dbaupp: https://github.com/thestinger/rust-core/blob/master/core/concurrent.rs happy? :)
+[12:56:52] <strcat> still need RAII locks
+[12:56:58] <strcat> really easy to screw up without them
+[13:00:15] <strcat> ew
+[13:00:23] <strcat> the pthread timewait APIs are ridiculously dumb
+[13:00:55] <strcat> they take absolute time....
+[13:01:54] <strcat> hm
+[13:02:03] <strcat> it mentions Clock Selection
+[13:02:12] <strcat> not sure how you would do this properly without CLOCK_MONOTONIC :|
+[13:03:06] <strcat> ah
+[13:03:09] <strcat> setclock/getclock.
+[13:05:01] <eddyb> strcat: your Cond is a semaphore?
+[13:05:06] <strcat> hm?
+[13:05:16] <eddyb> or maybe the mix of Mutex and Cond
+[13:06:01] <strcat> eddyb: I don't think it's a semaphore
+[13:06:12] <eddyb> hmm
+[13:06:19] <eddyb> okay then, nevermind me
+[13:07:23] <eddyb> strcat: does the unidirectional comm not need the same amount of locking?
+[13:07:53] <strcat> eddyb: for a blocking queue, this is as good as it gets for throughput afaik
+[13:08:04] <strcat> for non-blocking, you don't need a mutex/condvar
+[13:08:20] <eddyb> just atomic push/pop?
+[13:08:21] <strcat> and for non-blocking it gets better if you have 1 producer + 1 consumer
+[13:08:29] <strcat> eddyb: well, "just" :), it's hard to get right AFAIK
+[13:08:33] <eddyb> yeah, that's what I mean for unidirectional
+[13:09:31] <eddyb> strcat: I know, SlamAllocator has loops with regular checks and an atomic attempt - I don't think I could come up with all of that on my own
+[13:10:00] <strcat> eddyb: atomics are hard
+[13:10:04] <eddyb> but the dumb linear allocator is just an atomic add
+[13:10:09] <strcat> like, if you aren't just using the sequentially consistent atomics
+[13:10:12] <strcat> it gets really, really hard
+[13:10:30] <strcat> eddyb: look in rust-core's ARc
+[13:10:32] <strcat> Arc*
+[13:10:36] <strcat> I just stole it from boost ;p
+[13:10:42] <strcat> they have a nice example with the reasoning explained
+[13:10:46] <eddyb> strcat: don't make me consider the consequences for the code I ported from C++
+[13:10:56] <strcat> eddyb: so, atomic == the write/read will not be split
+[13:10:59] <strcat> *ordering* is separate
+[13:11:24] <eddyb> I just used the default versions
+[13:11:31] <strcat> eddyb: ah those are the most conservative
+[13:11:42] <eddyb> and they can be costier?
+[13:11:58] <strcat> eddyb: yes
+[13:12:03] <strcat> eddyb: they are costlier, afaik
+[13:12:13] <strcat> on x86 I think there are 2 levels
+[13:12:24] <eddyb> the lock prefix?
+[13:12:25] <strcat> on architectures like ARM with weak memory models, there are many levels
+[13:12:36] <strcat> eddyb: yes
+[13:12:48] <eddyb> you mean I can possibly make SlamAllocator even faster?
+[13:12:55] <strcat> yes but it's really hard :D
+[13:13:02] <strcat> eddyb: well
+[13:13:09] <strcat> eddyb: you need acq_rel, afaik
+[13:13:25] <strcat> hm
+[13:13:36] <eddyb> I'm an optimization nut :">
+[13:13:39] <strcat> maybe you do just need seq_cst (default) :(
+[13:13:45] <strcat> eddyb: yeah but this is basically impossible to test
+[13:13:46] <strcat> :D
+[13:13:56] <eddyb> are you sure?
+[13:14:04] <strcat> you need stuff running on many cores, on an arch with a weak memory model, and be lucky to catch the issue
+[13:14:09] <strcat> eddyb: I really would not try to reason about it
+[13:14:10] <strcat> it's too hard
+[13:14:19] <strcat> find something similar in something like boost that's well reviewed
+[13:14:21] <strcat> and just copy it ;p
+[13:14:34] <strcat> eddyb: http://en.cppreference.com/w/cpp/atomic/memory_order
+[13:14:41] <strcat> it's deceptively simple.
+[13:14:51] <strcat> I bet most papers with lock-free algorithms are broken :)
+[13:15:26] <eddyb> I should go back to my "simple" BIOS emulator
+[13:16:49] <eddyb> strcat: I could maybe test this better if I write disasm for 6502 or w/e and put it in sprocketnes
+[13:17:56] <eddyb> err, wrong channel >_>
+[13:18:11] <strcat> eddyb: linux pthread mutexes are super smart
+[13:18:15] <strcat> they do adaptive spinning
+[13:18:22] <strcat> and then call futex, which is itself really fast :)
+[13:18:25] <eddyb> *blink*
+[13:18:32] <strcat> eddyb: so, they start as a spin lock
+[13:18:38] <strcat> and then become a futex call
+[13:18:47] <strcat> depending on the contention for that lock and so on
+[13:18:50] <eddyb> did I mention that "futex" sounds like "fuckex" in Romanian?
+[13:18:54] <strcat> heh :)
+[13:19:05] <strcat> I think they wanted to move the adaptive part into the kernel but I dunno if they ever did
+[13:19:37] <strcat> but basically... if they don't have to wait much it doesn't need to actually do system calls
+[13:19:41] <eddyb> they all sound like hacks stacked on top of hacks
+[13:19:46] <strcat> it's not really a hack
+[13:19:49] <strcat> it spins a bit and then waits
+[13:19:51] <eddyb> I think that's what multithreading is
+[13:20:00] <strcat> for example my test case with 10 producers and 1 consumer never makes a futex system call
+[13:20:26] <eddyb> a convoluted hack. it's still giving us trouble, after all these years
+[13:20:30] <strcat> as long as you are producing faster than you're consuming, it's unlikely it has to wait by calling futex
+[13:21:54] <strcat> anyway on linux, locks are generally higher throughput than lock-free algorithms
+[13:22:14] <strcat> but with locks you have less deterministic latency
+[13:23:14] <strcat> anyway I'm not smart enough to deal with lock-free stuff
+[13:23:20] <strcat> ;p
+[13:31:46] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[13:31:46] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/rMiYoA
+[13:31:46] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[13:35:23] <eddyb> strcat: I wish I can implement Disasm::Expr::value() for Disasm<for Emulator>
+[13:35:57] <strcat> hm? why not?
+[13:36:27] <eddyb> I mean, Disasm is a trait, Expr is an enum :P
+[13:36:35] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[13:36:35] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/fn2tpA
+[13:36:35] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[13:36:38] <eddyb> you can't structure things like that in Rust atm
+[13:36:42] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[13:36:42] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/KtoJZg
+[13:36:42] <ghrust> 13rust/06auto 148530647 15Corey Richardson: Add a test for #6976...
+[13:36:42] <ghrust> 13rust/06auto 144812b8e 15Corey Richardson: Add test for #10288...
+[13:36:43] <ghrust> 13rust/06auto 142e82d25 15Corey Richardson: Better error message when using vectors in statics...
+[13:36:45] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[13:36:55] <strcat> eddyb: there are generic impls
+[13:37:08] <strcat> impl<A: Foo, B: Bar<A>> T for Baz<B> { } for whatever
+[13:37:19] <eddyb> strcat: I mean I can't put an enum (and a context struct, hopefully) inside a trait
+[13:37:30] <strcat> ah
+[13:51:27] *** Quits: mizar99 (onur@A1DE5CDF.38EBB44D.1F67DEBC.IP) (Ping timeout)
+[14:07:53] *** Joins: mizar99 (onur@D56E96E7.67E63EB3.1F67DEBC.IP)
+[14:13:23] *** Joins: jdm (jdm@moz-ED0C7AC7.hinet-ip.hinet.net)
+[14:17:28] *** Quits: mizar99 (onur@D56E96E7.67E63EB3.1F67DEBC.IP) (Ping timeout)
+[14:17:40] *** Joins: mizar99 (onur@D56E96E7.67E63EB3.1F67DEBC.IP)
+[14:21:48] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[14:21:48] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1497c7c9c to 146c8e337: 02http://git.io/N3iJvQ
+[14:21:48] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[14:21:54] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[14:21:54] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/FRxpsQ
+[14:21:54] <ghrust> 13rust/06auto 146bd8bb5 15Huon Wilson: lint: _-prefixed variables don't get an unused-mut warning....
+[14:21:54] <ghrust> 13rust/06auto 145208332 15bors: auto merge of #10518 : huonw/rust/6911, r=alexcrichton...
+[14:21:54] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[14:29:52] *** Joins: poiru (poiru@moz-C4357EA7.kapsi.fi)
+[14:52:00] *** Quits: mizar99 (onur@D56E96E7.67E63EB3.1F67DEBC.IP) (Ping timeout)
+[14:54:30] *** Quits: Kxepal (Miranda@moz-A25B204D.pppoe.mtu-net.ru) (Quit: Kxepal)
+[14:54:53] *** Joins: Kxepal (Miranda@moz-A25B204D.pppoe.mtu-net.ru)
+[14:57:41] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[15:21:29] *** Joins: mizar99 (onur@D56E96E7.67E63EB3.1F67DEBC.IP)
+[15:27:08] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[15:27:09] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/FRxpsQ
+[15:27:09] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[15:31:14] *** Quits: mizar99 (onur@D56E96E7.67E63EB3.1F67DEBC.IP) (Quit: Leaving)
+[15:32:13] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[15:32:13] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/6IVf-A
+[15:32:13] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[15:32:17] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[15:32:17] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/nmnOoQ
+[15:32:17] <ghrust> 13rust/06auto 14c8e6a38 15Huon Wilson: extra: handle an edge case in BigUint.to_str()....
+[15:32:17] <ghrust> 13rust/06auto 14e094350 15bors: auto merge of #10523 : huonw/rust/10522, r=cmr...
+[15:32:18] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[15:38:54] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[16:21:46] <kimundi> Need a macro expert :P
+[16:23:29] <eddyb> I'd go with herring
+[16:37:03] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[16:37:03] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/nmnOoQ
+[16:37:03] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[16:37:24] *** Quits: eddyb (eddy@336E3A7F.D51DAF03.FB866788.IP) (Ping timeout)
+[16:38:01] *** Joins: eddyb (eddy@336E3A7F.D51DAF03.FB866788.IP)
+[16:38:55] *** Quits: w3lcome (Mibbit@moz-FE6BEF26.home.otenet.gr) (Quit: http://www.mibbit.com ajax IRC Client)
+[16:40:18] *** Joins: w3lcome (Mibbit@moz-FE6BEF26.home.otenet.gr)
+[16:48:58] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[16:48:58] *** ChanServ sets mode: +qo brson brson
+[17:08:25] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[17:12:54] *** Joins: brson (brson@981AA104.E81F12CD.76F66111.IP)
+[17:12:55] *** ChanServ sets mode: +qo brson brson
+[17:39:50] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[17:39:50] *** ChanServ sets mode: +o pnkfelix
+[17:40:52] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[17:41:55] <acrichto> dbussink: yeah I wouldn't say that our mutex bindings are "high quality" at all b/c as strcat points out it's also theoretical that the cvar/mutex should be split up. I don't think we can really provide a sound interface with a split, but we can provide a sound interface with a union anyway so that probably doesn't matter
+[17:45:13] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[17:47:23] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[17:47:23] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/DZ7rqQ
+[17:47:23] <ghrust> 13rust/06auto 14dc09dec 15Leah Hanson: Fix XFailed test x86stdcall...
+[17:47:23] <ghrust> 13rust/06auto 144f8f7c1 15bors: auto merge of #10363 : astrieanna/rust/fix-x86stdcall, r=alexcrichton...
+[17:47:23] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[17:54:02] *** Quits: eddyb (eddy@336E3A7F.D51DAF03.FB866788.IP) (Ping timeout)
+[17:56:29] *** Joins: eddyb (eddy@336E3A7F.D51DAF03.FB866788.IP)
+[18:07:16] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[18:32:24] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[18:32:24] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 144f8f7c1 to 14e094350: 02http://git.io/N3iJvQ
+[18:32:24] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[18:55:32] *** Quits: fredy (fredy@moz-E7647C0E.vm.okeanos.grnet.gr) (Ping timeout)
+[19:02:58] *** Joins: fredy (fredy@moz-E7647C0E.vm.okeanos.grnet.gr)
+[19:08:00] *** Quits: Jesse_ (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse_)
+[19:08:46] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[19:24:05] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[19:24:05] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 140a2c0b1 to 14e094350: 02http://git.io/N3iJvQ
+[19:24:05] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[19:24:12] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[19:24:12] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/y7wR1Q
+[19:24:12] <ghrust> 13rust/06auto 1411fc055 15Alex Crichton: Implement a native mutex type...
+[19:24:12] <ghrust> 13rust/06auto 1456b3ec2 15Alex Crichton: Remove the C++ lock_and_signal type...
+[19:24:12] <ghrust> 13rust/06auto 143e1fea4 15Alex Crichton: Move runtime files to C instead of C++...
+[19:24:14] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[19:27:08] *** Joins: blank_name (blank_name@FAB53C88.7071B2C8.31EC03F3.IP)
+[19:34:13] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[19:34:13] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/scK_Kg
+[19:34:13] <ghrust> 13rust/06auto 1426da3e7 15Alex Crichton: Forbid privacy in inner functions...
+[19:34:13] <ghrust> 13rust/06auto 14e3d59be 15bors: auto merge of #10443 : alexcrichton/rust/meaninless-pub-priv, r=cmr...
+[19:34:13] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[19:34:15] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[19:34:15] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14d85683f to 14e094350: 02http://git.io/N3iJvQ
+[19:34:15] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[19:59:39] *** Quits: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net) (Client exited)
+[20:08:39] *** Joins: lbergstrom1 (Adium@moz-5D8E4B14.lightspeed.cicril.sbcglobal.net)
+[20:08:46] *** Quits: lbergstrom1 (Adium@moz-5D8E4B14.lightspeed.cicril.sbcglobal.net) (Quit: lbergstrom1)
+[20:22:20] *** Quits: jdm (jdm@moz-ED0C7AC7.hinet-ip.hinet.net) (Ping timeout)
+[20:23:51] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[20:23:51] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14e3d59be to 14e094350: 02http://git.io/N3iJvQ
+[20:23:51] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[20:24:01] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[20:24:01] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/KPX2nA
+[20:24:01] <ghrust> 13rust/06auto 148e59c5d 15Chris Morgan: Don't make tags for our dependencies and tests....
+[20:24:01] <ghrust> 13rust/06auto 146621c48 15bors: auto merge of #10508 : chris-morgan/rust/tags-improvements, r=cmr...
+[20:24:01] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[20:24:11] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[21:07:31] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[21:07:31] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 146621c48 to 14e094350: 02http://git.io/N3iJvQ
+[21:07:31] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[21:07:34] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[21:07:34] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/zMeAMQ
+[21:07:34] <ghrust> 13rust/06auto 1411fc055 15Alex Crichton: Implement a native mutex type...
+[21:07:35] <ghrust> 13rust/06auto 1456b3ec2 15Alex Crichton: Remove the C++ lock_and_signal type...
+[21:07:35] <ghrust> 13rust/06auto 1425a1669 15Alex Crichton: Move runtime files to C instead of C++...
+[21:07:37] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[21:09:46] *** Quits: benh (ben@moz-4A0366D2.org) (Ping timeout)
+[21:10:00] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[21:17:40] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[21:17:40] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1404c5bed to 14e094350: 02http://git.io/N3iJvQ
+[21:17:40] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[21:17:44] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[21:17:45] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/AnZDMQ
+[21:17:45] <ghrust> 13rust/06auto 14b71d8f5 15Corey Richardson: Add a test for #6976...
+[21:17:45] <ghrust> 13rust/06auto 14ef3984f 15Corey Richardson: Better error message when using vectors in statics...
+[21:17:45] <ghrust> 13rust/06auto 14bbb6578 15bors: auto merge of #10511 : cmr/rust/addtests, r=alexcrichton...
+[21:17:47] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[21:19:20] *** Quits: eddyb (eddy@336E3A7F.D51DAF03.FB866788.IP) (Ping timeout)
+[21:29:02] *** Joins: rusti (rusti@moz-61B073BC.cpe.net.cable.rogers.com)
+[21:45:29] *** Joins: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net)
+[21:53:37] *** Quits: w3lcome (Mibbit@moz-FE6BEF26.home.otenet.gr) (Quit: http://www.mibbit.com ajax IRC Client)
+[22:02:00] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[22:02:00] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14bbb6578 to 14e094350: 02http://git.io/N3iJvQ
+[22:02:00] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[22:02:07] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[22:02:07] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/hKM3Pw
+[22:02:07] <ghrust> 13rust/06auto 146258857 15Guillaume Pinot: resurect shootout-mandelbrot.rs...
+[22:02:07] <ghrust> 13rust/06auto 140c3b04f 15Guillaume Pinot: Clarrify the message for test mode and use u8 instead of i8 for storing bits
+[22:02:07] <ghrust> 13rust/06auto 1493bb99e 15Guillaume Pinot: Prettier long string breaking.
+[22:02:09] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[22:04:10] *** Quits: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net) (Quit: Leaving...)
+[22:13:31] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[22:14:05] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[22:15:41] *** Quits: rusti (rusti@moz-61B073BC.cpe.net.cable.rogers.com) (Client exited)
+[22:15:55] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[22:16:49] *** Joins: rusti (rusti@moz-61B073BC.cpe.net.cable.rogers.com)
+[22:17:54] *** Quits: brson (brson@981AA104.E81F12CD.76F66111.IP) (Quit: leaving)
+[22:28:56] <cmr> anyone know what's up with https://github.com/mozilla/rust/commit/ef3984fd68247d43b692b2e310b7ae4c17bb0db4#commitcomment-4623793 ?
+[22:30:05] <dbaupp> cmr: error: function `main` is private
+[22:30:11] <cmr> well I can see that :P
+[22:30:13] <dbaupp> the check-fast driver needs `pub fn main() ...`
+[22:30:23] <cmr> but I didn't touch anything near or around there
+[22:30:59] <dbaupp> cmr: https://github.com/mozilla/rust/pull/10511/files#diff-705d3fb25b800948be6d95a195ae9d94R24
+[22:31:23] <cmr> ohhhhh
+[22:32:46] <eddyb9> need to find out what lub and glb are
+[22:32:59] <dbaupp> least upper bound
+[22:33:01] <eddyb9> I found the same names in v8, now I'm curious
+[22:33:02] <dbaupp> greatest lower bound
+[22:33:04] <cmr> least upper bound and greatest lower bound?
+[22:33:24] <eddyb9> dbaupp: thanks, I guess. didn't even let me search :P
+[22:34:03] <dbaupp> eddyb9: well, don't ask before you search then :P
+[22:34:25] <eddyb9> I just mentioned them
+[22:35:05] <dbaupp> don't mention before you search
+[22:35:24] <eddyb9> lol
+[22:36:29] *** Joins: aatch (James@moz-B437F499.pocketrent.com)
+[22:43:06] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Connection reset by peer)
+[22:45:20] *** Joins: jdm (jdm@moz-ED0C7AC7.hinet-ip.hinet.net)
+[23:06:50] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[23:06:50] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/hKM3Pw
+[23:06:50] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[23:11:43] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[23:11:43] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/a6tDsA
+[23:11:43] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[23:16:00] *** Joins: benh (ben@moz-4A0366D2.org)
+[23:36:10] <cmr> dbaupp: r? https://github.com/mozilla/rust/pull/10511

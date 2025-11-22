@@ -1,0 +1,1201 @@
+[00:01:10] *** Joins: bgamari (bgamari@moz-lflj1l.hsi7.kabel-badenwuerttemberg.de)
+[00:02:44] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[00:04:10] *** Quits: nham (nham@moz-lglsfe.il.comcast.net) (Ping timeout: 121 seconds)
+[00:06:52] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[00:12:10] *** Quits: achanda (achanda@moz-qv7q4n.ca.comcast.net) (Connection closed)
+[00:13:29] <SimonSapin> Are fn types Clone? I’m getting error: no method named `clone` found for type `core::iter::FlatMap<core::slice::Iter<'_, core::ops::Range<usize>>, core::ops::Range<usize>, fn(&core::ops::Range<usize>) -> core::ops::Range<usize> {core::clone::Clone::clone}>` in the current scope
+[00:15:21] <SimonSapin> I’m trying to clone the result of sequence.runs.iter().flat_map(Clone::clone) , with sequence.runs a Vec<Range<usize>>
+[00:16:03] <huon> you probably have to cast to an actual function pointer, rather than the unique type functions have
+[00:16:27] <huon> Clone::clone as fn(&Range<usize>) -> Range<usize>
+[00:17:25] *** Quits: Murarth (Murarth@moz-4t8fs2.phnx.qwest.net) (Quit: I have come here to chew bubblegum and kick ass. And I'm all out of bubblegum.)
+[00:17:46] *** Joins: Murarth (Murarth@moz-19ra4p.dyn.nltelcom.net)
+[00:21:39] <eddyb> huon: that fn pointer type is still not Clone
+[00:21:45] <eddyb> due to it having a for<'a>
+[00:23:28] *** Joins: ncarrillo (textual@moz-739a1t.cable.rcn.com)
+[00:23:33] *** Quits: dp (dp@moz-jbmop1.gb4f.8ao9.0e35.2a01.IP) (Quit: Leaving)
+[00:23:55] *** Joins: brson (brson@moz-u4t.ku8.145.82.IP)
+[00:23:55] *** ChanServ sets mode: +o brson
+[00:25:07] *** Quits: X67r (user@moz-manmml.mullvad.net) (Quit: leaving)
+[00:31:50] <SimonSapin> eddyb: can I have FnMut + Clone, other than by implementing FnMut myself?
+[00:32:35] <eddyb> SimonSapin: doubtful :/
+[00:32:52] <eddyb> oh, wait
+[00:33:05] <eddyb> SimonSapin: couldn't you use .cloned()?
+[00:33:25] <SimonSapin> eddyb: FlatMap still wants an FnMut
+[00:33:29] <eddyb> sequence.runs.iter().cloned().flat_map(id)
+[00:33:41] <eddyb> where fn id<T>(x: T) -> T {x}
+[00:33:53] <eddyb> id should be Copy + Clone
+[00:34:51] <SimonSapin> eddyb: same error
+[00:35:13] <SimonSapin> couldn’t / shouldn’t closures derive Clone?
+[00:35:33] <reem> (and Copy, please)
+[00:35:39] <aatch> Clone isn't a lang item, therefore the compiler doesn't know about it.
+[00:36:25] <eddyb> SimonSapin: how so?
+[00:36:33] <eddyb> SimonSapin: oh, what huon said
+[00:36:43] <eddyb> SimonSapin: id as fn(_) -> _
+[00:36:53] <eddyb> instead of just passing id to flat_map
+[00:37:25] <reem> aatch: Copy: Clone now, and Copy is known to the compiler. Technically speaking you’re right, but in principle Clone is part of the language as a result of that bound.
+[00:37:55] <eddyb> yeah, rustc can definitely "steal" Clone from there
+[00:39:19] <eternaleye> Shouldn't FnMut only be Clone if its state contains only Clone types?
+[00:40:04] <eddyb> eternaleye: FnMut is a trait
+[00:40:12] <eternaleye> eddyb: T: FnMut then
+[00:40:35] <eddyb> T: FnMut doesn't change anything about T: Clone
+[00:40:48] <eddyb> closures in particular might, they make this tricky
+[00:40:59] <eternaleye> eddyb: I'm meaning the case where |x| foo( x, y ) where y: !Clone
+[00:42:27] <eddyb> eternaleye: yeah, that's a closure, not necessarily tied to the Fn* traits
+[00:42:56] <eternaleye> Mm
+[00:43:07] <eddyb> copyability/cloneability of closures would also depend on capture mode
+[00:43:27] <eternaleye> eddyb: I guess I was focused on SimonSapin's original question, "can I have FnMut + Clone, other than by implementing FnMut myself?"
+[00:43:32] <eternaleye> eddyb: Which to me says 
+[00:43:42] <eternaleye> "Is there a way to have a cloneable closure"
+[00:43:59] <eddyb> he literally meant a type that implements both FnMut and Clone
+[00:44:25] <eternaleye> "Other than by implementing FnMut myself" - the only existing impl is closures, no?
+[00:44:39] <eddyb> functions pointers do that in the absence of higher-ranked regions or whatever they're called
+[00:44:40] <eddyb> eternaleye: no
+[00:45:09] <eddyb> Fn* traits are implemented by fn item types, fn pointer types, closures, the traits objects themselves, abstractions like FnBox, etc.
+[00:45:14] <SimonSapin> eddyb: It worked after making id non-generic. Thanks eddyb.
+[00:45:16] <eternaleye> Mm
+[00:45:38] <eddyb> on unstable, any user type can implement the Fn* traits, they're just traits
+[00:45:45] <eternaleye> eddyb: I was under the impression that pretty much all of those were either Fn or FnOnce
+[00:46:11] <eternaleye> eddyb: And the "on unstable" one is "implementing it yourself" - exactly what he wanted to avoid
+[00:46:34] <eddyb> eternaleye: the standard library can use unstable code
+[00:46:42] <eternaleye> Mm
+[00:46:45] <eddyb> and thus can have abstractions like FnBox
+[00:47:03] *** Quits: scott (uid25790@moz-e5ok1n.brockwell.irccloud.com) (Quit: Connection closed for inactivity)
+[00:47:13] <eternaleye> eddyb: I thought FnBox was "boxed FnOnce" though?
+[00:47:23] *** Quits: ncarrillo (textual@moz-739a1t.cable.rcn.com) (Quit: Textual IRC Client: www.textualapp.com)
+[00:47:25] <eternaleye> eddyb: Mm, although I suppose FnOnce: FnMut
+[00:47:27] <eddyb> that was just an example
+[00:47:41] <SimonSapin> eternaleye: clonable closures would work, yes. But since I suspected closures are not clonable in current Rust I asked about other things
+[00:47:45] <eddyb> no, FnOnce is at the bottom of the hiearchy. or at the top, I guess
+[00:47:57] <eternaleye> eddyb: Yeah, realized after sending I got it backwards
+[00:48:05] <eddyb> FnMut: Fn: FnOnce... maybe?
+[00:48:27] <eddyb> I'm not sure how to guide myself, I only know FnOnce is the base trait because it defines the Output associated type
+[00:48:29] <SimonSapin> My end goal was to clone a FlatMap, which contains a generic field F: FnMut
+[00:48:53] <eternaleye> eddyb: Something which wants to call a FnMut can call a Fn, something that wants a FnOnce can call either.
+[00:48:54] <SimonSapin> so #[derive(Clone)] on FlatMap only applies when F: Clone
+[00:49:37] <eternaleye> eddyb: The shorter the name, the more restricted the impl and the less restricted the caller
+[00:49:41] <eddyb> eternaleye: how does that make sense with what I said? it has to be stricter semantic-wise
+[00:50:03] <eddyb> self -> &mut self -> &self
+[00:50:28] <eddyb> although, Fn: FnMut: FnOnce seems backwards
+[00:50:53] <eternaleye> eddyb: No, not really
+[00:51:01] <eddyb> at least closures implement as many as possible, and fn item/pointer types implement all of them
+[00:51:02] <eternaleye> eddyb: Any FnMut can be called only once
+[00:51:14] <eternaleye> eddyb: But FnOnce _must_ be called only once
+[00:51:23] <eddyb> eternaleye: I was thinking in terms of default impls, I guess
+[00:52:10] <eternaleye> eddyb: Yeah, default impls don't work with Fn* because of the inverse constraint behavior on impls and callers
+[00:52:15] <eddyb> that's the counter-intuitive bit, no default impls for the methods
+[00:57:54] *** Joins: scott (uid25790@moz-e5ok1n.brockwell.irccloud.com)
+[00:59:44] *** Quits: dcb (textual@moz-j72nfe.ca.comcast.net) (Ping timeout: 121 seconds)
+[01:12:30] *** Joins: achanda (achanda@moz-qv7q4n.ca.comcast.net)
+[01:17:32] *** Quits: achanda (achanda@moz-qv7q4n.ca.comcast.net) (Ping timeout: 121 seconds)
+[01:19:18] *** Joins: dcb (textual@moz-j72nfe.ca.comcast.net)
+[01:24:42] *** Quits: brson (brson@moz-u4t.ku8.145.82.IP) (Ping timeout: 121 seconds)
+[01:26:16] *** Quits: Pierre_M (Pierre_M@moz-2vs15r.slkc.qwest.net) (Ping timeout: 121 seconds)
+[01:26:51] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[01:26:52] *** ChanServ sets mode: +o brson
+[01:32:45] *** Quits: dcb (textual@moz-j72nfe.ca.comcast.net) (Connection closed)
+[01:34:20] *** Joins: dlight (dlight@moz-d7n.hlq.135.177.IP)
+[01:40:28] *** Joins: nham (nham@moz-lglsfe.il.comcast.net)
+[01:43:12] *** Quits: dlight (dlight@moz-d7n.hlq.135.177.IP) (Quit: Leaving)
+[01:43:19] *** Joins: dlight (dlight@moz-d7n.hlq.135.177.IP)
+[01:44:18] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[01:46:41] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[01:48:01] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[01:56:30] *** Quits: dlight (dlight@moz-d7n.hlq.135.177.IP) (Quit: Leaving)
+[02:01:15] *** Joins: dcb (textual@moz-v6l3du.ca.comcast.net)
+[02:03:47] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[02:08:00] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[02:10:38] *** Quits: kimundi (kimundi@moz-0r8.svi.226.79.IP) (Ping timeout: 121 seconds)
+[02:12:55] *** Joins: kimundi (kimundi@moz-2q77u9.obe6.7gie.57bc.2002.IP)
+[02:29:35] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[02:36:02] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[02:38:44] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[02:42:10] *** Joins: RCIX (RCIX@moz-7omm6s.ph.cox.net)
+[02:42:19] *** Quits: Jesin (Jesin@moz-sak2gd.cc.lehigh.edu) (Quit: Leaving)
+[02:42:44] *** Quits: RC9 (RCIX@moz-31k.dfa.8.198.IP) (Ping timeout: 121 seconds)
+[02:43:20] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[02:44:21] *** Joins: Jesin (Jesin@moz-sak2gd.cc.lehigh.edu)
+[02:51:09] <WindowsBunny> As far as I can tell, llvm does not emit memcmp, it only emits memcpy memmove and memset
+[02:52:07] <WindowsBunny> even though the rust docs claim that it is
+[02:53:11] <aatch> WindowsBunny, where's this?
+[02:54:06] <WindowsBunny> aatch: Well, based on http://llvm.org/docs/doxygen/html/IntrinsicLowering_8cpp_source.html
+[02:54:20] <WindowsBunny> and https://github.com/rust-lang/rust/blob/9cc0b2247509d61d6a246a5c5ad67f84b9a2d8b6/src/libcore/lib.rs#L34-L35
+[02:54:52] <WindowsBunny> and also https://github.com/rust-lang/rust/blob/da1b296e16b1c1c07afac10026bb77e96fa64a0d/src/liblibc/lib.rs#L5533-L5538
+[02:56:37] <aatch> WindowsBunny, ah, well for the second one at least, it's possible that LLVM used to emit calls to memcmp and now doesn't. That comment is pretty old.
+[03:16:47] *** Joins: semarie (semarie@moz-nct036.bpv6.bg1u.41d0.2001.IP)
+[03:36:13] *** Joins: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP)
+[03:42:50] *** Quits: Rym (uid91135@moz-n2i7qm.charlton.irccloud.com) (Quit: Connection closed for inactivity)
+[03:43:54] *** Quits: RCIX (RCIX@moz-7omm6s.ph.cox.net) (Connection closed)
+[03:49:03] *** Joins: achanda (achanda@moz-qv7q4n.ca.comcast.net)
+[04:04:18] *** Quits: dcb (textual@moz-v6l3du.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[04:04:46] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[04:07:39] *** Quits: achanda (achanda@moz-qv7q4n.ca.comcast.net) (Connection closed)
+[04:08:54] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[04:12:25] *** Joins: dcb (textual@moz-v6l3du.ca.comcast.net)
+[04:13:45] *** Joins: Quxxy (chatzilla@moz-0nv.jkp.167.59.IP)
+[04:22:23] *** Quits: dcb (textual@moz-v6l3du.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[04:23:50] *** Joins: dcb (textual@moz-v6l3du.ca.comcast.net)
+[04:26:59] *** Joins: mib_l9ivp1 (Mibbit@moz-hu6.nja.252.72.IP)
+[04:31:52] *** Quits: mib_l9ivp1 (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[04:32:16] *** Joins: bdero (bran@moz-nr0176.b90n.1kaj.018d.2601.IP)
+[04:51:59] *** Quits: Quxxy (chatzilla@moz-0nv.jkp.167.59.IP) (Ping timeout: 121 seconds)
+[04:52:48] *** Joins: Quxxy (chatzilla@moz-efh10q.internode.on.net)
+[04:54:34] *** Quits: dcb (textual@moz-v6l3du.ca.comcast.net) (Quit: Textual IRC Client: www.textualapp.com)
+[04:54:50] *** Quits: genbattle (genbattle@moz-4v0.gkd.16.182.IP) (Ping timeout: 121 seconds)
+[05:01:35] *** Joins: achanda (achanda@moz-qv7q4n.ca.comcast.net)
+[05:08:32] *** Joins: dcb (textual@moz-v6l3du.ca.comcast.net)
+[05:16:05] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[05:20:21] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[05:22:45] *** Joins: Pierre_M (Pierre_M@moz-2vs15r.slkc.qwest.net)
+[05:26:25] *** Quits: O01eg (o01eg@moz-d21dbs.j0bl.3egh.2698.2a02.IP) (Client exited)
+[05:28:25] *** Quits: bkoropoff (bkoropoff@moz-kthi5c.wa.comcast.net) (Client exited)
+[05:37:18] *** Joins: listochkin (listochkin@moz-u28j0j.interview.volia.net)
+[05:46:19] <Quxxy> What is it about closures that is *not* correctly inferred if you don't write a closure in argument position.  This has gotten me a few times before, and it came up in an SO question yesterday and I don't get what's going on.  I asked in #rust with no response; figured if anyone would know, someone in here would
+[05:47:54] <aatch> Quxxy, gh26085 is probably relevant
+[05:47:55] <[o__o]> Closures should always implement the all applicable Fn* traits.: https://github.com/rust-lang/rust/issues/26085
+[05:48:26] <Quxxy> That actually seems to be the opposite problem
+[05:49:35] <aatch> Quxxy, then what's your issue?
+[05:50:51] <Quxxy> It came up in this question: https://stackoverflow.com/questions/31362206/.  First it complains about expecting a bound lifetime, but getting a concrete one, then if you hint that one of the arguments is a &, it then complains that the appropriate trait isn't implemented
+[05:51:04] <Quxxy> Shoving the closure into argument position fixes the problems, I'm just not sure *why*
+[05:56:47] <aatch> Quxxy, oh, in that case, it's just the whole "doesn't implement `Fn` because it mutates the environment", at least for the second case.
+[05:58:13] <aatch> Quxxy, so the issues are unrelated, the first one is because it *can* infer a concrete lifetime for the closure, so it does. But that doesn't match the bound on the function signature.
+[05:58:57] <aatch> Quxxy, the second one is that because the closure modifies the environment, it *can't* implement `Fn`.
+[05:59:01] <Quxxy> So the compiler only takes the trait into account for the purposes of inference if it's used as an argument?
+[05:59:18] <Quxxy> (Yeah, I keep forgetting the mutation thing, since I missed it when I boiled the example down to something I could actually compile)
+[05:59:59] <aatch> Quxxy, more that it's a bit eager to nail down the types involved.
+[06:00:46] *** Joins: RC9 (RCIX@moz-432.dfa.8.198.IP)
+[06:02:20] <aatch> Quxxy, what's happening is that we're resolving the types for the closure argument, then checking it against the later usage, in an argument position, we'll check the closure type against that first, then check everything else.
+[06:02:46] <aatch> Quxxy, it's just a side-effect of the order in which we do things.
+[06:04:09] <Quxxy> Ok; so by the time the constraint on the argument type comes into play, it's already too late to change its mind about the arguments
+[06:04:21] <Quxxy> (By argument type, I mean the argument into which the closure is passed)
+[06:04:35] <Quxxy> (Too many arguments :P)
+[06:05:14] <aatch> Quxxy, I think so. (It's pretty complicated, so I might have the wrong idea)
+[06:05:26] <Quxxy> Ok; thanks
+[06:06:13] <aatch> Quxxy, thinking about it (and looking at the code), it's actually most likely that the bound from the function isn't taken into account.
+[06:19:09] *** Quits: aatch (james@moz-i1k1ks.tlms.2o1v.e006.2406.IP) (Connection closed)
+[06:22:48] *** Quits: bdero (bran@moz-nr0176.b90n.1kaj.018d.2601.IP) (Ping timeout: 121 seconds)
+[06:24:22] *** Joins: laumann (thomas@moz-3m6.3kq.109.2.IP)
+[06:24:55] *** Joins: GBGamer (npm@moz-ond.4f3.56.172.IP)
+[06:25:49] *** Quits: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au) (Ping timeout: 121 seconds)
+[06:28:43] *** Quits: SiegeLord (sl@moz-9jtaei.ca.comcast.net) (Quit: It's a joke, it's all a joke.)
+[06:39:05] *** Joins: eljay (eljay@moz-fmte10.skybroadband.com)
+[06:56:02] *** Quits: achanda (achanda@moz-qv7q4n.ca.comcast.net) (Connection closed)
+[06:57:00] *** Quits: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[06:57:03] *** Quits: scott (uid25790@moz-e5ok1n.brockwell.irccloud.com) (Quit: Connection closed for inactivity)
+[07:01:12] *** Joins: squiddy (squiddy@moz-md4.pm3.19.178.IP)
+[07:01:36] *** Quits: listochkin (listochkin@moz-u28j0j.interview.volia.net) (Connection closed)
+[07:02:47] *** Joins: listochkin (listochkin@moz-u28j0j.interview.volia.net)
+[07:03:09] *** Joins: AlisdairO (anonymous@moz-ntsaoe.cable.virginm.net)
+[07:03:17] *** Joins: achanda (achanda@moz-qv7q4n.ca.comcast.net)
+[07:16:50] *** Quits: achanda (achanda@moz-qv7q4n.ca.comcast.net) (Connection closed)
+[07:16:57] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[07:21:12] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[07:35:10] *** Joins: Kingsquee (kingsquee@moz-k72lip.bchsia.telus.net)
+[07:36:41] *** Quits: sprang (sprang@moz-gpnug3.3dj0.bqct.0647.2601.IP) (Ping timeout: 121 seconds)
+[07:37:07] *** Joins: oli_obk__ (Mibbit@moz-7bq.0sb.52.141.IP)
+[07:39:49] *** Quits: KokaKiwi (kokakiwi@moz-cagds5.kokakiwi.net) (Connection closed)
+[07:40:01] *** Quits: njn (chatzilla@moz-270n86.iinet.net.au) (Quit: ChatZilla 0.9.91.1 [Firefox 42.0a1/20150706135613])
+[07:40:32] *** Quits: AlisdairO (anonymous@moz-ntsaoe.cable.virginm.net) (Client exited)
+[07:41:24] *** Joins: KokaKiwi (kokakiwi@moz-cagds5.kokakiwi.net)
+[07:41:41] *** Joins: AlisdairO (anonymous@moz-ntsaoe.cable.virginm.net)
+[07:42:52] *** Joins: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au)
+[07:54:28] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[08:00:40] *** Quits: RC9 (RCIX@moz-432.dfa.8.198.IP) (Ping timeout: 121 seconds)
+[08:01:58] *** Joins: Tobba (Tobba@moz-oecqnu.plus.com)
+[08:09:36] *** Quits: nham (nham@moz-lglsfe.il.comcast.net) (Ping timeout: 121 seconds)
+[08:11:13] *** Joins: RC9 (RCIX@moz-tu3.dfa.8.198.IP)
+[08:11:48] *** Joins: zxq9 (ceverett@moz-fe3mfn.mesh.ad.jp)
+[08:12:13] *** Joins: Viewtiful (Viewtiful@moz-eub.afi.30.89.IP)
+[08:12:23] *** Joins: casey (casey@moz-v0ns05.tpgi.com.au)
+[08:16:26] *** Quits: casey (casey@moz-v0ns05.tpgi.com.au) (Ping timeout: 121 seconds)
+[08:22:44] *** Joins: doener (bs@moz-c061a3.saltation.de)
+[08:25:59] *** Joins: casey (casey@moz-v0ns05.tpgi.com.au)
+[08:27:02] *** Quits: casey (casey@moz-v0ns05.tpgi.com.au) (Connection closed)
+[08:27:16] *** Joins: casey (casey@moz-v0ns05.tpgi.com.au)
+[08:28:44] *** Quits: barosl (barosl@moz-tmp.qma.67.220.IP) (Quit: Leaving)
+[08:42:02] *** Joins: munksgaard (munksgaard@moz-gqpfnm.science.ku.dk)
+[08:47:24] *** Joins: Feyn (aram@moz-5vj.68e.115.42.IP)
+[08:47:54] *** Quits: RC9 (RCIX@moz-tu3.dfa.8.198.IP) (Ping timeout: 121 seconds)
+[08:47:56] *** Joins: barosl (barosl@moz-tmp.qma.67.220.IP)
+[08:56:15] <Manishearth> huon: btw, what's the reason behind extern "rust-call"?
+[09:01:52] *** Quits: dcb (textual@moz-v6l3du.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[09:06:03] <doener> Manishearth: the function actually gets all the arguments individually, but to have a single trait that can handle all the closure types, you need them to appear as a tuple
+[09:06:26] <doener> Manishearth: the rust-call ABI does the tupling
+[09:12:18] *** Quits: Pierre_M (Pierre_M@moz-2vs15r.slkc.qwest.net) (Ping timeout: 121 seconds)
+[09:16:10] *** Quits: doener (bs@moz-c061a3.saltation.de) (Quit: leaving)
+[09:16:13] *** Joins: doener (bs@moz-c061a3.saltation.de)
+[09:17:15] *** Quits: doener (bs@moz-c061a3.saltation.de) (Connection closed)
+[09:17:48] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[09:18:51] *** Quits: AlisdairO (anonymous@moz-ntsaoe.cable.virginm.net) (Client exited)
+[09:22:08] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[09:26:15] *** Joins: doener (bs@moz-c061a3.saltation.de)
+[09:27:44] *** Joins: AlisdairO (anonymous@moz-ntsaoe.cable.virginm.net)
+[09:40:58] <Manishearth> oh I see
+[09:51:42] *** Joins: vmx (vmx@moz-kdofmb.dip0.t-ipconnect.de)
+[09:54:41] *** Quits: AlisdairO (anonymous@moz-ntsaoe.cable.virginm.net) (Client exited)
+[09:56:51] <Manishearth> doener: can't we instead desugar func calls to calls with a tuple?
+[10:02:33] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[10:05:26] *** Quits: listochkin (listochkin@moz-u28j0j.interview.volia.net) (Connection closed)
+[10:05:40] *** Joins: listochkin (listochkin@moz-u28j0j.interview.volia.net)
+[10:06:03] *** Quits: listochkin (listochkin@moz-u28j0j.interview.volia.net) (Connection closed)
+[10:06:48] *** Joins: listochkin (listochkin@moz-u28j0j.interview.volia.net)
+[10:07:21] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[10:08:32] *** Joins: wcosta (wander@moz-7k0.o3c.56.187.IP)
+[10:17:25] *** Joins: genbattle (genbattle@moz-poo2cb.xtra.co.nz)
+[10:20:55] *** Joins: AlisdairO (anonymous@moz-ntsaoe.cable.virginm.net)
+[10:22:54] *** Quits: Kingsquee (kingsquee@moz-k72lip.bchsia.telus.net) (Quit: Leaving)
+[10:23:45] <doener> Manishearth: I don't understand the question
+[10:25:37] *** Quits: munksgaard (munksgaard@moz-gqpfnm.science.ku.dk) (Quit: Lost terminal)
+[10:26:41] *** Quits: listochkin (listochkin@moz-u28j0j.interview.volia.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[10:27:01] <Elaine> Manishearth: you wouldn't want to, that'd be inefficient.
+[10:36:30] <doener> Luqman: ping
+[10:36:54] *** Quits: genbattle (genbattle@moz-poo2cb.xtra.co.nz) (Ping timeout: 121 seconds)
+[10:37:14] <Manishearth> Elaine: why?
+[10:37:38] <Manishearth> doener: I mean that when we have x(a,b,c), desugar that to x.call((a,b,c))
+[10:37:44] <Luqman> doener: pong
+[10:38:40] <Manishearth> Elaine: is it that llvm two-arguments-vs-one-tuple-arg thing that optimized slices?
+[10:39:25] <doener> Luqman: gh26996 should be a bug in the reassignment checker 
+[10:39:26] <[o__o]> Wrong code with assignment in match body: https://github.com/rust-lang/rust/issues/26996
+[10:39:45] <doener> Luqman: and I wondered about this line: https://github.com/rust-lang/rust/blob/master/src/librustc_trans/trans/_match.rs#L1387
+[10:39:52] *** Joins: devm33 (devm33@moz-uoltil.eonet.ne.jp)
+[10:40:05] <doener> Luqman: shouldn't the field check be omitted if self.field is None?
+[10:40:34] <doener> Luqman: i.e. self.reassigned |= self.node == vid && (self.field.is_none() || Some(field) == self.field)
+[10:43:26] *** Joins: zmack (zmack@moz-htpein.home.aster.pl)
+[10:43:54] *** Joins: Kingsquee (kingsley@moz-k72lip.bchsia.telus.net)
+[10:44:24] *** Quits: zmack (zmack@moz-htpein.home.aster.pl) (Connection closed)
+[10:47:31] <Luqman> doener: yea, that seems right.
+[10:48:19] <doener> ok, building...
+[10:48:53] *** Quits: vmx (vmx@moz-kdofmb.dip0.t-ipconnect.de) (Quit: Leaving)
+[10:59:37] *** Joins: vmx (vmx@moz-p4glpr.dip0.t-ipconnect.de)
+[11:00:41] *** Quits: oli_obk__ (Mibbit@moz-7bq.0sb.52.141.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[11:10:17] <kimundi> Manishearth: Afaik its really just function call ABI - one big struct argument is more inefficent than many small ones
+[11:10:17] *** Joins: arielby (Mibbit@moz-cmi.jfj.114.192.IP)
+[11:14:31] *** Joins: Sho (sho@moz-50bv2t.cust.telecolumbus.net)
+[11:16:01] *** Quits: devm33 (devm33@moz-uoltil.eonet.ne.jp) (Quit: Leaving)
+[11:18:42] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[11:19:11] <Manishearth> cool
+[11:21:10] <doener> yeah, it creates a "fake" tuple out of the individual arguments. Tuple-based overloading if you want ;-)
+[11:21:36] <doener> the tuple only exists inside the rust-call function
+[11:22:51] *** Joins: James__ (quassel@moz-7abj9b.range86-163.btcentralplus.com)
+[11:22:56] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[11:25:47] <arielby> what's the matter with "blank extern" fns
+[11:25:55] <arielby> shouldn't functions always be
+[11:25:57] <arielby> extern "ABI"
+[11:26:50] <Manishearth> arielby: iirc its default C
+[11:29:17] *** Quits: untitaker (untitaker@moz-jgmr13.highway.telekom.at) (Ping timeout: 121 seconds)
+[11:30:58] <arielby> and extern isn't really extern?
+[11:31:07] <arielby> (extern "C" fn = function with C ABI)
+[11:31:08] <arielby> ?
+[11:31:16] <arielby> not C-style extern
+[11:31:17] *** Joins: untitaker (untitaker@moz-shub0s.highway.telekom.at)
+[11:31:29] *** Joins: bjz (bjz@moz-puppgq.tpgi.com.au)
+[11:37:17] *** Joins: achanda (achanda@moz-qv7q4n.ca.comcast.net)
+[11:43:14] *** Quits: p1start (p1start@moz-nftjhe.org) (Ping timeout: 121 seconds)
+[11:43:56] *** Joins: dlight (dlight@moz-d7n.hlq.135.177.IP)
+[11:44:27] *** Joins: amyers (amyers@moz-f2k.1cm.177.128.IP)
+[11:48:09] *** Quits: tamird (textual@moz-lat.dkr.14.50.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[11:49:48] *** Quits: amyers (amyers@moz-f2k.1cm.177.128.IP) (Connection closed)
+[11:50:39] *** Quits: achanda (achanda@moz-qv7q4n.ca.comcast.net) (Connection closed)
+[11:51:48] *** Joins: jdm (jdm@moz-ilbt2e.cable.teksavvy.com)
+[11:56:01] *** Quits: Kingsquee (kingsley@moz-k72lip.bchsia.telus.net) (Quit: Konversation terminated!)
+[11:58:55] *** Quits: rovar (rovar@moz-96effg.dyn.optonline.net) (Quit: Leaving)
+[11:59:27] *** Joins: amyers (amyers@moz-qn874b.zip.zayo.com)
+[12:00:04] *** Quits: amyers (amyers@moz-qn874b.zip.zayo.com) (Connection closed)
+[12:00:14] *** Joins: amyers (amyers@moz-qn874b.zip.zayo.com)
+[12:01:17] *** Joins: mukilan (mukilan@moz-uaj.174.164.122.IP)
+[12:03:20] *** Quits: laumann (thomas@moz-3m6.3kq.109.2.IP) (Ping timeout: 121 seconds)
+[12:15:40] *** Joins: achanda (achanda@moz-qv7q4n.ca.comcast.net)
+[12:19:23] *** Quits: casey (casey@moz-v0ns05.tpgi.com.au) (Connection closed)
+[12:24:10] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[12:36:17] *** Quits: MatrixBridge (matrixirc@moz-905bpb.openmarket.com) (Connection closed)
+[12:36:29] *** Joins: MatrixBridge (matrixirc@moz-905bpb.openmarket.com)
+[12:37:10] *** Joins: Tuba (Tobba@moz-oecqnu.plus.com)
+[12:37:16] *** Quits: Tuba (Tobba@moz-oecqnu.plus.com) (Connection closed)
+[12:43:43] *** Quits: Amaranth (travis@moz-1raqsl.cpe.cableone.net) (Connection closed)
+[12:43:44] <doener> interesting... I had expected "foo(std::unique_ptr<long>); /*...*/ foo(std::move(some_unique_ptr));" to work just like rust's Box<T>, but instead, the unique pointer is passed indirectly and the caller keeps the responsibility to call the destructor
+[12:46:16] *** Joins: Amaranth (travis@moz-1raqsl.cpe.cableone.net)
+[12:50:23] <WindowsBunny> doener: well it should transfer ownership, so the original pointer is now null
+[12:50:42] <doener> WindowsBunny: no
+[12:51:12] <WindowsBunny> well it should!
+[12:51:41] <benh> everybody has to call destructors!
+[12:51:56] <WindowsBunny> doener: the caller still has to call the destructor even though the pointer is null
+[12:52:16] <doener> WindowsBunny: the callee does not call the destructor at all
+[12:52:18] <benh> maybe the move is elided because foo is inlined or something?
+[12:53:29] *** Quits: dlight (dlight@moz-d7n.hlq.135.177.IP) (Ping timeout: 121 seconds)
+[12:54:20] <doener> benh: https://gist.github.com/dotdash/a5134131fdb5850d7f7e
+[12:57:27] <eddyb> doener: what?
+[12:58:17] *** Joins: bdero (bran@moz-nr0176.b90n.1kaj.018d.2601.IP)
+[12:58:26] <eddyb> doener: does unique_ptr<long>&& do something different?
+[12:58:39] <doener> eddyb: no
+[12:58:51] <eddyb> okay...
+[12:59:04] <doener> eddyb: only assignment seems to actually transfer ownership
+[12:59:05] <eddyb> how does this make sense?
+[12:59:49] *** Joins: RC9 (RCIX@moz-uq0.dfa.8.198.IP)
+[12:59:57] <eddyb> where's the free?
+[13:00:44] <doener> eddyb: in the caller
+[13:01:42] <eddyb> doener: you mean, a function which has an unique_ptr variable on the stack?
+[13:01:43] <doener> eddyb: downside: extra level of indirection, upside: no need for invoke
+[13:01:50] <doener> eddyb: yeah
+[13:02:06] <eddyb> function arguments do not call destructors but locals do?
+[13:02:25] <eddyb> my head hurts :|
+[13:02:41] <eddyb> doener: pass-by-value is pass-by-ref until you move out of it?
+[13:03:31] <doener> yeah, seems like it
+[13:03:54] <doener> it's indeed not limited to unique_ptr, works for normal classes as well
+[13:04:15] <eddyb> unique_ptr is a normal class
+[13:04:30] <eddyb> it's worse enough as it is without there being special-cased types :P
+[13:04:52] <doener> eddyb: I thought that maybe some move constructor magic or whatever is responsible
+[13:04:57] <doener> makes no sense though
+[13:06:03] <doener> oh no, I'm getting "undefined reference to `_Unwind_Resume'" during "make check"
+[13:07:08] *** Joins: dlight (dlight@moz-7rhf91.gvt.net.br)
+[13:09:05] <arielby> doener: I was getting that too
+[13:09:07] <arielby> have any idea?
+[13:09:25] <doener> arielby: none at all :-/
+[13:09:42] <doener> already did a clean rebuild, no dice
+[13:11:04] <arielby> acrichto: ^
+[13:19:48] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[13:20:51] *** Quits: bdero (bran@moz-nr0176.b90n.1kaj.018d.2601.IP) (Connection closed)
+[13:21:48] *** Quits: Viewtiful (Viewtiful@moz-eub.afi.30.89.IP) (Quit: Leaving...)
+[13:22:16] *** Joins: bdero (bran@moz-nr0176.b90n.1kaj.018d.2601.IP)
+[13:24:03] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[13:26:12] *** Joins: listochkin (listochkin@moz-u28j0j.interview.volia.net)
+[13:26:24] *** Quits: listochkin (listochkin@moz-u28j0j.interview.volia.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[13:26:36] *** Quits: arielby (Mibbit@moz-cmi.jfj.114.192.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[13:28:58] *** Joins: bluss (bluss@moz-dc3fi4.customer.cdi.no)
+[13:30:09] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[13:35:33] *** wcosta is now known as wcosta|brb
+[13:40:11] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[13:41:09] *** Joins: summerlight (summerlight@moz-lb3.6do.193.175.IP)
+[13:42:22] *** Joins: listochkin (listochkin@moz-u28j0j.interview.volia.net)
+[13:42:44] *** Joins: zmack (zmack@moz-htpein.home.aster.pl)
+[13:42:51] *** Quits: Feyn (aram@moz-5vj.68e.115.42.IP) (Quit: Leaving)
+[13:51:14] *** Joins: eibwen (eibwen@moz-7bgmg3.dip0.t-ipconnect.de)
+[13:54:37] *** Joins: tamird (textual@moz-ga3.afc.209.65.IP)
+[14:00:38] *** Joins: waffles (wafflespean@moz-af6.co9.193.113.IP)
+[14:12:52] *** Quits: zmack (zmack@moz-htpein.home.aster.pl) (Connection closed)
+[14:14:37] <SimonSapin> pnkfelix: Do you have a suggestion of what to do about this LLVM assertion error? https://github.com/rust-lang/rust/pull/26241#issuecomment-117442724
+[14:14:39] <SimonSapin> bugpoint gave a "reduce" file of 18 MB of IR
+[14:16:16] <doener> SimonSapin: same as gh26484 I guess
+[14:16:16] <[o__o]> Using both --enable-debug, --enable-optimization causes an assertion failure on build: https://github.com/rust-lang/rust/issues/26484
+[14:16:46] *** Quits: listochkin (listochkin@moz-u28j0j.interview.volia.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[14:16:51] <doener> SimonSapin: so not a new bug, build without debug info and ignore it maybe?
+[14:18:03] *** Quits: achanda (achanda@moz-qv7q4n.ca.comcast.net) (Connection closed)
+[14:19:03] <SimonSapin> doener: So this bug would not occur on buildbot when trying to land that PR?
+[14:20:28] <Luqman> SimonSapin: i'm guessing so since i've run into that on master lately
+[14:20:55] <doener> SimonSapin: I'd guess so. There's currently no bot that builds with debug and optz. There's an open issue for that, but obviously that needs 26484 to be resolved first
+[14:21:25] *** Joins: killercup (killercup@moz-4udt1b.dip0.t-ipconnect.de)
+[14:23:19] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[14:28:47] *** Quits: AlisdairO (anonymous@moz-ntsaoe.cable.virginm.net) (Client exited)
+[14:30:13] <pnkfelix> SimonSapin: I've been looking into it
+[14:31:18] <pnkfelix> SimonSapin: but I do not have an immediate workaround beyond disabling debuginfo.  (I do not know of a trivial way to ask for a configure that has --enable-debug but all the debuginfo stuff turned off, which is unfortunate since that is probably the best way for you to test the PR in the meantime)
+[14:32:24] *** Joins: harrisonclarke (harrisoncla@moz-5oo.19q.134.142.IP)
+[14:34:42] <SimonSapin> pnkfelix: if we have no builder in that config, could the PR just be r+’d ?
+[14:35:23] <pnkfelix> "could", sure
+[14:35:45] <pnkfelix> I'm personally on a protest against the fact that we have no builder in that config
+[14:42:09] *** Quits: squiddy (squiddy@moz-md4.pm3.19.178.IP) (A TLS packet with unexpected length was received.)
+[14:44:42] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[14:49:07] *** Quits: Tobba (Tobba@moz-oecqnu.plus.com) (A TLS packet with unexpected length was received.)
+[14:49:23] <SimonSapin> pnkfelix: Is that a reason to block PRs?
+[14:50:10] <pnkfelix> who's blocking?
+[14:51:05] <SimonSapin> no one I guess, your previous sentence seemed to imply you were against landing gh26241 because of this
+[14:51:06] <[o__o]> Implement DerefMut for String: https://github.com/rust-lang/rust/pull/26241
+[14:51:58] <pnkfelix> SimonSapin: well, the bigger problem is that, unless I missed something, I don't see a reviewer with an `r=me` in the comments on gh26241
+[14:51:58] <[o__o]> Implement DerefMut for String: https://github.com/rust-lang/rust/pull/26241
+[14:52:41] <SimonSapin> not quite r=me, but https://github.com/rust-lang/rust/pull/26241#issuecomment-117401540 sounds like approval. I’ll ping Alex
+[14:52:57] <pnkfelix> SimonSapin: Its true, it would be bad practice for me to choose to r- (or even fail to re-r+ ) based on this build bot issue alone
+[14:53:06] <SimonSapin> (I’m also rebuilding locally with default configure flags)
+[14:53:11] * pnkfelix goes to go re-read
+[14:53:19] <SimonSapin> sure, I’m not asking you to
+[14:53:44] <SimonSapin> If this build succeeds I’ll comment on the PR and wait for Alex to respond
+[14:53:59] <pnkfelix> SimonSapin: hmm, okay, I think you are right.  I interpreted that comment one way but in hindsight it looks like it effectively was an r=me from alex
+[14:57:03] <pnkfelix> SimonSapin: r+'ed
+[14:57:09] *** Quits: summerlight (summerlight@moz-lb3.6do.193.175.IP) (Ping timeout: 121 seconds)
+[14:57:19] *** Joins: AlisdairO (anonymous@moz-ntsaoe.cable.virginm.net)
+[14:57:23] *** Quits: harrisonclarke (harrisoncla@moz-5oo.19q.134.142.IP) (Connection closed)
+[14:58:06] *** Joins: ytain (ytain@moz-gslvdm.cpe.pppoe.ca)
+[14:58:20] <bluss> hm, why not r=yourself? :)
+[15:02:55] *** Joins: SiegeLord (sl@moz-9jtaei.ca.comcast.net)
+[15:03:08] *** wcosta|brb is now known as wcosta
+[15:05:03] <pnkfelix> b/c I didn't review it
+[15:12:00] *** Quits: AlisdairO (anonymous@moz-ntsaoe.cable.virginm.net) (Client exited)
+[15:14:57] *** Joins: AlisdairO (anonymous@moz-ntsaoe.cable.virginm.net)
+[15:15:32] *** Joins: Tobba (Tobba@moz-oecqnu.plus.com)
+[15:16:00] *** Quits: vmx (vmx@moz-p4glpr.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[15:20:35] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[15:22:23] *** Joins: vmx (vmx@moz-p4glpr.dip0.t-ipconnect.de)
+[15:23:47] *** Quits: vmx (vmx@moz-p4glpr.dip0.t-ipconnect.de) (Quit: Leaving)
+[15:24:04] *** Joins: harrisonclarke (harrisoncla@moz-th044a.ns.bellaliant.net)
+[15:24:58] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[15:33:47] *** Joins: imperio (Mibbit@moz-0ebgt2.fbx.proxad.net)
+[15:33:51] <imperio> eddyb: ping
+[15:34:23] <eddyb> imperio: pong
+[15:34:51] <imperio> so about the PR, for now we have compilation warnings about error codes which are use multiple times
+[15:34:56] <imperio> *used
+[15:35:03] <imperio> do I keep them or not ?
+[15:36:11] <doener> pnkfelix: we're marking function pointers as subroutines instead of pointers
+[15:36:36] <pnkfelix> doener: that might explain the debuginfo bug, eh?
+[15:36:50] <doener> pnkfelix: that's what I was chasing ;-)
+[15:36:57] <eddyb> imperio: I believe there should be no warnings
+[15:37:19] <pnkfelix> eddyb: wait, what?
+[15:37:25] *** Quits: SiegeLord (sl@moz-9jtaei.ca.comcast.net) (Quit: It's a joke, it's all a joke.)
+[15:37:36] <eddyb> as in, you should avoid having any warnings from error codes
+[15:37:37] <pnkfelix> eddyb: I believe catching duplicate entries in the error code lists was still a goal
+[15:38:05] <pnkfelix> eddyb: or rather
+[15:38:08] <pnkfelix> eddyb: (and also)
+[15:38:19] <imperio> eddyb: I'll write another macro/function which will allow to do it but without warning
+[15:38:25] <eddyb> imperio: so when you have duplicated codes, is it in the same piece of code, or are the different uses of the same error code across different functions?
+[15:38:26] <pnkfelix> eddyb: we wanted to safe guard against the same error code being used for two distinct warning messages
+[15:38:34] <imperio> it darkens the code but if you really wants to avoid compilation warnings...
+[15:38:48] <pnkfelix> eddyb: Maybe I am misunderstanding the feedback you are giving to imperio
+[15:38:49] <imperio> eddyb: not in the same parts, that's the issue
+[15:39:00] <imperio> pnkfelix: gh26898
+[15:39:01] <[o__o]> Improvements of librustc_resolve and add missing error codes: https://github.com/rust-lang/rust/pull/26898
+[15:39:10] *** Joins: nham (nham@moz-lglsfe.il.comcast.net)
+[15:39:12] <eddyb> pnkfelix: I have seen error reporting being factored out into functions so the same code/message can be used from multiple locations
+[15:39:20] <pnkfelix> eddyb: okay sorry I do approve of that
+[15:39:31] <pnkfelix> eddyb:  I thought you were telling imperio that he should remove the error-code checking
+[15:39:42] <eddyb> pnkfelix: initially I was going to suggest using a different error code for each message used with the old resolve_error calls
+[15:39:43] <imperio> pnkfelix: no, not at all aha
+[15:39:55] <eddyb> but I'm not sure that's the best either
+[15:39:56] *** Joins: mib_li24vp (Mibbit@moz-hu6.nja.252.72.IP)
+[15:39:58] <pnkfelix> eddyb: Which is a very different interpretation of: "there should be no warnings"  ;)
+[15:40:16] <imperio> well, I'm make a work around
+[15:40:17] <eddyb> "you should have no warnings caused by your PR"
+[15:40:23] <pnkfelix> gotcha
+[15:40:23] <eddyb> our error code allocation is also a bit messy :(
+[15:40:28] <pnkfelix> true
+[15:40:33] <imperio> true
+[15:41:21] <imperio> the error code checking is a bit stupid too
+[15:41:36] <imperio> why is it a problem if you call the same error code from different places ?
+[15:41:41] <imperio> makes no sense...
+[15:41:56] <pnkfelix> imperio: we wanted to safe guard against the same error code being used for two distinct warning messages
+[15:42:05] <pnkfelix> imperio: the safe-guard is conservative and naive
+[15:42:08] *** Quits: mib_li24vp (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:42:22] <imperio> pnkfelix: I can understand this, but in my case, that's the exact same error message
+[15:42:43] <pnkfelix> imperio: right, but in that case, it should be too hard to factor your code out to a separate subroutine
+[15:43:07] <imperio> yep
+[15:43:12] <pnkfelix> imperio: annoying, but easier than trying to figure out how to make the overall check sufficiently smart to allow duplication
+[15:43:16] *** Quits: bvinc (brain@moz-ake53i.rcsntx.sbcglobal.net) (Ping timeout: 121 seconds)
+[15:43:22] <imperio> I'll just write a workaround function
+[15:43:36] <imperio> not very beautiful but who cares ? :p
+[15:44:09] *** Joins: bvinc (brain@moz-ake53i.rcsntx.sbcglobal.net)
+[15:44:34] <imperio> pnkfelix: you want me to tag you in the PR to follow its evolution ?
+[15:45:40] <pnkfelix> imperio: no that's okay, I trust eddyb
+[15:45:53] <pnkfelix> (despite my confused responses above)
+[15:45:57] <eddyb> I don't know that much about error codes, though so far I haven't been wrong
+[15:46:25] <eddyb> I was hoping to get someone who has done more work with them to look at the PR
+[15:46:37] <eddyb> I can only think of Manishearth atm
+[15:46:57] <eddyb> imperio: btw, you have a few cases which use "{}" as the format string, followed by a string literal
+[15:47:26] <Manishearth> hm?
+[15:47:50] <imperio> eddyb: I'm checking that too
+[15:48:11] *** Joins: arielb1 (Ariel@moz-b95g78.red.bezeqint.net)
+[15:48:59] <eddyb> Manishearth: imperio brought error codes to resolve in gh26898
+[15:49:00] <[o__o]> Improvements of librustc_resolve and add missing error codes: https://github.com/rust-lang/rust/pull/26898
+[15:49:31] <eddyb> Manishearth: LGTM but I wanted to make sure everything's in order
+[15:50:32] <eddyb> Manishearth: mind taking a look at it?
+[15:52:10] *** Joins: Tuba (Tobba@moz-oecqnu.plus.com)
+[15:52:10] *** Quits: Tuba (Tobba@moz-oecqnu.plus.com) (Connection closed)
+[15:53:57] <Manishearth> kay
+[15:54:09] <imperio> Manishearth: thanks :)
+[15:55:49] <imperio> I have an issue for writing the super wonderful macro : I pass "432" and I wanna add "E0" in front of it in the process like : "$code:expr", and then passing it like : "E0$code"
+[15:56:06] <imperio> Is that possible or do I have to handle it with a match ?
+[15:56:15] *** Quits: harrisonclarke (harrisoncla@moz-th044a.ns.bellaliant.net) (Connection closed)
+[15:57:45] <GBGamer> imperio: do you mean like a macro!(432) -> "E0432"
+[15:58:18] <imperio> no, I mean like I pass 432 as a parameter in a macro, and inside this macro, I pass E0432 in another macro
+[15:58:28] <imperio> like the error code
+[15:58:32] <imperio> not like a string
+[15:58:45] <GBGamer> so, concat_idents?
+[15:58:48] <imperio> I concat 432 and E0
+[15:59:31] <imperio> but the issue is that 432 isn't recognized as an ident then
+[15:59:59] <pnkfelix> imperio: please don't do this
+[16:00:14] <GBGamer> yeah, I think I agree with pnkfelix
+[16:00:16] <pnkfelix> imperio: if anything you are going to make it harder for people to grep for the error dcode
+[16:00:18] <imperio> pnkfelix: hum... You have another solution in mind ?
+[16:00:27] <pnkfelix> yes.  Make a subroutine that emits the message
+[16:00:37] <imperio> pnkfelix: yes, that's why I was grumbling against the error code checker
+[16:00:41] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[16:00:51] <pnkfelix> fn common_subroutine(args, ...) { /* in here is the *only* reference to E0432 */ }
+[16:00:52] <imperio> pnkfelix: so I have to create a function finally ?
+[16:01:02] <imperio> ok !
+[16:01:03] <pnkfelix> imperio: why are you adverse to making a function?
+[16:01:23] <imperio> I was afraid it was a bit too heavy
+[16:01:34] <imperio> but if it's okay, then I totally do it
+[16:01:54] *** Joins: O01eg (o01eg@moz-3agoj3.qpcp.3egh.2698.2a02.IP)
+[16:01:55] <imperio> but a macro instead of a function
+[16:02:02] <pnkfelix> Why a macro?
+[16:02:07] <imperio> I'll just create a macro for each duplicated error code
+[16:02:13] * pnkfelix does not understand why a macro is warranted here
+[16:02:15] <imperio> pnkfelix: it allows a bit more
+[16:02:36] <imperio> I'm not sure all types passed are the same
+[16:02:40] <pnkfelix> imperio: okay, i changed my mind: Add me to the CC list for the bug, please.
+[16:02:52] <imperio> they just have the field emit_error in common
+[16:02:57] <imperio> ok haha
+[16:03:05] *** Quits: killercup (killercup@moz-4udt1b.dip0.t-ipconnect.de) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[16:03:14] <imperio> done ^^
+[16:05:02] <pnkfelix> imperio: I'll wait until you're done to judge the result, but I'll warn you up front that my gut reaction is that adding error codes to our output messages should not require any further macro infrastructure beyond what we already have for it.
+[16:05:18] <pnkfelix> (and that's coming from a Schemer, i.e. someone who *loves* using macros)
+[16:05:35] <imperio> well
+[16:05:41] <imperio> it's just a way for making it easy
+[16:05:53] <imperio> changing afterwards should be easy
+[16:06:07] *** Joins: npm (npm@moz-ond.4f3.56.172.IP)
+[16:06:09] <imperio> I'll let you judge and then I'll change or not, depending on your opinion
+[16:06:26] *** Quits: GBGamer (npm@moz-ond.4f3.56.172.IP) (Connection closed)
+[16:06:27] <pnkfelix> who knows, maybe you'll convince me that its warranted
+[16:06:44] <imperio> oh crap
+[16:06:54] <pnkfelix> but statements like "I'll add a macro for each duplicated error code" make me worried.
+[16:06:56] <Manishearth> eddyb: lgtm
+[16:07:27] <huon> acrichto: apparently libc broke back compat going 0.1.8 -> 0.1.9 
+[16:08:07] *** Joins: yjv_ (yjv@moz-j0cdis.fios.verizon.net)
+[16:10:20] <eddyb> Manishearth: thanks
+[16:11:13] *** Joins: poorman (poorman@moz-vid7t6.res.rr.com)
+[16:11:27] <acrichto> huon: yes
+[16:12:22] <huon> acrichto: should that've been -> 0.2 then?
+[16:12:44] <acrichto> huon: unsure, it's a minor change and it's not worth making a breaking change on the most downloaded crate on crates.io
+[16:13:31] <huon> acrichto: hm, well it breaks this in practice
+[16:13:37] <acrichto> yes
+[16:13:45] <acrichto> I just have yet to deal with this pile of emails this morning
+[16:13:46] <huon> so we did in fact make a breaking change
+[16:14:01] <huon> but didn't use the infrastructure we have to make handling it easy
+[16:14:31] <npm> what was the breaking change?
+[16:14:56] <huon> [08:26:41] <jarrednicholls> I have a crate that depends on libc 0.1.8, and another dependency that also depends on libc 0.1.8.  However, libc 0.1.8 is never downloaded and 0.1.9 is downloaded instead.  It so happens that libc 0.1.9 breaks compatibility with my one dependency nix 0.3.9.
+[16:15:21] <huon> (I agree that it seems annoying to force everyone to upgrade for something that's probably relatively minor)
+[16:19:53] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[16:22:45] <imperio> eddyb: pnkfelix: I added functions. No more warnings. However, don't you think I could do the same with just one function and a match ?
+[16:26:28] <pnkfelix> imperio: as a matter of style, I would try to avoid embedded error code numbers into function names
+[16:27:03] <imperio> I thought it made it more clear
+[16:27:07] <pnkfelix> imperio: I think I would opt personally to 1. identify the different kinds of resolve errors that occur
+[16:27:20] <pnkfelix> imperio: 2. create an enum with variants corresponding to each error
+[16:27:40] <pnkfelix> imperio: 3. make a single function that takes an instance of the enum and then maps it to the appropriate message (with embedded error code)
+[16:27:50] <imperio> okay, you answered my question ^^'
+[16:27:58] <imperio> I'll create the enum
+[16:27:59] <pnkfelix> imperio: I think you can see examples of this elsewhere ... let me see ...
+[16:28:14] <pnkfelix> imperio: hold on a sec, let me at least give you a pointer
+[16:28:20] <pnkfelix> imperio: so that you can see an example of what I'm talking about
+[16:28:24] <Luqman> doener: can the llvm ir tests be arch specific?
+[16:28:46] <imperio> pnkfelix: thanks :)
+[16:30:40] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[16:30:41] <doener> Luqman: maybe? :-)
+[16:30:45] <pnkfelix> imperio: here is one example of such an enum: https://github.com/rust-lang/rust/blob/master/src/librustc/middle/infer/region_inference/mod.rs#L99
+[16:30:51] <doener> Luqman: I'm not sure
+[16:31:14] *** Joins: achanda (achanda@moz-qv7q4n.ca.comcast.net)
+[16:33:27] <imperio> pnkfelix: in the present case, that's always the same objects, no need for something like this I guess
+[16:33:47] <imperio> Just having a comprehensive enum will be enough I think =D
+[16:33:57] <pnkfelix> imperio: well then in that case a C style enum that odes not carry any extra state will probably suffice
+[16:34:12] <pnkfelix> imperio: but still, such enums can be extended in the future to carry such extra state
+[16:34:22] <pnkfelix> imperio: so I still prefer them.  :)
+[16:34:35] <imperio> pnkfelix: Okay, then here I go ! :)
+[16:36:34] <huon> llvm documented their inline assembly syntax, finally. http://llvm.org/docs/LangRef.html#inline-assembler-expressions
+[16:36:43] *** Quits: Murarth (Murarth@moz-19ra4p.dyn.nltelcom.net) (Quit: Mani Mani is always Mani Mani at Mani Mani with all Mani Mani Mani)
+[16:37:00] *** Joins: Murarth (Murarth@moz-4t8fs2.phnx.qwest.net)
+[16:37:42] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[16:37:42] *** ChanServ sets mode: +o pcwalton
+[16:41:53] *** Quits: untitaker (untitaker@moz-shub0s.highway.telekom.at) (Ping timeout: 121 seconds)
+[16:41:59] <doener> pnkfelix: testing a fix for the debug stuff now
+[16:42:34] <pnkfelix> doener: k thx
+[16:43:03] <SimonSapin> I don’t understand the output of check-cfail: https://gist.github.com/anonymous/ae25048513e11834281a
+[16:43:50] <SimonSapin> In https://github.com/rust-lang/rust/blob/master/src/test/compile-fail/str-mut-idx.rs , what do ~^ and ~^^ mean?
+[16:44:08] *** Quits: Tobba (Tobba@moz-oecqnu.plus.com) (A TLS packet with unexpected length was received.)
+[16:44:35] *** Joins: untitaker (untitaker@moz-12ob49.highway.telekom.at)
+[16:44:47] <pnkfelix> SimonSapin: they mean that that the error message that we expect to see
+[16:45:09] <pnkfelix> SimonSapin: should be associated with the line that precedes this line by one or two lines respectively
+[16:45:11] <pnkfelix> SimonSapin: that is
+[16:45:20] <SimonSapin> yet make says "unexpected compiler error"
+[16:46:01] <SimonSapin> even when I add one more with //~^^^
+[16:46:06] <pnkfelix> SimonSapin: that means that under your PR, it is now seeing a new error message that was not included in the expected output.
+[16:46:26] <eddyb> SimonSapin: you might have multiple errors on the same line, even identical
+[16:46:28] <pnkfelix> SimonSapin: have you compiled the test in question yourself with your patched version of the compiler?
+[16:46:55] <pnkfelix> SimonSapin: yes, unfortunately if the same error comes up multiple times for the same line, the test infrastructure ensures that *exactly* the right number that is expected is printed.
+[16:47:25] <pnkfelix> SimonSapin: By the way, you may want to switch the expected error message comments to use the `~^` + `~|` form instead
+[16:47:58] <SimonSapin> what’s the difference? (is this documented?)
+[16:48:48] <pnkfelix> SimonSapin: I don't remember where I documented this.  I'm not sure if compiletest has all that much documentation
+[16:49:15] <pnkfelix> SimonSapin: but the difference is that with the `~^^^` form, you need to count the right number of ^'s
+[16:49:33] <pnkfelix> SimonSapin: with the `~^` and `~|` form, it just "follows the arrow" to the right line
+[16:49:36] <pnkfelix> SimonSapin: I'll find an example
+[16:50:52] <SimonSapin> pnkfelix: Ok, I have as many ~^ and ~| lines as occurrences of error: in the output now, but still "unexpected compiler error
+[16:50:53] <SimonSapin> "
+[16:50:54] <pnkfelix> SimonSapin: here is the "doc" : https://github.com/pnkfelix/rust/commit/f5b795dc82edb4488bf237b470a68fcfec505bac#diff-a4460b18aee6cf89f50f743c29ff3c9aR26
+[16:51:29] <pnkfelix> SimonSapin: unfortunately it is hard to diagnose this without seeing the output from a manual run of the compiler on your test
+[16:51:41] <pnkfelix> SimonSapin: so that we can analyze the exact set of error messages it is emitting.
+[16:51:50] * pnkfelix has to step out
+[16:52:12] *** Quits: doener (bs@moz-c061a3.saltation.de) (Quit: leaving)
+[16:52:54] <SimonSapin> https://gist.github.com/anonymous/e7545cd5d85f32251a6e
+[16:53:57] <pnkfelix> SimonSapin: (by "a manual run" I meant: Invoke `rustc` yourself at the command line, but I guess the output in this gist can work...)
+[16:54:54] <pnkfelix> SimonSapin: you haven't added any expected errors for IndexMut not being implemented
+[16:55:06] <pnkfelix> SimonSapin: are you expecting to see that error, or not?  (Or is gistfile2.rs in that gist out-of-date ? )
+[16:55:40] *** Joins: killercup (killercup@moz-0pf6i8.dip0.t-ipconnect.de)
+[16:57:04] <SimonSapin> oh, I missed that the errors were not all the same
+[16:57:06] <SimonSapin> thanks
+[17:00:23] *** Quits: waffles (wafflespean@moz-af6.co9.193.113.IP) (Ping timeout: 121 seconds)
+[17:03:53] *** Joins: waffles (wafflespean@moz-af6.co9.193.113.IP)
+[17:07:57] *** Quits: npm (npm@moz-ond.4f3.56.172.IP) (Connection closed)
+[17:12:15] <imperio> I hate lifetimes
+[17:12:39] *** Quits: Murarth (Murarth@moz-4t8fs2.phnx.qwest.net) (Quit: I have come here to chew bubblegum and kick ass. And I'm all out of bubblegum.)
+[17:13:02] *** Joins: Murarth (Murarth@moz-jva.78t.166.46.IP)
+[17:14:55] *** Quits: ytain (ytain@moz-gslvdm.cpe.pppoe.ca) (Quit: Textual IRC Client: www.textualapp.com)
+[17:16:05] *** Joins: sprang (sprang@moz-gpnug3.3dj0.bqct.0647.2601.IP)
+[17:18:35] *** Quits: MatrixBridge (matrixirc@moz-905bpb.openmarket.com) (Connection closed)
+[17:18:42] *** Joins: MatrixBridge (matrixirc@moz-905bpb.openmarket.com)
+[17:19:15] <Gankro> Hmm... It occurs to me that it's slightly inconsistent to say that `unsafe` code can't trust generic trait implementations to be correct, but it *can* trust concrete implementations to be correct. That is, in either case you're trusting Safe code to be correct to avoid Undefined Behaviour. The only difference is a matter of scale (one-to-one vs one-to-many)
+[17:19:15] <Gankro> and the ability to potentially review the code in question. (which certainly doesn't seem like an *insubstantial* difference)
+[17:19:18] *** Quits: poorman (poorman@moz-vid7t6.res.rr.com) (Quit: )
+[17:20:16] *** Quits: MatrixBridge (matrixirc@moz-905bpb.openmarket.com) (Connection closed)
+[17:20:24] *** Joins: MatrixBridge (matrixirc@moz-905bpb.openmarket.com)
+[17:20:40] <Gankro> However the assertion that bad safe code can't cause undefined behaviour isn't quite right then. Bad safe code can't cause undefined behaviour unless some random unsafe code decides to rely on it arbitrarily.
+[17:20:41] <pnkfelix> Gankro: what is the context?
+[17:21:00] <Gankro> pnkfelix: writing why unsafe trait is a thing
+[17:21:27] <pnkfelix> Gankro: `unsafe trait`, or `unsafe impl` ?
+[17:21:33] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[17:21:39] <Gankro> pnkfelix: two sides of the same coin, no?
+[17:22:09] <pnkfelix> Gankro: I don't know, I need to double check
+[17:22:18] <arielb1> Gankro: unsafe code shouldn't trust random stuff to be correct
+[17:22:34] <Gankro> As a concrete case, lots of code "trusts" Vec
+[17:23:08] <Gankro> e.g. you can call with_capacity, get the ptr, and it has exactly `capacity` elements allocated
+[17:23:12] <arielb1> each bit of unsafe code should trust a known amount of code
+[17:23:13] *** Joins: poorman (poorman@moz-vid7t6.res.rr.com)
+[17:23:13] <pnkfelix> Gankro: I think the idea is that unsafe code can only "trust" invariants established by safe code, if that safe code falls within a module boundary
+[17:23:28] <arielb1> pnkfelix: you can also trust parent crates
+[17:23:30] <pnkfelix> Gankro: and so Vec is an example of that, in principle at least
+[17:23:33] <arielb1> in some cases
+[17:23:40] <pnkfelix> Gankro: can you trust parent crates?
+[17:23:45] <pnkfelix> arielb1: ^ ?
+[17:24:05] <pnkfelix> arielb1: what's an example of that?
+[17:24:08] <Gankro> Do crates have a parent/child relation?
+[17:24:26] <arielb1> pnkfelix: I think the rule is that you shouldn't trust things that are not trustworthy
+[17:24:53] <pnkfelix> arielb1: I cannot tell if you are writing that in jest or in sincerity
+[17:25:00] <arielb1> I mean, having unsafe code that trusts `sort` to e.g. actually sort a list of u32-s is fine
+[17:25:02] <pnkfelix> arielb1: i.e. it appears oxymoronic
+[17:25:15] *** Joins: listochkin (listochkin@moz-u28j0j.interview.volia.net)
+[17:25:25] <pnkfelix> arielb1: okay, but we are only talking about the `sort` provided by libstd in this case, right?
+[17:25:42] <pnkfelix> arielb1: or are we talking about an impl of a trait that has a `sort` method ?
+[17:25:53] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[17:26:00] <arielb1> pnkfelix: I am talking about libstd's sort
+[17:26:11] <pnkfelix> arielb1: okay then yes I'm on board with that
+[17:26:23] <arielb1> pnkfelix: "trust" and "trustworthy" are infosec definitions
+[17:26:25] <pnkfelix> arielb1: but it seems obvious that libstd is part of the trusted computing base (TCB), right? 
+[17:26:47] <arielb1> B is trusted (by A for C) if B can violate C
+[17:27:08] <arielb1> (and A can allow it)
+[17:27:28] <arielb1> that's a "factual" definition
+[17:27:45] <arielb1> by it, a computer trusts everyone with a 0-day
+[17:27:59] <arielb1> B is trustworthy (by A for C) is a policy decision
+[17:28:19] <pnkfelix> arielb1: okay
+[17:28:29] * pnkfelix scrolls back up to Gankro 's original q
+[17:28:37] *** Joins: dcb (dcb@moz-4hh.6p3.217.74.IP)
+[17:28:44] <Gankro> arielb1: So it's ok to unconditionally trust everything exported by std?
+[17:28:59] <arielb1> Gankro: for what?
+[17:29:17] <Gankro> Anything it claims to do can be relied on for memory safety in unsafe code
+[17:29:22] <aturon> Gankro: isn't the point just that you can trust known code, but can't trust unknown code?
+[17:29:48] <arielb1> "that's a policy decision"
+[17:30:13] <Gankro> aturon: my concern about that is that it substantially expands the scope of "things that can make the badness happen"
+[17:30:14] <aturon> Gankro: (in terms of the one-one/one-many distinction you were making)
+[17:30:55] <Gankro> Not that we honestly review more or less seriously when `unsafe` is touched, in my experience
+[17:31:10] <aturon> Gankro: put differently, you want it to be the case that your safe abstraction can never have UB regardless of any *parameters* instantiated by safe code
+[17:31:24] <aturon> Gankro: but if you use e.g. Vec internally, that is not controlled by a parameter,
+[17:31:24] <Gankro> waht
+[17:31:36] <nagisa> http://reviews.llvm.org/rL241698 woaaaah
+[17:31:41] <Gankro> aturon: Ah I see
+[17:31:43] *** Joins: doener (doener@moz-fnh.n4j.147.5.IP)
+[17:32:04] <Gankro> nagisa: holy shit, llvm docs!
+[17:32:06] <aturon> Gankro: "safe abstraction" == "safe in any client context/parameters"
+[17:32:15] *** chmanchester|afk is now known as chmanchester
+[17:32:26] *** Quits: dcb (dcb@moz-4hh.6p3.217.74.IP) (Quit: Textual IRC Client: www.textualapp.com)
+[17:32:36] <aturon> which involves trusting the type/borrow checker and any *concrete* safe code you are using internally
+[17:32:53] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[17:32:57] *** Joins: munksgaard (munksgaard@moz-478pev.u.parknet.dk)
+[17:33:12] *** Quits: waffles (wafflespean@moz-af6.co9.193.113.IP) (Quit: C'yall soon...)
+[17:33:32] <imperio> eddyb: pnkfelix: updated. Is it good ?
+[17:33:51] <huon> Gankro: nagisa (in rendered form, http://llvm.org/docs/LangRef.html#inline-assembler-expressions )
+[17:33:55] <pnkfelix> and the logic of those checkers in turn relies on correct usage of `unsafe impl` by the code that is part of the client context
+[17:33:57] <arielb1> libstd *should* be mostly trustworthy
+[17:33:57] <arielb1> there may be buggy areas, through
+[17:33:57] <arielb1> I mean, you should be able to mostly trust libstd to comply with the documentation
+[17:33:57] <arielb1> aturon: libpng is known code
+[17:33:57] <arielb1> it isn't particularly trustworthy
+[17:33:57] <arielb1> you shouldn't trust unknown out-of-crate safe code for memory-safety
+[17:33:57] <pnkfelix> Gankro: ^
+[17:33:57] <aturon> Gankro: (glad to hash this out in person if that'd be helpful)
+[17:34:17] <Luqman> nagisa: and a pull to link to it from our docs already!
+[17:34:33] <Gankro> aturon: Nah I just need to stew on this
+[17:34:50] <pnkfelix> Gankro: If we didn't require the `unsafe` in `unsafe impl`, then we would have a leak where we would be relying on the correctness of client code that didn't include the word `unsafe`
+[17:34:50] <aturon> arielb1: sure, there are best practices, but Gankro is trying to define formally what must be true of a safe abstraction over unsafe code
+[17:35:06] <arielb1> aturon: "formally"?
+[17:35:10] <pnkfelix> imperio: looking
+[17:35:27] <aturon> arielb1: heh, ok "formally" might be a stretch :)
+[17:35:30] <arielb1> it isn't UB to have unsafe code that trusts the response from an HTTP
+[17:35:40] <arielb1> from an unauthenticated HTTP connection
+[17:35:43] <Gankro> pnkfelix: I totally agree with unsafe trait/impl; I have just become slightly disillusioned with *concrete* safe code :P
+[17:35:44] <arielb1> not a wise idea, through
+[17:36:28] <aturon> arielb1: the whole notion of "trust" here is based on results that could lead to UB in the guts of the unsafe code
+[17:37:19] <aturon> arielb1: IOW if the result can't lead to UB internally, no trust is needed
+[17:37:52] <arielb1> aturon: I don't see how a buffer overflow is different from mmap-ing and running code you got from teh interwebz
+[17:38:10] <arielb1> or even writing it to a file and then running it
+[17:38:21] <arielb1> (except the latter can be done in safe code of course)
+[17:38:36] <pnkfelix> imperio: I fear you missed part of the idea with factoring those error messages into an enum
+[17:38:42] <arielb1> Rust's standard libraries should provide a "safe interface"
+[17:38:51] <aturon> arielb1: the idea is that "safe" in Rust should ultimately have a formalizable meaning
+[17:39:06] <pnkfelix> imperio: in particular, it would be nice if the error message you emit *came from* the enum variant
+[17:39:08] <aturon> which does not exclude all of the silly things you might do, but does exclude certain classes of them
+[17:39:13] <arielb1> aturon: should it?
+[17:39:14] <imperio> pnkfelix: ooooh
+[17:39:22] <imperio> hum...
+[17:39:27] <pnkfelix> imperio: what you have here, you construct the enum variant, and in parallel you construct an error message.
+[17:39:31] <aturon> arielb1: yes. that's pretty much a foundational principle of the language.
+[17:39:36] <imperio> you mean I pass it inside the num or I generate it from the enum variant ?
+[17:39:40] <arielb1> I think there should be a formalizable "completely-safe"
+[17:39:48] <arielb1> which is a standard libstd etc. should go for
+[17:40:29] <pnkfelix> imperio: i'll write a comment on the PR
+[17:40:36] <imperio> pnkfelix: I think I got what you mean, I generate message from my centralized function then
+[17:40:36] <arielb1> which is linking-preserved and fulfilled by all unsafe-free Rust code
+[17:40:57] <imperio> pnkfelix: I'll wait your comment then
+[17:40:58] <aturon> arielb1: where "unsafe-free" permits using std?
+[17:41:13] <arielb1> aturon: linking-preserved
+[17:41:22] <aturon> arielb1: std isn't unsafe-free :)
+[17:41:24] <arielb1> if A is completely-safe, and B is completely-safe
+[17:41:45] <arielb1> aturon: unsafe-free -> completely-safe (when linked with completely-safe crates)
+[17:42:24] <aturon> i'm afraid i don't follow. i'm trying to ask if you consider std to be a special case, considered completely-safe by fiat despite the use of unsafe
+[17:42:33] <arielb1> aturon: it isn't
+[17:42:43] <arielb1> there's a runtime definition of complete-safety
+[17:42:50] <arielb1> which libstd satisfies
+[17:42:59] <arielb1> and unsafe-free Rust satisfies
+[17:43:09] <arielb1> and is closed under linking
+[17:44:01] <arielb1> of course libstd satisfying it needs a proof
+[17:44:15] <aturon> arielb1: i see, i was taking the above as definitional. i don't understand the difference between what you're proposing and the long plan of record, though?
+[17:44:25] <arielb1> long plan?
+[17:44:46] <arielb1> maybe its just us calling UB "unsafety" that confuses me
+[17:44:51] <huon> arielb1: so you're taking "bugs exist" as the reason that std isn't completely-safe? (is fine, just trying to be clear)
+[17:45:06] <arielb1> huon: if there are bugs in unsafe code in libstd, then it isn't completely-safe
+[17:45:15] <arielb1> I mean, memory-safety-critical bugs
+[17:45:17] <huon> yes, that's what I said :)
+[17:45:27] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[17:45:27] *** ChanServ sets mode: +o brson
+[17:45:51] <aturon> arielb1: ah, ok. we often use UB as a proxy/shorthand since most (all?) failures to be safe can be weaponized to produce UB
+[17:45:53] <arielb1> if sort can occasionally drop elements, that doesn't invalidate complete-safety
+[17:46:20] <arielb1> drop=lose, not duplicate without calling destructors here, ofc.
+[17:46:31] <arielb1> *duplicate and call destructor
+[17:46:46] <aturon> sorry, have to disappear to chat with nmatsakis, but it seems to me that what you're proposing is effectively what has always been the plan and what Gankro is trying to put on more precise footing
+[17:47:04] <arielb1> code can rely on sort being safe
+[17:47:10] <arielb1> *being correct
+[17:47:18] <arielb1> and still be completely-safe
+[17:47:25] <arielb1> because complete-safety can depend on supercrates
+[17:47:31] <arielb1> in a "non-modular" way
+[17:48:27] *** Quits: Murarth (Murarth@moz-jva.78t.166.46.IP) (Quit: Screw you guys. I'm going home.)
+[17:48:43] *** Joins: Murarth (Murarth@moz-4t8fs2.phnx.qwest.net)
+[17:48:49] <arielb1> the only "modular" property complete-safety has is that it is preserved by linking
+[17:49:16] <arielb1> and in some nicely decidable-ish way by module boundaries
+[17:50:03] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (Quit: Leaving.)
+[17:51:36] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[17:51:44] *** Joins: dcb (dcb@moz-4hh.6p3.217.74.IP)
+[17:52:08] *** Quits: amyers (amyers@moz-qn874b.zip.zayo.com) (Ping timeout: 121 seconds)
+[17:52:45] *** Quits: imperio (Mibbit@moz-0ebgt2.fbx.proxad.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[17:57:00] <arielb1> complete-safety (I think quasi-hereditarily-safe - qhs - is a better name) of course can be conditional
+[17:57:13] <arielb1> conditions can be e.g.
+[17:57:36] <arielb1> only if linked to a libstd with a non-broken std::sort function
+[17:58:31] <arielb1> but (of course) also, only if a particular public key doesn't sign malformed data
+[17:59:03] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[17:59:12] *** Joins: Guest53 (textual@moz-rvv.00r.255.109.IP)
+[17:59:13] <arielb1> or only if the (safe) library functions aren't called with malicious inputs (that kind of condition isn't recommended through)
+[18:00:12] <arielb1> of course packages should state these conditions in some form
+[18:01:03] <arielb1> some people are really interested in programs only safe in the absence of an adversary
+[18:02:21] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (Client exited)
+[18:07:46] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[18:09:56] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[18:11:16] *** Joins: Peach (Peach@moz-500.6lb.246.96.IP)
+[18:11:51] <brson> i might want to spend some more time on installers and multirust soon
+[18:14:14] *** Joins: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP)
+[18:15:59] <doener> hm, DI for functions is kinda messed up... their subroutine is marked as a subroutine accepting the right arguments but returning a type that is their actual type
+[18:17:16] *** Quits: Quxxy (chatzilla@moz-efh10q.internode.on.net) (Ping timeout: 121 seconds)
+[18:24:56] *** Joins: Havvy[Hex] (Havvy@moz-h6avch.m707.nviq.01c2.2601.IP)
+[18:26:19] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[18:26:45] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[18:27:20] *** Quits: Havvy (Havvy@moz-vu0d1p.m707.nviq.01c2.2601.IP) (Ping timeout: 121 seconds)
+[18:31:15] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[18:34:17] *** Havvy[Hex] is now known as Havvy
+[18:42:21] *** Joins: imperio (Mibbit@moz-0ebgt2.fbx.proxad.net)
+[18:44:16] *** Quits: imperio (Mibbit@moz-0ebgt2.fbx.proxad.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[18:46:52] *** Joins: summerlight (summerlight@moz-lb3.6do.193.175.IP)
+[18:46:59] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[18:51:08] *** Quits: summerlight (summerlight@moz-lb3.6do.193.175.IP) (Ping timeout: 121 seconds)
+[18:57:10] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[18:59:49] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[19:00:13] *** Joins: imperio (Mibbit@moz-0ebgt2.fbx.proxad.net)
+[19:02:55] <imperio> pnkfelix: About your last comment, generating appropriate error message (when multiple are possible) can be done with a state you said
+[19:03:24] <imperio> just to be sure i understood you : I intend to do it with an Option<SomeParameter>
+[19:03:30] <imperio> is that what you had in mind ?
+[19:04:10] <imperio> (in this case, one message doesn't need any state)
+[19:05:30] *** Joins: X67r (user@moz-2tcksh.mullvad.net)
+[19:09:07] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[19:09:07] *** ChanServ sets mode: +o pcwalton
+[19:16:59] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[19:20:05] *** Joins: eerie (eerie@moz-bn66jk.red.bezeqint.net)
+[19:21:11] *** Quits: eerie (eerie@moz-bn66jk.red.bezeqint.net) (Connection closed)
+[19:21:21] *** Joins: eerie (eerie@moz-bn66jk.red.bezeqint.net)
+[19:21:29] *** Quits: dcb (dcb@moz-4hh.6p3.217.74.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[19:22:27] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[19:26:39] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[19:34:07] *** Quits: eerie (eerie@moz-bn66jk.red.bezeqint.net) (Connection closed)
+[19:35:36] *** Joins: gavin_ (gavin@irc.mozilla.org)
+[19:37:52] *** Quits: gavin (gavin@irc.mozilla.org) (Ping timeout: 121 seconds)
+[19:39:26] *** gavin_ is now known as gavin
+[19:40:18] *** Joins: goyox86 (textual@moz-9ct.il3.161.192.IP)
+[19:41:40] *** Quits: mukilan (mukilan@moz-uaj.174.164.122.IP) (A TLS packet with unexpected length was received.)
+[19:43:55] *** Joins: dcb (dcb@moz-4hh.6p3.217.74.IP)
+[19:53:31] *** Joins: harrisonclarke (harrisoncla@moz-g1kp2c.ns.bellaliant.net)
+[19:55:40] *** Joins: froglegstew (Mibbit@moz-hu6.nja.252.72.IP)
+[20:00:35] *** Quits: froglegstew (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[20:02:59] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[20:03:27] *** Quits: semarie (semarie@moz-nct036.bpv6.bg1u.41d0.2001.IP) (Ping timeout: 121 seconds)
+[20:04:08] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[20:04:08] *** ChanServ sets mode: +o pcwalton
+[20:07:36] *** Joins: yjv (yjv@moz-j0cdis.fios.verizon.net)
+[20:08:17] *** Quits: yjv (yjv@moz-j0cdis.fios.verizon.net) (Connection closed)
+[20:08:36] *** Joins: yjv (yjv@moz-j0cdis.fios.verizon.net)
+[20:10:10] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Ping timeout: 121 seconds)
+[20:10:48] *** Quits: yjv_ (yjv@moz-j0cdis.fios.verizon.net) (Ping timeout: 121 seconds)
+[20:12:17] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[20:12:17] *** ChanServ sets mode: +o pcwalton
+[20:13:51] *** Joins: genbattle (genbattle@moz-4v0.gkd.16.182.IP)
+[20:14:49] *** Quits: imperio (Mibbit@moz-0ebgt2.fbx.proxad.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[20:15:03] *** Quits: dlight (dlight@moz-7rhf91.gvt.net.br) (A TLS packet with unexpected length was received.)
+[20:17:26] *** Quits: steshaw (sid30841@moz-mij4a1.highgate.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: Ericson2314 (user@moz-5muv45.m9e4.oi28.0306.2602.IP) (*.net *.split)
+[20:17:26] *** Quits: larsberg (sid89@moz-1a60qu.0j4i.jtu0.0101.2620.IP) (*.net *.split)
+[20:17:26] *** Quits: jroesch (sid26078@moz-o13a59.charlton.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: vadimcn (uid46608@moz-0d43u8.highgate.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: huhlig (sid17687@moz-mt3sa2.highgate.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: dustinm` (dustinm@moz-1c1j82.fu2o.sj0n.5300.2607.IP) (*.net *.split)
+[20:17:26] *** Quits: Gankro (sid71432@moz-sc2bd6.charlton.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: jack (sid19593@moz-fhlsm9.highgate.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: lkuper (sid44041@moz-7edef8.ealing.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: huon (huon@moz-hj272o.8rnv.rggd.6180.2400.IP) (*.net *.split)
+[20:17:26] *** Quits: dprien (dprien@moz-15s7c4.udtd.gaqb.04f8.2a01.IP) (*.net *.split)
+[20:17:26] *** Quits: bdero (bran@moz-nr0176.b90n.1kaj.018d.2601.IP) (*.net *.split)
+[20:17:26] *** Quits: jvns (sid26231@moz-p7mvuh.brockwell.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: O01eg (o01eg@moz-3agoj3.qpcp.3egh.2698.2a02.IP) (*.net *.split)
+[20:17:26] *** Quits: spastorino (sid27384@moz-i6sgse.brockwell.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: mtsr (mtsr@moz-b5lsuq.yourbnc.co.uk) (*.net *.split)
+[20:17:26] *** Quits: huseby (huseby@moz-m7l0au.d2vr.5em6.6400.2605.IP) (*.net *.split)
+[20:17:26] *** Quits: reem (sid78397@moz-octfcu.brockwell.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: jyyou (jyyou@moz-nhbjfr.bo6r.4bjo.8900.2400.IP) (*.net *.split)
+[20:17:26] *** Quits: cha0s (chaos@moz-ebt9bj.q7tv.7c32.b0c0.2a03.IP) (*.net *.split)
+[20:17:26] *** Quits: sp3d (sp3d@moz-re8m3s.mf75.3igv.0240.2601.IP) (*.net *.split)
+[20:17:26] *** Quits: frewsxcv (sid86219@moz-dneii9.brockwell.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: yuriks (quassel@moz-hnlou0.yuriks.net) (*.net *.split)
+[20:17:26] *** Quits: smkz (a@moz-gdd4un.fs1g.619c.a880.2604.IP) (*.net *.split)
+[20:17:26] *** Quits: aturon (sid379@moz-hhfc8n.0j4i.jtu0.0101.2620.IP) (*.net *.split)
+[20:17:26] *** Quits: ato (sid11@moz-c1oek8.0j4i.jtu0.0101.2620.IP) (*.net *.split)
+[20:17:26] *** Quits: sprang (sprang@moz-gpnug3.3dj0.bqct.0647.2601.IP) (*.net *.split)
+[20:17:26] *** Quits: jld (jld@moz-onnk26.xlerb.net) (*.net *.split)
+[20:17:26] *** Quits: zwarich (sid63988@moz-402giv.ealing.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: seanmonstar|offline (seanmonstar@moz-jd3i0j.fkdv.ulf6.3c01.2600.IP) (*.net *.split)
+[20:17:26] *** Quits: nrc (sid365@moz-3taf2s.0j4i.jtu0.0101.2620.IP) (*.net *.split)
+[20:17:26] *** Quits: nox (sid3872@moz-fvvn96.ealing.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: carllerche (sid50851@moz-8i75uq.brockwell.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: kimundi (kimundi@moz-2q77u9.obe6.7gie.57bc.2002.IP) (*.net *.split)
+[20:17:26] *** Quits: nmatsakis (sid381@moz-32a8b5.0j4i.jtu0.0101.2620.IP) (*.net *.split)
+[20:17:26] *** Quits: dbussink (dbussink@moz-hsd6q3.bussink.me) (*.net *.split)
+[20:17:26] *** Quits: new_one (new_one@moz-ps5j1c.fs1g.619c.a880.2604.IP) (*.net *.split)
+[20:17:26] *** Quits: noustuff (sid82844@moz-0s5vdk.highgate.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: carter (carter@moz-aheg3i.ieqc.6fdm.3c03.2600.IP) (*.net *.split)
+[20:17:26] *** Quits: wycats (sid79@moz-b4lrm3.brockwell.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: jbcrail (sid24674@moz-s17jb5.charlton.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: DenSchub (DenSchub@moz-6io4fd.hol4.1ume.2260.2a02.IP) (*.net *.split)
+[20:17:26] *** Quits: richo (richo@moz-slrmp8.fs1g.619c.a880.2604.IP) (*.net *.split)
+[20:17:26] *** Quits: Levans (levans@moz-usvfnf.safaradeg.net) (*.net *.split)
+[20:17:26] *** Quits: ggherdov_ (sid11402@moz-u71qnt.charlton.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: erikj (erikj@moz-1bq7nj.com) (*.net *.split)
+[20:17:26] *** Quits: martin (martin@moz-bmp33l.u0v6.gff7.1608.2001.IP) (*.net *.split)
+[20:17:26] *** Quits: Havvy (Havvy@moz-h6avch.m707.nviq.01c2.2601.IP) (*.net *.split)
+[20:17:26] *** Quits: pnkfelix (sid344@moz-nnnecs.0j4i.jtu0.0101.2620.IP) (*.net *.split)
+[20:17:26] *** Quits: Siosm (quassel@moz-7ucvlk.c3r2.lncg.41d0.2001.IP) (*.net *.split)
+[20:17:26] *** Quits: jethrogb (jethrob@moz-p2iedd.scintilla.utwente.nl) (*.net *.split)
+[20:17:26] *** Quits: dherman (sid7996@moz-u0jlif.ealing.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: stask (sid61294@moz-0bjq4h.ealing.irccloud.com) (*.net *.split)
+[20:17:26] *** Quits: ephemeron (ephemeron@moz-h5kea2.i2gt.qoll.a880.2604.IP) (*.net *.split)
+[20:17:26] *** Quits: andrew-d (andrew-d@moz-dgoafa.cusf.glje.ff48.2607.IP) (*.net *.split)
+[20:17:26] *** Quits: chmanchester (sid313@moz-6igabj.0j4i.jtu0.0101.2620.IP) (*.net *.split)
+[20:17:26] *** Quits: rdgawdzi (sid91768@moz-36ps68.ealing.irccloud.com) (*.net *.split)
+[20:17:40] *** Joins: carter (carter@moz-aheg3i.ieqc.6fdm.3c03.2600.IP)
+[20:17:40] *** Joins: Levans (levans@moz-usvfnf.safaradeg.net)
+[20:17:40] *** Joins: new_one (new_one@moz-ps5j1c.fs1g.619c.a880.2604.IP)
+[20:17:40] *** Joins: richo (richo@moz-slrmp8.fs1g.619c.a880.2604.IP)
+[20:17:40] *** Joins: cha0s (chaos@moz-ebt9bj.q7tv.7c32.b0c0.2a03.IP)
+[20:17:40] *** Joins: seanmonstar|offline (seanmonstar@moz-jd3i0j.fkdv.ulf6.3c01.2600.IP)
+[20:17:40] *** Joins: DenSchub (DenSchub@moz-6io4fd.hol4.1ume.2260.2a02.IP)
+[20:17:40] *** Joins: ephemeron (ephemeron@moz-h5kea2.i2gt.qoll.a880.2604.IP)
+[20:17:40] *** Joins: andrew-d (andrew-d@moz-dgoafa.cusf.glje.ff48.2607.IP)
+[20:17:40] *** Joins: vadimcn (uid46608@moz-0d43u8.highgate.irccloud.com)
+[20:17:40] *** Joins: martin (martin@moz-bmp33l.u0v6.gff7.1608.2001.IP)
+[20:17:40] *** Joins: frewsxcv (sid86219@moz-dneii9.brockwell.irccloud.com)
+[20:17:40] *** Joins: O01eg (o01eg@moz-3agoj3.qpcp.3egh.2698.2a02.IP)
+[20:17:40] *** Joins: rdgawdzi (sid91768@moz-36ps68.ealing.irccloud.com)
+[20:17:40] *** Joins: jyyou (jyyou@moz-nhbjfr.bo6r.4bjo.8900.2400.IP)
+[20:17:40] *** Joins: wycats (sid79@moz-b4lrm3.brockwell.irccloud.com)
+[20:17:40] *** Joins: nox (sid3872@moz-fvvn96.ealing.irccloud.com)
+[20:17:40] *** Joins: Gankro (sid71432@moz-sc2bd6.charlton.irccloud.com)
+[20:17:40] *** Joins: carllerche (sid50851@moz-8i75uq.brockwell.irccloud.com)
+[20:17:40] *** Joins: reem (sid78397@moz-octfcu.brockwell.irccloud.com)
+[20:17:40] *** Joins: spastorino (sid27384@moz-i6sgse.brockwell.irccloud.com)
+[20:17:40] *** Joins: jvns (sid26231@moz-p7mvuh.brockwell.irccloud.com)
+[20:17:40] *** Joins: huhlig (sid17687@moz-mt3sa2.highgate.irccloud.com)
+[20:17:40] *** Joins: dprien (dprien@moz-15s7c4.udtd.gaqb.04f8.2a01.IP)
+[20:17:40] *** Joins: zwarich (sid63988@moz-402giv.ealing.irccloud.com)
+[20:17:40] *** Joins: noustuff (sid82844@moz-0s5vdk.highgate.irccloud.com)
+[20:17:40] *** Joins: jbcrail (sid24674@moz-s17jb5.charlton.irccloud.com)
+[20:17:40] *** Joins: jroesch (sid26078@moz-o13a59.charlton.irccloud.com)
+[20:17:40] *** Joins: stask (sid61294@moz-0bjq4h.ealing.irccloud.com)
+[20:17:40] *** Joins: ggherdov_ (sid11402@moz-u71qnt.charlton.irccloud.com)
+[20:17:40] *** Joins: dherman (sid7996@moz-u0jlif.ealing.irccloud.com)
+[20:17:40] *** Joins: lkuper (sid44041@moz-7edef8.ealing.irccloud.com)
+[20:17:40] *** Joins: nmatsakis (sid381@moz-32a8b5.0j4i.jtu0.0101.2620.IP)
+[20:17:40] *** Joins: pnkfelix (sid344@moz-nnnecs.0j4i.jtu0.0101.2620.IP)
+[20:17:40] *** Joins: aturon (sid379@moz-hhfc8n.0j4i.jtu0.0101.2620.IP)
+[20:17:40] *** Joins: ato (sid11@moz-c1oek8.0j4i.jtu0.0101.2620.IP)
+[20:17:40] *** Joins: nrc (sid365@moz-3taf2s.0j4i.jtu0.0101.2620.IP)
+[20:17:40] *** Joins: chmanchester (sid313@moz-6igabj.0j4i.jtu0.0101.2620.IP)
+[20:17:40] *** bruford.mozilla.org sets mode: +ooaooo wycats nmatsakis pnkfelix pnkfelix aturon nrc
+[20:17:40] *** Joins: huseby (huseby@moz-m7l0au.d2vr.5em6.6400.2605.IP)
+[20:17:40] *** Joins: Havvy (Havvy@moz-h6avch.m707.nviq.01c2.2601.IP)
+[20:17:40] *** Joins: Ericson2314 (user@moz-5muv45.m9e4.oi28.0306.2602.IP)
+[20:17:40] *** Joins: kimundi (kimundi@moz-2q77u9.obe6.7gie.57bc.2002.IP)
+[20:17:40] *** Joins: dustinm` (dustinm@moz-1c1j82.fu2o.sj0n.5300.2607.IP)
+[20:17:40] *** Joins: huon (huon@moz-hj272o.8rnv.rggd.6180.2400.IP)
+[20:17:40] *** Joins: mtsr (mtsr@moz-b5lsuq.yourbnc.co.uk)
+[20:17:40] *** Joins: dbussink (dbussink@moz-hsd6q3.bussink.me)
+[20:17:40] *** Joins: bdero (bran@moz-nr0176.b90n.1kaj.018d.2601.IP)
+[20:17:40] *** Joins: sp3d (sp3d@moz-re8m3s.mf75.3igv.0240.2601.IP)
+[20:17:40] *** Joins: sprang (sprang@moz-gpnug3.3dj0.bqct.0647.2601.IP)
+[20:17:40] *** Joins: jld (jld@moz-onnk26.xlerb.net)
+[20:17:40] *** Joins: steshaw (sid30841@moz-mij4a1.highgate.irccloud.com)
+[20:17:40] *** Joins: jack (sid19593@moz-fhlsm9.highgate.irccloud.com)
+[20:17:40] *** Joins: Siosm (quassel@moz-7ucvlk.c3r2.lncg.41d0.2001.IP)
+[20:17:40] *** Joins: erikj (erikj@moz-1bq7nj.com)
+[20:17:40] *** Joins: larsberg (sid89@moz-1a60qu.0j4i.jtu0.0101.2620.IP)
+[20:17:40] *** Joins: jethrogb (jethrob@moz-p2iedd.scintilla.utwente.nl)
+[20:17:40] *** Joins: yuriks (quassel@moz-hnlou0.yuriks.net)
+[20:17:40] *** Joins: smkz (a@moz-gdd4un.fs1g.619c.a880.2604.IP)
+[20:17:40] *** bruford.mozilla.org sets mode: +o huon
+[20:20:09] *** Quits: dbussink (dbussink@moz-hsd6q3.bussink.me) (Ping timeout: 121 seconds)
+[20:22:56] *** Quits: Amaranth (travis@moz-1raqsl.cpe.cableone.net) (Ping timeout: 121 seconds)
+[20:25:41] *** Quits: steshaw (sid30841@moz-mij4a1.highgate.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: Ericson2314 (user@moz-5muv45.m9e4.oi28.0306.2602.IP) (*.net *.split)
+[20:25:41] *** Quits: larsberg (sid89@moz-1a60qu.0j4i.jtu0.0101.2620.IP) (*.net *.split)
+[20:25:41] *** Quits: jroesch (sid26078@moz-o13a59.charlton.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: vadimcn (uid46608@moz-0d43u8.highgate.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: huhlig (sid17687@moz-mt3sa2.highgate.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: dustinm` (dustinm@moz-1c1j82.fu2o.sj0n.5300.2607.IP) (*.net *.split)
+[20:25:41] *** Quits: Gankro (sid71432@moz-sc2bd6.charlton.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: jack (sid19593@moz-fhlsm9.highgate.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: lkuper (sid44041@moz-7edef8.ealing.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: huon (huon@moz-hj272o.8rnv.rggd.6180.2400.IP) (*.net *.split)
+[20:25:41] *** Quits: dprien (dprien@moz-15s7c4.udtd.gaqb.04f8.2a01.IP) (*.net *.split)
+[20:25:41] *** Quits: bdero (bran@moz-nr0176.b90n.1kaj.018d.2601.IP) (*.net *.split)
+[20:25:41] *** Quits: jvns (sid26231@moz-p7mvuh.brockwell.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: O01eg (o01eg@moz-3agoj3.qpcp.3egh.2698.2a02.IP) (*.net *.split)
+[20:25:41] *** Quits: spastorino (sid27384@moz-i6sgse.brockwell.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: mtsr (mtsr@moz-b5lsuq.yourbnc.co.uk) (*.net *.split)
+[20:25:41] *** Quits: huseby (huseby@moz-m7l0au.d2vr.5em6.6400.2605.IP) (*.net *.split)
+[20:25:41] *** Quits: reem (sid78397@moz-octfcu.brockwell.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: jyyou (jyyou@moz-nhbjfr.bo6r.4bjo.8900.2400.IP) (*.net *.split)
+[20:25:41] *** Quits: cha0s (chaos@moz-ebt9bj.q7tv.7c32.b0c0.2a03.IP) (*.net *.split)
+[20:25:41] *** Quits: sp3d (sp3d@moz-re8m3s.mf75.3igv.0240.2601.IP) (*.net *.split)
+[20:25:41] *** Quits: frewsxcv (sid86219@moz-dneii9.brockwell.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: yuriks (quassel@moz-hnlou0.yuriks.net) (*.net *.split)
+[20:25:41] *** Quits: smkz (a@moz-gdd4un.fs1g.619c.a880.2604.IP) (*.net *.split)
+[20:25:41] *** Quits: aturon (sid379@moz-hhfc8n.0j4i.jtu0.0101.2620.IP) (*.net *.split)
+[20:25:41] *** Quits: ato (sid11@moz-c1oek8.0j4i.jtu0.0101.2620.IP) (*.net *.split)
+[20:25:41] *** Quits: sprang (sprang@moz-gpnug3.3dj0.bqct.0647.2601.IP) (*.net *.split)
+[20:25:41] *** Quits: jld (jld@moz-onnk26.xlerb.net) (*.net *.split)
+[20:25:41] *** Quits: zwarich (sid63988@moz-402giv.ealing.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: seanmonstar|offline (seanmonstar@moz-jd3i0j.fkdv.ulf6.3c01.2600.IP) (*.net *.split)
+[20:25:41] *** Quits: nrc (sid365@moz-3taf2s.0j4i.jtu0.0101.2620.IP) (*.net *.split)
+[20:25:41] *** Quits: nox (sid3872@moz-fvvn96.ealing.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: carllerche (sid50851@moz-8i75uq.brockwell.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: kimundi (kimundi@moz-2q77u9.obe6.7gie.57bc.2002.IP) (*.net *.split)
+[20:25:41] *** Quits: nmatsakis (sid381@moz-32a8b5.0j4i.jtu0.0101.2620.IP) (*.net *.split)
+[20:25:41] *** Quits: new_one (new_one@moz-ps5j1c.fs1g.619c.a880.2604.IP) (*.net *.split)
+[20:25:41] *** Quits: noustuff (sid82844@moz-0s5vdk.highgate.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: carter (carter@moz-aheg3i.ieqc.6fdm.3c03.2600.IP) (*.net *.split)
+[20:25:41] *** Quits: wycats (sid79@moz-b4lrm3.brockwell.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: jbcrail (sid24674@moz-s17jb5.charlton.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: DenSchub (DenSchub@moz-6io4fd.hol4.1ume.2260.2a02.IP) (*.net *.split)
+[20:25:41] *** Quits: richo (richo@moz-slrmp8.fs1g.619c.a880.2604.IP) (*.net *.split)
+[20:25:41] *** Quits: Levans (levans@moz-usvfnf.safaradeg.net) (*.net *.split)
+[20:25:41] *** Quits: ggherdov_ (sid11402@moz-u71qnt.charlton.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: erikj (erikj@moz-1bq7nj.com) (*.net *.split)
+[20:25:41] *** Quits: martin (martin@moz-bmp33l.u0v6.gff7.1608.2001.IP) (*.net *.split)
+[20:25:41] *** Quits: Havvy (Havvy@moz-h6avch.m707.nviq.01c2.2601.IP) (*.net *.split)
+[20:25:41] *** Quits: pnkfelix (sid344@moz-nnnecs.0j4i.jtu0.0101.2620.IP) (*.net *.split)
+[20:25:41] *** Quits: Siosm (quassel@moz-7ucvlk.c3r2.lncg.41d0.2001.IP) (*.net *.split)
+[20:25:41] *** Quits: jethrogb (jethrob@moz-p2iedd.scintilla.utwente.nl) (*.net *.split)
+[20:25:41] *** Quits: dherman (sid7996@moz-u0jlif.ealing.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: stask (sid61294@moz-0bjq4h.ealing.irccloud.com) (*.net *.split)
+[20:25:41] *** Quits: ephemeron (ephemeron@moz-h5kea2.i2gt.qoll.a880.2604.IP) (*.net *.split)
+[20:25:41] *** Quits: andrew-d (andrew-d@moz-dgoafa.cusf.glje.ff48.2607.IP) (*.net *.split)
+[20:25:41] *** Quits: chmanchester (sid313@moz-6igabj.0j4i.jtu0.0101.2620.IP) (*.net *.split)
+[20:25:41] *** Quits: rdgawdzi (sid91768@moz-36ps68.ealing.irccloud.com) (*.net *.split)
+[20:26:07] *** Joins: carter (carter@moz-aheg3i.ieqc.6fdm.3c03.2600.IP)
+[20:26:07] *** Joins: Levans (levans@moz-usvfnf.safaradeg.net)
+[20:26:07] *** Joins: new_one (new_one@moz-ps5j1c.fs1g.619c.a880.2604.IP)
+[20:26:07] *** Joins: richo (richo@moz-slrmp8.fs1g.619c.a880.2604.IP)
+[20:26:07] *** Joins: cha0s (chaos@moz-ebt9bj.q7tv.7c32.b0c0.2a03.IP)
+[20:26:07] *** Joins: seanmonstar|offline (seanmonstar@moz-jd3i0j.fkdv.ulf6.3c01.2600.IP)
+[20:26:07] *** Joins: DenSchub (DenSchub@moz-6io4fd.hol4.1ume.2260.2a02.IP)
+[20:26:07] *** Joins: ephemeron (ephemeron@moz-h5kea2.i2gt.qoll.a880.2604.IP)
+[20:26:07] *** Joins: andrew-d (andrew-d@moz-dgoafa.cusf.glje.ff48.2607.IP)
+[20:26:07] *** Joins: dbussink (dbussink@moz-hsd6q3.bussink.me)
+[20:26:07] *** Joins: vadimcn (uid46608@moz-0d43u8.highgate.irccloud.com)
+[20:26:07] *** Joins: martin (martin@moz-bmp33l.u0v6.gff7.1608.2001.IP)
+[20:26:07] *** Joins: frewsxcv (sid86219@moz-dneii9.brockwell.irccloud.com)
+[20:26:07] *** Joins: O01eg (o01eg@moz-3agoj3.qpcp.3egh.2698.2a02.IP)
+[20:26:07] *** Joins: rdgawdzi (sid91768@moz-36ps68.ealing.irccloud.com)
+[20:26:07] *** Joins: jyyou (jyyou@moz-nhbjfr.bo6r.4bjo.8900.2400.IP)
+[20:26:07] *** Joins: wycats (sid79@moz-b4lrm3.brockwell.irccloud.com)
+[20:26:07] *** Joins: nox (sid3872@moz-fvvn96.ealing.irccloud.com)
+[20:26:07] *** Joins: Gankro (sid71432@moz-sc2bd6.charlton.irccloud.com)
+[20:26:07] *** Joins: carllerche (sid50851@moz-8i75uq.brockwell.irccloud.com)
+[20:26:07] *** Joins: reem (sid78397@moz-octfcu.brockwell.irccloud.com)
+[20:26:07] *** Joins: spastorino (sid27384@moz-i6sgse.brockwell.irccloud.com)
+[20:26:07] *** Joins: jvns (sid26231@moz-p7mvuh.brockwell.irccloud.com)
+[20:26:07] *** Joins: huhlig (sid17687@moz-mt3sa2.highgate.irccloud.com)
+[20:26:07] *** Joins: dprien (dprien@moz-15s7c4.udtd.gaqb.04f8.2a01.IP)
+[20:26:07] *** Joins: zwarich (sid63988@moz-402giv.ealing.irccloud.com)
+[20:26:07] *** Joins: noustuff (sid82844@moz-0s5vdk.highgate.irccloud.com)
+[20:26:07] *** Joins: jbcrail (sid24674@moz-s17jb5.charlton.irccloud.com)
+[20:26:07] *** Joins: jroesch (sid26078@moz-o13a59.charlton.irccloud.com)
+[20:26:07] *** Joins: stask (sid61294@moz-0bjq4h.ealing.irccloud.com)
+[20:26:07] *** Joins: ggherdov_ (sid11402@moz-u71qnt.charlton.irccloud.com)
+[20:26:07] *** Joins: dherman (sid7996@moz-u0jlif.ealing.irccloud.com)
+[20:26:07] *** Joins: lkuper (sid44041@moz-7edef8.ealing.irccloud.com)
+[20:26:07] *** Joins: nmatsakis (sid381@moz-32a8b5.0j4i.jtu0.0101.2620.IP)
+[20:26:07] *** Joins: pnkfelix (sid344@moz-nnnecs.0j4i.jtu0.0101.2620.IP)
+[20:26:07] *** Joins: aturon (sid379@moz-hhfc8n.0j4i.jtu0.0101.2620.IP)
+[20:26:07] *** Joins: ato (sid11@moz-c1oek8.0j4i.jtu0.0101.2620.IP)
+[20:26:07] *** Joins: nrc (sid365@moz-3taf2s.0j4i.jtu0.0101.2620.IP)
+[20:26:07] *** bruford.mozilla.org sets mode: +ooaooo wycats nmatsakis pnkfelix pnkfelix aturon nrc
+[20:26:07] *** Joins: chmanchester (sid313@moz-6igabj.0j4i.jtu0.0101.2620.IP)
+[20:26:07] *** Joins: huseby (huseby@moz-m7l0au.d2vr.5em6.6400.2605.IP)
+[20:26:07] *** Joins: Havvy (Havvy@moz-h6avch.m707.nviq.01c2.2601.IP)
+[20:26:07] *** Joins: Ericson2314 (user@moz-5muv45.m9e4.oi28.0306.2602.IP)
+[20:26:07] *** Joins: kimundi (kimundi@moz-2q77u9.obe6.7gie.57bc.2002.IP)
+[20:26:07] *** Joins: dustinm` (dustinm@moz-1c1j82.fu2o.sj0n.5300.2607.IP)
+[20:26:07] *** Joins: huon (huon@moz-hj272o.8rnv.rggd.6180.2400.IP)
+[20:26:07] *** Joins: mtsr (mtsr@moz-b5lsuq.yourbnc.co.uk)
+[20:26:07] *** Joins: bdero (bran@moz-nr0176.b90n.1kaj.018d.2601.IP)
+[20:26:07] *** Joins: sp3d (sp3d@moz-re8m3s.mf75.3igv.0240.2601.IP)
+[20:26:07] *** Joins: sprang (sprang@moz-gpnug3.3dj0.bqct.0647.2601.IP)
+[20:26:07] *** Joins: jld (jld@moz-onnk26.xlerb.net)
+[20:26:07] *** Joins: steshaw (sid30841@moz-mij4a1.highgate.irccloud.com)
+[20:26:07] *** Joins: jack (sid19593@moz-fhlsm9.highgate.irccloud.com)
+[20:26:07] *** Joins: Siosm (quassel@moz-7ucvlk.c3r2.lncg.41d0.2001.IP)
+[20:26:07] *** Joins: erikj (erikj@moz-1bq7nj.com)
+[20:26:07] *** Joins: larsberg (sid89@moz-1a60qu.0j4i.jtu0.0101.2620.IP)
+[20:26:07] *** Joins: jethrogb (jethrob@moz-p2iedd.scintilla.utwente.nl)
+[20:26:07] *** Joins: yuriks (quassel@moz-hnlou0.yuriks.net)
+[20:26:07] *** Joins: smkz (a@moz-gdd4un.fs1g.619c.a880.2604.IP)
+[20:26:07] *** bruford.mozilla.org sets mode: +o huon
+[20:27:03] *** Quits: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP) (Connection closed)
+[20:30:06] <nagisa> +oooooooooooooooo
+[20:30:12] <nagisa> needs more o
+[20:31:37] *** Joins: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP)
+[20:53:32] *** Quits: mcpherrin (mcpherrin@moz-clk6gh.ca.comcast.net) (Ping timeout: 121 seconds)
+[20:55:38] *** Joins: Amaranth (travis@moz-1raqsl.cpe.cableone.net)
+[20:58:12] *** Quits: dcb (dcb@moz-4hh.6p3.217.74.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[21:01:38] *** Quits: goyox86 (textual@moz-9ct.il3.161.192.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[21:08:28] *** Joins: dcb (dcb@moz-4hh.6p3.217.74.IP)
+[21:08:29] *** Quits: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP) (Quit: ChatZilla 0.9.91.1 [Firefox 39.0/20150630154324])
+[21:08:52] *** Joins: scott (uid25790@moz-e5ok1n.brockwell.irccloud.com)
+[21:09:43] *** Joins: Tobba (Tobba@moz-4l45on.skybroadband.com)
+[21:11:50] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[21:12:09] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[21:12:09] *** ChanServ sets mode: +o pcwalton
+[21:12:51] *** Joins: goyox86 (textual@moz-rvv.00r.255.109.IP)
+[21:13:05] *** Quits: Guest53 (textual@moz-rvv.00r.255.109.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[21:14:10] *** Quits: goyox86 (textual@moz-rvv.00r.255.109.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[21:19:28] *** Joins: goyox86 (textual@moz-rvv.00r.255.109.IP)
+[21:23:24] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[21:27:34] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[21:31:07] *** Quits: AlisdairO (anonymous@moz-ntsaoe.cable.virginm.net) (Client exited)
+[21:31:44] <brson> what happened to the #[packed] attribute that it's no longer accepted in 1.2?
+[21:31:56] <brson> needs to go in relnotes
+[21:33:28] <nagisa> was it ever accepted (did anything sensible?)
+[21:33:47] *** Quits: munksgaard (munksgaard@moz-478pev.u.parknet.dk) (Connection closed)
+[21:34:06] <brson> nagisa: it is accepted on stable
+[21:34:08] <nagisa> brson: #[repr(packed)] maybe?
+[21:34:12] <brson> i don't know if it does anything stable
+[21:34:15] <brson> *sensible
+[21:35:15] <nagisa> brson: https://github.com/rust-lang/rust/commit/6e8ff999589a7b4c7f62f7128f3e028a7b3ea64f
+[21:35:54] <brson> thanks
+[21:35:56] <huon> brson: https://github.com/rust-lang/rust/pull/25541
+[21:36:03] <huon> (was probably the 1.2 change)
+[21:36:06] *** Quits: tamird (textual@moz-ga3.afc.209.65.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[21:37:50] *** Quits: sprang (sprang@moz-gpnug3.3dj0.bqct.0647.2601.IP) (Connection closed)
+[21:39:06] <brson> i've got some juicy regression reports in the works
+[21:44:48] *** Joins: Pierre_M (Pierre_M@moz-g3a.5hf.152.12.IP)
+[21:47:32] *** chmanchester is now known as chmanchester|afk
+[21:47:50] *** Joins: casey (casey@moz-v0ns05.tpgi.com.au)
+[21:47:58] <brson> https://internals.rust-lang.org/t/new-crater-reports-1-1-stable-vs-beta-2015-07-10-and-nightly-2015-07-10/2358
+[21:48:00] *** Joins: Pierre_M_ (Pierre_M@moz-2vs15r.slkc.qwest.net)
+[21:48:07] <brson> lots of regressions on nightly
+[21:48:28] *** Quits: casey (casey@moz-v0ns05.tpgi.com.au) (Connection closed)
+[21:49:30] *** Quits: achernya (quassel@moz-i01917.mit.edu) (Ping timeout: 121 seconds)
+[21:50:32] *** Quits: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au) (Ping timeout: 121 seconds)
+[21:50:51] *** Quits: Pierre_M (Pierre_M@moz-g3a.5hf.152.12.IP) (Ping timeout: 121 seconds)
+[21:52:02] *** Quits: Pierre_M_ (Pierre_M@moz-2vs15r.slkc.qwest.net) (Connection closed)
+[21:53:50] *** Joins: casey (casey@moz-v0ns05.tpgi.com.au)
+[21:54:29] *** Quits: casey (casey@moz-v0ns05.tpgi.com.au) (Connection closed)
+[21:56:44] *** Joins: Pierre_M (Pierre_M@moz-2vs15r.slkc.qwest.net)
+[21:57:55] *** Quits: poorman (poorman@moz-vid7t6.res.rr.com) (Quit: )
+[22:05:07] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[22:06:49] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[22:06:49] *** ChanServ sets mode: +o pcwalton
+[22:07:35] *** Quits: Tobba (Tobba@moz-4l45on.skybroadband.com) (A TLS packet with unexpected length was received.)
+[22:11:47] *** Quits: arielb1 (Ariel@moz-b95g78.red.bezeqint.net) (Quit: Ex-Chat)
+[22:13:14] <nmatsakis> brson: hmm!
+[22:13:43] <nmatsakis> brson: did you investigate? the first one I looked at is some sort of type inference thing
+[22:15:17] <nmatsakis> never mind
+[22:15:19] <nmatsakis> I see that's in the thread!
+[22:19:11] *** Quits: wcosta (wander@moz-7k0.o3c.56.187.IP) (Ping timeout: 121 seconds)
+[22:24:48] *** Joins: tamird (textual@moz-lat.dkr.14.50.IP)
+[22:25:17] *** Joins: summerlight (summerlight@moz-lb3.6do.193.175.IP)
+[22:34:18] *** Joins: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au)
+[22:34:40] *** Joins: wcosta (wander@moz-er7.5ve.255.191.IP)
+[22:34:50] *** Quits: eibwen (eibwen@moz-7bgmg3.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[22:35:07] *** Joins: njn (chatzilla@moz-270n86.iinet.net.au)
+[22:36:18] *** Quits: bjz (bjz@moz-puppgq.tpgi.com.au) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[22:37:27] *** Joins: dlight (dlight@moz-7rhf91.gvt.net.br)
+[22:38:44] *** Joins: tynopex (Mibbit@moz-ikvsjo.cable.rogers.com)
+[22:49:45] *** Quits: killercup (killercup@moz-0pf6i8.dip0.t-ipconnect.de) (Quit: Bye)
+[22:53:28] *** Quits: nham (nham@moz-lglsfe.il.comcast.net) (Ping timeout: 121 seconds)
+[22:53:41] *** Quits: summerlight (summerlight@moz-lb3.6do.193.175.IP) (Ping timeout: 121 seconds)
+[22:53:41] *** Quits: bdero (bran@moz-nr0176.b90n.1kaj.018d.2601.IP) (Ping timeout: 121 seconds)
+[22:58:53] *** Joins: mcpherrin (mcpherrin@moz-clk6gh.ca.comcast.net)
+[23:01:49] *** Quits: X67r (user@moz-2tcksh.mullvad.net) (Quit: leaving)
+[23:05:24] *** chmanchester|afk is now known as chmanchester
+[23:07:31] *** Quits: eljay (eljay@moz-fmte10.skybroadband.com) (Quit: Leaving)
+[23:09:44] *** Quits: dcb (dcb@moz-4hh.6p3.217.74.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[23:11:16] *** Joins: achernya (quassel@moz-i01917.mit.edu)
+[23:11:20] *** Joins: amphibulus (Mibbit@moz-hu6.nja.252.72.IP)
+[23:13:14] *** Quits: amphibulus (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[23:13:47] *** Quits: mcpherrin (mcpherrin@moz-clk6gh.ca.comcast.net) (Ping timeout: 121 seconds)
+[23:15:58] *** Joins: bdero (bran@moz-3p5is1.b90n.1kaj.018d.2601.IP)
+[23:19:36] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[23:20:27] *** Parts: wcosta (wander@moz-er7.5ve.255.191.IP) ()
+[23:21:14] *** Joins: dcb (dcb@moz-4hh.6p3.217.74.IP)
+[23:24:21] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[23:25:51] *** Joins: Diggsey (diggsey@moz-91d79b.dsl.pipex.com)
+[23:28:33] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[23:31:37] *** Quits: yjv (yjv@moz-j0cdis.fios.verizon.net) (Connection closed)
+[23:31:57] *** Quits: achanda (achanda@moz-qv7q4n.ca.comcast.net) (Connection closed)
+[23:32:44] *** Joins: achanda (achanda@moz-qv7q4n.ca.comcast.net)
+[23:36:12] *** Quits: goyox86 (textual@moz-rvv.00r.255.109.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[23:36:41] *** Quits: achanda (achanda@moz-qv7q4n.ca.comcast.net) (Connection closed)
+[23:36:59] *** Quits: bdero (bran@moz-3p5is1.b90n.1kaj.018d.2601.IP) (Ping timeout: 121 seconds)
+[23:41:50] *** Quits: James__ (quassel@moz-7abj9b.range86-163.btcentralplus.com) (Ping timeout: 121 seconds)
+[23:46:24] <WindowsBunny> "The new argmemonly attribute can be used to mark functions that can only  access memory through its argument pointers."
+[23:46:30] <WindowsBunny> More optimization potential for Rust? :D
+[23:48:05] *** Quits: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua) (Ping timeout: 121 seconds)
+[23:49:00] *** Joins: achanda (achanda@moz-qv7q4n.ca.comcast.net)
+[23:52:24] *** Joins: bdero (bran@moz-nr0176.b90n.1kaj.018d.2601.IP)
+[23:54:05] *** Quits: Diggsey (diggsey@moz-91d79b.dsl.pipex.com) (Ping timeout: 121 seconds)
+[23:58:22] <brandonson> WindowsBunny: what does that actually mean?  That the functions don't access global variables?  Do we have that kind of info?
+[23:58:40] *** Joins: p1start (p1start@moz-nftjhe.org)
+[23:58:59] <WindowsBunny> I don't know
+[23:59:04] <WindowsBunny> Maybe one day we will
+[23:59:18] <WindowsBunny> But yeah, I presume it means it doesn't access globals

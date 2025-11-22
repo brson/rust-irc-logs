@@ -1,0 +1,715 @@
+[00:01:00] *** Joins: MauricioC (mauricioc@moz-2CFCD404.impa.br)
+[00:06:14] *** Joins: azita (Azita@moz-BBE3ABD.mv.mozilla.com)
+[00:11:09] <SimonSapin> kmc: I want them sorted by specificity, and the same declaration block can have multiple selectors with different specificity
+[00:11:37] <SimonSapin> jack: do we have reftests running yet?
+[00:12:53] <SimonSapin> kmc: I don’t know if it’s possible to avoid @ entirely here, but I want to get something running and optimize later
+[00:13:04] <kmc> ok
+[00:13:12] <SimonSapin> kmc: also, it gets more complex when we can add/remove stylesheets and rules with CSSOM
+[00:13:13] <kmc> my concern is not so much performance as the kinda gross semantics
+[00:13:16] <kmc> but okay
+[00:13:22] <kmc> (semantics of @ generally, I mean)
+[00:13:28] <SimonSapin> and when Media Queries start to apply dynamically
+[00:13:51] *** Quits: tjc (tjc@moz-BBE3ABD.mv.mozilla.com) (Quit: zzzzzzzzzz)
+[00:13:55] <kmc> also whenever we introduce @ we should think about whether it should be Rc<> instead
+[00:14:02] <kmc> but I don't want to block these commits on that
+[00:14:09] <SimonSapin> what’s Rc<>?
+[00:14:17] <cmr> Reference counted box.
+[00:14:31] <SimonSapin> isn’t @ reference counted?
+[00:14:35] <kmc> it is at the moment
+[00:14:37] <cmr> Not semantically.
+[00:14:40] <kmc> but it's intended to be garbage collected
+[00:14:53] <SimonSapin> do @ or Rc collect cycles?
+[00:14:54] <kmc> also Rc<> statically prevents cycles, whereas @ lets cycles live until task exit
+[00:14:56] <cmr> Rc<T> also can't have cycles.
+[00:15:03] <cmr> SimonSapin: @ doesn't
+[00:15:06] <cmr> Rc forbids them
+[00:15:16] <kmc> which has caused us much grief with deadlocks and crashes on task exit
+[00:15:18] <SimonSapin> cool
+[00:15:40] <kmc> also @ is implicitly copyable, which means you can end up twiddling the refcount more than you want to
+[00:15:45] <SimonSapin> I suppose Rc would work, in this case
+[00:15:58] *** Quits: rbarker (rbarker@moz-BBE3ABD.mv.mozilla.com) (Input/output error)
+[00:16:21] *** Quits: dherman (dherman@moz-B31C6965.dsl.pltn13.sbcglobal.net) (Quit: dherman)
+[00:16:35] <SimonSapin> btw, is extra::sort::tim_sort stable?
+[00:17:00] <kmc> for Rc<T> you have to say .clone() which is arguably a good thing
+[00:17:06] <SimonSapin> I know that Python’s Tim Sort is, but the rust docs on this is quite sparse
+[00:17:34] <kmc> I can also imagine that in the future, rooting @-boxes when borrowed will be more expensive than rooting Rc<T> (because the latter won't move regardless)
+[00:17:46] <kmc> and in general refcounting can perform better
+[00:17:55] <SimonSapin> tim_sort requires Clone, so I guess it’d touch the ref counter anyway
+[00:18:02] <kmc> ah
+[00:18:31] <kmc> it's fine to use @ here for now -- certainly it's in line with a lot of other Servo code
+[00:19:40] *** Joins: dzbarsky (Adium@76587571.D5562F02.B5C6E82B.IP)
+[00:19:53] *** Quits: azita (Azita@moz-BBE3ABD.mv.mozilla.com) (Quit: azita)
+[00:19:54] *** Quits: dzbarsky1 (Adium@E5216EFC.D5562F02.B5C6E82B.IP) (Ping timeout)
+[00:20:39] *** Quits: mccr8 (mccr8@moz-BBE3ABD.mv.mozilla.com) (Quit: mccr8)
+[00:20:59] <kmc> SimonSapin: are has_normal_declarations / has_important_declarations just an optimization to avoid sorting an empty vector?
+[00:21:00] *** Quits: Jayflux (Jason@moz-6B79D832.as13285.net) (Quit: Leaving)
+[00:22:03] <SimonSapin> kmc: also non-empty unchanged already sorted
+[00:22:03] <pcwalton> servo renders http://en.wikipedia.org/wiki/List_of_fictional_badgers pretty well
+[00:22:11] <kmc> ah
+[00:22:21] <SimonSapin> kmc: if you add multiple stylesheets
+[00:24:35] *** Quits: jet (jet@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: jet)
+[00:27:55] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[00:28:31] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[00:28:31] *** ChanServ sets mode: +o brson
+[00:29:04] <pcwalton> ahaha
+[00:29:14] <pcwalton> most of shaping is spent in time::precise_time_ns profiling the shaper :P
+[00:29:28] *** Quits: MauricioC (mauricioc@moz-2CFCD404.impa.br) (Ping timeout)
+[00:29:38] <pcwalton> 60% of shaping is spent profiling the shaper
+[00:30:16] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[00:30:51] <lbergstrom> that's awesome :-)
+[00:31:13] <pcwalton> I mean, it's 2 calls to the precise system clock for every word on the page
+[00:31:37] <pcwalton> for pages with a lot of text (I'm using the wikipedia article on Buffy the Vampire Slayer) that's a lot of calls to rdtsc
+[00:32:37] <lbergstrom> at that point, it's not going to matter which shaping engine you use…
+[00:33:02] <SimonSapin> kmc: although in retrospect it’s not often helpful. You’d need to add a stylesheet that uses !important, then one that doesn’t at all
+[00:35:10] <kmc> rdtsc should be really fast, the overhead is probably somewhere else
+[00:36:02] <pcwalton> kmc: yeah, I think it's a syscall or something
+[00:36:04] <kmc> on Linux you have the vDSO with kernel support to do fast clock_gettime() in userspace, but I don't know about OS X
+[00:36:08] <pcwalton> there is also overhead with sending the data to the profiler
+[00:36:10] <pcwalton> which is a malloc
+[00:36:14] <kmc> *nod*
+[00:36:14] <pcwalton> you don't wanna malloc on every word on the page
+[00:36:22] <pcwalton> and free
+[00:36:44] <pcwalton> we profile even on a cache hit I think
+[00:37:15] <kmc> I wonder if eventually we want different allocators for ~, with some optimized to more message-like use vs. long-lived data structures
+[00:37:34] <pcwalton> yeah, possibly
+[00:37:35] <lbergstrom> we may also be emitting a mfence before the rdtsc (depending on how pedantic our profiling code is)
+[00:37:57] <kmc> or a CPUID if it's not willing to assume the existence of MFENCE :)
+[00:38:02] <lbergstrom> :-)
+[00:38:32] <kmc> (there was a bugfix where gettimeofday() in Linux on Xen got 80x faster, because they'd been using CPUID for serializing, and Xen virtualizes that instruction)
+[00:39:02] <SimonSapin> bed time for me. kmc, please write on github if you have more comments
+[00:40:36] *** Quits: dzbarsky (Adium@76587571.D5562F02.B5C6E82B.IP) (Ping timeout)
+[00:41:17] <kmc> sure thing
+[00:41:22] <kmc> 'night simon
+[00:43:58] *** Quits: zz_kimundi (kimundi@moz-F02A6FA4.dip0.t-ipconnect.de) (Ping timeout)
+[00:46:26] *** Joins: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com)
+[00:48:18] *** Joins: zz_kimundi (kimundi@moz-27245F78.dip0.t-ipconnect.de)
+[00:48:21] *** zz_kimundi is now known as kimundi
+[00:52:44] <lbergstrom> well, it's not just image display bloating our memory usage, because even with their display commented out entirely (the call to render_context.draw_image, which is what shoves the data into an Azure surface and renders it) summit.html still quickly grows to over 400MB of video memory used
+[01:02:28] *** Quits: kimundi (kimundi@moz-27245F78.dip0.t-ipconnect.de) (Ping timeout)
+[01:03:49] *** Joins: zz_kimundi (kimundi@moz-27245F78.dip0.t-ipconnect.de)
+[01:04:02] *** zz_kimundi is now known as kimundi
+[01:11:54] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Client exited)
+[01:12:14] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[01:13:00] *** Joins: annevk (annevk@moz-95E235BF.hfc.comcastbusiness.net)
+[01:14:08] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Ping timeout)
+[01:30:16] *** Quits: dbaron (dbaron@moz-BE33DA21.fw1.sfo1.mozilla.net) (Ping timeout)
+[01:41:43] *** Joins: jdm (jdm@7F255D02.1B9223B5.AE2B2F80.IP)
+[01:41:43] *** ChanServ sets mode: +o jdm
+[01:41:56] <jdm> hmm, I see the finalize crash now
+[01:44:03] *** Joins: tjc (tjc@95247703.870F2FA5.2370DFC3.IP)
+[01:44:03] *** ChanServ sets mode: +o tjc
+[01:46:08] *** Quits: pcwalton (pcwalton@moz-BBE3ABD.mv.mozilla.com) (Quit: pcwalton)
+[01:46:17] <lbergstrom> jdm: just at shutdown?
+[01:46:25] <lbergstrom> and is summit.html more stable for you now?
+[01:46:27] <jdm> lbergstrom: yep
+[01:46:30] *** Quits: tjc (tjc@95247703.870F2FA5.2370DFC3.IP) (Quit: Places to go, people to annoy)
+[01:46:39] <jdm> haven't pulled since brson's change
+[01:46:58] <lbergstrom> nothing more since then that affects it, I think
+[01:47:36] *** Quits: Luqman (laden@moz-AB7945E9.csclub.uwaterloo.ca) (Ping timeout)
+[01:47:52] <lbergstrom> I can push you a tweak that helps a little, but I'm not convinced it's a good idea (basically just turn down the buffer_map size and then add back an addref in azure). There's clearly something else wrong in there that I'm just having trouble tracking down.
+[01:51:36] *** Quits: victorporof_ (victorporo@16E89FDD.B0D0881A.79933D60.IP) (Ping timeout)
+[02:03:45] *** Joins: vodik (simon@moz-CBE4BB13.cable.teksavvy.com)
+[02:07:06] *** Joins: Luqman (laden@moz-AB7945E9.csclub.uwaterloo.ca)
+[02:10:51] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[02:19:50] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[02:29:48] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[02:30:43] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[02:30:43] <ghservo> [13servo] 15jdm opened issue #1004: Creating more than one HTMLCollection causes a crash when finalizing a proxy later  02http://git.io/7pk0bQ
+[02:30:43] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[02:31:56] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[02:41:19] *** Quits: kimundi (kimundi@moz-27245F78.dip0.t-ipconnect.de) (Ping timeout)
+[02:43:23] *** Quits: timot_ (timot@moz-7088860C.bredband.tre.se) (Ping timeout)
+[02:44:52] *** Joins: zz_kimundi (kimundi@moz-2C65B47D.dip0.t-ipconnect.de)
+[02:44:53] *** zz_kimundi is now known as kimundi
+[02:45:20] *** Joins: timot_ (timot@moz-B2E8A573.cust.tele2.se)
+[02:53:39] *** Quits: Luqman (laden@moz-AB7945E9.csclub.uwaterloo.ca) (Ping timeout)
+[03:07:38] *** Quits: jdm (jdm@7F255D02.1B9223B5.AE2B2F80.IP) (Quit: Lost terminal)
+[03:09:47] *** Joins: MauricioC (mauricioc@moz-2CFCD404.impa.br)
+[03:14:00] *** Quits: annevk (annevk@moz-95E235BF.hfc.comcastbusiness.net) (Input/output error)
+[03:14:27] *** Joins: annevk (annevk@moz-95E235BF.hfc.comcastbusiness.net)
+[03:16:19] *** Quits: annevk (annevk@moz-95E235BF.hfc.comcastbusiness.net) (Ping timeout)
+[03:21:50] *** Quits: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com) (Quit: lmandel)
+[03:34:38] *** Joins: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com)
+[03:34:50] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Ping timeout)
+[03:36:19] *** Quits: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com) (Quit: lmandel)
+[03:40:23] *** Joins: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com)
+[03:54:22] *** Joins: Luqman (laden@moz-AB7945E9.csclub.uwaterloo.ca)
+[04:06:36] *** Joins: dbaron (dbaron@moz-C566053C.dsl.dynamic.sonic.net)
+[04:07:43] *** Quits: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com) (Quit: lmandel)
+[04:19:34] *** Joins: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com)
+[04:20:55] *** Quits: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com) (Quit: lmandel)
+[04:38:29] *** Quits: MauricioC (mauricioc@moz-2CFCD404.impa.br) (Ping timeout)
+[04:42:52] *** Joins: MauricioC (mauricioc@moz-5D49F2DE.impa.br)
+[05:03:23] *** Quits: MauricioC (mauricioc@moz-5D49F2DE.impa.br) (Ping timeout)
+[05:04:28] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[05:08:34] *** Joins: eatkinson (eatkinson@moz-261EDE03.hsd1.ca.comcast.net)
+[05:09:05] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[05:10:16] *** Joins: valenting (Thunderbir@50075977.FDB3AFA7.FB866788.IP)
+[05:26:34] *** Quits: valenting (Thunderbir@50075977.FDB3AFA7.FB866788.IP) (Ping timeout)
+[05:37:25] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[05:38:40] <jaeman> Hi SimonSapin
+[05:38:48] <jaeman> \
+[05:49:21] *** Joins: valenting (Thunderbir@50075977.FDB3AFA7.FB866788.IP)
+[05:52:06] *** Joins: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP)
+[05:52:06] <ghservo> [13servo] 15jdm opened pull request #1005: Various fixes for crashes and frequent task failure at shutdown (06master...06failfixes)  02http://git.io/TjW1LA
+[05:52:06] *** Parts: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP) ()
+[05:58:19] *** Quits: eatkinson (eatkinson@moz-261EDE03.hsd1.ca.comcast.net) (Quit: eatkinson)
+[06:09:18] *** Joins: eatkinson (eatkinson@moz-261EDE03.hsd1.ca.comcast.net)
+[06:10:26] *** Joins: Ms2ger (Ms2ger@moz-79E00D8E.ugent.be)
+[06:16:43] *** Quits: eatkinson (eatkinson@moz-261EDE03.hsd1.ca.comcast.net) (Quit: eatkinson)
+[06:17:28] *** Quits: valenting (Thunderbir@50075977.FDB3AFA7.FB866788.IP) (Quit: valenting)
+[06:28:50] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Input/output error)
+[06:29:17] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[06:29:23] *** Quits: vodik (simon@moz-CBE4BB13.cable.teksavvy.com) (Ping timeout)
+[06:32:59] *** Quits: tikue_ (tikue_star@ABF748F2.CD72397.689607DE.IP) (Ping timeout)
+[06:44:34] *** Quits: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[06:49:08] *** Quits: timot_ (timot@moz-B2E8A573.cust.tele2.se) (Connection reset by peer)
+[06:54:51] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[06:54:51] <ghservo> 01[13servo01] 15bors-servo 04force-pushed 06auto from 142afeccb to 14be5deb2: 02http://git.io/c8GovQ
+[06:54:51] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[06:54:53] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[06:54:53] <ghservo> 01[13servo01] 15bors-servo pushed 4 new commits to 06auto: 02http://git.io/g-JARA
+[06:54:53] <ghservo> 13servo/06auto 1492f6599 15Josh Matthews: Wait for any layout tasks to complete in a page tree before a handling a pipeline's exit message.
+[06:54:53] <ghservo> 13servo/06auto 14bc81716 15Josh Matthews: Make proxy finalizers retrieve the DOM object from the right slot.
+[06:54:53] <ghservo> 13servo/06auto 14499935b 15Josh Matthews: Silence occasional task failure that occurs from sending to the render task after it's shut down.
+[06:54:55] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[06:56:15] *** Quits: doomlord_ (servitor@moz-728E30A7.range109-151.btcentralplus.com) (Connection reset by peer)
+[06:59:13] *** Joins: timot_ (timot@moz-3896B0B8.cust.tele2.se)
+[06:59:40] *** Quits: timot_ (timot@moz-3896B0B8.cust.tele2.se) (Quit: Konversation terminated!)
+[06:59:45] *** Joins: timot_ (timot@moz-3896B0B8.cust.tele2.se)
+[07:02:03] *** Joins: tikue_ (tikue_star@ABF748F2.CD72397.689607DE.IP)
+[07:07:33] *** Quits: tikue_ (tikue_star@ABF748F2.CD72397.689607DE.IP) (Ping timeout)
+[07:15:50] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[07:15:50] <ghservo> 01[13servo01] 15bors-servo merged 06auto into 06master: 02http://git.io/g-JARA
+[07:15:50] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[07:15:51] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[07:15:51] <ghservo> [13servo] 15bors-servo closed pull request #1005: Various fixes for crashes and frequent task failure at shutdown (06master...06failfixes)  02http://git.io/TjW1LA
+[07:15:51] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[07:17:17] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Connection reset by peer)
+[07:17:39] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[07:26:38] *** Joins: tgummerer (tgummerer@51D3B54.FEF996EA.EA6FEF3D.IP)
+[07:34:46] *** Quits: Ms2ger (Ms2ger@moz-79E00D8E.ugent.be) (Ping timeout)
+[07:45:06] *** Joins: victorporof (victorporo@A3643B25.1C233438.79933D60.IP)
+[07:54:00] *** Quits: dbaron (dbaron@moz-C566053C.dsl.dynamic.sonic.net) (Ping timeout)
+[08:20:21] *** Joins: jensnock_ (jensnocker@moz-8BE55278.customer.t3.se)
+[08:20:22] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Connection reset by peer)
+[08:23:38] *** Quits: jensnock_ (jensnocker@moz-8BE55278.customer.t3.se) (Connection reset by peer)
+[08:23:58] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[08:24:00] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[08:26:18] *** Joins: bholley (anonymous@moz-D5EB36E2.rev.numericable.fr)
+[08:34:51] *** Quits: tgummerer (tgummerer@51D3B54.FEF996EA.EA6FEF3D.IP) (Ping timeout)
+[08:45:11] *** Joins: robertknight (robertknig@moz-54528EE0.wby.mendeley.com)
+[08:52:56] *** Joins: tgummerer (tgummerer@51D3B54.FEF996EA.EA6FEF3D.IP)
+[08:55:43] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Client exited)
+[08:56:03] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[08:57:57] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Ping timeout)
+[09:08:01] *** Quits: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[09:11:33] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[09:12:42] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[09:13:31] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Connection reset by peer)
+[09:13:38] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[09:31:06] *** Quits: alex-abreu (alex@moz-7421D6C9.mc.videotron.ca) (Ping timeout)
+[09:31:23] *** Joins: alex-abreu (alex@moz-7421D6C9.mc.videotron.ca)
+[09:40:34] *** Quits: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[09:49:56] *** Quits: tgummerer (tgummerer@51D3B54.FEF996EA.EA6FEF3D.IP) (Ping timeout)
+[09:49:58] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Input/output error)
+[09:50:25] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[09:51:43] *** Quits: silverroots (uid10556@moz-31ABA2C0.irccloud.com) (Ping timeout)
+[09:52:08] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Ping timeout)
+[09:54:29] *** Joins: tgummerer (tgummerer@51D3B54.FEF996EA.EA6FEF3D.IP)
+[09:56:59] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[09:58:44] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Connection reset by peer)
+[09:58:54] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[10:06:40] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[10:08:35] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Ping timeout)
+[10:12:09] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Ping timeout)
+[10:15:04] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[10:45:01] *** Quits: tgummerer (tgummerer@51D3B54.FEF996EA.EA6FEF3D.IP) (Ping timeout)
+[10:48:42] *** Joins: jensnock_ (jensnocker@moz-8BE55278.customer.t3.se)
+[10:48:42] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Connection reset by peer)
+[10:49:23] *** Quits: jensnock_ (jensnocker@moz-8BE55278.customer.t3.se) (Connection reset by peer)
+[10:49:32] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[10:51:18] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Ping timeout)
+[11:04:01] *** kimundi is now known as zz_kimundi
+[11:08:21] *** zz_kimundi is now known as kimundi
+[11:17:20] *** Joins: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP)
+[11:25:11] *** Joins: Ms2ger (Ms2ger@moz-8D00CA6C.ugent.be)
+[11:27:05] *** Joins: annevk (annevk@moz-95E235BF.hfc.comcastbusiness.net)
+[11:27:45] *** Joins: vodik (simon@moz-CBE4BB13.cable.teksavvy.com)
+[12:19:52] *** Quits: Ms2ger (Ms2ger@moz-8D00CA6C.ugent.be) (Ping timeout)
+[12:27:50] *** Joins: silverroots (uid10556@moz-31ABA2C0.irccloud.com)
+[12:30:39] *** Quits: annevk (annevk@moz-95E235BF.hfc.comcastbusiness.net) (Input/output error)
+[12:31:05] *** Joins: annevk (annevk@moz-95E235BF.hfc.comcastbusiness.net)
+[12:32:51] *** Quits: annevk (annevk@moz-95E235BF.hfc.comcastbusiness.net) (Ping timeout)
+[12:35:12] *** Joins: tgummerer (tgummerer@moz-4B463D12.kthopen.kth.se)
+[12:43:37] *** Joins: annevk (annevk@moz-AB6F484C.wireless.csail.mit.edu)
+[12:58:32] *** Quits: vodik (simon@moz-CBE4BB13.cable.teksavvy.com) (Ping timeout)
+[13:03:41] *** Quits: timot_ (timot@moz-3896B0B8.cust.tele2.se) (Ping timeout)
+[13:09:50] *** Joins: timot_ (timot@moz-3896B0B8.cust.tele2.se)
+[13:24:05] *** Joins: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP)
+[13:24:05] *** ChanServ sets mode: +o jdm
+[13:24:18] <SimonSapin> Hi jaeman 
+[13:24:18] *** Quits: timot_ (timot@moz-3896B0B8.cust.tele2.se) (Ping timeout)
+[13:24:53] *** Joins: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com)
+[13:29:53] *** Joins: ahal (ahal@moz-101FBACE.eng.wind.ca)
+[13:45:31] *** Joins: Ms2ger (Ms2ger@moz-F19E3423.ugent.be)
+[13:52:18] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[13:53:57] *** bz_away is now known as bz
+[13:58:25] *** Quits: Ms2ger (Ms2ger@moz-F19E3423.ugent.be) (Ping timeout)
+[14:12:58] *** Quits: tgummerer (tgummerer@moz-4B463D12.kthopen.kth.se) (Ping timeout)
+[14:16:00] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[14:21:52] *** Joins: doomlord_ (servitor@moz-728E30A7.range109-151.btcentralplus.com)
+[14:28:03] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[14:28:03] <ghservo> [13skia] 15kworr opened issue #27: build fails: error: ft2build.h: No such file or directory  02http://git.io/f5DOHA
+[14:28:03] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[14:28:13] *** Joins: tgummerer (tgummerer@moz-4B463D12.kthopen.kth.se)
+[14:29:45] *** Joins: eholk (eric@moz-F70D5031.hsd1.in.comcast.net)
+[14:34:24] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Ping timeout)
+[14:34:55] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[14:50:49] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[14:50:49] <ghservo> [13servo] 15SimonSapin opened issue #1006: Using the new style system  02http://git.io/YmflLA
+[14:50:49] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[14:51:04] <SimonSapin> need feedback ^
+[14:58:57] *** Quits: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP) (Ping timeout)
+[14:59:46] *** Joins: timot_ (timot@moz-857AE244.mobile.tre.se)
+[15:02:30] *** Quits: tgummerer (tgummerer@moz-4B463D12.kthopen.kth.se) (Ping timeout)
+[15:08:59] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Input/output error)
+[15:09:27] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[15:10:49] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Connection reset by peer)
+[15:18:33] *** Quits: Luqman (laden@moz-AB7945E9.csclub.uwaterloo.ca) (Ping timeout)
+[15:19:29] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[15:24:05] *** Quits: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[15:26:05] *** Joins: jdm (jdm@FCCEA34F.7672369.D8E68FF6.IP)
+[15:26:05] *** ChanServ sets mode: +o jdm
+[15:30:34] *** Joins: jdm_ (jdm@13F2CEC5.7672369.D8E68FF6.IP)
+[15:31:06] *** Quits: jdm (jdm@FCCEA34F.7672369.D8E68FF6.IP) (Ping timeout)
+[15:31:18] *** Quits: ahal (ahal@moz-101FBACE.eng.wind.ca) (Ping timeout)
+[15:31:25] *** jdm_ is now known as jdm
+[15:31:40] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Input/output error)
+[15:32:08] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[15:33:53] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Ping timeout)
+[15:44:06] *** Quits: timot_ (timot@moz-857AE244.mobile.tre.se) (Ping timeout)
+[15:46:50] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[15:47:20] *** Joins: Luqman (laden@moz-AB7945E9.csclub.uwaterloo.ca)
+[15:49:22] *** Quits: bholley (anonymous@moz-D5EB36E2.rev.numericable.fr) (Quit: bholley)
+[15:49:37] *** Joins: vodik (simon@moz-B2DD01ED.net.uwaterloo.ca)
+[15:58:18] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[15:58:18] *** ChanServ sets mode: +qo dherman dherman
+[16:00:43] *** Joins: mccr8 (mccr8@moz-BBE3ABD.mv.mozilla.com)
+[16:00:58] *** Joins: dbaron (dbaron@moz-C566053C.dsl.dynamic.sonic.net)
+[16:01:32] *** Joins: Ms2ger (Ms2ger@moz-2F2A356D.adsl-dyn.isp.belgacom.be)
+[16:02:47] *** Quits: bz (bzbarsky@moz-EA9A3995.bstnma.fios.verizon.net) (Ping timeout)
+[16:04:20] *** Quits: vodik (simon@moz-B2DD01ED.net.uwaterloo.ca) (Quit: class)
+[16:04:57] *** jdm is now known as jdm|f00d
+[16:08:43] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[16:08:43] <ghservo> [13skia] 15metajack closed issue #27: build fails: error: ft2build.h: No such file or directory  02http://git.io/f5DOHA
+[16:08:43] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[16:08:57] *** Joins: timot_ (timot@moz-E599A11C.in-addr.nilings.se)
+[16:15:33] *** Joins: ahal (ahal@moz-101FBACE.eng.wind.ca)
+[16:17:46] *** Quits: Luqman (laden@moz-AB7945E9.csclub.uwaterloo.ca) (Input/output error)
+[16:19:45] *** Joins: timot (timot@1C5B7AF5.87C6DE19.CBC7865F.IP)
+[16:21:10] *** Quits: timot_ (timot@moz-E599A11C.in-addr.nilings.se) (Ping timeout)
+[16:22:08] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[16:24:28] *** Quits: eholk (eric@moz-F70D5031.hsd1.in.comcast.net) (Quit: Konversation terminated!)
+[16:29:06] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[16:37:09] *** Joins: Luqman (laden@moz-AB7945E9.csclub.uwaterloo.ca)
+[16:37:20] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[16:39:33] *** Quits: ahal (ahal@moz-101FBACE.eng.wind.ca) (Ping timeout)
+[16:45:16] *** Joins: timot_ (timot@moz-E599A11C.in-addr.nilings.se)
+[16:46:23] *** Quits: timot (timot@1C5B7AF5.87C6DE19.CBC7865F.IP) (Ping timeout)
+[16:50:46] *** Joins: dzbarsky (Adium@moz-A544FDDE.wlan.wharton.upenn.edu)
+[16:54:54] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[16:55:18] *** Joins: bz (bzbarsky@moz-EA9A3995.bstnma.fios.verizon.net)
+[17:02:53] *** jdm|f00d is now known as jdm
+[17:06:15] <jdm> lbergstrom: you probably want jack on that email about the skia context
+[17:06:20] <jdm> I've never touched the graphics code
+[17:06:42] <jdm> the mailing list would also be an acceptable place
+[17:06:57] <lbergstrom> jdm: sounds good, thanks! 
+[17:07:59] *** Joins: pcwalton (pcwalton@moz-7B0110AD.mv.mozilla.com)
+[17:07:59] *** ChanServ sets mode: +o pcwalton
+[17:08:37] <lbergstrom> I'm still trying to track down what's causing us so much pain on the graphics side and was just curious about the shutdown crash because I always see it.
+[17:08:55] <lbergstrom> I suspect what's happening is that we're in the middle of tearing things down when the timer goes off in javascript, causes the width of an element to be updated
+[17:09:20] <lbergstrom> that pushes a window_changed and forces a re-render, which crashes because we've started tearing down the contexts, etc.
+[17:12:27] <jdm> hmm
+[17:12:41] <jdm> the timer control task has an exit message
+[17:13:27] <jdm> lbergstrom: also when the Window destructor runs we shut down the timer task
+[17:13:39] <jdm> conceivably we could do that sooner
+[17:14:02] <jdm> or just ignore timer fire messages on the script task if we're supposed to be shutting down or something
+[17:19:39] *** Quits: dzbarsky (Adium@moz-A544FDDE.wlan.wharton.upenn.edu) (Quit: Leaving.)
+[17:20:54] *** Joins: dzbarsky (Adium@moz-A544FDDE.wlan.wharton.upenn.edu)
+[17:28:39] *** Joins: eatkinson (eatkinson@moz-D86C5DB2.airbears2.berkeley.edu)
+[17:33:06] <lbergstrom> jdm: yeah, it looks like the constellation walks through all of the pipelines, calling exit (which sends the exitmsg to the script task), but before waiting to find out if those pipelines have actually torn themselves down, it rips down the image_cache and the resource task and continues to unwind
+[17:39:32] *** Joins: tjc (tjc@4DBA3B45.81A2ADB4.284344F5.IP)
+[17:39:32] *** ChanServ sets mode: +o tjc
+[17:39:34] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[17:50:47] *** Quits: eatkinson (eatkinson@moz-D86C5DB2.airbears2.berkeley.edu) (Quit: eatkinson)
+[17:52:36] *** Quits: robertknight (robertknig@moz-54528EE0.wby.mendeley.com) (Ping timeout)
+[17:56:13] <jdm> anybody know how to make summit.html display images in chrome when loaded via file://?
+[17:56:50] <jdm> it works with a python http server in src/test/html
+[17:57:04] <jdm> whee, look at it jank :)
+[17:58:49] * jdm curses the mesa crashes
+[18:00:08] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[18:00:08] <ghservo> [13servo] 15jdm opened issue #1007: fontconfig crash closing summit.html  02http://git.io/rgbkDg
+[18:00:08] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[18:00:27] <pcwalton> these shared GL crashes are really obnoxious
+[18:00:36] <pcwalton> maybe I should take a stab at just eliminating shared GL contexts?
+[18:00:39] *** Joins: jet (jet@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[18:00:40] <pcwalton> I think it is possible
+[18:01:05] <bjz> pcwalton: what's the issue with the shared contexts?
+[18:01:32] <pcwalton> bjz: it is very annoying to make sure that textures get destroyed on the right thread
+[18:01:52] <bjz> nothing at fault on my end?
+[18:01:59] <pcwalton> I don't think so
+[18:02:14] <bjz> ok, just checking
+[18:02:24] <bjz> :P
+[18:04:07] <lbergstrom> pcwalton: if you could, investigating why we are still filling up video ram / choppy a few seconds into rendering summit.html would be a huge help for this weekend's demos
+[18:04:12] <pcwalton> ok
+[18:05:25] <lbergstrom> tyvm; I've thrown some time at it and don't think it's image rendering (we do just as badly skipping them entirely)
+[18:06:16] <lbergstrom> the buffer_map (which holds onto the LayerBufferSet) seems to contribute, but not be the sole source. Eliminating the caching (and working around some related AddRef/Release issues) delays the behavior slightly but doesn't eliminate it
+[18:09:13] <pcwalton> have you tried with CPU rendering?
+[18:09:59] <SimonSapin> jdm: are you going to brussels through london?
+[18:11:08] <lbergstrom> pcwalton: same behavior when I forced it to CPU rendering (via the OpenGL profiler settings)
+[18:11:20] <pcwalton> oh, I mean Servo CPU rendering
+[18:11:20] <pcwalton> -c
+[18:11:25] <pcwalton> but that only works with my patches I think
+[18:12:12] <lbergstrom> I also tried your patch, but it crashed at startup IIRC (and jack told me to try the OpenGL version). That was a few days ago, though, and not the most recent bits in your PR
+[18:13:14] <pcwalton> hmm, ok
+[18:13:17] <pcwalton> I'll look at it
+[18:13:29] <pcwalton> I have a nasty line breaking regression with my patchset that I need to track down
+[18:14:35] <lbergstrom> that code is definitely tricky. line breaking inline iframes properly after resize is what's holding up my PR that adds support for them
+[18:15:35] <pcwalton> fastest way is probably to diff debug output against master and find the delta, which I'm doing right now (waiting on recompile)
+[18:15:41] <pcwalton> I have a minimal testcase
+[18:15:55] <pcwalton> btw, my patches + CPU rendering make layout and rendering blazingly fast
+[18:16:05] <pcwalton> it feels on par with Gecko/WebKit for Wikipedia
+[18:16:18] <pcwalton> probably will be better once I fix the shaping regression
+[18:16:19] <pcwalton> err
+[18:16:24] <pcwalton> the shaping profiling problem
+[18:16:58] <pcwalton> the biggest perf problems right now, besides lack of incremental reflow, are the lack of a displayport outside the visible rect
+[18:16:59] <jdm> SimonSapin: yes
+[18:17:05] <pcwalton> and network being slow
+[18:18:21] <jdm> SimonSapin: I'll be in the office all day tomorrow, and working from london until the 28th
+[18:19:25] <pcwalton> when is the demo? fri or sat?
+[18:19:43] <jdm> I don't think we've been told
+[18:22:02] *** Quits: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP) (Ping timeout)
+[18:27:47] <pcwalton> lbergstrom: I'll test my cpu rendering patches on linux
+[18:28:24] *** Quits: jet (jet@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: jet)
+[18:28:52] <lbergstrom> pcwalton: thanks. Do you want me to check the newer version of them out on OSX? I have to head to the airport in an hour or so, but I should be able to get initial results
+[18:29:04] <pcwalton> lbergstrom: I'm pushing my changes right now
+[18:29:14] <pcwalton> there is that linebreaking regression so acid1 looks somewhat messed up
+[18:29:34] <pcwalton> oh, it may be kinda hard to build due to the rust patch it needs
+[18:29:51] <pcwalton> I'll upgrade my rust
+[18:36:05] *** Joins: jet (jet@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[18:41:37] *** Quits: pcwalton (pcwalton@moz-7B0110AD.mv.mozilla.com) (Quit: pcwalton)
+[18:41:45] *** Quits: tjc (tjc@4DBA3B45.81A2ADB4.284344F5.IP) (Quit: zzzzzzzzzz)
+[18:42:21] *** Joins: pcwalton (pcwalton@moz-7B0110AD.mv.mozilla.com)
+[18:42:21] *** ChanServ sets mode: +o pcwalton
+[18:43:26] *** Quits: jdm (jdm@13F2CEC5.7672369.D8E68FF6.IP) (Quit: Lost terminal)
+[18:47:44] *** Quits: dzbarsky (Adium@moz-A544FDDE.wlan.wharton.upenn.edu) (Quit: Leaving.)
+[18:48:05] *** Joins: valenting (Thunderbir@50075977.FDB3AFA7.FB866788.IP)
+[18:48:09] *** Quits: dbaron (dbaron@moz-C566053C.dsl.dynamic.sonic.net) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[18:58:05] *** Joins: Jayflux (Jason@moz-B7CA6F22.ppp.as43234.net)
+[18:58:29] *** Joins: tjc (tjc@moz-A7F450FF.sfba.hfc.comcastbusiness.net)
+[18:58:29] *** ChanServ sets mode: +o tjc
+[19:01:41] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Connection reset by peer)
+[19:02:02] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[19:03:57] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Ping timeout)
+[19:12:59] *** Quits: lbergstrom (Adium@moz-5D8E4B14.lightspeed.cicril.sbcglobal.net) (Quit: Leaving.)
+[19:14:02] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[19:21:02] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Client exited)
+[19:21:23] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[19:21:41] *** Quits: tjc (tjc@moz-A7F450FF.sfba.hfc.comcastbusiness.net) (Quit: zzzzzzzzzz)
+[19:21:52] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[19:21:53] <ghservo> 01[13servo01] 15bors-servo pushed 0 new commits to 06auto: 02http://git.io/RJuzzw
+[19:21:53] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[19:22:00] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[19:22:00] <ghservo> 01[13servo01] 15bors-servo pushed 11 new commits to 06auto: 02http://git.io/l3UCjg
+[19:22:00] <ghservo> 13servo/06auto 14cb340df 15Simon Sapin: Add style structs.
+[19:22:00] <ghservo> 13servo/06auto 1496dce99 15Simon Sapin: Handle 'color: currentColor'
+[19:22:00] <ghservo> 13servo/06auto 147a70200 15Simon Sapin: Resolve 'unset' to 'initial' or 'inherit' when parsing.
+[19:22:02] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[19:23:16] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Ping timeout)
+[19:24:58] *** Quits: bz (bzbarsky@moz-EA9A3995.bstnma.fios.verizon.net) (Ping timeout)
+[19:25:59] <pcwalton> style structs? \o/
+[19:26:43] *** Joins: tjc (tjc@moz-A7F450FF.sfba.hfc.comcastbusiness.net)
+[19:26:43] *** ChanServ sets mode: +o tjc
+[19:32:11] *** Joins: dzbarsky (Adium@9782DD58.69EBDC0E.B5B6DD03.IP)
+[19:37:52] *** Quits: jet (jet@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: jet)
+[19:39:33] *** Quits: timot_ (timot@moz-E599A11C.in-addr.nilings.se) (Quit: Konversation terminated!)
+[19:41:58] *** Joins: Kostic (marko@moz-4DE19A5D.mbb.telenor.rs)
+[19:42:47] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[19:42:47] <ghservo> 01[13servo01] 15bors-servo merged 06auto into 06master: 02http://git.io/l3UCjg
+[19:42:47] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[19:42:48] *** Joins: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP)
+[19:42:48] <ghservo> [13servo] 15bors-servo closed pull request #1001: Mostly complete new style system (06master...06newnewcss)  02http://git.io/4staPQ
+[19:42:48] *** Parts: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP) ()
+[19:47:53] *** Joins: azakai_ (alon@moz-BBE3ABD.mv.mozilla.com)
+[19:55:30] *** Quits: annevk (annevk@moz-AB6F484C.wireless.csail.mit.edu) (Input/output error)
+[19:55:56] *** Joins: annevk (annevk@moz-AB6F484C.wireless.csail.mit.edu)
+[19:56:31] *** Joins: timot (timot@moz-3896B0B8.cust.tele2.se)
+[19:57:43] *** Quits: annevk (annevk@moz-AB6F484C.wireless.csail.mit.edu) (Ping timeout)
+[19:59:29] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[20:02:12] *** Quits: tjc (tjc@moz-A7F450FF.sfba.hfc.comcastbusiness.net) (Ping timeout)
+[20:02:28] *** Joins: tjc (tjc@151DA674.5B95CD0.284344F5.IP)
+[20:02:28] *** ChanServ sets mode: +o tjc
+[20:04:42] *** Joins: jensnock_ (jensnocker@moz-63C022A1.mobileonline.telia.com)
+[20:05:34] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Ping timeout)
+[20:08:18] *** Joins: annevk (annevk@moz-AB6F484C.wireless.csail.mit.edu)
+[20:31:57] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[20:32:37] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[20:33:48] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Ping timeout)
+[20:36:24] *** Joins: tikue_ (tikue_star@86B7C416.EB08480C.689607DE.IP)
+[20:38:05] <pcwalton> SimonSapin++
+[20:39:21] <kmc> I'm excited that we are this close to having pure Rust CSS already
+[20:39:40] <pcwalton> me too
+[20:42:09] <pcwalton> servo just made a giant leap forward to becoming a real browser engine :)
+[20:43:07] *** Quits: jensnock_ (jensnocker@moz-63C022A1.mobileonline.telia.com) (Input/output error)
+[20:43:35] *** Joins: jensnockert (jensnocker@moz-63C022A1.mobileonline.telia.com)
+[20:44:05] *** Quits: jensnockert (jensnocker@moz-63C022A1.mobileonline.telia.com) (Connection reset by peer)
+[20:46:04] *** Quits: annevk (annevk@moz-AB6F484C.wireless.csail.mit.edu) (Input/output error)
+[20:46:28] *** Quits: Kostic (marko@moz-4DE19A5D.mbb.telenor.rs) (Quit: Kostic)
+[20:46:31] *** Joins: annevk (annevk@moz-AB6F484C.wireless.csail.mit.edu)
+[20:48:06] *** Joins: jet (jet@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[20:48:24] *** Quits: annevk (annevk@moz-AB6F484C.wireless.csail.mit.edu) (Ping timeout)
+[20:49:31] *** Joins: dbaron (dbaron@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[20:50:05] *** Joins: bholley (anonymous@moz-D5EB36E2.rev.numericable.fr)
+[20:51:13] *** Joins: burg (burg@moz-A644EFFF.dyn.cs.washington.edu)
+[20:51:35] <burg> hmm, no eatkinson 
+[20:52:39] *** Joins: ahal (ahal@7F85AFB3.F7EBA23.C3C3A9D0.IP)
+[20:54:11] <kmc> I guess we should talk about how to get Servo using the new CSS stuff (https://github.com/mozilla/servo/issues/1006)
+[20:56:12] <kmc> I'd rather have a new crate, instead of having gfx depend on script, which isn't justified by any overall architecture
+[20:56:56] <kmc> but I don't know how much work is involved in each solution
+[20:57:18] <kmc> SimonSapin: I'm game for trying one approach while you try the other, and we can see how far we get in a day
+[20:57:50] <kmc> sometimes you start pulling on these refactoring threads and a whole bunch of stuff gets dragged along so I'm not sure we can know ahead of time which way is better
+[21:01:55] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[21:04:42] *** Quits: dbaron (dbaron@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[21:05:56] *** Joins: dbaron (dbaron@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[21:07:55] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[21:10:46] *** Joins: bz (bzbarsky@moz-29D2559C.hfc.comcastbusiness.net)
+[21:11:52] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[21:14:41] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[21:16:30] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Input/output error)
+[21:16:58] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[21:18:52] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Ping timeout)
+[21:19:33] <SimonSapin> kmc: It’ll have to wait till after the summit for me :)
+[21:19:40] <kmc> *nod*
+[21:19:55] *** Quits: dzbarsky (Adium@9782DD58.69EBDC0E.B5B6DD03.IP) (Quit: Leaving.)
+[21:20:10] <SimonSapin> oh, and my Rust talk proposal for PyConFR has been accepted
+[21:22:50] <burg> SimonSapin: yay /o=
+[21:23:03] <burg> \o/ too
+[21:23:17] <SimonSapin> kmc, pcwalton: I don’t really like the idea of splitting the style system (part in the script crate and part in its own crate)
+[21:23:30] <SimonSapin> but it might bee the "least bad"
+[21:24:02] <pcwalton> yeah, I think putting CSS as much as possible in one crate would be desirable a priori, but I have no idea whether that's feasible
+[21:25:10] <SimonSapin> pcwalton: selector matching needs the DOM, and the HTML parser needs the CSS parser
+[21:25:19] <bz> er...
+[21:25:24] <bz> why does the HTML parser need the CSS parser???
+[21:25:26] <SimonSapin> these two lead me to put everything in the script crate in the first place
+[21:25:30] * bz claims this must be false
+[21:26:03] <SimonSapin> bz: at least in the current Servo code, the HTML parser calls CSS parser code on <style> element
+[21:26:03] <bz> (generally; I can't speak to particular dependencies particular code must happen to have)
+[21:26:09] <bz> Well, that's bogus
+[21:26:10] <pcwalton> could that be abstracted into a trait?
+[21:26:14] <bz> because you can add a <style> via the DOM
+[21:26:15] <SimonSapin> maybe there is a way to organize things differently
+[21:26:16] <bz> and that needs to work
+[21:26:24] <bz> So <style> needs to be handled from the DOM anyway
+[21:26:33] <bz> And then you might as well _always_ handle it from the DOM
+[21:27:15] <bz> Again, conceptually.  ;)
+[21:28:45] <pcwalton> yeah, we should organize this differently I think... but aren't the DOM and HTML parser in the same crate?
+[21:28:48] <pcwalton> so I don't think it matters
+[21:29:30] <Ms2ger> Clearly you just need a Web crate :)
+[21:30:01] <pcwalton> for compile times that would be bad :)
+[21:30:12] <pcwalton> until Rust gets incremental compilation (hard, but probably inevitable)
+[21:30:42] <Ms2ger> I already context-switch whenever I start compiling servo, not sure it's a big deal ;)
+[21:33:15] <kmc> yeah I think in an ideal world rustc should be semantically whole-crate, but should cache various things as possible
+[21:34:20] <burg> rustccc!
+[21:34:33] <burg> rustccache!
+[21:36:20] <cmr> kmc: Yes, definitely agree.
+[21:36:28] <SimonSapin> ah, how often I wish I was using Rust from two years from now :)
+[21:36:35] <pcwalton> it's hard because it's hard to figure out the dependency graph
+[21:36:43] <pcwalton> especially when inlining and such happen
+[21:36:50] <cmr> Yeah
+[21:37:03] <cmr> Past trans, I don't think there's really anything we can do, is there?
+[21:38:22] *** Quits: victorporof (victorporo@A3643B25.1C233438.79933D60.IP) (Quit: victorporof)
+[21:38:24] <pcwalton> we could llvm-extract individual functions into individual LLVM Modules, hash the Modules, save the .o files, and then avoid regenerating the .o files if the Modules haven't changed
+[21:38:33] <Ms2ger> I'd already be happy if syntax errors were caught quickly
+[21:38:36] <cmr> Would that preclude some optimizations?
+[21:38:37] <pcwalton> that would at least save on LLVM IR time
+[21:38:39] <pcwalton> no
+[21:38:47] *** Quits: Ms2ger (Ms2ger@moz-2F2A356D.adsl-dyn.isp.belgacom.be) (Quit: nn)
+[21:38:49] <pcwalton> parse errors are caught quickly, type errors aren't
+[21:39:00] <pcwalton> there is some room for improvement here
+[21:39:10] <pcwalton> dunno how much
+[21:39:10] <kmc> is it still the case that rustc spends a lot of time on metadata reading?
+[21:39:19] <pcwalton> not since a few weeks ago
+[21:39:21] <cmr> kmc: no, actually.
+[21:39:21] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[21:39:21] *** ChanServ sets mode: +qo dherman dherman
+[21:39:30] <pcwalton> it is true that it spends too much time but it's not horribly bad
+[21:39:31] <cmr> it still spends too much time on it
+[21:39:32] <kmc> oh cool
+[21:39:34] <pcwalton> especially for big crates like servo
+[21:39:58] <cmr> pcwalton: have you seen a recent profile of rustc on fn main() {} ?
+[21:40:08] <cmr> 8% of it on linux is the kernel clearing mmap'd pages
+[21:40:37] *** Joins: dbaron_ (dbaron@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[21:40:46] *** Quits: dbaron (dbaron@moz-BE33DA21.fw1.sfo1.mozilla.net) (NickServ (GHOST command used by dbaron_))
+[21:42:40] *** Quits: tjc (tjc@151DA674.5B95CD0.284344F5.IP) (Ping timeout)
+[21:42:42] <pcwalton> so too much memory use I guess?
+[21:42:58] *** Quits: tikue_ (tikue_star@86B7C416.EB08480C.689607DE.IP) (Ping timeout)
+[21:43:27] <cmr> Definitely, but a large portion of it still is ld doing its linking things.
+[21:43:44] <cmr> Did you see the cycle acrichto found in lint? Almost a gig :\
+[21:43:52] <pcwalton> yeah, he told me about it
+[21:43:55] *** Joins: tikue_ (tikue_star@86B7C416.EB08480C.689607DE.IP)
+[21:43:59] <pcwalton> also bleh, ld
+[21:44:13] <pcwalton> would be nice to use llvm-ld
+[21:44:14] <pcwalton> lld
+[21:44:19] <pcwalton> maybe we could use the Plan 9 linker?
+[21:45:10] <cmr> I've been meaning to look into using lld, just haven't found the time.
+[21:45:21] <cmr> Silly school :(
+[21:45:35] *** Joins: tjc (tjc@moz-A7F450FF.sfba.hfc.comcastbusiness.net)
+[21:45:35] *** ChanServ sets mode: +o tjc
+[21:45:53] *** Quits: bholley (anonymous@moz-D5EB36E2.rev.numericable.fr) (Quit: bholley)
+[21:45:56] <Luqman> afaik lld still has some kinks to work out for dynamic linking
+[21:46:22] <cmr> Luqman: I keep hearing that, but nobody has any docs, ML posts, or experiments that share that conclusion :p
+[21:46:40] <cmr> none that I've seen at least
+[21:47:08] <Luqman> http://lld.llvm.org/ mentions it can self host on linux with -static
+[21:47:14] <Luqman> but i'm not sure how recent that is
+[21:50:23] <pcwalton> oh, heh, dynamic linking
+[21:50:27] <pcwalton> I bet the plan 9 linker doesn't support it
+[21:50:55] <cmr> tbh I don't think losing dynamic linking in the short term would be that bad, especially if it's just transitionary.
+[21:51:13] <pcwalton> that'd be a big change
+[21:51:24] <pcwalton> quite possibly to the build systems too
+[21:51:30] <Luqman> going from dynamic only to static only :P
+[21:51:42] <cmr> ah yes the build system
+[21:58:22] *** Joins: gandalf (zbraniecki@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[22:00:15] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[22:01:19] *** Quits: tjc (tjc@moz-A7F450FF.sfba.hfc.comcastbusiness.net) (Quit: zzzzzzzzzz)
+[22:01:42] <kmc> what about gold
+[22:01:53] * kmc probably mentioned it before but doesn't recall the answer
+[22:02:01] <cmr> I'm already using gold
+[22:02:32] <kmc> ah
+[22:02:43] <kmc> should I be using gold to build Servo? how do I switch?
+[22:02:44] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[22:06:58] <Luqman> you could just link ld to gold
+[22:07:17] *** Quits: exobit_ (textual@moz-E06F46F0.corp.bitshelter.com) (Quit: )
+[22:08:25] *** Quits: tikue_ (tikue_star@86B7C416.EB08480C.689607DE.IP) (Ping timeout)
+[22:08:58] *** Quits: bz (bzbarsky@moz-29D2559C.hfc.comcastbusiness.net) (Ping timeout)
+[22:09:49] <cmr> Actually I'm not already using gold :|
+[22:09:52] * cmr changes that
+[22:11:38] *** Quits: burg (burg@moz-A644EFFF.dyn.cs.washington.edu) (Ping timeout)
+[22:12:06] <cmr> Yeah, gold helps quite a bit.
+[22:12:48] *** Joins: tikue_ (tikue_star@86B7C416.EB08480C.689607DE.IP)
+[22:16:47] <SimonSapin> cmr: how do you do that?
+[22:17:00] <cmr> SimonSapin: ln /usr/bin/ld.gold ~/.local/bin/ld
+[22:17:05] <cmr> ln -s, that is
+[22:18:14] *** Joins: burg (burg@moz-A644EFFF.dyn.cs.washington.edu)
+[22:19:53] *** Joins: tjc (tjc@moz-6C584174.ipnetworksinc.net)
+[22:19:53] *** ChanServ sets mode: +o tjc
+[22:21:46] *** Quits: tjc (tjc@moz-6C584174.ipnetworksinc.net) (Ping timeout)
+[22:25:42] *** Quits: valenting (Thunderbir@50075977.FDB3AFA7.FB866788.IP) (Ping timeout)
+[22:25:58] *** Joins: valenting (Thunderbir@moz-9CED7364.residential.rdsnet.ro)
+[22:26:56] *** Joins: dzbarsky (Adium@9782DD58.69EBDC0E.B5B6DD03.IP)
+[22:28:07] <kmc> hm when I apt-get install binutils-gold it puts it at /usr/bin/ld... guess it really is considered a drop-in replacement now
+[22:29:29] <cmr> Heh
+[22:29:39] <cmr> I wouldn't have expected that tbh. Debian or Ubuntu?
+[22:31:37] *** Joins: jdm (jdm@moz-5D18647C.com)
+[22:31:37] *** ChanServ sets mode: +o jdm
+[22:31:44] *** Quits: burg (burg@moz-A644EFFF.dyn.cs.washington.edu) (Quit: burg)
+[22:31:48] <SimonSapin> apt has an "alternatives" system, /usr/bin/ld is a symlink and you choose what it points to
+[22:32:37] <kmc> debian
+[22:32:55] <kmc> it's not using alternatives, just a diversion
+[22:34:42] *** Joins: dzbarsky1 (Adium@9782DD58.69EBDC0E.B5B6DD03.IP)
+[22:34:56] *** Quits: dzbarsky (Adium@9782DD58.69EBDC0E.B5B6DD03.IP) (Ping timeout)
+[22:37:08] *** Quits: ahal (ahal@7F85AFB3.F7EBA23.C3C3A9D0.IP) (Ping timeout)
+[22:41:41] *** Quits: dzbarsky1 (Adium@9782DD58.69EBDC0E.B5B6DD03.IP) (Connection reset by peer)
+[22:41:44] *** Joins: dzbarsky (Adium@9782DD58.69EBDC0E.B5B6DD03.IP)
+[22:44:35] *** Quits: tikue_ (tikue_star@86B7C416.EB08480C.689607DE.IP) (Ping timeout)
+[22:51:42] *** Joins: burg (burg@moz-A644EFFF.dyn.cs.washington.edu)
+[22:54:12] *** Joins: tjc (tjc@47C8A6B2.A033706C.284344F5.IP)
+[22:54:12] *** ChanServ sets mode: +o tjc
+[22:55:17] *** Quits: valenting (Thunderbir@moz-9CED7364.residential.rdsnet.ro) (Ping timeout)
+[22:55:25] *** Joins: valenting (Thunderbir@moz-416F9035.residential.rdsnet.ro)
+[22:58:55] *** Quits: dzbarsky (Adium@9782DD58.69EBDC0E.B5B6DD03.IP) (Quit: Leaving.)
+[23:00:05] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[23:01:38] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[23:02:06] *** Quits: timot (timot@moz-3896B0B8.cust.tele2.se) (Ping timeout)
+[23:05:07] *** dbaron_ is now known as dbaron
+[23:05:11] *** Quits: dbaron (dbaron@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[23:05:19] *** Joins: dbaron (dbaron@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[23:07:55] *** Quits: tjc (tjc@47C8A6B2.A033706C.284344F5.IP) (Quit: zzzzzzzzzz)
+[23:07:56] *** Quits: gandalf (zbraniecki@moz-BE33DA21.fw1.sfo1.mozilla.net) (Input/output error)
+[23:08:01] *** Joins: gandalf (zbraniecki@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[23:08:33] *** Quits: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com) (Quit: brendan)
+[23:13:23] *** Joins: tikue_ (tikue_star@86B7C416.EB08480C.689607DE.IP)
+[23:13:39] *** Joins: dzbarsky (Adium@9782DD58.69EBDC0E.B5B6DD03.IP)
+[23:13:59] *** Joins: tjc (tjc@47C8A6B2.A033706C.284344F5.IP)
+[23:13:59] *** ChanServ sets mode: +o tjc
+[23:16:42] *** Joins: brendan (brendaneic@moz-BBE3ABD.mv.mozilla.com)
+[23:18:55] *** Quits: tikue_ (tikue_star@86B7C416.EB08480C.689607DE.IP) (Ping timeout)
+[23:21:08] *** Quits: tjc (tjc@47C8A6B2.A033706C.284344F5.IP) (Quit: zzzzzzzzzz)
+[23:22:41] *** Quits: valenting (Thunderbir@moz-416F9035.residential.rdsnet.ro) (Ping timeout)
+[23:27:27] *** Quits: burg (burg@moz-A644EFFF.dyn.cs.washington.edu) (Quit: burg)
+[23:28:04] *** Joins: burg (burg@moz-A644EFFF.dyn.cs.washington.edu)
+[23:30:41] *** Quits: burg (burg@moz-A644EFFF.dyn.cs.washington.edu) (Quit: burg)
+[23:32:18] *** Joins: deokjinkim (Mibbit@B4104EBB.3CC170B1.1E14B209.IP)
+[23:35:29] *** Joins: tjc (tjc@47C8A6B2.A033706C.284344F5.IP)
+[23:35:29] *** ChanServ sets mode: +o tjc
+[23:36:22] *** Quits: Jayflux (Jason@moz-B7CA6F22.ppp.as43234.net) (Quit: Leaving)
+[23:36:55] *** Joins: haxney (dan@moz-424CB7EB.cs.brown.edu)
+[23:37:08] <haxney> SimonSapin: I did some timing tests on cssparser and servo-style to see what might be gained from parallel parsing.
+[23:37:22] <haxney> SimonSapin: the results weren't terribly promising: https://gist.github.com/haxney/6719953
+[23:38:08] *** Joins: sonwow (sonwow@5AB4884B.FCC4549.14D5B978.IP)
+[23:38:20] <haxney> basically, for files over a few KiB, the percentage of time spent parsing is in the single digits
+[23:38:45] <haxney> so Amdahl's law says, "sucks to be you!"
+[23:38:58] *** Quits: tjc (tjc@47C8A6B2.A033706C.284344F5.IP) (Quit: zzzzzzzzzz)
+[23:39:52] <haxney> SimonSapin: any thoughts on how to get some more potential speedup out of it?
+[23:40:15] <deokjinkim> jaeman: hi
+[23:40:39] <SimonSapin> haxney: so where is the time spent?
+[23:41:11] <jaeman> deokjinkim: hi
+[23:41:15] <haxney> SimonSapin: timings.csv is the time in microseconds for lexing and parsing
+[23:41:17] *** Joins: jdm_ (jdm@moz-3AA477DF.dsl.bell.ca)
+[23:41:31] <haxney> where "lexing" is `parse_stylesheet_rules(tokenize(css))`
+[23:41:45] <haxney> and "parsing is `servo_style::stylesheets::parse_stylesheet(css)`
+[23:41:53] *** Quits: jdm (jdm@moz-5D18647C.com) (Ping timeout)
+[23:42:13] <SimonSapin> so parsing includes lexing
+[23:42:14] <haxney> oh, lexing also includes iterating through the result of `parse_stylesheet_rules`
+[23:43:17] <haxney> SimonSapin: yes. I computed the fraction of time spent as `(lex_time - parse_time) / parse_time`
+[23:43:48] <haxney> Whoops, I mean `parse_time - lex_time`
+[23:44:11] <SimonSapin> haxney: so apperently there is no low hanging fruit making things parallel
+[23:44:26] <SimonSapin> but I bet there is in plain old optimization
+[23:44:48] <SimonSapin> eg. add a fast path for identifiers that do not contain a backslash-escape
+[23:44:55] <haxney> looks like it
+[23:45:32] <SimonSapin> what are the units in timings.csv?
+[23:45:50] <haxney> μs
+[23:46:10] <haxney> except for the final column, which is bytes
+[23:47:17] <haxney> the files are all taken from the alexa top 10
+[23:47:53] <SimonSapin> cool
+[23:49:22] <haxney> I saved the homepage with firefox, then copied over the css files, extracting the inline CSS with some fun Emacs macros
+[23:49:25] <SimonSapin> this matches my experience with tinycss (CSS parser in Python, spends most of the time in the tokenizer), but it’s good to have numbers
+[23:50:05] <kmc> at some point we can microoptimize the tokenizer using SIMD
+[23:50:12] <SimonSapin> hehe
+[23:50:20] <kmc> Intel has a whitepaper on using SSE for XML parsing
+[23:50:44] <SimonSapin> oh, that was serious
+[23:51:32] <kmc> yes :D
+[23:51:42] <SimonSapin> well, I’m off. ’later
+[23:51:47] <kmc> although it's probably way too early
+[23:51:50] <kmc> ttyl SimonSapin
+[23:52:14] <kmc> you can speculatively parallelize tokenization as well
+[23:52:54] *** Joins: burg (burg@moz-A644EFFF.dyn.cs.washington.edu)
+[23:52:55] <kmc> it's one of the examples in http://research.microsoft.com/pubs/118795/pldi026-vaswani.pdf
+[23:53:02] <SimonSapin> kmc: I’m curious how to make speculative stuff correct when it guesses wrong
+[23:53:33] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[23:53:35] <kmc> http://hackage.haskell.org/package/speculation is a nifty Haskell library for speculative parallelism
+[23:53:45] <kmc> "spec g f a evaluates f g while forcing a, if g == a then f g is returned, otherwise f a is evaluated and returned."
+[23:54:13] <haxney> hmm. Some of this may be beyond an undergrad project. I'm talking with my professor tomorrow to work out what to do
+[23:54:13] <kmc> so the correctness part is pretty easy
+[23:54:34] <kmc> the trick is just to cheaply find a guess 'g' which is correct often enough for it to be worthwhile
+[23:55:41] <kmc> in the case of tokenization, you can jump to the middle of the character stream, look at a few characters nearby, and guess the FSM state from that
+[23:56:04] <haxney> It seems like it "should" be fairly easy with CSS, since (almost) any '}' ends a block
+[23:56:29] <kmc> right, you can look at the n nearest characters to guess if you're in a string literal
+[23:56:31] <haxney> you could run into issues if you have a lot of commented-out blocks
+[23:56:39] <kmc> most stylesheets don't contain long literals or comments, I bet
+[23:57:16] <haxney> kmc: There are probably some which have commented-out blocks of rules as a way of "soft-deleting" code, but that's probably a tiny minority
+[23:57:32] <kmc> I'm not sure, people love commenting out code
+[23:57:44] <kmc> but I bet it is the case and we could anyway gather some data if we want to do this
+[23:58:27] *** Quits: jdm_ (jdm@moz-3AA477DF.dsl.bell.ca) (Quit: Lost terminal)
+[23:59:27] <kmc> I think we may have a high bar for "correct often enough" because the speculation is potentially starving other bits of the browser that also want to run in parallel
+[23:59:36] <haxney> kmc: I didn't see any commented-out CSS form the alexa top 11 (including Amazon)

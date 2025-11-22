@@ -1,0 +1,578 @@
+[00:02:40] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[00:02:55] *** Quits: bjz_ (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Connection reset by peer)
+[00:07:08] *** Joins: erickt1 (Adium@moz-8DB1E76B.hfc.comcastbusiness.net)
+[00:38:15] <Eridius> I'm marking up every place that we don't handle non-utf8 paths that are exposed by adopting the new Path impl. And it's turning out to be a lot :/
+[00:38:20] <Eridius> especially in librustc/back/link.rs
+[00:40:30] *** Joins: quvarxa (chatzilla@moz-978E4C31.static.tpgi.com.au)
+[00:41:23] <cmr> gasp!
+[00:41:31] * cmr isn't that surprised :(
+[00:42:19] <Eridius> some of it is because run requires str args
+[00:42:31] <Eridius> actually that's a fair amount for back/link.rs
+[00:43:12] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[00:43:28] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[00:44:36] *** Quits: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Input/output error)
+[00:50:07] *** Quits: erickt1 (Adium@moz-8DB1E76B.hfc.comcastbusiness.net) (Quit: Leaving.)
+[00:51:09] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[00:51:09] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/7cP1TQ
+[00:51:09] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[00:56:07] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[00:56:08] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/Ryry_w
+[00:56:08] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[00:56:09] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[00:56:09] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/wrKehw
+[00:56:09] <ghrust> 13rust/06auto 145fe0956 15Alex Crichton: Remove `@mut Resolver`...
+[00:56:09] <ghrust> 13rust/06auto 146828d2e 15bors: auto merge of #9556 : alexcrichton/rust/less-at-mut, r=luqmana...
+[00:56:10] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[00:59:17] *** Quits: quvarxa (chatzilla@moz-978E4C31.static.tpgi.com.au) (Client exited)
+[01:00:59] *** Quits: steveklabnik (steveklabn@moz-A6B56C6E.lsan.ca.megapath.net) (Ping timeout)
+[01:12:26] *** Joins: steveklabnik (steveklabn@90E4D93F.93EC364C.1C63AAF3.IP)
+[01:17:51] *** Quits: jdm (jdm@FCCEA34F.7672369.D8E68FF6.IP) (Quit: Lost terminal)
+[01:18:37] *** Quits: steveklabnik (steveklabn@90E4D93F.93EC364C.1C63AAF3.IP) (Ping timeout)
+[01:21:03] *** Joins: steveklabnik (steveklabn@90E4D93F.93EC364C.1C63AAF3.IP)
+[01:37:24] *** Quits: steveklabnik (steveklabn@90E4D93F.93EC364C.1C63AAF3.IP) (Ping timeout)
+[01:37:39] *** Joins: steveklabnik (steveklabn@90E4D93F.93EC364C.1C63AAF3.IP)
+[01:39:02] <Eridius> ooh, librustc just compiled with my new path! \o/
+[01:39:48] <Eridius> well that's interesting... unnecessary `unsafe` warning wehn I say `self.method_returning_opt().map_move(cast::transmute)`
+[01:40:03] <Eridius> rusti: Some("foo").map_move(std::cast::transmute)
+[01:40:04] -rusti- pastebinned 10 lines of output: http://sprunge.us/KcJF
+[01:40:17] <Eridius> rusti: let x: &[u8] = Some("foo").map_move(std::cast::transmute); x
+[01:40:18] -rusti- pastebinned 5 lines of output: http://sprunge.us/aFLM
+[01:40:31] <Eridius> rusti: let x: Option<&[u8]> = Some("foo").map_move(std::cast::transmute); x
+[01:40:33] -rusti- Some(&[102u8, 111u8, 111u8])
+[01:40:35] <Eridius> that's surprising
+[01:40:45] <strcat> bug
+[01:40:55] <Eridius> rusti: let x: Option<&[u8]> = Some("foo").map_move(|x| std::cast::transmute(x)); x
+[01:40:55] -rusti- <anon>:7:57: 7:81 error: call to unsafe function requires unsafe function or block
+[01:40:55] -rusti- <anon>:7          let x: Option<&[u8]> = Some("foo").map_move(|x| std::cast::transmute(x)); x
+[01:40:56] -rusti-                                                                   ^~~~~~~~~~~~~~~~~~~~~~~~
+[01:40:56] -rusti- error: aborting due to previous error
+[01:40:57] -rusti- application terminated with error code 101
+[01:41:03] <strcat> unsafe fn shouldn't coerce to &fn
+[01:41:05] <Eridius> strcat: is it known?
+[01:41:09] <strcat> don't think so
+[01:41:13] <Eridius> I would hope it could coerce inside an unsafe {} block
+[01:41:18] <strcat> seems too easily fixable to be known
+[01:42:32] <Eridius> filed as #9582
+[01:44:32] <engla> Eridius: nice bug!
+[01:45:30] <Eridius> engla: I just love violating unsafety :)
+[01:45:47] <Eridius> make that violating safety.
+[01:51:03] *** Quits: bytewise (bytewise@moz-4A801D04.unitymediagroup.de) (Quit: Leaving)
+[01:51:29] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[01:55:45] *** Joins: brson (brson@981AA104.E81F12CD.76F66111.IP)
+[01:55:45] *** ChanServ sets mode: +qo brson brson
+[02:04:14] *** Quits: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com) (Quit: Jesse)
+[02:10:18] *** Quits: steveklabnik (steveklabn@90E4D93F.93EC364C.1C63AAF3.IP) (Ping timeout)
+[02:11:08] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[02:11:08] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/wrKehw
+[02:11:08] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[02:16:05] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[02:16:06] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/XMRN6Q
+[02:16:06] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[02:16:07] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[02:16:07] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/clPgIw
+[02:16:07] <ghrust> 13rust/06auto 14c0e1c09 15blake2-ppc: std::vec: Use a valid value as lifetime dummy in iterator...
+[02:16:07] <ghrust> 13rust/06auto 143ae8953 15bors: auto merge of #9557 : blake2-ppc/rust/vec-lifetime-token, r=thestinger...
+[02:16:08] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[02:29:27] *** Joins: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net)
+[02:30:49] *** Quits: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net) (Quit: Jesse)
+[02:35:58] *** Quits: kimundi (kimundi@moz-221F72D2.dip0.t-ipconnect.de) (Ping timeout)
+[02:39:19] *** Joins: zz_kimundi (kimundi@moz-E17678C9.dip0.t-ipconnect.de)
+[02:39:21] *** zz_kimundi is now known as kimundi
+[03:04:08] <acrichto> how does libextra compile...
+[03:04:08] <acrichto> https://github.com/alexcrichton/rust/blob/rc-crate/src/libextra/test.rs#L1004
+[03:05:29] <dbaupp> acrichto: \o/
+[03:05:42] *** Quits: tikue_ (tkuehn@885B1A5.2ACBBF24.689607DE.IP) (Quit: tikue_)
+[03:07:04] <acrichto> jeez fmt is everywhere
+[03:07:25] *** Joins: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[03:26:09] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[03:26:09] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/clPgIw
+[03:26:09] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[03:27:06] *** Quits: brson (brson@981AA104.E81F12CD.76F66111.IP) (Ping timeout)
+[03:31:06] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[03:31:06] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/dBsWJA
+[03:31:06] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[03:31:08] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[03:31:08] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/GQBTEQ
+[03:31:08] <ghrust> 13rust/06auto 14fe9b1e2 15Steven Fackler: Visibility fixes
+[03:31:08] <ghrust> 13rust/06auto 144a2f8ba 15bors: auto merge of #9559 : sfackler/rust/more-visibility, r=alexcrichton
+[03:31:09] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[03:31:29] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[03:31:29] *** ChanServ sets mode: +qo brson brson
+[03:47:42] <erickt1> strcat: any more deep thoughts about ToPrimitive?
+[03:52:12] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[03:52:53] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[04:04:32] * Eridius really hopes that when he's done with this path port, that newer changes to master won't break everything
+[04:04:47] <dbaupp> Eridius: impossible!
+[04:05:19] <erickt1> brson: ping
+[04:06:48] <Eridius> I think I'm fixing a couple of rustpkg bugs while I'm at it
+[04:06:59] <Eridius> (which honestly makes me nervous, because it means there aren't tests covering that functionality)
+[04:12:50] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[04:12:58] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[04:17:51] <erickt1> hrm, I wonder if there's a sensible way to auto generate `#[deriving(…)] enum Foo { A, B }` that adds a `5.to_foo()` 
+[04:18:40] <erickt1> having a `deriving` generate a FromInt form is much simpler
+[04:18:52] <erickt1> :(
+[04:22:40] <brson> erickt1: pong
+[04:23:12] <erickt1> good evening!
+[04:24:00] <erickt1> brson: we've had some back and forth over what's the best api for https://github.com/mozilla/rust/pull/9250, and I was hoping to get another opinion
+[04:24:42] <erickt1> it changes .to_int() to do over/underflow checking
+[04:25:32] <erickt1> we could also add another trait that does .to_int_trunc() / .to_int_zext() / .to_int_sext()
+[04:26:35] <brson> ok i'll take a look
+[04:26:44] * Eridius wishes unhappiness upon everyone who accessed a path's components field directly
+[04:27:29] <erickt1> brson: strcat wasn't able to decide whether or not it'd make sense for the short form, .to_int() do range checking, or if we should not have a short form at all. So my code could be changed to .to_int_checked()
+[04:27:57] <erickt1> and we add a .to_int_unchecked() that just does `*self as int`
+[04:28:12] <erickt1> it's a combinatorial explosion of options :)
+[04:31:33] <erickt1> Eridius: are you adding Foo::<int>::bar()?
+[04:34:33] <Eridius> erickt1: what? no, I'm talking about std::path
+[04:34:38] <erickt1> ah
+[04:35:08] <Eridius> we already have Foo::<int>::bar() anyway. What we don't have yet is Foo::<for int>::bar()
+[04:35:33] <Eridius> tjc is never around when I need him :(
+[04:36:00] <Eridius> and extra::workcache has zero documentation
+[04:36:31] <erickt1> Eridius: I can help out with high level stuff about workcache, it's based off of my design
+[04:37:08] <Eridius> erickt1: I'm not really sure what it's doing. But judging from the type signatures, the return values of the blocks passed to Context.with_prep() and Prep.exec() are only used as the return value for the function, yes?
+[04:37:39] <Eridius> there's some code in librustpkg that uses workcache and it's returning a value from the block to Prep.exec(), which is then used as the return value from Context.with_prep(), and I want to make sure it's safe to just delete the return value from this code, as it's not used any further
+[04:38:14] <erickt1> Eridius: what's the line?
+[04:38:19] <erickt1> in rustpkg?
+[04:39:02] <Eridius> 323
+[04:39:11] <Eridius> in package_source.rs
+[04:39:39] <Eridius> as of f210a16 at least (which is master from 27 hours ago)
+[04:41:06] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[04:41:06] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/GQBTEQ
+[04:41:06] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[04:41:25] <erickt1> Eridius: so what workcache does is that it memoizes the result of a function call. If you pass the same arguments to a function, you should get the same results back
+[04:42:36] <brson> erickt1: I think we're leaning to doing checks by default
+[04:42:45] <Eridius> erickt1: to which function though? again, the type signatures of Prep.exec and Context.with_prep use an arbitrary T, so I assume that the return value of the block itself is irrelevant
+[04:42:56] <brson> erickt1: so I'd say leave the short forms doing the checks
+[04:43:49] <brson> erickt1: I also though share acrichto's concern about from_foo functions as constructors. They kind of feel backwards. I wonder if these are a special case or if all our polymorphic constructors are going to end up like this
+[04:43:58] <Eridius> erickt1: basically, if I delete line 323 (which is "result"), that won't adversely affect anything, right?
+[04:45:04] <erickt1> it might adversely affect things
+[04:45:51] <erickt1> Eridius: one of the special things workcache can (or eventually will) do is you can say that a function returns a "file". in this case, workcache can/will check if the file exists. If so, it can return the cached value, otherwise it'll rerun the function
+[04:46:04] <Eridius> erickt1: how? the type of the return value of the block is polymorphic. How can .exec() or .with_prep() do anything with it?
+[04:46:06] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[04:46:06] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/QgdJfA
+[04:46:06] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[04:46:13] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[04:46:14] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/FPjZlA
+[04:46:14] <ghrust> 13rust/06auto 146e2ab6d 15Patrick Walton: librustc: Inline cross-crate tuple struct constructors
+[04:46:14] <ghrust> 13rust/06auto 14dc2cd14 15bors: auto merge of #9560 : pcwalton/rust/xc-tuple-structs, r=thestinger...
+[04:46:14] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[04:46:27] <erickt1> Eridius: that's a good question. Gimme a sec to see if it's been implemented
+[04:46:53] <erickt1> brson: oh cool
+[04:47:02] <Eridius> erickt1: workcache should be updated to use Path values instead of strings for file inputs then
+[04:48:20] <erickt1> brson: the from_foo do feel backwards, but in some ways they are simpler than to_foo functions. For example, I'm not sure how to implement a `deriving(ToFoo)` because it needs to make a ToFoo trait and implement it for all the integers
+[04:49:24] <erickt1> Eridius: it probably should
+[04:49:33] <Eridius> erickt1: ahh, I see what I was missing. It requires that the value be encodable as json
+[04:49:37] <Eridius> so it then memoizes based on the json
+[04:52:18] <erickt1> Eridius: it doesn't look like the output file support hasn't been added yet
+[04:52:43] <cmr> erickt1: also re: glob
+[04:52:49] <Eridius> erickt1: see what I just said in #rust. This is actually returning the output file as "Some(\"filepath\")"
+[04:52:55] <cmr> erm
+[04:52:57] <cmr> @Eridius
+[04:53:00] <erickt1> heh
+[04:53:03] <Eridius> cmr: yes glob needs updating
+[04:53:05] <cmr> It should probably take a &[&str]
+[04:53:09] <cmr> Rather than matching on paths.
+[04:53:13] <Eridius> erickt1: is there a way to indicate that the work failed and should not be cached? What if I just return an empty string?
+[04:53:40] <Eridius> cmr: what should? Glob needs to work on paths, since it will actually hit the filesystem
+[04:55:04] <erickt1> Eridius: I can't speak to the implementation, but returning an empty string should be a valid result
+[04:55:22] <Eridius> erickt1: my issue is compile_crate() returns an Option, and this code doesn't handle that
+[04:55:25] <erickt1> Eridius: to indicate a failure, why not fail!()?
+[04:55:37] <Eridius> since it doesn't handle that, I'm just going to give up and continue using Option and letting it convert that to a string, and let tjc deal with it
+[04:55:43] <Eridius> erickt1: it's not my code. I don't know what the intention was
+[04:55:46] <erickt1> heh
+[04:55:49] <erickt1> ok
+[04:56:06] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[04:56:06] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/492pKQ
+[04:56:06] <ghrust> 13rust/06auto 1446aaf51 15Alex Crichton: Register new snapshots
+[04:56:06] <ghrust> 13rust/06auto 14c151d37 15bors: auto merge of #9562 : alexcrichton/rust/snapshots, r=thestinger
+[04:56:07] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[04:56:35] <cmr> Eridius: it shouldn't hit the filesystem is what I'm saying
+[04:56:37] <erickt1> brson: are you okay if I r+ https://github.com/mozilla/rust/pull/9250?
+[04:56:43] <cmr> you should be able to match a glob against any vector of strings.
+[04:56:56] <Eridius> cmr: that's fnmatch-style behavior, which is what I personally care about
+[04:56:59] <Eridius> but glob() checks the filesystem
+[04:57:02] <cmr> oh
+[04:57:03] <cmr> ok
+[04:57:22] <Eridius> cmr: glob::Pattern has a .matches() func that takes a &str, which is what you awnt
+[04:57:27] <Eridius> but glob::glob() hits the filesystem
+[04:57:44] <Eridius> the problem is glob::Pattern::matches_path() converts the path to a str and matches that instead of handling vecs
+[04:59:06] <brson> erickt1: i did
+[04:59:13] <erickt1> thanks!
+[05:06:54] *** Quits: olsonjeffery (pf@B8927AE1.CFEFA148.239A1A9E.IP) (Ping timeout)
+[05:07:14] *** Joins: olsonjeffery (pf@B8927AE1.CFEFA148.239A1A9E.IP)
+[05:24:00] *** Joins: engla_ (engla@moz-DBD1D96E.cust.bredbandsbolaget.se)
+[05:24:44] *** Quits: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se) (Ping timeout)
+[05:30:57] *** Joins: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP)
+[05:34:24] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[05:38:49] *** Joins: brson (brson@981AA104.E81F12CD.76F66111.IP)
+[05:38:49] *** ChanServ sets mode: +qo brson brson
+[05:43:04] *** Joins: ecr (Mibbit@6A833033.5BB0586B.11F8506F.IP)
+[05:54:58] *** Quits: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[05:55:35] *** Quits: brson (brson@981AA104.E81F12CD.76F66111.IP) (Quit: leaving)
+[06:02:37] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[06:02:42] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[06:06:05] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[06:06:05] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/492pKQ
+[06:06:05] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[06:11:03] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[06:11:03] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/3ibPIA
+[06:11:03] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[06:11:05] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[06:11:05] <ghrust> 01[13rust01] 15bors pushed 12 new commits to 06auto: 02http://git.io/UxOTBg
+[06:11:05] <ghrust> 13rust/06auto 14d9bf8c7 15Erick Tryzelaar: std: Replace num::IntConvertible with {To,From}Primitive
+[06:11:05] <ghrust> 13rust/06auto 146f36864 15Erick Tryzelaar: syntax: Add #[deriving(FromPrimitive)] syntax extension...
+[06:11:06] <ghrust> 13rust/06auto 1474e1fb0 15Erick Tryzelaar: syntax: swap from .span_fatal to .span_err in #[deriving(FromPrimitive)]
+[06:11:08] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[06:18:05] *** Quits: ecr (Mibbit@6A833033.5BB0586B.11F8506F.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[06:19:38] *** Quits: SiegeLord (sl@moz-3D449DF.bstnma.fios.verizon.net) (Quit: Leaving)
+[06:26:33] *** Joins: quvarxa (chatzilla@moz-978E4C31.static.tpgi.com.au)
+[06:51:04] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[06:51:04] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 141ffe7f6 to 14c151d37: 02http://git.io/N3iJvQ
+[06:51:04] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[06:51:04] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[06:51:04] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/gaNsNg
+[06:51:04] <ghrust> 13rust/06auto 14d7e8f4c 15Flavio Percoco: Suppress warning by removing unused import
+[06:51:04] <ghrust> 13rust/06auto 144d81e38 15bors: auto merge of #9574 : FlaPer87/rust/suppress_warnings, r=metajack...
+[06:51:05] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[06:53:32] *** Quits: olsonjeffery (pf@B8927AE1.CFEFA148.239A1A9E.IP) (Ping timeout)
+[06:54:01] *** Joins: olsonjeffery (pf@B8927AE1.CFEFA148.239A1A9E.IP)
+[06:55:13] <dbaupp> acrichto: ping
+[06:55:19] <acrichto> dbaupp: pong
+[06:57:02] <dbaupp> acrichto: https://github.com/mozilla/rust/pull/9261 appears to have caused a 100MB mem regression
+[06:57:26] <dbaupp> acrichto: (it's the second last thing on irfy, which is currently broken pending gh pages updating itself)
+[06:58:22] <acrichto> dbaupp: oh argh
+[06:58:54] <acrichto> dbaupp: I would suspect codegen right off the bt
+[06:59:21] <acrichto> we'd need to reconfigure the bots to run with --disable-debug
+[06:59:23] <acrichto> to confirm that
+[07:03:34] <acrichto> cmr: I re-pushed that branch of rc-crate 
+[07:03:37] <acrichto> it should be building now
+[07:06:49] *** Quits: engla_ (engla@moz-DBD1D96E.cust.bredbandsbolaget.se) (Ping timeout)
+[07:37:31] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[08:01:05] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[08:01:05] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/gaNsNg
+[08:01:05] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[08:06:05] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[08:06:05] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/XdgiXg
+[08:06:05] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[08:06:05] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[08:06:05] <ghrust> 01[13rust01] 15bors pushed 7 new commits to 06auto: 02http://git.io/t2Z1UA
+[08:06:05] <ghrust> 13rust/06auto 14c5e03be 15Alex Crichton: rustdoc: Don't emit redirect pages for variants/fields...
+[08:06:05] <ghrust> 13rust/06auto 14a925762 15Alex Crichton: rustdoc: Fix searching for default methods...
+[08:06:06] <ghrust> 13rust/06auto 14b93678e 15Alex Crichton: rustdoc: Fix search for something on the same page
+[08:06:08] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[08:26:04] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[08:26:04] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14a50a969 to 144d81e38: 02http://git.io/N3iJvQ
+[08:26:04] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[08:26:07] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[08:26:07] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/8c6_5Q
+[08:26:07] <ghrust> 13rust/06auto 145444f60 15blake2-ppc: std::vec: Add benchmark for .concat_vec and .connect_vec
+[08:26:07] <ghrust> 13rust/06auto 1424a4d0d 15blake2-ppc: std::vec: Sane implementations for connect_vec and concat_vec...
+[08:26:08] <ghrust> 13rust/06auto 143709aa7 15blake2-ppc: std::vec: Remove functions concat, connect...
+[08:26:10] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[08:46:02] *** Quits: quvarxa (chatzilla@moz-978E4C31.static.tpgi.com.au) (Ping timeout)
+[08:46:46] *** Joins: quvarxa (chatzilla@moz-978E4C31.static.tpgi.com.au)
+[09:02:17] *** Joins: jensnockert (jensnocker@F1E3FD84.8AAAF769.FAAB0799.IP)
+[09:16:14] *** Quits: jensnockert (jensnocker@F1E3FD84.8AAAF769.FAAB0799.IP) (Input/output error)
+[09:55:18] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: sleep)
+[10:28:31] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[10:28:34] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[10:28:34] *** ChanServ sets mode: +o pnkfelix
+[10:28:43] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[10:35:15] *** Joins: jensnockert (jensnocker@F1E3FD84.8AAAF769.FAAB0799.IP)
+[10:36:26] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[10:36:44] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[10:40:31] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[10:40:45] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[10:59:07] *** Quits: jensnockert (jensnocker@F1E3FD84.8AAAF769.FAAB0799.IP) (Input/output error)
+[11:35:10] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[12:22:49] *** Joins: saneyuki (saneyuki@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[12:23:47] *** Quits: saneyuki (saneyuki@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Quit: )
+[12:23:51] *** Joins: saneyuki (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[12:24:38] *** Joins: jensnockert (jensnocker@F1E3FD84.8AAAF769.FAAB0799.IP)
+[12:25:05] *** Quits: saneyuki (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Client exited)
+[12:25:09] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[12:26:05] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[12:26:05] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 146a66414 to 144d81e38: 02http://git.io/N3iJvQ
+[12:26:05] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[12:26:09] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[12:26:09] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/pWex9w
+[12:26:09] <ghrust> 13rust/06auto 14835960a 15eliovir: tutorial.md : correct formula in fn area()...
+[12:26:09] <ghrust> 13rust/06auto 14058a5d9 15bors: auto merge of #9459 : eliovir/rust/patch-1, r=bstrie...
+[12:26:09] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[12:30:56] *** Quits: jensnockert (jensnocker@F1E3FD84.8AAAF769.FAAB0799.IP) (Input/output error)
+[12:46:45] *** Joins: nickk (Mibbit@D2540B48.15F87C4.520CDC98.IP)
+[13:08:37] *** Joins: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se)
+[13:30:36] *** Quits: quvarxa (chatzilla@moz-978E4C31.static.tpgi.com.au) (Quit: ChatZilla 0.9.90.1 [Firefox 25.0/20130926170421])
+[13:41:02] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[13:41:02] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/pWex9w
+[13:41:02] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[13:45:53] *** Joins: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[14:01:02] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[14:01:02] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/wWbmOw
+[14:01:02] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[14:01:05] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[14:01:06] <ghrust> 01[13rust01] 15bors pushed 5 new commits to 06auto: 02http://git.io/Hck2zw
+[14:01:06] <ghrust> 13rust/06auto 14accb143 15Flavio Percoco: Update std::task::mod docstring
+[14:01:06] <ghrust> 13rust/06auto 147008c21 15Flavio Percoco: Typo fixes
+[14:01:06] <ghrust> 13rust/06auto 149818f64 15Flavio Percoco: Restructured documentation
+[14:01:07] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[14:31:03] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[14:31:03] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 143004457 to 14058a5d9: 02http://git.io/N3iJvQ
+[14:31:03] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[14:31:04] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[14:31:04] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/LWTPdA
+[14:31:04] <ghrust> 13rust/06auto 145444f60 15blake2-ppc: std::vec: Add benchmark for .concat_vec and .connect_vec
+[14:31:04] <ghrust> 13rust/06auto 1424a4d0d 15blake2-ppc: std::vec: Sane implementations for connect_vec and concat_vec...
+[14:31:04] <ghrust> 13rust/06auto 143709aa7 15blake2-ppc: std::vec: Remove functions concat, connect...
+[14:31:06] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[14:58:57] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[14:58:57] *** ChanServ sets mode: +o pnkfelix
+[15:35:10] *** Quits: StarLight (StarLight@moz-FFA9EA5.dynamic.avangarddsl.ru) (Ping timeout)
+[15:39:31] *** Joins: StarLight (StarLight@moz-DBB2336A.dynamic.avangarddsl.ru)
+[15:41:02] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[15:41:02] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/LWTPdA
+[15:41:02] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[15:46:02] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[15:46:02] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/a2UJWQ
+[15:46:02] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[15:46:03] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[15:46:03] <ghrust> 01[13rust01] 15bors pushed 12 new commits to 06auto: 02http://git.io/TMrawA
+[15:46:03] <ghrust> 13rust/06auto 14d9bf8c7 15Erick Tryzelaar: std: Replace num::IntConvertible with {To,From}Primitive
+[15:46:03] <ghrust> 13rust/06auto 146f36864 15Erick Tryzelaar: syntax: Add #[deriving(FromPrimitive)] syntax extension...
+[15:46:03] <ghrust> 13rust/06auto 1474e1fb0 15Erick Tryzelaar: syntax: swap from .span_fatal to .span_err in #[deriving(FromPrimitive)]
+[15:46:05] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[16:18:36] *** Joins: steveklabnik (steveklabn@moz-5EF6C37C.socal.res.rr.com)
+[16:50:00] *** Quits: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[16:50:48] *** Joins: jensnockert (jensnocker@moz-2DBD7676.mobileonline.telia.com)
+[16:51:10] *** Joins: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net)
+[16:55:11] *** Quits: steveklabnik (steveklabn@moz-5EF6C37C.socal.res.rr.com) (Ping timeout)
+[17:11:03] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Client exited)
+[17:11:06] *** Joins: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[17:11:24] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:13:07] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:16:42] *** Quits: jensnockert (jensnocker@moz-2DBD7676.mobileonline.telia.com) (Input/output error)
+[17:26:08] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:34:58] *** Quits: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[17:45:18] *** Joins: tjc (tjc@moz-BF4FE20E.tmodns.net)
+[17:45:18] *** ChanServ sets mode: +o tjc
+[17:46:34] *** Quits: tjc (tjc@moz-BF4FE20E.tmodns.net) (Quit: zzzzzzzzzz)
+[17:48:19] *** Quits: nielsle (nielsle@moz-5CE8ECCD.boa.fiberby.dk) (Ping timeout)
+[18:27:45] *** Joins: bytewise (bytewise@moz-4A801D04.unitymediagroup.de)
+[18:42:20] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Client exited)
+[18:42:41] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:43:23] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:44:28] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:46:09] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Client exited)
+[18:46:30] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:48:13] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:49:50] <Luqman> acrichto: conflicting lifetime errors galore :D
+[18:50:20] <Luqman> acrichto: i am tempted to just transmute to &'static Session since the session outlives the Resolver
+[19:11:02] *** Joins: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[19:17:06] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:22:30] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:33:53] *** Joins: tjc (tjc@moz-BF4FE20E.tmodns.net)
+[19:33:53] *** ChanServ sets mode: +o tjc
+[19:38:53] *** Joins: pnkfelix1 (pnkfelix@moz-43495417.fbx.proxad.net)
+[19:40:28] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Ping timeout)
+[19:46:05] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[19:46:05] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14ec78597 to 14c635fba: 02http://git.io/N3iJvQ
+[19:46:05] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[19:46:06] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[19:46:06] <ghrust> 01[13rust01] 15bors pushed 12 new commits to 06auto: 02http://git.io/ahEtIg
+[19:46:06] <ghrust> 13rust/06auto 14d9bf8c7 15Erick Tryzelaar: std: Replace num::IntConvertible with {To,From}Primitive
+[19:46:06] <ghrust> 13rust/06auto 146f36864 15Erick Tryzelaar: syntax: Add #[deriving(FromPrimitive)] syntax extension...
+[19:46:07] <ghrust> 13rust/06auto 1474e1fb0 15Erick Tryzelaar: syntax: swap from .span_fatal to .span_err in #[deriving(FromPrimitive)]
+[19:46:09] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[19:56:40] *** Joins: steveklabnik (steveklabn@moz-624B4A04.west.biz.rr.com)
+[20:07:32] *** Quits: tjc (tjc@moz-BF4FE20E.tmodns.net) (Quit: Places to go, people to annoy)
+[20:17:22] <acrichto> cmr: could you bench 2 graphs for me? one is my rc-crate branch, and the other would be the compiler with --cfg ndebug
+[20:17:44] <cmr> acrichto: sure
+[20:17:51] <acrichto> cmr: you are the best
+[20:20:14] <cmr> acrichto: is stage1 fine or do you want stage2
+[20:20:41] <acrichto> cmr: stage1 is fine
+[20:21:04] <acrichto> stage2 is only useful for codegen changes I think
+[20:21:51] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:22:42] <Luqman> acrichto: hmmm so yea, how bad do you think transmuting to &'static Session would be?
+[20:23:01] <Eridius> woohoo, run-pass tests are finally running
+[20:23:01] <acrichto> Luqman: I'm not sure that it's worth it
+[20:23:17] <Eridius> this is rather encouraging, that it actually seems to work
+[20:23:21] <acrichto> Luqman: the complier should have very little unsafe code, and it should only have it if it's a huge improvement
+[20:23:43] <cmr> ty transmutes to &'static iirc
+[20:24:11] <acrichto> I think there were strong performance reasons for that though
+[20:24:16] <cmr> yes
+[20:24:28] <cmr> just saying, there *is* precedent for it
+[20:24:47] <Eridius> crud, 5 run-pass failures
+[20:24:59] <Eridius> ahh, compilation failures. phew
+[20:25:07] <Luqman> acrichto: well it's only 2 lines :P
+[20:26:04] <acrichto> Luqman: is it something that increases performance by a fair amount or decreases memory usage?
+[20:26:10] *** Quits: nickk (Mibbit@D2540B48.15F87C4.520CDC98.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[20:27:04] <Luqman> hmmm, probably not
+[20:27:14] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:29:41] <cmr> acrichto: rc-crate: http://i.imgur.com/IO3NENy.png
+[20:29:57] <acrichto> awww yisss
+[20:29:58] <acrichto> look at that
+[20:30:02] <acrichto> no giant spike
+[20:30:10] <cmr> a few tiny spikes though
+[20:30:12] <cmr> what's going on there?
+[20:30:18] <acrichto> that's when we're folding crates
+[20:30:28] <acrichto> each time you fold a crate you create a whole new crate
+[20:30:34] <acrichto> before it was retaining all of them
+[20:30:49] <acrichto> that branch has actual ownership so they're free'd when they go out of scope
+[20:31:04] <acrichto> doesn't help overall memory usage, but it should if we ever manage to bring down the giant peaks
+[20:31:13] <cmr> acrichto: so what about ndebug?
+[20:31:16] <acrichto> we're using so much memory :(
+[20:31:17] <cmr> Same branch?
+[20:31:22] <acrichto> cmr: no, on master
+[20:31:24] <cmr> ah
+[20:31:26] <acrichto> ndebug should omit all debug! statements
+[20:31:45] <Eridius> wow that's almost 2.5GB. I thought we only used like 1.6GB?
+[20:32:00] <acrichto> we used to :(
+[20:32:18] <cmr> we've regressed a gig since 0.7
+[20:32:34] <Eridius> :/
+[20:32:47] <Eridius> I used to just barely be able to compile on my linode, using swap. There's no way in hell I can do that now
+[20:33:08] <cmr> thankfully you can use the freshly-released 0.8 :p
+[20:33:28] <cmr> acrichto: a compiler *built* with ndebug?
+[20:33:34] <Eridius> well, the only reason to compile on my linode atm is if I need to test something linux-specific
+[20:33:57] <acrichto> cmr: hmm...
+[20:34:00] <cmr> could try and see if strcat's packages run on your box
+[20:34:21] <acrichto> cmr: nah build rustc with --cfg with a normal stage1 compiler
+[20:34:29] <cmr> ok
+[20:34:30] <acrichto> --cfg ndebug
+[20:34:40] <cmr> and do you want a single graph or a comparison graph?
+[20:35:04] <cmr> and would you like fries with that? :P
+[20:35:16] <Luqman> acrichto: i've updated the pull and the offending parts are https://github.com/mozilla/rust/pull/9551/files#L39R921 & https://github.com/mozilla/rust/pull/9551/files#L13R820
+[20:35:37] <cmr> comparison graph, this single graph... not that useful
+[20:36:00] <acrichto> cmr: yeah, and ketchup on the side :P
+[20:36:20] <acrichto> Luqman: let me think on that, I'd hope we could avoid that
+[20:36:58] <Luqman> acrichto: ok, anyways got to go and catch the caltrain
+[20:38:33] <cmr> acrichto: http://i.imgur.com/ApAOZGi.png
+[20:38:44] <Eridius> acrichto: I like the new proposed privacy rules
+[20:38:50] <acrichto> cmr: jeez that was fast
+[20:38:57] <acrichto> also doesn't seem right...
+[20:39:07] <cmr> well, I didn't have to rebuild :p
+[20:39:29] <Eridius> woo, run-pass and compile-fail tests pass!
+[20:39:36] <cmr> it doesn't
+[20:39:48] <cmr> let me check the order I plotted them in
+[20:40:06] <acrichto> cmr: oh hm that does actually make a little sense
+[20:40:07] <cmr> Ok, red is ndebug
+[20:40:13] <cmr> Which makes sense
+[20:40:23] <acrichto> I was hoping for decreased memory usage
+[20:40:33] <cmr> it is decreased, in the epak
+[20:40:39] <cmr> actual peak, not the spike
+[20:40:48] <acrichto> a little
+[20:41:03] <cmr> Anything else?
+[20:41:04] <acrichto> man compare that to my rc-crate branch
+[20:41:08] <acrichto> that's so cool lol
+[20:41:12] <acrichto> cmr: nah I'm good for now :P
+[20:41:17] <cmr> k
+[20:41:28] <acrichto> I wanna investigate what's actually taking all this memory
+[20:41:38] <acrichto> there should be a massive drop right after translation
+[20:41:42] <acrichto> where we can drop *everything*
+[20:41:50] <acrichto> except the ll module
+[20:43:07] <cmr> yeah, that used to happen.
+[20:43:18] <cmr> the graph is very differently shaped than it used to be
+[20:44:02] <cmr> http://huonw.github.io/isrustfastyet/mem/#74dfd93,a8a69ec,c29e76b,7585b34,9e85745,5c6069c
+[20:44:27] <cmr> it *should* be flat during llvm
+[20:45:03] <acrichto> it's the same machine, right?
+[20:45:25] <cmr> yes
+[20:45:43] <acrichto> weird
+[20:45:56] <acrichto> it is so nice having this bencher back
+[20:45:57] <acrichto> cmr you are awesome
+[20:46:03] <cmr> hey, dbaupp did all the hard work
+[20:46:12] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[20:46:12] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 144f5b1d7 to 14c635fba: 02http://git.io/N3iJvQ
+[20:46:12] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[20:46:13] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[20:46:14] <ghrust> 01[13rust01] 15bors pushed 7 new commits to 06auto: 02http://git.io/5ZEwrg
+[20:46:14] <ghrust> 13rust/06auto 14c5e03be 15Alex Crichton: rustdoc: Don't emit redirect pages for variants/fields...
+[20:46:14] <ghrust> 13rust/06auto 14a925762 15Alex Crichton: rustdoc: Fix searching for default methods...
+[20:46:14] <ghrust> 13rust/06auto 14b93678e 15Alex Crichton: rustdoc: Fix search for something on the same page
+[20:46:16] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[20:46:18] <acrichto> dbaupp you too are also awesome
+[21:01:18] *** Quits: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[21:02:14] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[21:26:29] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:28:14] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:34:30] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[21:34:30] *** ChanServ sets mode: +qo brson brson
+[21:40:05] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[21:41:15] <Eridius> goddammit. `make check` sure takes a long time to get around to running the libextra tests
+[21:41:23] <Eridius> which, of course, failed because I hadn't actually run them yet
+[21:42:35] <acrichto> Eridius: make check-stage2-extra
+[21:42:49] <Eridius> acrichto: yeah I'm doing that now
+[21:42:53] <Eridius> but I didn't realize it hadn't run them before
+[21:45:52] *** Joins: tikue_ (tkuehn@4245E30A.E2CAEE6E.689607DE.IP)
+[21:46:41] *** Quits: steveklabnik (steveklabn@moz-624B4A04.west.biz.rr.com) (Ping timeout)
+[21:50:21] *** Joins: steveklabnik (steveklabn@moz-624B4A04.west.biz.rr.com)
+[21:51:05] <strcat> acrichto: https://github.com/mozilla/rust/pull/9589 r?
+[21:51:23] <acrichto> reading
+[21:51:27] <strcat> I don't really understand when a diff counts as outdated
+[21:51:42] <strcat> since I pushed over it after those... but it was clever enough to not mark it outdated
+[21:56:07] <acrichto> lgtm
+[21:56:18] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[21:56:19] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/5ZEwrg
+[21:56:19] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[21:57:00] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:58:44] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[22:01:22] <engla> acrichto: I started reading your fmt! PR (I don't know why) but I'm not sure I can/should finish reading that whole diff :)
+[22:01:39] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[22:01:39] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/XAgVTA
+[22:01:39] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[22:01:42] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[22:01:42] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/Zp9Tmw
+[22:01:42] <ghrust> 13rust/06auto 142835df2 15Felix S. Klock II: Fix for make -j race from #9531 injected by cleanup in b1a22518f0c687db.
+[22:01:42] <ghrust> 13rust/06auto 1492e7bb6 15bors: auto merge of #9542 : pnkfelix/rust/fsk-fix-issue-9531, r=thestinger...
+[22:01:43] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[22:01:56] <acrichto> engla: it's massive :(
+[22:02:18] <Eridius> acrichto: I'm pretty sure that PR is going to conflict with my Path work :/
+[22:02:33] <engla> yeah. I added comments for some lines where I think it needs to update
+[22:02:45] <engla> basically I think libextra tests were not compiled
+[22:04:33] <acrichto> Eridius: I'm pretty sure it'll conflict with everything :P
+[22:04:44] <acrichto> engla: oh good point I forgot to run tests...
+[22:04:53] <acrichto> maybe I'll finish that tonight...
+[22:06:36] <Eridius> acrichto: I'm almost done with my `make check`. When this passes, I then get to merge in latest master and see what breaks :/
+[22:07:02] <Eridius> I'm also nervous about running tests on Windows. Do we have a way of getting current rust running on Windows with current mingw, or do I need to somehow find an old mingw?
+[22:07:24] * Eridius wishes he could just push to try ;)
+[22:11:11] <strcat> acrichto: http://static.rust-lang.org/doc/master/ng/std/iter/trait.Iterator.html is still around
+[22:13:12] <strcat> (/ng/)
+[22:15:11] *** Quits: steveklabnik (steveklabn@moz-624B4A04.west.biz.rr.com) (Quit: brb)
+[22:18:10] <acrichto> weird, I'll look into that
+[22:18:57] <Eridius> craaaap. librustpkg tests don't run until reaaally late in make check
+[22:44:40] *** Joins: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[22:53:56] *** Quits: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[22:56:33] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[22:57:49] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[22:58:23] *** pnkfelix1 is now known as pnkfelix
+[22:59:32] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[23:00:01] *** Joins: brson (brson@6A848D32.C1B840DD.76F66111.IP)
+[23:00:01] *** ChanServ sets mode: +qo brson brson
+[23:16:06] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[23:16:06] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/Zp9Tmw
+[23:16:06] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[23:21:05] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[23:21:05] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/gR3SlQ
+[23:21:05] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[23:21:08] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[23:21:08] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/Mm175w
+[23:21:08] <ghrust> 13rust/06auto 146c8e6aa 15Daniel Micay: tutorial: rewrite the sections on boxes/moves
+[23:21:08] <ghrust> 13rust/06auto 149883a62 15bors: auto merge of #9589 : thestinger/rust/tutorial, r=alexcrichton
+[23:21:08] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[23:21:31] <cmr> acrichto: was that the big rustdoc PR that went through 3 merges ago?
+[23:24:02] <engla> docs now have [src] links
+[23:24:18] <cmr> so yes
+[23:24:42] <engla> nice!!
+[23:24:53] <engla> that's a great feature
+[23:29:47] <Eridius> crud, 3 librustpkg tests fail >_<
+[23:32:09] <tikue_> Eridius: what are you changing?
+[23:32:17] <cmr> tikue_: huge Path overhaul
+[23:32:27] <tikue_> oh cool
+[23:34:09] <Eridius> yeah I rewrote path from scratch. Now I'm trying to port the entire codebase over to it at once
+[23:34:15] <Eridius> and when I'm done with this... I forsee many merge conflicts
+[23:34:19] <Eridius> since my master is now 48 hours old
+[23:34:35] <Eridius> but, it's time to go to my brother's birthday party, so fixing librustpkg will just have to wait
+[23:35:48] <acrichto> cmr: yes that was the rustdoc changes
+[23:38:59] <engla> acrichto: I think I'll find some more rustdoc bugs soon :)
+[23:43:43] *** Quits: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP) (Ping timeout)
+[23:47:16] <acrichto> engla: haha, I can imagine, just cc me on any bugs
+[23:55:48] *** Quits: brson (brson@6A848D32.C1B840DD.76F66111.IP) (Quit: leaving)
+[23:59:08] <dbaupp> acrichto: you're awesome too!
+[23:59:37] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)

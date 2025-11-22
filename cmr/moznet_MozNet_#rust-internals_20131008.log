@@ -1,0 +1,1150 @@
+[00:06:23] <acrichto> benh: did you add `extern r"C" fn` for consistency mainly?
+[00:06:42] <benh> Yeah.
+[00:07:06] <acrichto> sad to see a 5 element tuple go up to 6 :(
+[00:07:10] <benh> Yeah!
+[00:07:27] <benh> Maybe it _is_ better to just tell people who use --pretty expanded that their string literals are going to get shrunk
+[00:07:54] <benh> and --pretty normal can yank the precise way it was written down out of the tokenizer, as usual (except for extern r"C" positions apparently)
+[00:08:06] <acrichto> we should start allowing extern mod foo = r"<insert binary file here>"
+[00:08:47] <acrichto> benh: I don't want to flip flop on the issue, but I'm personally in favor of only allowing raw string literals in expressions
+[00:09:04] <kmc> acrichto: data: urls!
+[00:09:10] *** Joins: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP)
+[00:09:11] <acrichto> kmc: :( :( :( :( :(
+[00:09:24] <acrichto> #[cfg(target_arch = "x86")] extern mod foo = ...;
+[00:09:25] <benh> data urls never need embedded escapes, do they?
+[00:09:28] <acrichto> #[cfg(target_arch = "x86_64")] extern mod foo = ...;
+[00:09:54] <kmc> benh: you would just use base64, yeah
+[00:10:10] <acrichto> but you would rather just go home
+[00:10:12] <engla> but a raw string is still a string right? So there is no use for arbitrary data
+[00:10:25] <kmc> good point
+[00:10:27] <acrichto> engla: yeah I think it'd still have to be utf-8
+[00:10:32] <acrichto> gcc -please-emit-utf-8 foo.c
+[00:10:37] <cmr> hahah
+[00:11:13] <acrichto> benh: it looks good to me
+[00:11:23] <acrichto> although I don't care a whole lot about pretty printing
+[00:11:43] <acrichto> I think we should talk about only allowing it in expressions though
+[00:11:44] <benh> I'm tempted to prefer the variant that doesn't pretty-print as precisely but doesn't require changes all over the ast and librustc
+[00:12:03] <acrichto> we should construct the AST to allow both I think
+[00:12:06] <benh> (since --pretty normal which I think is the main use case still works)
+[00:12:26] <benh> (since that re-tokenizes the source to print literals instead of reconstructing them)
+[00:12:55] <acrichto> interesting
+[00:13:44] <benh> that applies to expression contexts, though, not extern mod blah = "blah" or extern "C" fwiw
+[00:14:08] <acrichto> I think I would like to reject raw strings for abi constraints
+[00:14:23] <acrichto> that would reduce a lot of the surface area for raw strings I think
+[00:14:31] <acrichto> extern mod should be ok though
+[00:15:01] <benh> From a "language spec" kind of view, it feels weird to only allow certain kins of strings in certain places, I don't know
+[00:15:20] <acrichto> it's true
+[00:15:32] <benh> then we'd need to rewrite the fake grammar in the docs to have separate productions and consistently use string_lit | raw_string_lit throughout
+[00:16:11] <benh> I mean, you can argue that abi specs never have embedded escapes so regular string literals are always preferable instead :)
+[00:16:12] <acrichto> perhaps the abi structure could remember how it was defined?
+[00:16:24] <acrichto> instead of adding an element to all abi tuples
+[00:16:57] <benh> mhm
+[00:17:25] <benh> I thought it was semantically proper to store it in the ast. The AbiSet struct just wraps u32 right now, iirc
+[00:17:51] <acrichto> oh that's no fund
+[00:17:52] <benh> might require less modifications of other code, though
+[00:17:53] <acrichto> fun*
+[00:19:30] <acrichto> benh: yeah I don't think modifying AbiSet is a good way to go
+[00:20:28] <acrichto> benh: although we're already not true to the source in that we butcher the ordering of the abis I believe
+[00:20:47] <benh> Yeah, and I think it omits specifying the ABI where it's the default, etc
+[00:21:01] <acrichto> perhaps just accept it but don't pretty-print it?
+[00:21:25] <benh> for reference, the branch I have where the pretty printer decides what string literal to use works out like this for http://ix.io/8nk
+[00:21:33] <benh> --pretty normal: http://ix.io/8ni
+[00:21:39] <benh> --pretty expanded: http://ix.io/8nj
+[00:23:01] <benh> meaning in the normal mode, it is able to reproduce string literals exactly in expressions and attributes, and only does the "reconstruct string literal so it's the shorter repesentation" for abi specs and those extern mod positions, if I'm not forgetting anything
+[00:24:08] <acrichto> sounds fine to me, are you ok with removing retaining what style is used for abi specs?
+[00:24:57] <benh> sure
+[00:26:17] <benh> It's currently not using the information whether it is a raw string for expressions either in the expanded mode, are you fine with that? meaning the whole branch leaves the ast unmodified
+[00:27:35] <benh> note that even master doesn't reproduce regular string literals exactly in that case, since the escaping that happens escapes eg. all embedded newlines present in the original source, not just " and \ characters
+[00:28:35] <acrichto> benh: I noticed that there was a StrStyle passed around for things like item_fn, I just think it's fine to remove that
+[00:29:00] <benh> Yeah, this branch is like the earlier states of the pull request, let me just push it elsewhere
+[00:29:57] <benh> https://github.com/ben0x539/rust/compare/raw-str2?expand=1 no strstyles anywhere
+[00:31:13] <acrichto> benh: I was thinking though that something like lit_str knows how it was originally specified, and maybe the string of 'extern mod'
+[00:31:17] <acrichto> but abis can be ignored
+[00:32:20] <benh> ok.
+[00:32:31] <acrichto> so kinda mix/match of the two
+[00:32:34] <benh> yeah
+[00:32:48] *** Quits: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se) (Ping timeout)
+[00:35:20] <benh> acrichto: there is also inline_asm ast nodes
+[00:35:53] <benh> which show up after macro expansion, and contain their asm code as a string, and also the info on what registers they clobber, and options, and that sort of thing, which used to be string literals
+[00:36:11] <acrichto> benh: that's a pretty small surface area so I think it's fine to include the style there
+[00:36:17] <acrichto> (although I personally also think it's fine to ignore it)
+[00:36:25] <benh> do you think it's reasonable to remember what the style is for the asm code itself but ignore it for the small other strings?
+[00:36:59] <acrichto> I'm thinking we only forget it on abis
+[00:37:05] <acrichto> everything else would still remember its original style
+[00:51:20] *** Joins: w3lcome (Mibbit@moz-2A50DB79.home.otenet.gr)
+[00:55:29] <acrichto> strcat: is there anything blocking https://github.com/mozilla/rust/pull/9359 ?
+[00:55:42] <acrichto> if it's just finding time then that's perfectly ok :)
+[01:00:34] <benh> hm, asm! nodes already don't seem to pretty-print exactly
+[01:00:39] <benh> : : "" everywher
+[01:01:22] <acrichto> I'm not sure anyone's even using asm! ...
+[01:01:30] <benh> not in rustc I think :)
+[01:01:34] <acrichto> there's not even a test for it :(
+[01:01:56] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[01:05:39] <cmr> it's hard to test.
+[01:05:53] <cmr> very plaform specific, depends 100% on llvm and the assembler.
+[01:06:39] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[01:06:39] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/w0HGOg
+[01:06:39] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[01:09:50] <acrichto> Eridius: looking at the path rewrite now
+[01:11:41] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[01:11:41] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/OE7T8A
+[01:11:41] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[01:11:42] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[01:11:42] <ghrust> 01[13rust01] 15bors pushed 5 new commits to 06auto: 02http://git.io/jzNM8w
+[01:11:42] <ghrust> 13rust/06auto 14439e277 15Alex Crichton: Extract privacy checking from name resolution...
+[01:11:43] <ghrust> 13rust/06auto 14de7d143 15Alex Crichton: Fix existing privacy/visibility violations...
+[01:11:43] <ghrust> 13rust/06auto 142c76cda 15Alex Crichton: Document visibility in the manual/tutorial...
+[01:11:45] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[01:12:22] <benh> I can't wait until I understand privacy/resolve ;)
+[01:13:15] <acrichto> benh: in theory if that lands it's all well documented and "bug free" modulo the actual few bugs
+[01:13:44] <acrichto> that pretty much closes the "surprises in resolve" issue, so if you have any more questions/find any bugs, please report!
+[01:14:05] <cmr> <<<<<<<<<<<<<<<<<<<<<,,3
+[01:14:08] <cmr> hm, commas.
+[01:14:13] <cmr> this keyboard makes me want to eat kittens
+[01:23:09] <erickt> r? https://github.com/mozilla/rust/pull/9757
+[01:23:56] *** Quits: w3lcome (Mibbit@moz-2A50DB79.home.otenet.gr) (Quit: http://www.mibbit.com ajax IRC Client)
+[01:30:37] <acrichto> erickt: one comment about adding a test and otherwise r=me
+[01:31:01] <erickt> good idea
+[01:44:16] <Eridius> acrichto: thanks for the additional path review. I'll go ahead and standardize the is_sep stuff in path. I replied to your other comments
+[01:46:39] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[01:46:39] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 148bed696 to 14b17dc4a: 02http://git.io/N3iJvQ
+[01:46:39] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[01:46:43] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[01:46:43] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/RKl5Vw
+[01:46:43] <ghrust> 13rust/06auto 14fdb49aa 15Dmitry Ermolov: Hide internal stuff in check_match.rs
+[01:46:43] <ghrust> 13rust/06auto 14822699e 15Dmitry Ermolov: Add tests for issue 8351
+[01:46:43] <ghrust> 13rust/06auto 14da7f411 15Dmitry Ermolov: Fix bug in match checking...
+[01:46:45] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[01:49:42] *** Quits: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[01:52:08] <acrichto> Eridius: I really wish that github had a "batch comment" b/c I'm still like only halfway through
+[01:53:38] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[01:54:08] <Eridius> heh
+[01:54:34] <Eridius> I also wish it let you expand/collapse files so the browser doesn't have to deal with such a gigantic page
+[01:58:19] <acrichto> yeah :(
+[01:58:28] <acrichto> I can't click on the "See on github" links in the emails
+[01:58:34] <acrichto> b/c they don't actually jump to the right spot
+[01:58:46] <Eridius> they do for me, if I wait for the entire page to load
+[01:59:07] <benh> acrichto: Sorry about the delays, I'm not very good at minimizing complete rebuilds. How do you feel about http://ix.io/8nr => http://ix.io/8ns / http://ix.io/8nt ? That's mostly the current state of the PR minus the ABI string style propagation and not banning raw strs in the later asm! argument positions.
+[01:59:10] <Eridius> btw, with your CString comment, were you suggesting it should conform to BytesContainer?
+[01:59:31] <acrichto> Eridius: yeah, why have from_str when it can be passed to new
+[01:59:50] <Eridius> acrichto: because I didn't consider making CString conform to BytesContainer before. It's a good idea
+[01:59:59] <benh> (though admittedly not propagating raw-str-ness for eg. the "volatile" string in the asm! invocation either :/)
+[02:00:01] <acrichto> benh: lgtm
+[02:01:51] <strcat> acrichto: https://github.com/mozilla/rust/pull/9759 what do you think?
+[02:02:59] <acrichto> strcat: sounds like a reasonable course of action to me
+[02:03:02] <strcat> really annoying bug :(
+[02:03:30] * strcat spent ages just figuring out the cause being UnsafeArc's destructor being called twice
+[02:03:40] <acrichto> :(
+[02:05:15] <strcat> acrichto: so, it might be something to do with rvalues
+[02:05:45] <strcat> it looks like that cleanup code exists to cancel rvalue cleanups by not outputting a destructor call if they were moved from
+[02:05:54] <strcat> the non-immediate path *always* zeroes
+[02:06:06] <strcat> anyway really don't want to deal with it anymore for now :P
+[02:06:29] <acrichto> I thought that rvalues in general had questionable trans semantics
+[02:06:30] <strcat> that type can just be non-immediate...
+[02:06:40] <acrichto> rusti: fn foo(_: &mut ~int) {} foo(&mut ~1);
+[02:06:40] <strcat> acrichto: dunno
+[02:06:41] -rusti- ()
+[02:06:50] <acrichto> oh hm I thought there was an issue about that dying
+[02:07:00] <strcat> ~T is immediate, so I might have introduced that same bug to UnsafeArc
+[02:07:07] <strcat> by making it immediate
+[02:08:47] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: sleep)
+[02:09:55] <Eridius> whoa fatal runtime error: thread-local pointer is null. bogus!
+[02:13:31] <Eridius> acrichto: why are Left/Right going away?
+[02:13:42] <acrichto> Either in general is being removed
+[02:13:53] <Eridius> why?
+[02:13:54] <acrichto> Eridius: https://github.com/mozilla/rust/issues/9157
+[02:18:17] *** Quits: doomlord__ (servitor@moz-728E30A7.range109-151.btcentralplus.com) (Ping timeout)
+[02:18:53] *** Quits: doomlord_ (servitor@moz-728E30A7.range109-151.btcentralplus.com) (Ping timeout)
+[02:22:37] <Eridius> wooo error: internal compiler error: fictitious type ty_param(middle::ty::param_ty{idx: 0u, def_id: syntax::ast::DefId{crate: 0, node: 835989}}) in sizing_type_of()
+[02:24:02] <acrichto> don't think I've seen that one before
+[02:26:06] <acrichto> Eridius: I'll just reply here instead of on github b/c it's easier, if "Path" is platform agnostic, you should never be able to call something whic hdoesn't compile on all platforms
+[02:26:22] <acrichto> and b/c Path = WindowsPath or PosixPath, the apis of the two must be exactly the same
+[02:27:00] <acrichto> if you need specialty functions (that do different things on different platforms), then you should have 'pub fn foo(&Path) {}' inside path::platform
+[02:27:44] <Eridius> acrichto: I think the only platform-specific functions right now are WindowsPath's .is_cwd_relative() and .is_vol_relative()
+[02:27:53] <acrichto> that shouldn't be a method
+[02:27:53] <Eridius> oh and .prefix() and .is_verbatim()
+[02:28:03] <acrichto> those should all be top-level function items
+[02:28:26] <acrichto> I should explicitly have to say "windows::foo" to opt-in to windows behavior
+[02:28:27] <Eridius> that seems slightly excessive
+[02:28:36] <acrichto> are they private functions or public functions?
+[02:28:40] <Eridius> public
+[02:28:50] <Eridius> even if I make them top-level I can still easily write code that compiles on windows only
+[02:28:57] <acrichto> you'll inevitably get windows devs that write code and then when you port to unix nothign will compile
+[02:29:10] <Eridius> because Path is a typedef for either, I can write code that passes a Path to a function that requires a WindowsPath, and it will work on windows and fail on posix
+[02:30:00] <acrichto> the problem is that all functions will be written taking &Path, not &WindowsPath
+[02:30:13] <Eridius> the other alternative is to define these methods on PosixPath too, but that's ugly code bloat as they're useless there
+[02:30:42] <acrichto> I'm under the impression that the purpose of the library is to make the same code compile pretty much everywher
+[02:30:49] <Eridius> pub fn is_cwd_relative(path: &WindowsPath) -> bool { ... }; let path = Path::new("test)"; let b = is_cwd_relative(path); // compiles on windows, won't compile on unix
+[02:31:10] <Eridius> yes, that's the primary goal, but there's a bit of an exception here in WindowsPath. People writing code specifically for WindowsPath may need a bit of extra info
+[02:31:20] <acrichto> you can't have "just one exception" though
+[02:31:52] <Eridius> the only alternative I can think of that prevents code from failing to compile on unix is to define these methods as stubs on PosixPath that do nothing useful
+[02:32:09] <Eridius> everything else, including top-level functions, won't work because Path is WindowsPath on Windows
+[02:32:45] <acrichto> it's a lot more explicit if you have to reach into the "windows" module, though
+[02:32:53] <Eridius> the goal isn't so much to _prevent_ you from writing platform-specific code, as it is to _enable_ you to write platform-agnostic code
+[02:33:14] <Eridius> well you have to read the path::windows docs to even know the methods exist
+[02:33:16] <acrichto> being able to write platform-specific code silently is a problem though
+[02:33:42] <Eridius> ...ok
+[02:34:10] <Eridius> I will concede this. I think you care more about requiring the use of ::windows than I do about making Windows-specific APIs ugly
+[02:34:52] *** Quits: zz_kimundi (kimundi@moz-F7EA7A97.dip0.t-ipconnect.de) (Ping timeout)
+[02:37:29] <benh> making Path a newtype around WindowsPath so you explicitly have to extract it for windows-specific functionality is probably also excessive :/
+[02:38:04] <acrichto> benh: r+
+[02:38:11] <Eridius> that would require reimplementing GenericPath to just call the underlying path. Pretty sucky
+[02:38:15] *** Joins: zz_kimundi (kimundi@moz-8F5873D8.dip0.t-ipconnect.de)
+[02:38:17] *** zz_kimundi is now known as kimundi
+[02:38:28] <Eridius> also, the extraction would be identical for both PosixPath and WindowsPath, so that doesn't actually help
+[02:38:33] <Eridius> (*p).is_vol_relative()
+[02:38:37] <benh> acrichto: think we should wait for brson to look at it again?
+[02:39:08] <acrichto> benh: brson's concerns were about pretty printing, and I believe that the specific behavior is easily changeable if we decide to alter it
+[02:39:14] <benh> okay, cool
+[02:39:18] <benh> thanks for your help!
+[02:39:24] <acrichto> if you want, feel free to remove the r+ :)
+[02:39:32] <acrichto> and thank you for your work!
+[02:39:56] <benh> I agree that it's probably good to get at least the part in where it actually supports raw strings and that we can fix the pretty printing behavior later
+[02:40:16] <benh> Let's hope bors agrees
+[02:40:29] <acrichto> benh: it's also a known fact that pretty printing is an entire travesty right now
+[02:40:39] <acrichto> so trying to tweak it to perfection in one tiny area is a little fruitless
+[02:40:47] <acrichto> unless we start actually working on it elsewhere
+[02:42:37] <benh> post-macro-expansion pretty printing that preserves all the little possibilities to write the same thing differently seems like a pretty tricky problem
+[02:44:11] <acrichto> I'm not entirely sure why you'd want post-macro-expansion pretty printing
+[02:44:17] <acrichto> try pretty printing format!("foo {}", "bar")
+[02:44:20] <acrichto> it's godawful
+[02:45:08] <benh> yeah I kept deleting println! from my prettyprinting examples ;)
+[02:46:18] <acrichto> to be fair fmt! was just as bad
+[02:46:21] <benh> It's probably good to have for debugging if nothing else
+[02:46:24] <acrichto> although maybe a littel better...
+[02:46:30] <acrichto> oh yeah definitely
+[02:46:34] <acrichto> I used it so much when writing format!
+[02:56:43] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[02:56:43] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/RKl5Vw
+[02:56:43] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[02:57:16] <Eridius> acrichto: the downside to the proposed without_nul() is it will add an extra allocation on some code paths when the condition is triggered
+[02:57:34] <Eridius> (because some code paths will consume the ~[u8] returned by the condition, but the without_nul won't allow that)
+[02:57:53] <Eridius> that said, it's probably not significant
+[02:58:01] <acrichto> Eridius: then don't take &T ?
+[02:58:20] <Eridius> acrichto: it's not that, it's because the closure would get a &[u8]
+[02:58:37] <Eridius> and it won't help as much as you think, because I'd still need the `if contains_nul()` check on the outside
+[02:58:45] <Eridius> otherwise it will coerce strings into &[u8] which is bad
+[02:59:00] <acrichto> wait I'm confused
+[02:59:09] <Eridius> so it would basically just replace `let x = self::null_byte::cond.raise(arg); assert!(!contains_nul(x))`
+[02:59:11] <acrichto> fn without_null(t: T, f: &fn(&[u8]) )
+[02:59:21] <acrichto> what's wrong with using that?
+[02:59:27] <Eridius> ignoring the allocations for a moment; this function coerces all BytesContainers into a &[u8]
+[02:59:36] <Eridius> meaning the functino it's then passed to cannot benefit from receiving a string
+[02:59:56] <acrichto> you're still not allocating?
+[02:59:58] <Eridius> which is a performance hit (all strings will have to be re-tested for utf-8 compliance)
+[03:00:00] <acrichto> f take &[u8]
+[03:00:04] <Eridius> not even talking about allocation right now
+[03:01:03] <acrichto> wait why would there be a check for utf8-ness?
+[03:01:23] <Eridius> if I pass a &str to, let's say, .push(). Right now, it's preserved as a str up until the concrete implementation, which, for WindowsPath, asks for it as a str, which is free
+[03:01:47] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[03:01:47] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/TjR1Qg
+[03:01:47] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[03:01:48] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[03:01:48] <ghrust> 01[13rust01] 15bors pushed 8 new commits to 06auto: 02http://git.io/NhxJ2A
+[03:01:48] <ghrust> 13rust/06auto 14e007f94 15Benjamin Herr: pp: print spaces around '=' in 'extern mod blah = "blah"'
+[03:01:48] <ghrust> 13rust/06auto 14904c6c4 15Benjamin Herr: lex raw string literals, like r#"blah"#...
+[03:01:48] <ghrust> 13rust/06auto 146885c73 15Benjamin Herr: document raw string literals in tutorial.md and rust.md
+[03:01:50] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[03:01:51] <Eridius> with your without_null(), the &str would be turned into a &[u8] before it reaches the concrete .push_unchecked() impl, which when it asks for a str, will run it through str::from_bytes_slice()
+[03:01:58] <acrichto> maybe some places preserve this, but not all the default methods
+[03:01:58] <Eridius> which will re-parse the &[u8] to see if it's valid utf-8
+[03:02:12] <Eridius> most of the default methods end up passing the arg to one of the non-default *_checked() methods
+[03:02:21] <Eridius> which, in WindowsPath, interpret the BytesContainer as a string
+[03:02:29] <acrichto> not the 3 I'm looking at
+[03:02:32] <Eridius> pretty much only the filestem/extension methods consume its arg immediately
+[03:02:41] <Eridius> set_filestem/set_extension/add_extension
+[03:02:58] <acrichto> I haven't gotten to windows at all just yet
+[03:03:16] <Eridius> windows wants everything as a string. posix wants everything as a vec
+[03:03:17] <acrichto> this is where github is really not sufficient at all for code review :(
+[03:03:28] <acrichto> windows can't have arbitrary bytes?
+[03:03:46] <Eridius> without_null would only really be usable in set_filestem/set_extension/add_extension, and I think it's more complicated to have two mechanisms of dealing with NULs than the current one (of raising the cond)
+[03:03:52] <Eridius> nope, WindowsPath must be unicode
+[03:04:13] <acrichto> any encoding of unicode codepoints?
+[03:04:13] <Eridius> technically it must be UCS-2, but I'm not enforcing that for now, since resources actually conflict on this; some say it can be UTF-16 these days
+[03:04:16] <Eridius> and I don't know what to trust
+[03:04:20] <benh> (Does windows still ban filenames like aux or con or whatever they were?)
+[03:04:32] <Eridius> WindowsPath stores it as utf-8 in a &str, but any utf-8 can be converted to utf-16
+[03:04:36] <Eridius> I have no idea
+[03:04:40] <klutzy> benh: using \\?\ syntax, you can create con.txt
+[03:04:50] <klutzy> which cannot be removed on explorer. :(
+[03:04:56] <Eridius> anyway, dinnertime. I'll read anything said here afterwards
+[03:05:18] <acrichto> Eridius: another question I was thinking about was that most of this could be re-used for things like http-paths, but you can't use Path currently and PosixPath as a name seems a little wrong
+[03:06:18] * Eridius returns for a sec. "Well, you could add a typedef yourself for it. It's certainly possible, but I'm not quite convinced it's fully appropriate"
+[03:06:27] <Eridius> because you could then take your HTTP path and pass it to something that expects a filesystem Path
+[03:06:30] * Eridius disappears again to actually eat
+[03:17:28] *** Joins: doomlord_ (servitor@moz-728E30A7.range109-151.btcentralplus.com)
+[03:26:57] *** Joins: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se)
+[03:48:54] *** Quits: StarLight (StarLight@moz-4A9C441D.dynamic.avangarddsl.ru) (Ping timeout)
+[03:51:39] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[03:51:39] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14be2b33e to 141320999: 02http://git.io/N3iJvQ
+[03:51:39] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[03:51:40] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[03:51:40] <ghrust> 01[13rust01] 15bors pushed 5 new commits to 06auto: 02http://git.io/jNbnyQ
+[03:51:40] <ghrust> 13rust/06auto 14439e277 15Alex Crichton: Extract privacy checking from name resolution...
+[03:51:40] <ghrust> 13rust/06auto 14de7d143 15Alex Crichton: Fix existing privacy/visibility violations...
+[03:51:40] <ghrust> 13rust/06auto 142c76cda 15Alex Crichton: Document visibility in the manual/tutorial...
+[03:51:42] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[03:53:10] *** Joins: StarLight (StarLight@moz-4FA7CF40.dynamic.avangarddsl.ru)
+[03:55:24] <benh> acrichto: bors says the raw-str branch failed - http://buildbot.rust-lang.org/builders/auto-linux-64-nopt-c/builds/989
+[03:55:43] <benh> i'm not sure how to read the build bot pages, but it looks like it randomly segfaults when building the docs to me, is that right?
+[03:55:52] <acrichto> ummm... that's a little unexpected...
+[03:56:54] <acrichto> benh: there are still a few known races in the scheduler, so I presume that's just exposing those bugs
+[03:57:09] <acrichto> if it starts to fail a lot of requests I'll look more into it for
+[03:57:10] <acrichto> suer
+[03:57:13] <acrichto> @bors: retry for now
+[03:57:47] <benh> thank you
+[04:13:25] <Eridius> acrichto: thanks for reviewing Path. I'm catching up right now
+[04:13:49] <Eridius> one thing to be aware of regarding code size: unit tests are over 50% of the code in both path::posix and path::windows (I think it's 65% for posix, 55% for windows)
+[04:14:13] <Eridius> also, I don't think other languages typically go all gung-ho with Windows functionality
+[04:14:53] <Eridius> also, for Display vs FilenameDisplay: I take it you're suggesting adding a boolean field?
+[04:15:48] <Eridius> they were originally newtypes, but that was buggy (yay generic newtype bugs). Since they're full structs, going with a bool field may be simpler
+[04:24:05] *** Joins: steveklabnik (steveklabn@moz-E4698C6D.red.bezeqint.net)
+[04:26:33] <acrichto> Eridius: the code size was without tests in rust, and yeah it's nt a bad thing it could just mean that "we're correct"
+[04:27:10] <Eridius> we also expose a lot of operations, and make a lot of effort to avoid unnecessary allocation and just generally do things right
+[04:27:35] <acrichto> but for the Display struct, not a bool, just create them differently
+[04:28:34] <Eridius> differently how? It holds a pointer to a Path
+[04:28:50] <Eridius> are you saying make it hold a &[u8]?
+[04:28:53] <acrichto> couldn't they just be a &[u8] ?
+[04:29:00] <acrichto> and one has the whole path while the other has just the filename
+[04:29:05] <Eridius> that's gonna be less performant on WindowsPath, although this is obviously not a hot path
+[04:29:08] *** Joins: stevekla1nik (steveklabn@moz-E4698C6D.red.bezeqint.net)
+[04:29:19] <Eridius> (because WindowsPath can avoid the utf-8 test in .as_str())
+[04:29:21] <acrichto> can you not cheaply get a [u8] all the time?
+[04:29:33] <Eridius> I can cheaply get a &[u8], but these functions then turn it back into a &str
+[04:29:36] <acrichto> well this isn't something that's meant to be "performant"
+[04:29:42] <acrichto> it's just displaying things
+[04:30:18] <acrichto> I haven't looked at the windows code at all yet, but do we force the bytes to be utf-8?
+[04:30:28] <Eridius> WindowsPath holds a ~str internally
+[04:30:45] <acrichto> but windows paths can be not utf-8, right?
+[04:30:47] <Eridius> and e.g. it's .as_str() is actually implemented as `Some(self.repr.as_slice())`, so it can never even return None
+[04:30:49] <Eridius> nope
+[04:30:59] <acrichto> can't they be like ucs2 or utf-16?
+[04:31:08] <Eridius> well the Windows APIs actually want UCS-2, but that's just a representational artifact. They must be unicode
+[04:31:19] <Eridius> that's like saying that PosixPath should hold *libc::c_char because that's what C APIs want
+[04:31:23] <acrichto> "must be unicode" can't be transmitted, they have to have some encoding?
+[04:31:24] <klutzy> acrichto: windows paths use utf-16, and any [u16] if user really wants
+[04:31:36] <Eridius> acrichto: all unicode encodings are equivalent
+[04:31:55] <acrichto> Eridius: in the sense that they're encoding the same thing, yes, in their byte representation, no
+[04:32:07] <Eridius> acrichto: correct, when dealing with Windows API functions it's gonna require a way to convert
+[04:32:16] <Eridius> but we have to do that with C API functions too, because we need to construct a CString
+[04:32:34] <Eridius> PosixPath uses a ~[u8] but that's not actually what's given to a POSIX API call
+[04:32:48] <acrichto> it's not?
+[04:33:00] *** Quits: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[04:33:03] <Eridius> well, not to ones that need a NUL-terminated string, which is a lot of them
+[04:34:35] <Eridius> basically, the internal representation was chosen to a) be able to represent everything that can be interpreted as a path, and b) actually be practical to work with
+[04:34:36] <acrichto> I think I'll just wait until I read the code...
+[04:34:54] <Eridius> it was not chosen to be able to be passed to a C FFI call for free
+[04:35:05] <Eridius> PosixPath implements ToCStr so you can create a CString for POSIX API calls
+[04:35:34] <acrichto> nothing can be passed to C FFI for free :(
+[04:35:35] <Eridius> and the idea is that someone who actually works on Windows can invent the Windows equivalent if they want, but in the meantime, there's a function in str that converts to utf-16 which people can use
+[04:35:37] <klutzy> Eridius: is it possible to not expose [u8] and just let users use from_str interfaces?
+[04:35:37] <acrichto> except like ints
+[04:35:50] <Eridius> klutzy: POSIX paths aren't guaranteed to be utf-8
+[04:36:07] <klutzy> Eridius: ah, I forgot "for WindowsPath"
+[04:36:08] <Eridius> one of the reasons for the rewrite is precisely because the existing Path cannot represent all paths allowed on Linux filesystems
+[04:36:40] <Eridius> klutzy: you can't hide [u8] without breaking platform agnostic behavior
+[04:36:41] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[04:36:41] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1491bc7c6 to 141320999: 02http://git.io/N3iJvQ
+[04:36:41] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[04:37:02] <Eridius> one of the goals here is the code you write for POSIX should just work for Windows, and vice versa (as long as you aren't calling FFI)
+[04:38:25] <acrichto> Eridius: well one arguable alternative to "we can't represent all paths" is to just have a separate api which takes *u8 instead of &str
+[04:38:45] <acrichto> but that has the drawback of not "handle everything by default"
+[04:39:07] <Eridius> treating &str as the primary interface will lead back to exactly what we have today, which is a system where exposing any sort of non-utf8 path anywhere will cause the program to fail
+[04:39:29] <Eridius> &[u8] was chosen to be the primary representation specifically to encourage people to actually use it, to support all paths
+[04:40:45] *** Quits: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net) (Quit: Jesse)
+[04:46:40] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[04:46:40] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1427b9d1e to 141320999: 02http://git.io/N3iJvQ
+[04:46:40] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[04:46:42] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[04:46:42] <ghrust> 01[13rust01] 15bors pushed 5 new commits to 06auto: 02http://git.io/shNPSQ
+[04:46:42] <ghrust> 13rust/06auto 14439e277 15Alex Crichton: Extract privacy checking from name resolution...
+[04:46:42] <ghrust> 13rust/06auto 14de7d143 15Alex Crichton: Fix existing privacy/visibility violations...
+[04:46:43] <ghrust> 13rust/06auto 142c76cda 15Alex Crichton: Document visibility in the manual/tutorial...
+[04:46:45] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[04:48:03] <acrichto> benh: what, g++ not found?!
+[04:48:37] <acrichto> and it's on the same win builder...
+[04:48:50] <klutzy> acrichto: FYI, python3 encodes non-utf8 byte as surrogates
+[04:49:03] <acrichto> how so?
+[04:49:09] <benh> The last failure was on a linux-64-nopt build, wasn't it?
+[04:49:10] <klutzy> so for filename "\xff", os.listdir('.') will return ["\udcff"]
+[04:49:19] <klutzy> 0x?? byte becomes U+DC??
+[04:49:32] <klutzy> this is possible because python unicode permits surrogates
+[04:49:38] <klutzy> while we don't.
+[04:49:47] <acrichto> interesting
+[04:49:48] <Eridius> klutzy: wtf?
+[04:49:57] <acrichto> I wish we could just say "have utf8 filenames" :P
+[04:50:02] <acrichto> not really realistic though
+[04:50:03] <Eridius> klutzy: that's really horrible
+[04:50:05] <klutzy> uh.. this is unix story. I don't know how python-on-windows works :(
+[04:50:46] <klutzy> Eridius: well, I think it is better than python2 :p
+[04:50:57] <acrichto> I'm pretty much convinced that anything touching a filesystem is a terrible story :(
+[04:51:14] <klutzy> in python2, os.listdir(u'.') will return ["\xff"] even though I requested unicodes
+[04:51:31] <Eridius> acrichto: filesystems suck
+[04:52:01] <Eridius> as much as Linus disagrees, I'm really glad that HFS+ forces unicode on paths (and normalizes it too)
+[04:52:19] <acrichto> too bad everyone doesn't do that lol
+[04:52:31] <acrichto> it actually wouldn't really matter that much if everyone did "one thing"
+[04:52:37] <klutzy> I sometimes meet non-utf8 filenames. it's real!
+[04:52:38] <acrichto> as in it doesn't really matter what the "one thing is"
+[04:52:49] <acrichto> but that'll never happen, except for tcp/ip
+[04:53:23] <Eridius> acrichto: btw, do you really think that adding a second API call that replicates .pop() but without the return value is worth the extra API?
+[04:53:36] <acrichto> Eridius: nah you have a good point, don't do that for now
+[04:53:46] <acrichto> I want to focus on reducing the surface area of this, not increasing it :P
+[04:53:51] <Eridius> ok
+[04:59:08] *** Joins: sanxiyn (tinuviel@B4104EBB.3CC170B1.1E14B209.IP)
+[05:04:19] <klutzy> hmm, python paths are either unicode or bytes. they don't convert one to other.
+[05:04:47] <klutzy> and it seems that they uses bytes for "locale-encoded" strings, not for raw u16 stuff
+[05:04:57] <klutzy> http://www.python.org/dev/peps/pep-0383/
+[05:05:45] *** Quits: steveklabnik (steveklabn@moz-E4698C6D.red.bezeqint.net) (Ping timeout)
+[05:05:45] *** Quits: stevekla1nik (steveklabn@moz-E4698C6D.red.bezeqint.net) (Ping timeout)
+[05:22:42] *** Joins: isenmann (isenmann@moz-B656BA79.science-computing.de)
+[05:22:52] <cmr> klutzy: python's string situation is also a cluster
+[05:23:19] *** Joins: nrc (nrc@moz-3576D163.cable.virginmedia.com)
+[05:28:54] <cmr> dbaupp: ping
+[05:49:09] <cmr> dbaupp: unping, fixed the big.
+[05:49:11] <cmr> *bug
+[05:56:38] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[05:56:38] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/shNPSQ
+[05:56:38] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[05:56:44] <cmr> acrichto: \o/
+[05:57:20] <acrichto> woo!
+[06:01:40] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[06:01:40] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/QDXNOw
+[06:01:40] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[06:01:42] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[06:01:42] <ghrust> 01[13rust01] 15bors pushed 8 new commits to 06auto: 02http://git.io/JLyPbg
+[06:01:42] <ghrust> 13rust/06auto 14e007f94 15Benjamin Herr: pp: print spaces around '=' in 'extern mod blah = "blah"'
+[06:01:42] <ghrust> 13rust/06auto 14904c6c4 15Benjamin Herr: lex raw string literals, like r#"blah"#...
+[06:01:43] <ghrust> 13rust/06auto 146885c73 15Benjamin Herr: document raw string literals in tutorial.md and rust.md
+[06:01:45] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[06:12:17] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[06:12:17] <ghrust> 01[13rust01] 15alexcrichton merged 06master into 06snap-stage3: 02http://git.io/v5SoYA
+[06:12:17] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[06:17:57] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[06:17:57] <ghrust> 01[13rust01] 15alexcrichton merged 06auto into 06snap-stage3: 02http://git.io/JLyPbg
+[06:17:57] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[06:19:55] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[06:19:55] <ghrust> 01[13rust01] 15alexcrichton 04force-pushed 06snap-stage3 from 14c919629 to 146ddd011: 02http://git.io/f3Qwfg
+[06:19:55] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[06:20:12] <cmr> acrichto: having trouble?
+[06:20:22] <acrichto> trying to not hit mac4
+[06:20:34] <sanxiyn> Is something wrong with mac4?
+[06:20:41] <acrichto> it has valgrind
+[06:21:04] <cmr> Is valgrind still disabled?
+[06:21:45] <acrichto> only in that it silently disables it if it isn't installed
+[06:22:01] <cmr> I mean on the auto bots.
+[06:22:16] <cmr> (the release builders should be the decepticons...)
+[06:22:16] <acrichto> yeah it was way too slow
+[06:22:21] <acrichto> 3 => 1hr cycle time
+[06:22:27] <sanxiyn> acrichto: Is this #8267?
+[06:22:52] <acrichto> sanxiyn: yeah
+[06:23:18] <sanxiyn> cmr: "The configure script does not error if --enable-valgrind is specified but valgrind does not exist."
+[06:28:25] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[06:28:25] <ghrust> 01[13rust01] 15alexcrichton merged 06auto into 06snap-stage3: 02http://git.io/JLyPbg
+[06:28:25] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[06:28:34] <acrichto> what this actually means is that I should investigate valgrind
+[06:29:26] <benh> I just realized I was waiting for acrichto's PR for documenting visibility etc to land just to read the documentation
+[06:29:37] <benh> I am not very clever.
+[06:29:44] <cmr> hahah
+[06:30:44] <acrichto> alright I'm just gonna see what mac4 has to say today
+[06:31:50] <benh> Is it correct that a path that doesn't begin with :: always refers to something relative to the current module analogous to a unix path, unlike in C++?
+[06:31:57] *** Joins: jensnockert (jensnocker@moz-C4B24C3.customers.ownit.se)
+[06:32:06] <cmr> benh: except in `use`, yes.
+[06:32:07] <acrichto> yes, except in use
+[06:32:24] <benh> yeah, ok
+[06:33:56] <acrichto> uh oh
+[06:34:10] <acrichto> I just took down mac4 again :(
+[06:35:07] <acrichto> sorry benh :(
+[06:36:08] <benh> :]
+[06:37:09] <acrichto> I think I shut down bors for the night
+[06:37:10] <acrichto> argh
+[06:37:43] *** Quits: jensnockert (jensnocker@moz-C4B24C3.customers.ownit.se) (Input/output error)
+[06:37:53] <benh> and jensnockert, apparently
+[06:38:03] <cmr> what did jens do?
+[06:38:14] <benh> nothing, but he left just after acrichto said that
+[06:38:17] <cmr> oh
+[06:38:18] <cmr> heh
+[06:38:20] *** Joins: jensnockert (jensnocker@moz-C4B24C3.customers.ownit.se)
+[06:38:24] <benh> ah!
+[06:38:27] * cmr has parts disabled for non-active speakers
+[06:38:44] <acrichto> anyway, that probably means that it's time for me to sleep
+[06:38:50] <acrichto> see y'all tmw
+[06:38:52] <benh> good night :)
+[06:51:34] *** Parts: sanxiyn (tinuviel@B4104EBB.3CC170B1.1E14B209.IP) (Leaving)
+[06:55:09] <dbaupp> acrichto: pong
+[06:55:16] <dbaupp> cmr: pong anyway!
+[06:55:29] <cmr> dbaupp: morning!
+[06:55:40] <dbaupp> cmr: evening ;P
+[06:56:03] <dbaupp> cmr: I see you pushed the bug fix to a separate branch?
+[06:56:23] <cmr> dbaupp: yeah, that was an accident, I thought I was on master.
+[06:56:45] <dbaupp> haha
+[06:56:52] * dbaupp was waiting for the PR
+[06:57:08] <dbaupp> (just push it straight to master, when you rebase on top of it)
+[06:57:13] <cmr> (I did already :P)
+[06:57:46] * dbaupp missed that message
+[07:00:20] <cmr> I hate hate hate that JSON doesn't allow trailing commas.
+[07:00:57] * dbaupp likes how flexible Rust is about trailing commas
+[07:02:44] * benh kind of dislikes trailing commas because they're not valid natural language,
+[07:03:09] <Eridius> cmr: IIRC, JSON disallowed trailing commas in order to be compatible with YAML
+[07:03:21] <benh> (though I guess that went out of the window with trailing semicolons)
+[07:03:26] <cmr> benh: they make it easier to extend the list.
+[07:03:33] <cmr> Also, I don't care about natural language!
+[07:03:40] <dbaupp> benh: sure they're valid natural language,
+[07:03:46] <benh> cmr: Yeah, they're clearly the lesser evil
+[07:04:22] * dbaupp mainly likes trailing commas because they make macros easier
+[07:05:00] <Eridius> whew, I think I covered all the items from acrichto's review that I agreed with: https://github.com/mozilla/rust/pull/9655
+[07:05:03] * benh is going to terminate all his previously trailing-comma-terminated lists with ", and_thats_all" for natural language compliance
+[07:05:07] <Eridius> and replied to the ones that I didn't think needed addressing
+[07:05:24] <Eridius> benh: I'm going to use ", etc_etc_etc_and_so_forth_and_so_on"
+[07:06:02] <cmr> dbaupp: The benches dir is going to be changing structure.
+[07:06:10] <cmr> All of the data will be in data/$SHA
+[07:06:18] <cmr> With the metafiles (history.txt etc) not moving
+[07:06:25] <dbaupp> rather than ./$SHA, you mean?
+[07:06:30] <cmr> Yeah
+[07:06:34] <dbaupp> changed now?
+[07:06:36] <cmr> No
+[07:06:48] <cmr> Syncing now.
+[07:06:52] <dbaupp> ok
+[07:06:53] <cmr> Well
+[07:06:55] <cmr> I can sync whenever
+[07:06:59] <cmr> Tell me when you're ready :P
+[07:07:00] * dbaupp sshes into the bot to change it
+[07:07:03] <dbaupp> now
+[07:07:07] *** Quits: jensnockert (jensnocker@moz-C4B24C3.customers.ownit.se) (Input/output error)
+[07:07:08] <cmr> ok
+[07:10:01] <dbaupp> $ ls | tail -3
+[07:10:02] <dbaupp> Found<
+[07:10:02] <dbaupp> history.txt
+[07:10:02] <dbaupp> <hr><center>nginx
+[07:10:04] <dbaupp> cmr: ^
+[07:10:05] <dbaupp> weird
+[07:10:23] <dbaupp> don't know how that happened
+[07:10:41] <Eridius> nice
+[07:10:41] <dbaupp> (that's not been caused by the current migration)
+[07:10:51] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[07:12:34] <cmr> Hmmm
+[07:12:46] <cmr> looks like rsync exploded some permissions.
+[07:13:22] <cmr> Oh, no, my config exploded.
+[07:14:25] <dbaupp> so I shouldn't run it again?
+[07:14:46] <cmr> Fixed.
+[07:14:56] <dbaupp> ok
+[07:18:09] <cmr> dbaupp: the migration isn't complete btw.
+[07:18:13] <cmr> it's still running.
+[07:18:27] <cmr> And, I have multibuilder setup to automatically bench things when they're finished
+[07:18:42] <benh> Did tjc stop visiting #rust btw?
+[07:18:52] <cmr> no
+[07:19:00] <benh> I've wanted to ask about rustpkg leaving files behind in /tmp but I haven't seen him for a few days
+[07:20:18] <cmr> He drops in and out, and the summit was last week
+[07:20:26] <cmr> slash over the weekend
+[07:20:34] <benh> ah, right
+[07:23:43] <dbaupp> cmr: ok... I appear to be having problems of my own with grep -v -f <(ls data) history.txt being really bad for performance when there's ~1000 things in data and history.txt
+[07:23:55] <cmr> Hahah
+[07:24:06] <cmr> The sync is finished btw.
+[07:24:58] <benh> Not very scientifically measured, after every make check I have 8M more in /tmp than before, and there's a lot of randomly named directories in there now with temp and workspace in the name and .rs files and rust-looking .so's inside, so I figured that's probably rustpkg
+[07:25:23] <benh> but I'm not sure if not maybe leaving files behind in /tmp is considered the right thing to do and the system should clean up after them
+[07:25:35] <cmr> benh: leaving things behind in /tmp is *not* the right thing to do.
+[07:25:56] <cmr> Probably an oversight.
+[07:29:38] * dbaupp wonders if extra::tempdir should use RAII to delete the directory
+[07:35:18] <benh> Like an RAII variant of Path that removes itself from the filesystem when it goes away? :)
+[07:35:56] * dbaupp apologises to cmr for pummelling his server with 331 curl processes
+[07:36:22] <cmr> It's fine, it can handle it.
+[07:38:30] <dbaupp> hm
+[07:39:01] <dbaupp> apparently http://octayn.net/benches/data/3acdbfd2c843ff2be79652df34a2a1959d18685d/ is invalid (and a *lot* of other ones)
+[07:39:10] * dbaupp thinks he broke something
+[07:39:53] <cmr> It looks valid to me!
+[07:40:45] <dbaupp> same
+[07:40:59] * dbaupp is very confused
+[07:49:43] *** flaper87|afk is now known as flaper87
+[07:52:56] *** Quits: nrc (nrc@moz-3576D163.cable.virginmedia.com) (Ping timeout)
+[07:58:44] <dbaupp> cmr: http://octayn.net/benches/data/491bc3568c87dadaba4d342135bd308961c6e0ef is listed in history.txt
+[08:01:40] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[08:01:40] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/JLyPbg
+[08:01:40] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[08:01:45] <benh> woo
+[08:02:20] *** Joins: jensnockert (jensnocker@moz-C4B24C3.customers.ownit.se)
+[08:02:55] <dbaupp> rusti: r##""#""##
+[08:02:55] -rusti- <anon>:7:10: 7:11 error: expected one of `;`, `}` but found `#`
+[08:02:56] -rusti- <anon>:7          r##""#""##
+[08:02:56] -rusti-                    ^
+[08:02:56] -rusti- application terminated with error code 101
+[08:03:05] <dbaupp> :'( rusti is too slow
+[08:03:52] <cmr> dbaupp: is that the only one?
+[08:04:16] <dbaupp> cmr: so far yes
+[08:05:00] <engla> nice job benh 
+[08:06:47] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[08:06:47] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/GbWB3w
+[08:06:47] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[08:07:12] <benh> thank you :)
+[08:07:39] *** Quits: jensnockert (jensnocker@moz-C4B24C3.customers.ownit.se) (Input/output error)
+[08:08:40] <engla> I understood now that even r"" is a raw string (right?) and the # are optional, that's very nice
+[08:08:48] <cmr> engla: correct.
+[08:10:14] <dbaupp> benh: nice work :)
+[08:10:37] <dbaupp> kimundi: thank you for your proposed raw string syntax
+[08:10:40] <benh> You should really be giving credit to kimundi for coming up the -- yeah!
+[08:11:58] <cmr> dbaupp: that one has been removed.
+[08:12:46] <dbaupp> benh: you did all the work with extern mods and asm! etc etc :)
+[08:12:58] <dbaupp> cmr: ok
+[08:42:01] *** Quits: andrew-d (andrew-d@6C6C9B53.23518FA3.CE794808.IP) (Ping timeout)
+[08:46:34] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[08:46:34] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 149bcfeae to 14c919629: 02http://git.io/N3iJvQ
+[08:46:34] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[08:46:35] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[08:46:35] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/U65X_w
+[08:46:35] <ghrust> 13rust/06auto 146dfc5d5 15Erick Tryzelaar: std: fix an infinite loop in num::ToPrimitive and add tests
+[08:46:35] <ghrust> 13rust/06auto 144eb3bbd 15bors: auto merge of #9757 : erickt/rust/master, r=alexcrichton...
+[08:46:36] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[08:47:08] *** Joins: andrew-d (andrew-d@6C6C9B53.23518FA3.CE794808.IP)
+[08:48:01] *** kimundi is now known as zz_kimundi
+[09:11:00] *** Joins: nrc (nrc@88F51059.F3BBB17D.144F44FA.IP)
+[09:26:34] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[09:26:34] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 144eb3bbd to 14c919629: 02http://git.io/N3iJvQ
+[09:26:34] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[09:26:35] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[09:26:35] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/_r7jtg
+[09:26:35] <ghrust> 13rust/06auto 142899ca6 15Daniel Micay: make small ty_struct immediate...
+[09:26:35] <ghrust> 13rust/06auto 14dd5a908 15bors: auto merge of #9759 : thestinger/rust/immediate, r=alexcrichton...
+[09:26:35] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[09:37:01] *** Quits: tikue_ (tikue_star@80E31A8C.E6CB677E.689607DE.IP) (Client exited)
+[09:44:44] *** Joins: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP)
+[10:01:38] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[10:01:38] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14dd5a908 to 14c919629: 02http://git.io/N3iJvQ
+[10:01:38] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[10:01:39] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[10:01:39] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/l8BwzQ
+[10:01:39] <ghrust> 13rust/06auto 1485deeea 15Michael Woerister: debuginfo: Unified namespace generation approach for crate-local and external items. Fixed bug related to LLVM metadata uniquing.
+[10:01:39] <ghrust> 13rust/06auto 14e87205c 15bors: auto merge of #9658 : michaelwoerister/rust/namespace_fixes, r=jdm...
+[10:01:40] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[10:10:29] <benh> Can I make a test runner list all the tests it can run?
+[10:10:33] <benh> I want to run them one by one
+[10:10:53] <pnkfelix> hmm.  What is going on with the indices in token.rs ...
+[10:10:58] <benh> hm, this isn't rustc-engineering-specific, i should have asked in here
+[10:11:01] <benh> pnkfelix: hm?
+[10:11:09] <benh> (*shouldn't)
+[10:11:34] <pnkfelix> benh: I was idly reviewing the indices in the init_vec in mk_fresh_ident_interner.  They get a bit wonky between 54 and 55
+[10:12:23] <pnkfelix> (looks to me like a potential merge conflict?   also the range in is_any_keyword might need updating… but why hasn't this caused problems somewhere ...?)
+[10:12:28] <dbaupp> pnkfelix: magic numbers?
+[10:12:42] <dbaupp> it looks like they're just repeats?
+[10:12:57] <benh> Shouldn't that break something?
+[10:13:07] <pnkfelix> dbaupp: I was assuming that someone had put the numbers into the comments for a reason. Similar numbers are used elsewhere in the code ...
+[10:13:46] <cmr> It's their id in the interner iirc
+[10:13:48] <dbaupp> hm, looking at the definition of prefill, it actually calls intern, so the repeats defer to the previously interned string and don't change the numbers of the later ones
+[10:14:00] <dbaupp> (numbers == index into the internal vector of the interner)
+[10:14:10] <pnkfelix> ah.  but then why have the repeats listed ...
+[10:14:21] <dbaupp> accident?
+[10:14:26] * dbaupp does some history-diving
+[10:14:43] <benh> seems like that whole function is from 73c18395
+[10:15:14] <cmr> I'm doing the proglang course on coursera (at the recomendation of bjz), it's starting with SML, and it's very interesting.
+[10:15:50] <pnkfelix> benh: but the numbers have been updated since then, e.g. in 2ab278f1
+[10:16:22] <benh> yeah, but they already had static and self repeated down there
+[10:16:34] <bjz> cmr: ^_^
+[10:16:45] <pnkfelix> benh: oh, sure.  yeah there's lots of different issues that I'm trying to digest at once...
+[10:16:58] <dbaupp> benh, pnkfelix: 6c62d778 added it
+[10:17:26] <dbaupp> looks like they're listed with the keywords *and* the special idents
+[10:17:40] <dbaupp> (since they're both, whatever a "special ident" is)
+[10:18:42] <pnkfelix> ah, 88272a4f added `continue` and shifted a bunch of keywords down, but didn't update all the ranges ...
+[10:20:42] <pnkfelix> we could make these magic numbers into static constants that are defined next to the table in mk_fresh_ident_interner, and then have the match patterns reference the constants instead.  Let me see if there's an issue open for that
+[10:23:00] <dbaupp> fwiw, there's places that we use these hand-maintained tables (I think the intrinsics do something similar), so a solution that resolved the other ones would be useful
+[10:23:53] *** flaper87 is now known as flaper87|afk
+[10:34:49] *** Joins: Axord (xord@moz-1B228827.lsanca.dsl-w.verizon.net)
+[10:57:42] *** zz_kimundi is now known as kimundi
+[10:58:20] * dbaupp has finally got irfy updated to include the data from acrichto's const_eval cache <3 the 700MB drop
+[10:59:34] <dbaupp> I guess I should put some effort into optimising irfy, now that it's showing 1300 commits
+[11:06:34] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[11:06:34] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/l8BwzQ
+[11:06:34] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[11:16:35] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[11:16:35] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/MK_Mrg
+[11:16:35] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[11:16:41] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[11:34:56] *** Quits: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se) (Ping timeout)
+[11:41:17] *** kimundi is now known as zz_kimundi
+[11:58:13] *** Joins: jdm (jdm@88F51059.F3BBB17D.144F44FA.IP)
+[12:21:42] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[12:21:42] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/p2NCgg
+[12:21:42] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[12:24:19] *** Joins: engla (engla@moz-BFD53D48.selucle.dyn.perspektivbredband.net)
+[13:11:36] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[13:11:36] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/WywXaw
+[13:11:36] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[13:11:38] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[13:11:38] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/Xr8rqQ
+[13:11:38] <ghrust> 13rust/06auto 14313052a 15Daniel Micay: rm useless fast_ffi attributes...
+[13:11:38] <ghrust> 13rust/06auto 147ba8033 15bors: auto merge of #9766 : thestinger/rust/fast_ffi, r=huonw...
+[13:11:38] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[13:21:35] *** zz_kimundi is now known as kimundi
+[14:16:45] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[14:16:45] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/Xr8rqQ
+[14:16:45] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[14:21:48] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[14:21:48] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/BtApkQ
+[14:21:48] <ghrust> 13rust/06auto 14580adc9 15Felix S. Klock II: Add bindings for start and ends of keyword ranges; use bindings in match arms.
+[14:21:48] <ghrust> 13rust/06auto 14e293026 15bors: auto merge of #9768 : pnkfelix/rust/fsk-fix-issue-9762, r=bstrie...
+[14:21:48] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[14:31:42] *** Joins: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net)
+[14:32:09] <pnkfelix> If I'm in resolve.rs and I'm looking e.g. at a Target (or maybe an ImportResolution, whatever, I can back track to something as necessary), is there a way to extract the chain of view items that led to the identifier being mapped to this target?
+[14:32:30] <pnkfelix> i.e., is there some built in method or pattern for this I cannot see?  (Just trying to avoid hacking it up myself.)
+[14:35:34] *** Quits: engla (engla@moz-BFD53D48.selucle.dyn.perspektivbredband.net) (Ping timeout)
+[15:10:13] *** Joins: sanxiyn (tinuviel@B4104EBB.3CC170B1.1E14B209.IP)
+[15:13:11] *** Quits: jack (jack@moz-DF5A9AA3.members.linode.com) (Quit: ZNC - http://znc.in)
+[15:25:04] *** Joins: engla (engla@moz-14524F0F.selucle.dyn.perspektivbredband.net)
+[15:26:39] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[15:26:39] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/BtApkQ
+[15:26:39] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[15:31:02] *** Quits: engla (engla@moz-14524F0F.selucle.dyn.perspektivbredband.net) (Ping timeout)
+[15:40:02] <acrichto> dbaupp cmur: <3 irfy and irsy
+[15:40:07] <acrichto> cmr*
+[15:40:28] <dbaupp> acrichto: <3 the people who make the graph go down
+[15:40:51] <sanxiyn> Wow we got memory under 1.5 GB now?
+[15:41:08] <dbaupp> "we" == acrichto, yeah
+[15:41:14] <acrichto> we should be at 1.2GB...
+[15:41:15] <sanxiyn> :)
+[15:41:46] <dbaupp> acrichto: there is a pile of things that were never fixed (e..g I think the only regression you resolved was the visitor one?)
+[15:41:53] <sanxiyn> irsy gives 1383 MB for me
+[15:42:15] <acrichto> dbaupp: yeah I think that another big one was @Ty vs ~Ty in the ast
+[15:43:43] <dbaupp> acrichto: yup
+[15:44:02] <sanxiyn> http://huonw.github.io/isrustfastyet/mem/#ff30566,9344e2a,5a1073f
+[15:45:10] * dbaupp wonders if a timelapse of the memory profiles of rustc would look at all interesting
+[15:46:09] <acrichto> it may just be sad :(
+[15:52:27] <benh> acrichto: there's a double period and/or 2/3 ellipsis in rust.md in the bit you edited, "the default visibility of the enum container itself.."
+[15:53:00] <acrichto> benh: I'm notoriously bad for small mistakes in the documentation that I write
+[15:53:05] <benh> (also I don't know what "the default visibility of the enum container" means. the visibility of the containing enum? or the default visibility of the enum's container which is private because it's a mod?)
+[15:53:47] <acrichto> benh: I think I'm just referring to the enum there, but it could probably use re-wording
+[16:10:44] <olsonjeffery> acrichto: heh, i just stumbled upon your PR for std::io
+[16:10:48] <olsonjeffery> a lot to take in, there
+[16:11:10] <acrichto> olsonjeffery: yeah sorry I tried to keep it small, but it got real sprawling real fast
+[16:11:15] <olsonjeffery> indeed
+[16:11:27] <olsonjeffery> i haven't gotten to where you link into rt::uv, yet
+[16:11:35] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[16:11:36] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/mogH9Q
+[16:11:36] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[16:11:37] <[o__o]>  add dwarf sibling links  : https://github.com/mozilla/rust/issues/9
+[16:11:37] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[16:11:37] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/ZWUJqg
+[16:11:37] <ghrust> 13rust/06auto 14bed669c 15Tim Chevalier: syntax: Display spans for open delimiters when a file ends prematurely...
+[16:11:37] <ghrust> 13rust/06auto 1477d9ac3 15Tim Chevalier: syntax: Remove unnecessary @
+[16:11:37] <ghrust> 13rust/06auto 148db52a5 15bors: auto merge of #9756 : catamorphism/rust/issue-2354, r=alexcrichton...
+[16:11:39] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[16:11:41] <olsonjeffery> but i sort of designed the lower level stuff with dropping in printf, et al eventually
+[16:11:56] <olsonjeffery> you have to take a specific path to interact with STDOUT 's fd correctly
+[16:12:00] <olsonjeffery> or libuv chokes..
+[16:12:04] <acrichto> olsonjeffery: the rt/uv bindings for stdio were easy to make
+[16:12:10] <olsonjeffery> its sort of laid in the naive_printf bindings
+[16:12:18] <acrichto> oh interesting...
+[16:12:21] <olsonjeffery> tl;dr don't use the pwrite/pread versions of the api
+[16:12:25] <acrichto> lol
+[16:12:26] <olsonjeffery> always pass -1 for the offset
+[16:12:34] <olsonjeffery> so that libuv uses read/write
+[16:12:40] <olsonjeffery> when interacting with stdout's fd
+[16:12:53] <olsonjeffery> or stdin, for that matter
+[16:12:56] <olsonjeffery> anyways, its a minor detail
+[16:13:07] <olsonjeffery> and the higher-level stuff (exported from IoFactory) kind of conceals that
+[16:13:24] <olsonjeffery> i had it in mind that, when we wire up to uv for printf etc, that we'd have a separate path through uvio
+[16:13:27] <acrichto> certainly a nice job on the uv file/fd bindings
+[16:13:30] <olsonjeffery> not sure if you figured that out, though
+[16:13:38] <olsonjeffery> thank you
+[16:13:41] <acrichto> olsonjeffery: oh I was unaware of current intentions
+[16:13:57] <acrichto> if I'm short-circuiting those in the wrong way then feel free to comment and I will remove/update
+[16:13:59] <olsonjeffery> no worries. more than one way to skin a cat.
+[16:14:04] *** Joins: kendle (Mibbit@moz-2278976F.cityway.fr)
+[16:14:22] <acrichto> right now logging still goes through native printing
+[16:14:25] <olsonjeffery> yeah. as i said, a lot to take in. ill get around to providing some feedback
+[16:14:28] <acrichto> print/println go through uv though
+[16:14:33] <acrichto> thanks :)
+[16:14:35] <olsonjeffery> that's progress!
+[16:14:46] <olsonjeffery> we need a fallback for if/when the "platform-backed" io gets off the ground..
+[16:15:18] <acrichto> I tried to at least write the bindings inside io::native
+[16:15:26] <olsonjeffery> aka wherein mozilla/rust rewrites libuv in rust because people dont want to take a dep on libuv
+[16:15:35] <acrichto> ahha
+[16:15:39] <acrichto> haha*
+[16:15:56] *** Quits: kendle (Mibbit@moz-2278976F.cityway.fr) (Quit: http://www.mibbit.com ajax IRC Client)
+[16:16:19] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Quit: leaving)
+[16:16:20] <olsonjeffery> its really tricky, though. not sure how it'll shake out. anyways. one step at a time.
+[16:18:06] *** Parts: [o__o] (~o__o@moz-24EBFAC7.me) ()
+[16:26:04] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[16:26:04] <ghrust> 01[13rust01] 15alexcrichton merged 06auto into 06snap-stage3: 02http://git.io/EXCr9g
+[16:26:04] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[16:32:58] <strcat> acrichto: is that actually ready to r+? :s
+[16:33:02] <strcat> I guess not
+[16:33:15] <acrichto> should be
+[16:33:25] <acrichto> it got past stage0 so far locally
+[16:33:29] <strcat> oh
+[16:33:31] <acrichto> which is good enough to pass through bors for me
+[16:34:44] <cmr> dbaupp: ah, I was trying to figure out why irfy wasn't showing a large portion of my data. Now I know: your fault :P
+[16:39:55] <cmr> Anyway it's fully automated now, not at my whim.
+[16:43:52] *** Quits: nrc (nrc@88F51059.F3BBB17D.144F44FA.IP) (Ping timeout)
+[16:45:01] *** Joins: tjc (tjc@moz-BBE3ABD.mv.mozilla.com)
+[16:45:02] *** ChanServ sets mode: +o tjc
+[16:56:09] *** Quits: sanxiyn (tinuviel@B4104EBB.3CC170B1.1E14B209.IP) (Quit: Leaving)
+[17:00:18] *** Quits: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP) (Quit: Leaving.)
+[17:01:21] *** Joins: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP)
+[17:04:16] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[17:04:16] *** ChanServ sets mode: +qo brson brson
+[17:16:42] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[17:16:42] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/ZWUJqg
+[17:16:42] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[17:21:48] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[17:21:48] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/P-XDwg
+[17:21:48] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[17:21:50] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[17:21:50] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/WPUmMA
+[17:21:50] <ghrust> 13rust/06auto 14eb2a7e1 15Tim Chevalier: rustpkg: Search for crates in the current directory...
+[17:21:50] <ghrust> 13rust/06auto 1470e554c 15bors: auto merge of #9736 : catamorphism/rust/rustpkg-issue-8520, r=cmr...
+[17:21:51] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[17:23:03] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Connection reset by peer)
+[17:23:14] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[17:23:19] *** Joins: rusti_ (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[17:23:27] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[17:35:13] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[17:41:57] *** Quits: rusti_ (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[17:42:01] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[17:46:04] *** Quits: jdm (jdm@88F51059.F3BBB17D.144F44FA.IP) (Ping timeout)
+[17:47:21] *** Joins: jdm (jdm@88F51059.F3BBB17D.144F44FA.IP)
+[17:48:42] *** Quits: jdm (jdm@88F51059.F3BBB17D.144F44FA.IP) (Quit: Lost terminal)
+[17:51:51] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.1)
+[17:53:22] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[17:57:29] *** Quits: doomlord_ (servitor@moz-728E30A7.range109-151.btcentralplus.com) (Connection reset by peer)
+[17:58:15] *** Quits: dbaupp (Thunderbir@moz-EAA09AEF.lns20.syd7.internode.on.net) (Ping timeout)
+[18:01:23] *** Quits: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP) (Quit: Leaving.)
+[18:01:29] *** Joins: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP)
+[18:02:03] *** Joins: dbaupp (Thunderbir@moz-4301A13F.lns20.syd6.internode.on.net)
+[18:06:42] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[18:06:42] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1470e554c to 148db52a5: 02http://git.io/N3iJvQ
+[18:06:42] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[18:06:43] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[18:06:44] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/uHecPg
+[18:06:44] <ghrust> 13rust/06auto 146dfc5d5 15Erick Tryzelaar: std: fix an infinite loop in num::ToPrimitive and add tests
+[18:06:44] <ghrust> 13rust/06auto 14e42e322 15bors: auto merge of #9757 : erickt/rust/master, r=alexcrichton...
+[18:06:44] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[18:06:51] *** Joins: doomlord_ (servitor@moz-728E30A7.range109-151.btcentralplus.com)
+[18:12:19] *** Quits: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP) (Quit: Leaving.)
+[18:13:16] *** Joins: tikue_ (tikue_star@49825264.28259105.689607DE.IP)
+[18:14:44] *** Quits: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP) (Ping timeout)
+[18:30:08] <cmr> I'm thinking that if the 'self lifetime issue thing isn't going to be fixed, we should at least change it so that it requires some other name.
+[18:30:17] *** Joins: rusti (rusti@moz-61B073BC.cpe.net.cable.rogers.com)
+[18:30:19] <cmr> Like, 'typedecl
+[18:30:23] *** Joins: strcat (strcat@moz-61B073BC.cpe.net.cable.rogers.com)
+[18:30:29] <cmr> Something really ugly, that makes it obvious it's a hack atm
+[18:30:43] <cmr> (isn't going to be fixed in the short term, that is)
+[18:44:55] <nmatsakis> cmr: I am very close to fixing it
+[18:45:15] <cmr> nmatsakis: Oh, awesomesauce!
+[18:46:05] <nmatsakis> cmr: hoping to land that this week, though I think in light of the fact that I'm still digging myself out of a mountain of e-mail from the Mozilla summit this weekend, and have some other deadlines, it'll prob be next week
+[18:46:15] <cmr> heh
+[18:46:28] <nmatsakis> that and I just hit some annoying compiler bug because I used @[]
+[18:46:48] * nmatsakis faces the old choice: minimize and produce an issue, or just workaround it
+[18:47:03] <cmr> workaround it I say, @[] is dying anyway
+[18:48:08] <nmatsakis> likely, yes.
+[18:48:25] <nmatsakis> I don't actually KNOW that my use of @[] is responsible, but it seems a likely candidate
+[18:48:46] <nmatsakis> the problem being: error: internal compiler error: drop_ty_immediate: non-box ty
+[18:49:16] <acrichto> nmatsakis: you may want to rebase, all open issues about "drop_ty_immediate" are currently closed
+[18:49:22] <acrichto> I thought there were fixes to that recently...
+[18:49:29] <cmr> yeah, strcat did a ton of work on immediates.
+[18:49:44] <nmatsakis> ah, ok. I am overdue for a rebase anyhow
+[18:49:51] <nmatsakis> if nothing else I added use of fmt! 
+[18:49:51] <nmatsakis> :)
+[18:50:01] <strcat> yeah I fixed ~5-6 immediate bugs
+[18:50:07] <strcat> because I made small enums/structs/tuples immediate
+[18:50:12] <strcat> (<= 1 word, atm)
+[18:50:22] <strcat> so I had to fix them ;p
+[18:50:46] <nmatsakis> cool
+[18:50:51] <strcat> possibly some FFI bugs we can close now too, we were using the wrong type for the temporary we cast to the native type
+[18:51:29] <strcat> found some awful cleanup bug I haven't narrowed down yet though...
+[18:51:46] <strcat> there are suspiciously similar reports about double frees with ~T
+[18:56:00] <tikue_> is anyone aware of existing vector matching ICE's?
+[18:57:44] *** Joins: engla (engla@moz-9B69FE7C.selucle.dyn.perspektivbredband.net)
+[19:05:07] *** Quits: tikue_ (tikue_star@49825264.28259105.689607DE.IP) (Connection reset by peer)
+[19:05:22] *** Joins: tikue_ (tikue_star@49825264.28259105.689607DE.IP)
+[19:05:30] *** Joins: [o__o] (~o__o@moz-24EBFAC7.me)
+[19:05:32] *** Quits: acrichto (acrichto@moz-69F2E428.ugrad.cs.cmu.edu) (Ping timeout)
+[19:05:37] *** Joins: acrichto (acrichto@moz-69F2E428.ugrad.cs.cmu.edu)
+[19:06:27] *** Quits: strcat (strcat@moz-61B073BC.cpe.net.cable.rogers.com) (Ping timeout)
+[19:06:47] *** Joins: strcat (strcat@moz-61B073BC.cpe.net.cable.rogers.com)
+[19:07:10] <bstrie> acrichto: re: code review on github, what's so terrible about it? it's never struck me as great, but I'm not sure what the alternatives are
+[19:07:44] <acrichto> bstrie: mostly just the ability to queue up a bunch of comments and then send them all at once
+[19:08:07] <acrichto> also losing history between rebases (it'd be nice to have diffs between diffs)
+[19:08:55] <bstrie> right, that's the biggest problem I can think of
+[19:08:56] <acrichto> one email per comment is painful on the reviewee end as well
+[19:09:00] <bstrie> metadiffs would be sooo sweet
+[19:09:08] <acrichto> i barraged dbaupp with like 100 emails the other day I think
+[19:09:11] <acrichto> and Eridius P
+[19:09:13] <acrichto> :P*
+[19:09:29] <Eridius> acrichto: :D
+[19:10:42] <bstrie> acrichto: have you tried making pleas for these features to github directly? we've gotta be in their top 10 most active projects by PRs and issues
+[19:11:03] <acrichto> bstrie: I have not done so, although I suppose that would be a proactive thing to do!
+[19:11:36] <bstrie> recently we've had more PRs/issues per day than homebrew, which AFAIK is github's most PR-ed repo
+[19:11:44] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[19:11:44] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/uHecPg
+[19:11:44] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[19:11:47] <acrichto> go rust!
+[19:13:24] <bstrie> think they overtook us again though :P
+[19:13:33] <Eridius> how do you measure it?
+[19:14:10] <bstrie> Eridius: at one point I looked at all issues filed on homebrew in the past few days and then looked our own count, and we were like one higher
+[19:14:18] <Eridius> haha
+[19:14:28] <bstrie> but it might have just been a slow homebrew week
+[19:14:30] <bstrie> and a fast rust week
+[19:14:39] <bstrie> they have like 22,000 PRs :)
+[19:15:25] <acrichto> wow
+[19:15:26] <bstrie> though we're almost to 10,000...
+[19:15:32] <acrichto> 10k total?
+[19:15:32] * bstrie checks the rails issue count
+[19:15:38] <bstrie> total, yeah
+[19:15:39] <acrichto> oh I thought you meant 22k open
+[19:15:40] <bstrie> not 22,000 open
+[19:15:41] <acrichto> that would be insane
+[19:15:41] <bstrie> :P
+[19:15:50] <Eridius> and 1372 isn't? ;)
+[19:15:59] <acrichto> issues :(
+[19:16:07] <bstrie> oh well yes we're faaaaar beating them on open issues :P
+[19:16:08] <acrichto> it's been kinda stable around 1380 recently
+[19:16:13] <bstrie> PRs and issues are the same thing on github
+[19:16:17] <bstrie> as far as counting
+[19:16:37] <bstrie> rails only has 11,698 total issues
+[19:16:41] <bstrie> we're getting close
+[19:16:50] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[19:16:50] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/145ZRQ
+[19:16:50] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[19:16:54] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[19:16:55] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/Dew62g
+[19:16:55] <ghrust> 13rust/06auto 14eb2a7e1 15Tim Chevalier: rustpkg: Search for crates in the current directory...
+[19:16:55] <ghrust> 13rust/06auto 14afdfa04 15bors: auto merge of #9736 : catamorphism/rust/rustpkg-issue-8520, r=cmr...
+[19:16:55] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[19:17:18] <acrichto> *only*
+[19:17:41] <bstrie> well bugzilla.mozilla.org has like 900,000 issues
+[19:17:44] <bstrie> we're not quite there yet
+[19:17:58] * acrichto prepares to open 899k issues
+[19:18:05] <acrichto> prepare your inboes
+[19:18:07] <acrichto> inboxes*
+[19:21:28] <Eridius> acrichto: btw I think I addressed all your review comments from yesterday
+[19:21:45] <acrichto> Eridius: thanks! I'll probably get around to continuing it tonight
+[19:24:12] <bstrie> by my vague and unscientific estimates, we'll overtake rails in total PRs/issues in less than a year
+[19:24:34] <bstrie> which at that point might make us the biggest user of github's issues interface, save homebrew which is mostly PRs
+[19:25:04] <bstrie> at that point we should take that opportunity to dictate some terms :)
+[19:25:45] <acrichto> hmm, maybe I will ping them just to see what they've got going on if anything
+[19:55:00] *** Quits: tjc (tjc@moz-BBE3ABD.mv.mozilla.com) (Quit: zzzzzzzzzz)
+[19:56:45] *** Quits: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Ping timeout)
+[20:01:50] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[20:01:50] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14afdfa04 to 14e42e322: 02http://git.io/N3iJvQ
+[20:01:50] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[20:05:53] <cmr> acrichto: I agree that code review on github is awful
+[20:05:58] <cmr> But it's very convenient
+[20:06:07] <cmr> Using a different tool would increase the barrier to entry.
+[20:20:36] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[20:20:37] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[20:20:37] *** ChanServ sets mode: +o pnkfelix
+[20:20:40] <cmr> According to google analytics, my blog has grown in readership by 1k people, and there are now ~600 people reading TWiR weekly.
+[20:23:17] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Ping timeout)
+[20:23:51] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[20:25:14] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Input/output error)
+[20:25:44] *** Joins: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[20:38:06] *** Joins: andrew-__ (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[20:39:19] *** Quits: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Ping timeout)
+[20:45:08] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[20:46:54] <mcpherrin> cmr: Got any idea how many of those are reoccurring (I haven't used analytics in a long time; don't remmeber if it says that)
+[20:47:50] *** Joins: tjc (tjc@moz-7B0110AD.mv.mozilla.com)
+[20:47:50] *** ChanServ sets mode: +o tjc
+[20:48:36] <acrichto> cmr: yeah I agree that we probably shouldn't move off github, I was more curious about others' sentiments
+[20:50:28] *** Quits: tjc (tjc@moz-7B0110AD.mv.mozilla.com) (Ping timeout)
+[20:51:28] <tikue_> cmr, i follow your blog weekly ;)
+[20:51:35] <tikue_> you do a great job
+[20:53:06] <cmr> mcpherrin: I imagine most if not all of them are reoccuring.
+[20:53:18] <cmr> I don't really know hot to use analytics myself.
+[20:53:20] <cmr> *how
+[20:53:28] <cmr> I'm considering turning it off, for privacy reasons.
+[20:53:45] <cmr> I turned off disqus and the others for the same reason
+[20:54:36] *** Joins: tjc (tjc@moz-BBE3ABD.mv.mozilla.com)
+[20:54:36] *** ChanServ sets mode: +o tjc
+[20:57:40] *** Quits: engla (engla@moz-9B69FE7C.selucle.dyn.perspektivbredband.net) (Ping timeout)
+[21:00:44] *** Parts: tikue_ (tikue_star@49825264.28259105.689607DE.IP) (Leaving)
+[21:01:31] *** Joins: tikue_ (tikue_star@49825264.28259105.689607DE.IP)
+[21:02:15] *** Joins: bjz_ (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[21:02:22] *** Quits: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Connection reset by peer)
+[21:06:45] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[21:06:45] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/dIo4hQ
+[21:06:45] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[21:11:40] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[21:11:41] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/WNvGcg
+[21:11:41] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[21:11:41] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[21:11:41] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/LSU2ow
+[21:11:41] <ghrust> 13rust/06auto 147c6cdef 15Alex Crichton: Build libuv/jemalloc only once (not per stage)...
+[21:11:41] <ghrust> 13rust/06auto 14c62b004 15bors: auto merge of #9772 : alexcrichton/rust/buildsystem, r=thestinger...
+[21:11:41] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[21:13:10] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Input/output error)
+[21:13:16] *** Quits: andrew-__ (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Ping timeout)
+[21:16:20] *** Joins: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[21:31:14] * pnkfelix now groks why timing attacks are potentially relevant even for digest functions, which he did not grok during the mtg today
+[21:31:42] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[21:31:42] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14c62b004 to 146db8899: 02http://git.io/N3iJvQ
+[21:31:42] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[21:31:45] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[21:31:45] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/PC9jQQ
+[21:31:45] <ghrust> 13rust/06auto 14d858360 15Alex Crichton: Build libuv/jemalloc only once (not per stage)...
+[21:31:45] <ghrust> 13rust/06auto 146c2cdb3 15bors: auto merge of #9772 : alexcrichton/rust/buildsystem, r=thestinger...
+[21:31:46] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[21:34:22] *** Joins: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se)
+[22:09:07] <acrichto> it appears you can't add archives to archives very easily
+[22:09:28] <acrichto> or at least "ar crus dst.a foo.o bar.o src1.a src2.a" doesn't like me
+[22:10:10] <pnkfelix> acrichto: http://stackoverflow.com/questions/3821916/how-to-merge-two-ar-static-libraries-into-one
+[22:10:24] <acrichto> pnkfelix: yeah I was hoping to avoid extraction
+[22:10:33] <acrichto> littering object files all over the place seems sad
+[22:10:45] <acrichto> I think ld should be able to do this
+[22:10:48] <acrichto> instead of just using ar
+[22:11:08] <dbaupp> pnkfelix: https://github.com/mozilla/rust/issues/9167#issuecomment-25931921 in what way does it not work?
+[22:11:11] <acrichto> oh no, nvmd
+[22:11:29] <pnkfelix> dbaupp: LLVM assertion
+[22:11:52] <pnkfelix> dbaupp: https://gist.github.com/pnkfelix/6892686
+[22:12:27] <dbaupp> pnkfelix: ah! that looks like a new one?
+[22:13:02] <pnkfelix> who knows, I was just excitedly trying to follow my own suggestion of putting in a configure switch to emit debug info during a bootstrap build
+[22:13:35] <pnkfelix> am I crazy or is everyone making assertions that "it should work" but no one provided concrete statements that it *had* worked for them?  
+[22:13:40] <dbaupp> do you have --disable-optimize too?
+[22:13:50] <pnkfelix> dbaupp: yeah
+[22:14:12] <pnkfelix> dbaupp: --enable-debug --enable-debugdebug --disable-optimize --enable-ccache --enable-clang --prefix=~/opt/rust-dbg-dbgdbg-nopt
+[22:14:32] <pnkfelix> dbaupp: (where —enable-debugdebug is the new option I was hacking in to turn on the Z flags)
+[22:14:32] <dbaupp> "--enable-debugdebug" ?
+[22:14:36] <dbaupp> oh
+[22:14:49] <pnkfelix> dbaupp: its not what I'd put into a PR
+[22:14:57] <dbaupp> haha :)
+[22:15:20] <pnkfelix> even just -Z debug-info has issues too i think.
+[22:15:27] <pnkfelix> I'm going to reopen that ticket
+[22:16:06] <pnkfelix> well, no.  I might open a new one
+[22:16:18] <pnkfelix> (technically my own failure comes while building librustc
+[22:16:26] <pnkfelix> so its not appropriate for that ticket.)
+[22:16:48] <dbaupp> pnkfelix: wait; is this in stage0/1?
+[22:16:59] <dbaupp> (the assertion)
+[22:17:02] <pnkfelix> dbaupp: oh… good point
+[22:17:08] <pnkfelix> dbaupp: let me go fix thawt
+[22:23:07] *** Quits: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se) (Ping timeout)
+[22:30:50] <dbaupp> acrichto: ping
+[22:30:55] <acrichto> dbaupp: pong
+[22:32:24] <dbaupp> acrichto: does strerror really replace FormatMessage in https://github.com/mozilla/rust/pull/9695/files#diff-6207618f234a0266c4e66cfeaa0c0bbaR653?
+[22:32:42] <dbaupp> strerror seems to be a lot more basic than FormatMessage
+[22:32:56] <acrichto> dbaupp: I'm not sure, they looked like really similar code to me
+[22:33:13] <acrichto> I was basically thinking that if one was in rust the other culd be as well (and possibly merged with some flavor of arguments)
+[22:36:01] <dbaupp> hm it seems GetLastError is different to  strerror/errno (http://msdn.microsoft.com/en-us/library/windows/desktop/ms679360%28v=vs.85%29.aspx)
+[22:36:34] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[22:36:34] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/PC9jQQ
+[22:36:34] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[22:37:28] <dbaupp> acrichto: I don't have access to a windows computer, so is it alright if I push the Rustification to a later PR (or someone else), since I'll having to be waiting on try a lot?
+[22:37:49] <acrichto> dbaupp: yeah I think that's ok
+[22:37:51] <dbaupp> (I will do the externfn!() conversion you suggested below, though.)
+[22:41:25] <pnkfelix> dbaupp: when you pointed out that I should not be passing -Z [extra-]debug-info to stage0, you actually said stage0/stage1 .  Why did you include stage1 in your question?  I would have thought stage1 rustc should behave just like stage2 rustc (in principle) and so stage1 rustc should be a reasonable candidate for exercising -Z [extra-]debug-info ?
+[22:41:41] *** Joins: steveklabnik (steveklabn@moz-E4698C6D.red.bezeqint.net)
+[22:43:34] *** Joins: jdm (jdm@moz-E4B91594.zone16.bethere.co.uk)
+[22:43:48] <dbaupp> pnkfelix: only because mw only set the flag for stage2 in https://github.com/mozilla/rust/pull/9658 (i.e. cargo-culting)
+[22:44:02] <dbaupp> (I agree that stage1 should work)
+[22:46:44] *** Joins: stevekla1nik (steveklabn@moz-E4698C6D.red.bezeqint.net)
+[22:48:16] <acrichto> does anyone have an opinion on using libtool or not?
+[22:48:26] <acrichto> I know very little about it, but it appears to be on most platforms
+[22:48:38] <acrichto> and it also is apparently very good at merging two static libraries
+[22:48:52] <strcat> acrichto: please not libtool
+[22:48:54] <strcat> ;p
+[22:49:07] <pnkfelix> acrichto: do we have other use cases for it besides merging static libraries?
+[22:49:38] <pnkfelix> acrichto: (because while I understand your distaste for extracting the archives, that might be the worse-is-better approach here …?)
+[22:49:56] <acrichto> strcat: why not?
+[22:50:20] <acrichto> pnkfelix: there's also a namespace problem with extraction, if you haev the same named object file in two archives they overwrite one another
+[22:50:48] <acrichto> the context is I'm trying to get static linking working again, and the idea is that we distribute lib{std,extra,syntax,rustc}.{a,dylib}
+[22:50:51] <acrichto> and that's it
+[22:51:02] <pnkfelix> acrichto: so … don't do that?
+[22:51:13] <strcat> acrichto: because libtool is a horrific, fragile, 10k line shell script
+[22:51:20] <strcat> and it breaks every time they update it ;p
+[22:51:24] <pnkfelix> acrichto: (as in, do we not have sufficient control over our libraries to ensure no object files collide?)
+[22:51:41] <strcat> my experience with libtool is from a downstream POV, while packaging software using it
+[22:51:43] <strcat> it never works
+[22:51:49] <acrichto> pnkfelix: we'll be merging std.o, libuv.a, libjemalloc.a, and librustrt.la
+[22:51:54] <acrichto> librustrt.a*
+[22:52:01] <acrichto> which depends on sundown/linenoise
+[22:52:11] <pnkfelix> acrichto: okay, so we cannot make these guarantees then?
+[22:52:14] <acrichto> it's basically a lot of third party dependencies which we don't necessarily have a lot of control over
+[22:52:35] <acrichto> pnkfelix: in the meantime I'm just trying to find something easy, but I may resort to some method of doing that
+[22:52:54] <strcat> acrichto: can you just use clang?
+[22:53:38] <pnkfelix> acrichto: remind me, what significance do the object file names have in the end output archive?  E.g. could you get around this by renaming the extracted object files to ensure no collisions?
+[22:53:44] <acrichto> strcat: well we'd only need this for the rust build process, and we'd only be doing "standard procedures" of the form "libtool -static -o libfoo.a input1 input1, ..."
+[22:54:04] <acrichto> pnkfelix: renaming was the workaround that I found online, but that complicates the makefiles
+[22:54:05] <pnkfelix> (I admit something seems terribly off about that plan...)
+[22:54:17] <acrichto> strcat: I couldn't get clang/ld to create an archive file
+[22:55:07] <strcat> acrichto: can you just compile it to a giant .bc/.o?
+[22:55:32] <acrichto> strcat: I suppose, I could always "ld -r -o foo.o libfoo.a" I think
+[22:55:38] <pnkfelix> strcat: what is the name again of the llvm tool for narrowing an input that exposes an assert fail?
+[22:55:43] <acrichto> and this is for rust's build process only...
+[22:55:47] <acrichto> bugpoint
+[22:56:03] <strcat> bugpoint <3
+[22:56:11] <strcat> pnkfelix: sometimes it decides to find another bug though :s
+[22:57:00] <tjc> people who know about Unix stuff: https://github.com/mozilla/rust/issues/9776 (about segfaults and RUST_MIN_STACK)
+[22:57:32] <kmc> yeah, you can install a handler for SIGSEGV
+[22:57:38] <pnkfelix> tjc: sigaction I think
+[22:57:48] <strcat> pnkfelix: we can't use sigaction
+[22:57:52] <strcat> we mess up the stack and use threads
+[22:57:56] <acrichto> it's tricky to do correctly
+[22:57:58] <kmc> and yeah, the siginfo_t provides the address which faulted
+[22:58:12] <acrichto> tjc: I think the best thing in that specific situation is to just have segmented stcks implemented correctly
+[22:58:25] <acrichto> we have everything set up to catch stack overflow, there's no reason why we shouldn't be
+[22:58:47] <tjc> acrichto: The first thing that occurred to me was "well, if we print out an error to the user telling them to set this var, is that going to make us look worse, because people will think 'what a kludge, why do I have to do this'?"
+[22:59:03] <tjc> but unless we can implement segmented stacks this week, my intuition is that it's better to have an error message that tells somebody what to do
+[22:59:11] <tjc> because people building Rust for the first time will be puzzled
+[22:59:18] <strcat> tjc: we could have it abort on running out of stack though
+[22:59:20] <acrichto> tjc: are most of the causes of this infinite recursion?
+[22:59:32] <acrichto> in theory you shouldn't hit the stack limit ever (in normal use cases)
+[22:59:35] <tjc> acrichto: No
+[22:59:40] <acrichto> weird...
+[22:59:43] <tjc> every time I build rustc in a shell where I haven't set that var
+[22:59:48] <tjc> I get it when building stage0 libstd
+[22:59:54] *** Quits: jdm (jdm@moz-E4B91594.zone16.bethere.co.uk) (Quit: Lost terminal)
+[22:59:55] <tjc> I set RUST_MIN_STACK to the right thing and it's fine, but as I mentioned in the bug...
+[23:00:07] <tjc> my emacs shell doesn't source my environment correctly, and I've been too lazy to fix *that* (hello yak-shaving)
+[23:00:14] <pnkfelix> acrichto: I think a number of our algorithms are implemented via recursion rather than heap-allocated stacks
+[23:00:25] <pnkfelix> acrichto: so it doesn't surprise me *so* much that one could hit this ...
+[23:00:44] <acrichto> pnkfelix: but on a vanilla libstd compile?
+[23:01:16] <acrichto> tjc: that's a bit disturbing that you always hit it, I don't think the bots ever set that env var and I've certainly never done it
+[23:01:24] <acrichto> that may be indicative of something far more wrong
+[23:01:24] <tjc> acrichto: Specifically it happens in trans
+[23:01:39] <tjc> I'd assumed that there was something that was just recursing deeply (but not infinitely)
+[23:01:50] <acrichto> what os/platform/arch is this?
+[23:02:07] <pnkfelix> tjc: have you tried running atop gdb and getting a glimpse of what the stack is like?
+[23:02:10] <tjc> Mac OS X 10.8.3
+[23:02:18] <tjc> x86_64
+[23:02:18] <pnkfelix> tjc: (obviously I dont expect you to read the whole thing (!) )
+[23:02:37] <tjc> pnkfelix: haven't tried that, I will now, though
+[23:02:41] <acrichto> tjc: what in the world, maybe you have some like weird kernel setting saying "the default stack should be tiny"
+[23:02:56] <acrichto> but this is in a separate rust task...
+[23:03:23] <tjc> acrichto: if I do, it's not because of anything I changed explicitly...
+[23:03:37] <pnkfelix> acrichto: or maybe there's some other weird interaction with the emacs shell environment.  But I use emacs shell all the time for my builds ....
+[23:03:52] <kmc> <strcat> we mess up the stack and use threads   <--- perhaps sigaltstack(2) would help?
+[23:03:55] <acrichto> yeah and I'm running osx 10.8 all the time and I've never had to touch this variable as well
+[23:05:00] <strcat> kmc: still not thread safe
+[23:05:11] <strcat> unless you mask it in all but 1 thread
+[23:05:31] <acrichto> strcat: you could have per-thread stacks, but at some point it may just be overkill
+[23:05:44] <acrichto> tjc: does it segfault inside llvm or rustc?
+[23:06:18] <tjc> acrichto: rustc -- it's still in trans when it happens, hasn't gotten to LLVM yet
+[23:06:23] <tjc> I'm trying a fresh build to see what happens
+[23:06:39] <tjc> acrichto: oops, I'm embarrassed now...
+[23:06:42] <tjc> I realized what the problem is
+[23:07:52] <tjc> my .bashrc does say "declare -x RUST_MIN_STACK=32000000"
+[23:08:07] <tjc> but after that, for some reason, there's another line "declare -x RUST_MIN_STACK=360000"
+[23:08:09] <tjc> *facepalm*
+[23:08:17] <tjc> if I unset it completely, everything works
+[23:08:25] <acrichto> tjc: aaaah yes that would make sense
+[23:08:40] <acrichto> I will sleep well tonight
+[23:13:01] <acrichto> strcat: if I start to use libtool in the rust build process, will that start causing pain and suffering?
+[23:13:35] <strcat> probably for someone ;p
+[23:13:52] <acrichto> I'm honestly not seeing a fantastic alternative
+[23:14:00] <acrichto> unless we write our own python script
+[23:14:25] <acrichto> which we certainly *could* do
+[23:14:33] <acrichto> but if libtool is sufficient and everywhere...
+[23:18:04] <acrichto> strcat: hmm.... we have a lot of weird toolchain things that are like $target-$tool and I'm doubting that libtool exists for all of these...
+[23:18:20] <strcat> acrichto: libtool is seriously a 10k line shell script ;p
+[23:18:27] <strcat> it probably runs anywhere shell scripts do
+[23:18:42] <acrichto> maybe it really is just best if I write a like 40 line python script
+[23:19:47] *** Quits: tjc (tjc@moz-BBE3ABD.mv.mozilla.com) (Quit: zzzzzzzzzz)
+[23:23:10] * acrichto learns how to write python
+[23:23:27] <pnkfelix> strcat: with bugpoint, if I want to track down an LLVM assert fail, is there an argument to tell it that I don't need an lli interpreter ?
+[23:24:45] <pnkfelix> strcat: (actually, let me try reading the docs first ...)
+[23:33:17] *** Joins: jack (jack@moz-DF5A9AA3.members.linode.com)
+[23:40:54] <pnkfelix> strcat: If bugpoint emits the message "*** All input ok", is that a sign that I did not invoke it in the proper manner to reproduce the original assertion failure I was getting from rustc + llc ?
+[23:41:14] <strcat> pnkfelix: yeah
+[23:41:32] <strcat> pnkfelix: try -std-compile-opts
+[23:42:06] <pnkfelix> strcat: *there* we go.  Thanks
+[23:47:57] *** Quits: bjz_ (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Quit: Leaving...)
+[23:48:59] *** Quits: stevekla1nik (steveklabn@moz-E4698C6D.red.bezeqint.net) (Ping timeout)
+[23:48:59] *** Quits: steveklabnik (steveklabn@moz-E4698C6D.red.bezeqint.net) (Ping timeout)
+[23:51:40] *** Joins: tjc (tjc@moz-7B0110AD.mv.mozilla.com)
+[23:51:40] *** ChanServ sets mode: +o tjc
+[23:56:26] *** Joins: tjc_ (tjc@moz-BBE3ABD.mv.mozilla.com)
+[23:56:47] *** Quits: tjc (tjc@moz-7B0110AD.mv.mozilla.com) (Ping timeout)
+[23:56:47] *** tjc_ is now known as tjc

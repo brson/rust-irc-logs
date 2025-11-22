@@ -1,0 +1,652 @@
+[00:01:15] <Jesse> should i make a debug build to get crash stacks?
+[00:01:22] <pcwalton> that would make it easier, yeah
+[00:01:45] <pcwalton> a crash *could* be relatively benign if it's a stack overflow or double-panic
+[00:01:52] <pcwalton> it could also be bad
+[00:01:56] <Jesse> would it tell me if it's one of those things?
+[00:02:06] <pcwalton> the call stack and process output will tell you, yeah
+[00:04:02] <SimonSapin> Any idea what this error could be? https://github.com/servo/servo/pull/6591#issuecomment-120553600
+[00:04:02] <crowbot1> PR #6591: Upgrade to rustc 1.3.0-dev (fddfd089b 2015-07-10) - https://github.com/servo/servo/pull/6591
+[00:04:18] <larsberg> we have a graphics crash, too, in #6514 (though I haven't looked into it much yet)
+[00:04:18] <crowbot1> Issue #6514: Crash on OSX in IOSurface handling running servo-shell - https://github.com/servo/servo/issues/6514
+[00:04:35] <SimonSapin> duplicate symbols on mac
+[00:04:39] <Jesse> here's another non-crash, with thread 'LayoutTask PipelineId(0)' panicked at 'no layout root': http://pastebin.ca/3056583
+[00:04:41] <larsberg> I don't know if you were on then, pcwalton, but I proposed splitting I-Crash into I-crash and I-panic so that we can treat I-crash specially
+[00:04:54] <pcwalton> SimonSapin: sometimes the Skia one is the result of Skia and Azure not being compiled with the same -D preprocessor flags
+[00:05:15] <pcwalton> SimonSapin: I've seen that sort of thing happen with SK_DEBUG being set to 1 in skia-sys and 0 in rust-azure, or vice-versa
+[00:06:41] <SimonSapin> I’m off for tonight, if someone wants to take over this rustup
+[00:06:55] <Jesse> thread 'PaintWorker' panicked at 'assertion failed: `(left == right)` (left: `2430000`, right: `180000`)',
+[00:07:05] *** Joins: Rym (uid91135@moz-n2i7qm.charlton.irccloud.com)
+[00:07:35] <pcwalton> interesting
+[00:08:37] <pcwalton> "no layout root" usually indicates that flow construction got so confused by the document style that it didn't create any nodes at all
+[00:08:42] <pcwalton> this causes layout to abort
+[00:09:16] <Jesse> how do i run servo in a debugger on mac?
+[00:09:21] <pcwalton> gdb --args servo
+[00:09:36] <pcwalton> you could also just turn on core dumps "ulimit -c unlimited"
+[00:10:25] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[00:10:25] -ghservo- [13euclid] 15pcwalton opened pull request #94: Make `Length` and `ScaleFactor` serializable with `serde`. (06master...06more-serde) 02http://git.io/vqFHL
+[00:10:25] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[00:10:28] <pcwalton> jack: r? https://github.com/servo/euclid/pull/94
+[00:10:28] <crowbot1> PR #94: Make `Length` and `ScaleFactor` serializable with `serde`. - https://github.com/servo/euclid/pull/94
+[00:11:00] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[00:11:00] -ghservo- [13servo] 15pcwalton opened pull request #6593: compositing: Make the constellation messages serializable. (06master...06constellation-ipc) 02http://git.io/vqFHa
+[00:11:00] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[00:12:43] <Jesse> lldb -- target/release/servo
+[00:12:45] *** Quits: goyox86 (textual@moz-9ct.il3.161.192.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[00:12:56] <Jesse> https://pastebin.mozilla.org/8839239 crash in servo`AzCreateDrawTarget (release build)
+[00:13:08] <Jesse> null deref
+[00:13:31] <Jesse> i can try to make a reduced testcase if you want
+[00:14:28] *** Quits: brson_ (brson@moz-bro.mg6.56.172.IP) (Ping timeout: 121 seconds)
+[00:16:21] <pcwalton> Jesse: grrrr, OK
+[00:16:23] <pcwalton> thanks, that's helpful
+[00:16:27] <pcwalton> Jesse: that would be great
+[00:16:40] <Jesse> better stack from debug https://pastebin.mozilla.org/8839240
+[00:16:41] <pcwalton> I'm going to file an issue in rust-azure saying to better sanity check stuff
+[00:17:34] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[00:17:34] -ghservo- [13rust-azure] 15pcwalton opened issue #179: Audit this code for safety; don't permit null derefs 02http://git.io/vqFQ5
+[00:17:34] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[00:18:02] *** AutomatedTester is now known as AutomatedTester|AFK
+[00:18:07] <pcwalton> Jesse: wonder if it's as simple as "Azure draw targets blow up if you try to make ridiculously big ones"
+[00:18:52] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[00:18:52] -ghservo- [13rust-azure] 15pcwalton opened issue #180: Seems like Azure draw targets dereference a NULL pointer if too big 02http://git.io/vqF7U
+[00:18:52] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[00:19:19] <Jesse> so you don't need a reduced testcase?
+[00:21:10] <pcwalton> Jesse: let me try real quick
+[00:21:13] <pcwalton> if it's what I think it is
+[00:22:34] <pcwalton> Jesse: repro'd
+[00:23:33] <pcwalton> minimal test acse:
+[00:23:34] <pcwalton> <canvas id=c width=11621 height=109884><script>document.getElementById('c').getContext('2d');</script>
+[00:23:52] <Jesse> is "fatal runtime error: Could not unwind stack, error = 5" bad
+[00:23:59] <Jesse> after a panic and stack trace
+[00:24:17] <pcwalton> Jesse: not sure, asking in #rust-internals
+[00:24:43] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[00:24:43] -ghservo- [13servo] 15pcwalton opened issue #6594: NULL pointer dereference in Azure with canvas too big 02http://git.io/vqF7S
+[00:24:43] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[00:25:56] <Jesse> i'm getting that from most panics
+[00:26:04] <pcwalton> oh, it's probably OK then
+[00:26:23] <pcwalton> Jesse: oh, it's not bad
+[00:26:27] <pcwalton> it's an rtabort
+[00:26:31] <pcwalton> once that executes everything is going down
+[00:26:38] <pcwalton> I mean, it's not *good*
+[00:26:42] <pcwalton> but it's not exploitable
+[00:27:36] <Jesse> fwiw i've filed at least 5 gecko bugs where the testcase is just "make a big canvas"
+[00:27:49] <Jesse> and a few more that were "make a big canvas and do something simple on it"
+[00:27:52] <Jesse> so you're still ahead
+[00:27:52] <pcwalton> I'm pretty sure this Servo one is not exploitable
+[00:27:54] <pcwalton> but it's not good
+[00:28:01] <pcwalton> we need to audit Azure more carefully
+[00:28:04] <pcwalton> our bindings are too hacked together
+[00:29:46] <pcwalton> well, nothing exploitable yet, so we're ahead
+[00:30:16] <Jesse> another layout panic https://pastebin.mozilla.org/8839243
+[00:30:26] <pcwalton> ah yes, that's a common one
+[00:31:17] <Jesse> a paint panic https://pastebin.mozilla.org/8839244
+[00:31:30] <pcwalton> whoa
+[00:31:39] <pcwalton> that should not have happened
+[00:31:41] <pcwalton> thank goodness for bounds checks
+[00:31:49] <pcwalton> that one would probably be exploitable if not for them ;)
+[00:32:00] <Jesse> hehe
+[00:32:22] <Jesse> ooh i got a stack overflow
+[00:32:23] <Jesse> no stack
+[00:32:24] <Jesse> just
+[00:32:25] <Jesse> thread 'ScriptTask PipelineId(0)' has overflowed its stack
+[00:32:42] <pcwalton> yeah, that'll take the content process down, but harmlessly
+[00:33:30] <Jesse> lots of unwrap on FromUtf16Error from dom bindings
+[00:33:44] <pcwalton> yuck
+[00:33:50] <Jesse> may be preventing my text fuzzer module from doing more interesting things 
+[00:33:54] <pcwalton> seems low priority though, except for that
+[00:34:03] <Jesse> and acid3 crashing ;)
+[00:34:13] <pcwalton> we should fix bugs that are ultimately caused by pages DoSing themselves by sending themselves ridiculous javascript strings
+[00:34:17] <pcwalton> but I'm not overly concerned about that
+[00:34:47] <Jesse> i'm getting some SendError panics when i press Esc to quit
+[00:34:48] <mwu> acid3 crash is filed
+[00:40:29] *** chmanchester is now known as chmanchester|afk
+[00:42:00] *** Quits: crowbot1 (nodebot@moz-0lpsdi.compute-1.amazonaws.com) (A TLS packet with unexpected length was received.)
+[00:42:01] *** Joins: crowbot (nodebot@moz-t54l8p.compute-1.amazonaws.com)
+[00:44:32] <pcwalton> Jesse: acrichto says that "could not unwind stack" problem is "panics in situations where you're not in a catch_panic block, e.g. calling into Rust from C, TLS destructors, etc"
+[00:44:47] <pcwalton> aborts the process, but shouldn't be exploitable
+[00:50:15] *** Quits: sneakyness (textual@moz-tmbr33.biz.rr.com) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[01:01:20] *** Joins: till (till@moz-kfa.g42.119.82.IP)
+[01:02:03] *** Quits: CoreDuo (CoreDuo@moz-jgeuu4.coreduo.me.uk) (Ping timeout: 121 seconds)
+[01:04:41] *** Joins: xarcus (Mibbit@moz-hu6.nja.252.72.IP)
+[01:05:22] *** Quits: till (till@moz-kfa.g42.119.82.IP) (Ping timeout: 121 seconds)
+[01:06:40] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[01:07:30] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[01:07:30] -ghservo- [13servo] 15SimonSapin created 06replace-surrogates (+1 new commit): 02http://git.io/vqFxT
+[01:07:30] -ghservo- 13servo/06replace-surrogates 14bbd25c8 15Simon Sapin: Replace surrogates in JS strings with U+FFFD instead of panicking....
+[01:07:30] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[01:07:47] <mrobinson> pcwalton: I'm actually having success reusing framebuffers that use IOSurfaces. 
+[01:07:53] <pcwalton> mrobinson: great!
+[01:08:14] <mrobinson> pcwalton: It might turn out to be an okay option for Macs, while for other platforms we do a hardware copy.
+[01:08:22] <pcwalton> nice
+[01:08:44] *** Joins: CoreDuo (CoreDuo@moz-jgeuu4.coreduo.me.uk)
+[01:08:54] <mrobinson> pcwalton: There's not a lot of documentation for the IOSurface + CGL integration, so I'm not sure about the thickness of the ice I'm treading on ATM. :)
+[01:09:17] <pcwalton> yeah, it's all ill-documented (also, sadly, a forbidden API on iOS)
+[01:09:24] <pcwalton> but it's the right thing to do on Mac desktop anyway
+[01:09:35] * mrobinson nods
+[01:10:31] <mrobinson> pcwalton: The main issue seems to be that OS X allows you to have an IOSurface bound as a destination for an FBO render at the same time as a it's bound as a source in another.
+[01:10:48] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[01:11:15] <pcwalton> ah
+[01:11:21] <mrobinson> pcwalton: I can't seem to reuse a GLXPixmap for both purposes. 
+[01:11:25] <pcwalton> that's annoying
+[01:11:47] <pcwalton> ScriptListener has been successfully IPC-ified
+[01:11:51] <pcwalton> now onto ScriptControlChan
+[01:12:55] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[01:12:55] -ghservo- [13servo] 15SimonSapin 04force-pushed 06replace-surrogates from 14bbd25c8 to 143f07f8e: 02http://git.io/vqFxP
+[01:12:55] -ghservo- 13servo/06replace-surrogates 143f07f8e 15Simon Sapin: Replace surrogates in JS strings with U+FFFD instead of panicking....
+[01:12:55] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[01:12:55] *** Joins: blank_na1e (blank_name@moz-ms6nj1.mi.frontiernet.net)
+[01:13:19] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[01:13:19] -ghservo- [13servo] 15SimonSapin opened pull request #6595: Replace surrogates in JS strings with U+FFFD instead of panicking. (06master...06replace-surrogates) 02http://git.io/vqFxS
+[01:13:19] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[01:13:19] * pcwalton grimaces at StylesheetLoadResponder
+[01:13:24] <pcwalton> cross-process trait object again :(
+[01:13:30] <SimonSapin> pcwalton: r?
+[01:13:47] <SimonSapin> Jesse: that should fix FromUtf16Error
+[01:14:39] <pcwalton> SimonSapin: works for me!
+[01:14:40] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[01:14:40] -ghservo- [13servo] 15bors-servo pushed 1 new commit to 06auto: 02http://git.io/vqFxj
+[01:14:40] -ghservo- 13servo/06auto 140f36eea 15bors-servo: Auto merge of #6595 - servo:replace-surrogates, r=pcwalton...
+[01:14:40] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[01:15:04] *** Quits: blank_name (blank_name@moz-ttfeua.mi.frontiernet.net) (Ping timeout: 121 seconds)
+[01:15:07] <pcwalton> also, "layout_chan" is a Box<Any+Send> across processes
+[01:15:09] <pcwalton> that… doesn't seem good
+[01:15:35] <pcwalton> I guess it gets casted to the right thing on the other side.
+[01:15:51] <pcwalton> maybe I could add a function that allows you to cast an IpcSender to an IpcSender of any other type
+[01:15:59] <pcwalton> this is not actually type-unsafe
+[01:16:05] <pcwalton> it'll just cause deserialization to explode
+[01:16:10] <pcwalton> if you do it wrong
+[01:16:19] *** Quits: xarcus (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[01:16:50] *** Quits: laleh (Adium@moz-h8636h.mobile.uci.edu) (Quit: Leaving.)
+[01:18:48] *** Quits: rohin (rohin@moz-6lrl3i.user.start.ca) (Ping timeout: 121 seconds)
+[01:21:19] *** Joins: acgtyrant (acgtyrant@moz-pd7.j9p.189.60.IP)
+[01:24:08] *** Joins: playjax (chatzilla@moz-n7etr2.optusnet.com.au)
+[01:25:21] *** Quits: acgtyrant (acgtyrant@moz-pd7.j9p.189.60.IP) (Ping timeout: 121 seconds)
+[01:28:54] <Jesse> pcwalton: so if there's any JS on the stack, panics can't unwind?
+[01:29:01] *** Joins: Mouq (amoquin@moz-4sjrj2.ca.comcast.net)
+[01:29:03] <pcwalton> seems that way
+[01:29:12] <pcwalton> that should be fixable, in theory
+[01:31:01] *** Quits: MrZeus (MrZeus@moz-ecvk02.skybroadband.com) (Ping timeout: 121 seconds)
+[01:44:05] *** Joins: cimes (cimes@moz-sfmbhq.il.comcast.net)
+[01:48:09] *** Quits: Jayflux (Jason@moz-0dp730.opaltelecom.net) (Quit: Leaving)
+[01:51:38] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[01:51:38] -ghservo- [13servo] 15bors-servo merged 06auto into 06master: 02http://git.io/vqbvh
+[01:51:38] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[01:51:43] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[01:51:43] -ghservo- [13servo] 15bors-servo closed pull request #6595: Replace surrogates in JS strings with U+FFFD instead of panicking. (06master...06replace-surrogates) 02http://git.io/vqFxS
+[01:51:43] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[01:52:39] *** Joins: rohin (rohin@moz-6lrl3i.user.start.ca)
+[01:56:11] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[01:56:11] -ghservo- [13servo] 15pcwalton opened pull request #6596: compositing: Make `ScriptListener` and `LayoutControlChan` messages go over IPC. (06master...06layout-control-ipc) 02http://git.io/vqbfE
+[01:56:11] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[01:56:47] *** Quits: rohin (rohin@moz-6lrl3i.user.start.ca) (Ping timeout: 121 seconds)
+[02:00:12] * pcwalton grimaces at ImageResponder
+[02:00:23] <pcwalton> Servo really loves sending boxed trait objects across process boundaries :(
+[02:12:51] *** Quits: kimundi (kimundi@moz-l9v88u.dtlu.8ps3.57bc.2002.IP) (Ping timeout: 121 seconds)
+[02:14:05] *** Joins: laleh (Adium@moz-hgq383.reshsg.uci.edu)
+[02:16:33] *** Joins: adu (ajr@moz-99ult9.md.comcast.net)
+[02:19:34] *** Joins: kimundi (kimundi@moz-v038uj.nbov.7sqf.4fe2.2002.IP)
+[02:22:32] *** Quits: cyndis (cyndis@moz-bmdn13.kapsi.fi) (Ping timeout: 121 seconds)
+[02:24:07] *** Quits: Mouq (amoquin@moz-4sjrj2.ca.comcast.net) (Ping timeout: 121 seconds)
+[02:26:24] <dlight> pcwalton, how does this work? by serializing/deserializing?
+[02:26:27] <pcwalton> yes
+[02:26:48] <dlight> but how can trait object be serialized with its type information?
+[02:26:53] <pcwalton> it can't
+[02:26:58] <pcwalton> that's why Servo needs to stop doing it.
+[02:27:13] <dlight> but if it's doing now, it's because it works
+[02:27:14] <pcwalton> it's quite unfortunate that Servo started doing it so much
+[02:27:27] <pcwalton> it's insecure
+[02:27:41] <dlight> oh, deserializing the wrong type doesn't panic?
+[02:27:46] <pcwalton> no
+[02:27:53] <pcwalton> Servo is insecure because it is a single-process browser
+[02:28:01] <pcwalton> in order to make it secure, we need to make it a multiprocess browser
+[02:28:12] <pcwalton> that means we have to undo the single-process assumptions that have crept in over the last two years
+[02:28:49] <dlight> what do you mean by secure? you mean to contain security bugs by sandboxing each tab or sandboxing javascript and rendering etc?
+[02:29:03] *** Joins: cyndis (cyndis@moz-bmdn13.kapsi.fi)
+[02:29:12] <pcwalton> it needs to be the case that a JIT exploit does not trivially yield access to the entire system, yes.
+[02:30:54] <dlight> the compiler "forget" the type of a trait object, but perhaps there's some magic to serialize / deserialize them by tagging with a type? is that what std::any does?
+[02:31:29] <pcwalton> you don't want attackers to have the ability to instantiate arbitrary objects in your address space
+[02:32:38] <dlight> yes, if there's a security bug in the first place (and almost certainly there is) then separating the address space might limit the damage of some bugs
+[02:32:45] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[02:32:45] -ghservo- [13euclid] 15bors-servo pushed 0 new commits to 06auto: 02http://git.io/vqbkL
+[02:32:45] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[02:32:46] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[02:32:46] -ghservo- [13euclid] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/vqbkq
+[02:32:46] -ghservo- 13euclid/06auto 14f50f4f7 15Patrick Walton: Make `Length` and `ScaleFactor` serializable with `serde`....
+[02:32:46] -ghservo- 13euclid/06auto 14a65822e 15bors-servo: Auto merge of #94 - pcwalton:more-serde, r=metajack...
+[02:32:46] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[02:33:04] <dlight> but about sending trait objects from a process to another, could using std::any::Any make this safe?
+[02:33:38] <pcwalton> it's not safe.
+[02:33:56] <pcwalton> you would be giving attackers the ability to instantiate arbitrary objects into your process.
+[02:35:00] *** Joins: mib_sug6fq (Mibbit@moz-hu6.nja.252.72.IP)
+[02:35:43] <dlight> what should servo be using to serialize, serde? (I'm not sure if it's safe)
+[02:35:49] <pcwalton> yeah, serde should be safe
+[02:35:51] <pcwalton> my PRs use serde
+[02:35:58] <pcwalton> serde is all safe code I believe
+[02:35:58] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[02:35:58] -ghservo- [13euclid] 15bors-servo merged 06auto into 06master: 02http://git.io/vqbkq
+[02:35:58] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[02:37:24] <dlight> and for what you can substitute a trait object? an enum with all possible cases?
+[02:37:44] <pcwalton> in all cases I've encountered so far, I can replace it with an IpcSender and possibly an enum
+[02:42:18] <mwu> looks like reddit is less jumpy than before.
+[02:42:34] <mwu> still jumps, but not so much that I can't click on links
+[02:42:49] *** Quits: Rym (uid91135@moz-n2i7qm.charlton.irccloud.com) (Quit: Connection closed for inactivity)
+[02:43:15] *** Quits: mib_sug6fq (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[02:43:59] <dlight> I can't find IpcSender in the Servo repository, is this in a library?
+[02:47:07] *** Quits: cimes (cimes@moz-sfmbhq.il.comcast.net) (Ping timeout: 121 seconds)
+[02:49:26] *** Quits: mwu (mwu@moz-rcj0fv.nj.comcast.net) (Quit: Leaving)
+[02:53:49] *** Joins: rohin (rohin@moz-6lrl3i.user.start.ca)
+[02:57:56] *** Quits: rohin (rohin@moz-6lrl3i.user.start.ca) (Ping timeout: 121 seconds)
+[03:03:35] *** Joins: brson (brson@moz-3ki2he.tmodns.net)
+[03:03:35] *** ChanServ sets mode: +o brson
+[03:05:43] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[03:05:43] -ghservo- [13servo] 15pcwalton opened pull request #6597: script: Make the `ImageCacheTask` use IPC. (06master...06image-cache-ipc) 02http://git.io/vqbqE
+[03:05:43] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[03:06:21] <pcwalton> dlight: pcwalton/ipc-channel on github
+[03:06:23] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[03:07:36] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[03:11:56] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[03:11:59] <dlight> what's the goal with multiprocess servo, one process per tab?
+[03:38:11] *** Joins: mib_qtzfka (Mibbit@moz-hu6.nja.252.72.IP)
+[03:40:41] *** Joins: waffles (wafflespean@moz-ogr.43b.136.123.IP)
+[03:46:11] *** Joins: bdero (bran@moz-8jqdvf.hfc.comcastbusiness.net)
+[03:48:07] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[03:53:10] *** Quits: brson (brson@moz-3ki2he.tmodns.net) (Ping timeout: 121 seconds)
+[04:05:31] *** Joins: cakecatz (cakecatz@moz-o0s5rh.sannet.ne.jp)
+[04:08:12] *** Joins: rohin (rohin@moz-6lrl3i.user.start.ca)
+[04:08:38] *** Joins: gavin_ (gavin@irc.mozilla.org)
+[04:09:03] *** Joins: not_gavi1 (gavin@moz-46i.6l4.14.76.IP)
+[04:10:24] *** Quits: mib_qtzfka (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[04:10:44] *** Quits: gavin (gavin@irc.mozilla.org) (Ping timeout: 121 seconds)
+[04:11:10] *** Quits: not_gavin (gavin@moz-46i.6l4.14.76.IP) (Ping timeout: 121 seconds)
+[04:12:20] *** Quits: rohin (rohin@moz-6lrl3i.user.start.ca) (Ping timeout: 121 seconds)
+[04:18:12] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[04:18:12] -ghservo- [13rust-layers] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/vqbni
+[04:18:12] -ghservo- 13rust-layers/06auto 146a61def 15Corey Farwell: Enable OSX support in travis config
+[04:18:12] -ghservo- 13rust-layers/06auto 14b1bb589 15bors-servo: Auto merge of #190 - frewsxcv:travis-osx, r=metajack...
+[04:18:12] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[04:19:56] <jack> dlight: the sandboxing is the main benefit
+[04:20:08] <jack> most of the rest of the benefit we already have achieved in servo
+[04:20:56] <dlight> but does servo wants to sandbox one tab from another?
+[04:21:51] <jack> if overhead wasn't a factor, we'd sandbox every iframe :)
+[04:22:11] <jack> not just tabs, but also we sandbox gpu access from each tab
+[04:25:06] <dlight> is it possible to have an architecture that optionally have very fine grained sandboxing, but also can compile a version with less processes?
+[04:25:36] <dlight> I'm thinking that by the time Servo is ready (and generally speaking, the next decade), this overhead may not be that relevant
+[04:25:37] <jack> i suspect htere will be some setting to control the amount of content processes just like gecko e10s
+[04:25:46] <jack> so settings that low would trade security for some speed
+[04:25:57] <jack> although it's not clear yet how much overhead the ipc has
+[04:26:43] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[04:26:43] -ghservo- [13rust-layers] 15bors-servo merged 06auto into 06master: 02http://git.io/vqbni
+[04:26:43] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[04:37:24] *** Quits: not_gavi1 (gavin@moz-46i.6l4.14.76.IP) (Connection closed)
+[04:37:45] *** Quits: gavin_ (gavin@irc.mozilla.org) (Connection closed)
+[05:08:26] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[05:11:49] *** Quits: cakecatz (cakecatz@moz-o0s5rh.sannet.ne.jp) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[05:12:41] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[05:16:31] *** Joins: gavin (gavin@irc.mozilla.org)
+[05:17:19] *** Joins: not_gavin (gavin@moz-46i.6l4.14.76.IP)
+[05:23:56] *** Joins: cakecatz (cakecatz@moz-o0s5rh.sannet.ne.jp)
+[05:55:02] *** Quits: playjax (chatzilla@moz-n7etr2.optusnet.com.au) (Ping timeout: 121 seconds)
+[06:09:05] *** Joins: rohin (rohin@moz-6lrl3i.user.start.ca)
+[06:11:24] *** Joins: barosl (barosl@moz-tmp.qma.67.220.IP)
+[06:13:12] *** Quits: rohin (rohin@moz-6lrl3i.user.start.ca) (Ping timeout: 121 seconds)
+[06:32:37] *** Quits: adu (ajr@moz-99ult9.md.comcast.net) (Client exited)
+[06:39:12] *** Quits: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com) (Ping timeout: 121 seconds)
+[06:40:53] *** Quits: cakecatz (cakecatz@moz-o0s5rh.sannet.ne.jp) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[06:46:00] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[06:46:00] -ghservo- [13servo] 15jruderman opened issue #6598: Panic at 'This element should be in registered.' 02http://git.io/vqbaw
+[06:46:00] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[07:07:02] *** Joins: cakecatz (cakecatz@moz-o0s5rh.sannet.ne.jp)
+[07:09:27] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[07:11:16] *** Joins: Ms2ger (Ms2ger@moz-mt3r7m.access.telenet.be)
+[07:13:35] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[07:32:50] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[07:32:50] -ghservo- [13servo] 15Ms2ger pushed 1 new commit to 06master: 02http://git.io/vqbKL
+[07:32:50] -ghservo- 13servo/06master 14243446e 15Ms2ger: Revert "Replace surrogates in JS strings with U+FFFD instead of panicking."...
+[07:32:50] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[07:38:58] *** Joins: till (till@moz-kfa.g42.119.82.IP)
+[07:43:29] *** Quits: till (till@moz-kfa.g42.119.82.IP) (Ping timeout: 121 seconds)
+[07:56:49] *** Joins: Mouq (amoquin@moz-4sjrj2.ca.comcast.net)
+[07:56:51] *** Joins: jviereck (Adium@moz-qhb96u.dip0.t-ipconnect.de)
+[07:58:18] *** Quits: jviereck (Adium@moz-qhb96u.dip0.t-ipconnect.de) (Quit: Leaving.)
+[08:09:46] *** Joins: rohin (rohin@moz-6lrl3i.user.start.ca)
+[08:11:05] *** Joins: Tobba (Tobba@moz-oecqnu.plus.com)
+[08:13:53] *** Quits: rohin (rohin@moz-6lrl3i.user.start.ca) (Ping timeout: 121 seconds)
+[08:36:06] *** Joins: jviereck (Adium@moz-qhb96u.dip0.t-ipconnect.de)
+[08:40:11] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[08:40:11] -ghservo- [13servo] 15Ms2ger opened issue #6599: Setting the value of input type=button doesn't update its rendering 02http://git.io/vqbSF
+[08:40:11] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[08:41:12] *** Quits: ebfull (ebfull@moz-8vb.66e.34.73.IP) (Ping timeout: 121 seconds)
+[08:41:43] *** Quits: Mouq (amoquin@moz-4sjrj2.ca.comcast.net) (Ping timeout: 121 seconds)
+[08:44:09] *** Joins: ebfull (ebfull@moz-8vb.66e.34.73.IP)
+[08:48:46] *** Quits: ebfull (ebfull@moz-8vb.66e.34.73.IP) (Ping timeout: 121 seconds)
+[08:48:52] *** Joins: Jackneill (Jackneill@moz-mr1vs6.pool.digikabel.hu)
+[08:48:53] *** Joins: ebfull (ebfull@moz-8vb.66e.34.73.IP)
+[08:51:34] *** Joins: kmicu (kmicu@moz-uga.edn.218.91.IP)
+[08:53:10] *** Quits: ebfull (ebfull@moz-8vb.66e.34.73.IP) (Ping timeout: 121 seconds)
+[08:56:38] *** Joins: Mouq (amoquin@moz-4sjrj2.ca.comcast.net)
+[08:57:12] *** Joins: manishea1th (manishearth@moz-uc30rq.anapnea.net)
+[08:58:10] *** Quits: Manishearth (manishearth@moz-uc30rq.anapnea.net) (NickServ (RECOVER command used by manishea1th))
+[08:58:10] *** manishea1th is now known as Manishearth
+[08:58:21] <Ms2ger> ea1th, huh
+[09:00:04] *** Joins: ebfull (ebfull@moz-8vb.66e.34.73.IP)
+[09:04:23] <Manishearth> Ms2ger: needed to ghost my nick
+[09:05:47] *** Joins: jviereck1 (Adium@moz-qhb96u.dip0.t-ipconnect.de)
+[09:05:49] *** Quits: jviereck (Adium@moz-qhb96u.dip0.t-ipconnect.de) (Connection closed)
+[09:06:27] *** Quits: DroidLogician (Austin@moz-9lhp5e.ca.charter.com) (Quit: Leaving)
+[09:10:28] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[09:12:29] *** Quits: dlight (dlight@moz-dfg.304.135.177.IP) (A TLS packet with unexpected length was received.)
+[09:14:40] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[09:14:46] *** Quits: Tobba (Tobba@moz-oecqnu.plus.com) (A TLS packet with unexpected length was received.)
+[09:14:55] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[09:15:11] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[09:15:12] -ghservo- [13servo] 15Ms2ger opened pull request #6600: Implement Window#top. (06master...06top) 02http://git.io/vqbFD
+[09:15:12] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[09:15:36] <Ms2ger> Manishearth, r?
+[09:17:51] <Manishearth> Ms2ger: r=me with that spec link fixed
+[09:23:16] *** Joins: elemongw (textual@moz-g01hk5.home.otenet.gr)
+[09:29:37] <Ms2ger> Doh
+[09:31:07] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[09:31:07] -ghservo- [13servo] 15bors-servo merged 06master into 06auto: 02http://git.io/vqbAD
+[09:31:07] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[09:31:09] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[09:31:09] -ghservo- [13servo] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/vqbAy
+[09:31:09] -ghservo- 13servo/06auto 142d60db7 15Ms2ger: Implement Window#top.
+[09:31:09] -ghservo- 13servo/06auto 14c7e3dd5 15bors-servo: Auto merge of #6600 - Ms2ger:top, r=Manishearth...
+[09:31:09] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[09:41:11] *** Quits: AutomatedTester|AFK (AutomatedTe@moz-no0.93r.245.63.IP) (Ping timeout: 121 seconds)
+[09:42:32] *** Quits: Yoric (Yoric@moz-no0.93r.245.63.IP) (Ping timeout: 121 seconds)
+[09:42:44] *** Quits: justdave (dave@bugzilla.org) (Ping timeout: 121 seconds)
+[09:43:05] *** Joins: justdave (dave@irc.mozilla.org)
+[09:43:08] *** rn10950 is now known as rn10950|away
+[09:43:48] *** Joins: AutomatedTester|AFK (AutomatedTe@moz-no0.93r.245.63.IP)
+[09:44:10] *** AutomatedTester|AFK is now known as AutomatedTester
+[09:45:20] *** Joins: Yoric (Yoric@moz-no0.93r.245.63.IP)
+[10:09:22] *** Joins: ldng (ldng@moz-j945dl.abo.bbox.fr)
+[10:09:34] *** Joins: mukilan (mukilan@moz-ggd.0ov.164.122.IP)
+[10:10:40] *** Joins: rohin (rohin@moz-6lrl3i.user.start.ca)
+[10:10:50] *** Quits: bjz (bjz@moz-puppgq.tpgi.com.au) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[10:13:54] *** Quits: dzbarsky (Adium@moz-mukjmn.fios.verizon.net) (Quit: Leaving.)
+[10:14:47] *** Quits: rohin (rohin@moz-6lrl3i.user.start.ca) (Ping timeout: 121 seconds)
+[10:17:19] *** Joins: bjz (bjz@moz-puppgq.tpgi.com.au)
+[10:22:53] *** Quits: bjz (bjz@moz-puppgq.tpgi.com.au) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[10:23:37] *** Joins: bjz (bjz@moz-puppgq.tpgi.com.au)
+[10:25:16] *** Joins: zxq9 (ceverett@moz-qsm369.mesh.ad.jp)
+[10:35:31] *** Joins: Tobba (Tobba@moz-4l45on.skybroadband.com)
+[10:41:05] *** Quits: elemongw (textual@moz-g01hk5.home.otenet.gr) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[10:43:28] *** Quits: fkaa (fkaa@moz-501od2.business.telia.com) (RecvQ exceeded)
+[10:43:36] *** Joins: fkaa (fkaa@moz-501od2.business.telia.com)
+[10:53:44] *** Joins: enaqx (enaqx@moz-dtk.cpv.163.188.IP)
+[10:54:54] *** Joins: playjax (chatzilla@moz-a8i9r6.optusnet.com.au)
+[11:03:54] *** Quits: cakecatz (cakecatz@moz-o0s5rh.sannet.ne.jp) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[11:10:33] *** Joins: cakecatz (cakecatz@moz-o0s5rh.sannet.ne.jp)
+[11:11:25] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[11:13:03] *** Quits: enaqx (enaqx@moz-dtk.cpv.163.188.IP) (A TLS packet with unexpected length was received.)
+[11:15:12] *** Quits: stl (stl@moz-stg.7dk.15.176.IP) (Ping timeout: 121 seconds)
+[11:15:34] *** Joins: enaqx (enaqx@moz-dtk.cpv.163.188.IP)
+[11:15:40] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[11:19:37] *** Quits: enaqx (enaqx@moz-dtk.cpv.163.188.IP) (Ping timeout: 121 seconds)
+[11:24:30] *** Quits: Ms2ger (Ms2ger@moz-mt3r7m.access.telenet.be) (Ping timeout: 121 seconds)
+[11:30:39] *** Quits: Tobba (Tobba@moz-4l45on.skybroadband.com) (A TLS packet with unexpected length was received.)
+[11:34:10] *** Joins: stl (stl@moz-fdc.b44.15.176.IP)
+[11:35:46] *** Quits: waffles (wafflespean@moz-ogr.43b.136.123.IP) (Quit: C'yall soon...)
+[11:36:15] *** Quits: bdero (bran@moz-8jqdvf.hfc.comcastbusiness.net) (Ping timeout: 121 seconds)
+[11:38:13] *** Quits: stl (stl@moz-fdc.b44.15.176.IP) (Ping timeout: 121 seconds)
+[11:41:26] *** Joins: waffles (wafflespean@moz-ogr.43b.136.123.IP)
+[11:45:33] *** Quits: tomaka (Pierre@moz-0pd3dr.abo.wanadoo.fr) (Ping timeout: 121 seconds)
+[11:46:51] *** Joins: tomaka (Pierre@moz-0pd3dr.abo.wanadoo.fr)
+[12:01:10] *** Joins: stl (stl@moz-al5.8pf.15.176.IP)
+[12:04:52] *** Joins: elemongw (textual@moz-g01hk5.home.otenet.gr)
+[12:08:50] *** Joins: MrZeus (MrZeus@moz-ecvk02.skybroadband.com)
+[12:24:45] *** Quits: jviereck1 (Adium@moz-qhb96u.dip0.t-ipconnect.de) (Quit: Leaving.)
+[12:25:32] *** Quits: elemongw (textual@moz-g01hk5.home.otenet.gr) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[12:36:58] <ato> I’m having trouble building right now: https://gist.github.com/andreastt/fe59271b23ef84260c12
+[12:42:31] *** Joins: cimes (cimes@moz-sfmbhq.il.comcast.net)
+[12:48:48] *** Joins: elemongw (textual@moz-g01hk5.home.otenet.gr)
+[12:55:43] *** Quits: Mouq (amoquin@moz-4sjrj2.ca.comcast.net) (Ping timeout: 121 seconds)
+[13:07:44] *** Quits: bjz (bjz@moz-puppgq.tpgi.com.au) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[13:10:31] *** Joins: bjz (bjz@moz-puppgq.tpgi.com.au)
+[13:12:17] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[13:16:30] *** Quits: agile (mike@moz-m71dqt.rcsntx.sbcglobal.net) (Connection closed)
+[13:16:39] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[13:17:44] *** Joins: enaqx (enaqx@moz-dtk.cpv.163.188.IP)
+[13:21:55] *** Quits: enaqx (enaqx@moz-dtk.cpv.163.188.IP) (Ping timeout: 121 seconds)
+[13:25:23] *** Joins: jviereck (Adium@moz-qhb96u.dip0.t-ipconnect.de)
+[13:26:26] *** capella is now known as firefox
+[13:27:55] *** Quits: elemongw (textual@moz-g01hk5.home.otenet.gr) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[13:28:32] *** Joins: elemongw (textual@moz-g01hk5.home.otenet.gr)
+[13:29:45] *** firefox is now known as capella
+[13:33:16] *** Joins: Nekit1234007 (nekit@moz-t2fg7e.broadband.iskratelecom.ru)
+[13:39:43] *** Joins: goyox86 (textual@moz-rvv.00r.255.109.IP)
+[13:39:57] *** Joins: jdm (jdm@moz-ilbt2e.cable.teksavvy.com)
+[13:39:57] *** ChanServ sets mode: +qo jdm jdm
+[13:40:25] <jdm> ato: you need libXmu-devel
+[13:40:27] <jdm> or libxmu-dev
+[13:46:49] *** Joins: rohin (rohin@moz-l00.kf0.146.24.IP)
+[13:47:13] <ato> jdm: Thanks!
+[13:48:44] *** Joins: yati (Thunderbird@moz-e38.kma.237.87.IP)
+[13:48:48] *** Quits: elemongw (textual@moz-g01hk5.home.otenet.gr) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[13:49:05] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[13:49:05] -ghservo- [13servo] 15jdm reopened issue #6519: thread 'ScriptTask PipelineId(0)' panicked at 'called `Result::unwrap()` on an `Err` value: FromUtf16Error(())' 02http://git.io/vtiWE
+[13:49:05] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[13:49:28] *** Joins: elemongw (textual@moz-g01hk5.home.otenet.gr)
+[13:49:41] <jdm> crowbot: tell ms2ger why the revert of #6595 that was pushed to servo/master?
+[13:49:42] <crowbot> Issue #6595: Replace surrogates in JS strings with U+FFFD instead of panicking. - https://github.com/servo/servo/pull/6595
+[13:52:58] *** Joins: yati1 (Thunderbird@moz-e38.kma.237.87.IP)
+[13:52:58] *** Quits: yati (Thunderbird@moz-e38.kma.237.87.IP) (Connection closed)
+[13:52:58] *** yati1 is now known as yati
+[13:53:01] *** Quits: yati (Thunderbird@moz-e38.kma.237.87.IP) (Connection closed)
+[13:53:04] *** Joins: yati (Thunderbird@moz-e38.kma.237.87.IP)
+[13:57:46] *** Quits: playjax (chatzilla@moz-a8i9r6.optusnet.com.au) (Ping timeout: 121 seconds)
+[14:14:29] *** Joins: v21 (vee@moz-345o84.asianet.co.th)
+[14:22:07] *** Joins: enaqx (enaqx@moz-dtk.cpv.163.188.IP)
+[14:22:37] *** Quits: jviereck (Adium@moz-qhb96u.dip0.t-ipconnect.de) (Quit: Leaving.)
+[14:23:02] *** Quits: Noah_ (Noah@moz-tfe.coa.101.46.IP) (Quit: bye!)
+[14:24:09] *** Joins: Noah_ (Noah@moz-tfe.coa.101.46.IP)
+[14:24:34] *** Quits: huon (huon@moz-hj272o.8rnv.rggd.6180.2400.IP) (Ping timeout: 121 seconds)
+[14:27:06] *** Joins: huon (huon@moz-hj272o.8rnv.rggd.6180.2400.IP)
+[14:31:00] *** Joins: jviereck (Adium@moz-qhb96u.dip0.t-ipconnect.de)
+[14:45:58] *** Quits: enaqx (enaqx@moz-dtk.cpv.163.188.IP) (A TLS packet with unexpected length was received.)
+[14:54:24] *** Joins: enaqx (enaqx@moz-dtk.cpv.163.188.IP)
+[14:54:51] *** Joins: manishea1th (manishearth@moz-uc30rq.anapnea.net)
+[14:55:46] *** Quits: elemongw (textual@moz-g01hk5.home.otenet.gr) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[14:58:10] *** Joins: mib_77tvbs (Mibbit@moz-hu6.nja.252.72.IP)
+[14:58:36] *** Joins: elemongw (textual@moz-g01hk5.home.otenet.gr)
+[15:00:12] *** Quits: jviereck (Adium@moz-qhb96u.dip0.t-ipconnect.de) (Quit: Leaving.)
+[15:04:28] *** Quits: enaqx (enaqx@moz-dtk.cpv.163.188.IP) (A TLS packet with unexpected length was received.)
+[15:04:44] *** Quits: mib_77tvbs (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:11:07] *** Joins: enaqx (enaqx@moz-dtk.cpv.163.188.IP)
+[15:13:15] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[15:14:46] *** Joins: acgtyrant (acgtyrant@moz-bhi.kg4.201.115.IP)
+[15:17:27] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[15:19:18] *** Joins: sluggoxx (Mibbit@moz-hu6.nja.252.72.IP)
+[15:19:37] *** Quits: sluggoxx (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:19:52] *** Joins: mib_k0mrdu (Mibbit@moz-hu6.nja.252.72.IP)
+[15:22:05] *** Quits: elemongw (textual@moz-g01hk5.home.otenet.gr) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[15:22:06] *** Joins: ProgramFOX (ProgramFOX@moz-oob.vol.86.89.IP)
+[15:25:16] *** Joins: Ms2ger (Ms2ger@moz-u01.vup.182.91.IP)
+[15:25:16] <crowbot> ms2ger: jdm said why the revert of #6595 that was pushed to servo/master?
+[15:25:51] <Ms2ger> jdm, no proper review
+[15:30:12] *** Quits: mib_k0mrdu (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:32:56] *** Quits: enaqx (enaqx@moz-dtk.cpv.163.188.IP) (A TLS packet with unexpected length was received.)
+[15:36:18] *** Joins: enaqx (enaqx@moz-dtk.cpv.163.188.IP)
+[15:40:17] *** Quits: goyox86 (textual@moz-rvv.00r.255.109.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[15:40:20] *** Quits: enaqx (enaqx@moz-dtk.cpv.163.188.IP) (Ping timeout: 121 seconds)
+[15:40:30] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[15:40:30] -ghservo- [13servo] 15Ms2ger opened issue #6601: Assertion failure: this->is<js::TypedArrayObject>() with bufferData 02http://git.io/vqAOt
+[15:40:30] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[15:41:59] *** Joins: enaqx (enaqx@moz-dtk.cpv.163.188.IP)
+[15:42:52] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[15:42:52] -ghservo- [13servo] 15Ms2ger opened issue #6602: Assertion failure: (int32_t) tarr->type() == Scalar::Float32 with bufferData 02http://git.io/vqA3J
+[15:42:52] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[15:47:51] *** Quits: rohin (rohin@moz-l00.kf0.146.24.IP) (Ping timeout: 121 seconds)
+[15:50:32] *** Quits: cakecatz (cakecatz@moz-o0s5rh.sannet.ne.jp) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[15:57:25] *** Quits: waffles (wafflespean@moz-ogr.43b.136.123.IP) (Ping timeout: 121 seconds)
+[15:58:29] *** Quits: pauls (pauls@moz-e5p333.ccs.neu.edu) (Ping timeout: 121 seconds)
+[16:01:34] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[16:01:34] -ghservo- [13servo] 15bors-servo 04force-pushed 06auto from 14c7e3dd5 to 14243446e: 02http://git.io/A9I6iA
+[16:01:34] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[16:01:35] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[16:01:35] -ghservo- [13servo] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/vqAnp
+[16:01:35] -ghservo- 13servo/06auto 148b45f9f 15Ms2ger: Implement Window#top.
+[16:01:35] -ghservo- 13servo/06auto 14bd3380e 15bors-servo: Auto merge of #6600 - Ms2ger:top, r=Manishearth...
+[16:01:35] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[16:09:59] *** Joins: rohin (rohin@moz-l00.kf0.146.24.IP)
+[16:10:51] *** Joins: pauls (pauls@moz-e5p333.ccs.neu.edu)
+[16:14:53] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[16:14:53] -ghservo- [13servo] 15wjh opened pull request #6603: Remove url field from Page (06master...06remove-url-from-page-6589) 02http://git.io/vqAlu
+[16:14:53] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[16:18:04] *** Quits: enaqx (enaqx@moz-dtk.cpv.163.188.IP) (A TLS packet with unexpected length was received.)
+[16:19:40] *** Joins: dlight (dlight@moz-d7n.hlq.135.177.IP)
+[16:25:27] *** Quits: jdm (jdm@moz-ilbt2e.cable.teksavvy.com) (Quit: )
+[16:28:17] *** Quits: pauls (pauls@moz-e5p333.ccs.neu.edu) (Ping timeout: 121 seconds)
+[16:43:38] *** Joins: filsmick (filsmick@moz-gf7g4q.abo.wanadoo.fr)
+[16:45:37] *** Quits: rohin (rohin@moz-l00.kf0.146.24.IP) (Ping timeout: 121 seconds)
+[16:46:15] *** Joins: rohin (rohin@moz-l00.kf0.146.24.IP)
+[16:47:07] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[16:47:07] -ghservo- [13servo] 15bors-servo merged 06auto into 06master: 02http://git.io/vqAnp
+[16:47:07] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[16:47:10] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[16:47:10] -ghservo- [13servo] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/vqAuL
+[16:47:10] -ghservo- 13servo/06auto 1458a31b0 15Will Huxtable: Remove url field from Page
+[16:47:10] -ghservo- 13servo/06auto 143d4122e 15bors-servo: Auto merge of #6603 - wjh:remove-url-from-page-6589, r=jdm...
+[16:47:10] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[16:47:12] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[16:47:12] -ghservo- [13servo] 15bors-servo closed pull request #6600: Implement Window#top. (06master...06top) 02http://git.io/vqbFD
+[16:47:12] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[16:53:06] *** Quits: laleh (Adium@moz-hgq383.reshsg.uci.edu) (Quit: Leaving.)
+[16:56:55] *** Quits: MrZeus (MrZeus@moz-ecvk02.skybroadband.com) (Ping timeout: 121 seconds)
+[16:58:45] <mukilan> Ms2ger: ping
+[17:00:39] *** Quits: tomaka (Pierre@moz-0pd3dr.abo.wanadoo.fr) (Quit: Leaving)
+[17:14:07] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[17:18:17] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[17:18:32] *** Joins: enaqx (enaqx@moz-dtk.cpv.163.188.IP)
+[17:23:36] *** Joins: yati1 (Thunderbird@moz-e38.kma.237.87.IP)
+[17:23:36] *** Quits: yati (Thunderbird@moz-e38.kma.237.87.IP) (Connection closed)
+[17:23:36] *** yati1 is now known as yati
+[17:23:38] *** Quits: yati (Thunderbird@moz-e38.kma.237.87.IP) (Connection closed)
+[17:23:39] *** Joins: yati (Thunderbird@moz-e38.kma.237.87.IP)
+[17:24:37] *** Quits: enaqx (enaqx@moz-dtk.cpv.163.188.IP) (Ping timeout: 121 seconds)
+[17:24:52] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[17:24:52] -ghservo- [13servo] 15bors-servo merged 06auto into 06master: 02http://git.io/vqAuL
+[17:24:52] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[17:24:56] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[17:24:56] -ghservo- [13servo] 15bors-servo closed pull request #6603: Remove url field from Page (06master...06remove-url-from-page-6589) 02http://git.io/vqAlu
+[17:24:56] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[17:25:19] *** Joins: tomaka (Pierre@moz-0pd3dr.abo.wanadoo.fr)
+[17:41:37] *** Joins: bdero (bran@moz-0e2lk5.sns9.e6pb.0197.2601.IP)
+[17:54:29] *** Joins: waffles (wafflespean@moz-g2q.9ac.136.123.IP)
+[17:54:46] *** Quits: pkondzior (sid768@moz-nrgp4s.highgate.irccloud.com) (Quit: )
+[17:55:04] *** Joins: yati1 (Thunderbird@moz-e38.kma.237.87.IP)
+[17:55:51] *** Quits: yati (Thunderbird@moz-e38.kma.237.87.IP) (Connection closed)
+[17:55:52] *** yati1 is now known as yati
+[17:58:33] *** Joins: yati1 (Thunderbird@moz-e38.kma.237.87.IP)
+[17:58:46] *** Quits: yati (Thunderbird@moz-e38.kma.237.87.IP) (Connection closed)
+[17:58:46] *** yati1 is now known as yati
+[18:01:44] *** Joins: kermie (Mibbit@moz-hu6.nja.252.72.IP)
+[18:02:37] *** Quits: kermie (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[18:03:28] *** Quits: v21 (vee@moz-345o84.asianet.co.th) (A TLS packet with unexpected length was received.)
+[18:10:28] *** Joins: pkondzior (sid768@moz-nrgp4s.highgate.irccloud.com)
+[18:12:13] *** Quits: Daniellynet (Cupcake@moz-bci30q.customer.tdc.net) (Connection closed)
+[18:13:52] *** Joins: Daniellynet (Cupcake@moz-bci30q.customer.tdc.net)
+[18:27:04] *** Joins: laumann (thomas@moz-anc.lag.199.62.IP)
+[18:30:32] <Ms2ger> mukilan, ?
+[18:32:52] <mukilan> Ms2ger: ff and chrome output false for this case: http://software.hixie.ch/utilities/js/live-dom-viewer/?saved=3563 .I think this is wrong wrt to the spec
+[18:33:38] <mukilan> https://html.spec.whatwg.org/multipage/forms.html#reset-the-form-owner
+[18:34:09] <mukilan> step 3 is executed only when the control is in document, otherwise step 4 is executed
+[18:34:49] <SimonSapin> Ms2ger: what amount of review is "proper"?
+[18:35:12] *** Quits: doener (doener@moz-fnh.n4j.147.5.IP) (Quit: leaving)
+[18:41:16] <Ms2ger> SimonSapin, review by someone qualified
+[18:42:55] *** Joins: yati1 (Thunderbird@moz-e38.kma.237.87.IP)
+[18:43:28] *** Quits: yati (Thunderbird@moz-e38.kma.237.87.IP) (Connection closed)
+[18:43:29] *** yati1 is now known as yati
+[18:43:32] *** Quits: waffles (wafflespean@moz-g2q.9ac.136.123.IP) (Ping timeout: 121 seconds)
+[18:44:53] <SimonSapin> meaning you?
+[18:48:32] *** Quits: acgtyrant (acgtyrant@moz-bhi.kg4.201.115.IP) (Ping timeout: 121 seconds)
+[18:48:45] *** Joins: acgtyrant (acgtyrant@moz-bhi.kg4.201.115.IP)
+[18:49:40] <Ms2ger> Meaning someone who actually works on the DOM, be that me, jdm, Manishearth, nox, ...
+[19:00:44] <mukilan> Ms2ger: going to sleep now, i'll try to catch you later :)
+[19:00:44] *** Quits: rohin (rohin@moz-l00.kf0.146.24.IP) (Ping timeout: 121 seconds)
+[19:01:06] *** Quits: mukilan (mukilan@moz-ggd.0ov.164.122.IP) (A TLS packet with unexpected length was received.)
+[19:06:58] *** Quits: Siyo (Siyo@moz-dm4.ko9.32.178.IP) (Quit: Leaving)
+[19:07:17] *** Quits: ProgramFOX (ProgramFOX@moz-oob.vol.86.89.IP) (Quit: ChatZilla 0.9.91.1 [Firefox 39.0/20150630154324])
+[19:07:53] *** Joins: Siyo (Siyo@moz-dm4.ko9.32.178.IP)
+[19:08:39] *** Joins: rohin (rohin@moz-l00.kf0.146.24.IP)
+[19:10:57] *** Joins: dzbarsky (Adium@moz-mukjmn.fios.verizon.net)
+[19:15:04] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[19:19:16] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[19:22:56] *** Quits: rohin (rohin@moz-l00.kf0.146.24.IP) (Ping timeout: 121 seconds)
+[19:29:20] *** Joins: rohin (rohin@moz-l00.kf0.146.24.IP)
+[19:31:51] *** Joins: Guest53 (textual@moz-rvv.00r.255.109.IP)
+[19:52:19] *** Quits: rohin (rohin@moz-l00.kf0.146.24.IP) (Ping timeout: 121 seconds)
+[20:03:58] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[20:03:58] -ghservo- [13servo] 15Ms2ger opened pull request #6604: Add debug logging to register_named_element and unregister_named_element. (06master...06idmap-debug) 02http://git.io/vqxGw
+[20:03:58] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[20:22:36] *** Joins: enaqx (enaqx@moz-dtk.cpv.163.188.IP)
+[20:22:54] *** Joins: goyox86 (textual@moz-rvv.00r.255.109.IP)
+[20:24:41] *** Joins: laleh (Adium@moz-17v3gd.biz.rr.com)
+[20:26:43] *** Quits: enaqx (enaqx@moz-dtk.cpv.163.188.IP) (Ping timeout: 121 seconds)
+[20:28:44] *** Quits: jst (quassel@moz-cgq.50n.199.198.IP) (A TLS packet with unexpected length was received.)
+[20:28:55] *** Joins: jst (quassel@moz-cgq.50n.199.198.IP)
+[20:29:06] *** Quits: jst (quassel@moz-cgq.50n.199.198.IP) (A TLS packet with unexpected length was received.)
+[20:29:13] *** Joins: jst (quassel@moz-cgq.50n.199.198.IP)
+[20:35:06] *** Quits: goyox86 (textual@moz-rvv.00r.255.109.IP) (Quit: Textual IRC Client: www.textualapp.com)
+[20:46:36] *** Quits: dlight (dlight@moz-d7n.hlq.135.177.IP) (A TLS packet with unexpected length was received.)
+[20:55:00] *** Quits: yati (Thunderbird@moz-e38.kma.237.87.IP) (Ping timeout: 121 seconds)
+[20:57:43] *** Joins: bellows (Mibbit@moz-hu6.nja.252.72.IP)
+[20:58:34] *** Quits: bellows (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[21:01:01] *** Quits: laumann (thomas@moz-anc.lag.199.62.IP) (Ping timeout: 121 seconds)
+[21:09:41] *** Joins: tikue (tim@moz-dhqpfk.sntcca.sbcglobal.net)
+[21:14:37] *** Joins: jviereck (Adium@moz-qhb96u.dip0.t-ipconnect.de)
+[21:16:03] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[21:17:53] *** Joins: jviereck1 (Adium@moz-o5api4.dip0.t-ipconnect.de)
+[21:20:24] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[21:20:25] *** Quits: Guest53 (textual@moz-rvv.00r.255.109.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[21:20:41] *** Quits: jviereck (Adium@moz-qhb96u.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[21:22:27] *** Joins: laumann (thomas@moz-anc.lag.199.62.IP)
+[21:23:37] *** Joins: enaqx (enaqx@moz-dtk.cpv.163.188.IP)
+[21:24:46] *** Quits: Jackneill (Jackneill@moz-mr1vs6.pool.digikabel.hu) (A TLS packet with unexpected length was received.)
+[21:26:40] *** Quits: laumann (thomas@moz-anc.lag.199.62.IP) (Ping timeout: 121 seconds)
+[21:27:39] *** Quits: enaqx (enaqx@moz-dtk.cpv.163.188.IP) (Ping timeout: 121 seconds)
+[21:32:23] *** Joins: enaqx (enaqx@moz-dtk.cpv.163.188.IP)
+[21:34:04] *** Quits: filsmick (filsmick@moz-gf7g4q.abo.wanadoo.fr) (Quit: )
+[21:44:06] *** Quits: dzbarsky (Adium@moz-mukjmn.fios.verizon.net) (Quit: Leaving.)
+[21:44:10] *** Manishearth is now known as Guest1111
+[21:44:10] *** manishea1th is now known as Manishearth
+[21:50:57] *** Quits: kmicu (kmicu@moz-uga.edn.218.91.IP) (Client exited)
+[21:53:46] *** Quits: enaqx (enaqx@moz-dtk.cpv.163.188.IP) (A TLS packet with unexpected length was received.)
+[21:54:45] *** Joins: enaqx (enaqx@moz-dtk.cpv.163.188.IP)
+[21:56:09] *** Joins: Mouq (amoquin@moz-4sjrj2.ca.comcast.net)
+[21:57:28] *** Quits: enaqx (enaqx@moz-dtk.cpv.163.188.IP) (A TLS packet with unexpected length was received.)
+[21:59:41] *** Joins: enaqx (enaqx@moz-dtk.cpv.163.188.IP)
+[22:00:24] *** Quits: Mouq (amoquin@moz-4sjrj2.ca.comcast.net) (Ping timeout: 121 seconds)
+[22:04:19] *** Quits: laleh (Adium@moz-17v3gd.biz.rr.com) (Quit: Leaving.)
+[22:05:38] *** Quits: tikue (tim@moz-dhqpfk.sntcca.sbcglobal.net) (Connection closed)
+[22:11:05] *** Quits: Ms2ger (Ms2ger@moz-u01.vup.182.91.IP) (Ping timeout: 121 seconds)
+[22:16:08] *** Joins: fkaa_ (fkaa@moz-501od2.business.telia.com)
+[22:18:32] *** Quits: fkaa (fkaa@moz-501od2.business.telia.com) (Ping timeout: 121 seconds)
+[22:20:26] *** Joins: Guest53 (textual@moz-rvv.00r.255.109.IP)
+[22:25:15] *** Quits: Guest53 (textual@moz-rvv.00r.255.109.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[22:31:55] *** Quits: jviereck1 (Adium@moz-o5api4.dip0.t-ipconnect.de) (Quit: Leaving.)
+[22:45:04] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[22:45:04] -ghservo- [13servo] 15bors-servo pushed 0 new commits to 06auto: 02http://git.io/vqx51
+[22:45:04] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[22:45:05] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[22:45:05] -ghservo- [13servo] 15bors-servo pushed 1 new commit to 06auto: 02http://git.io/vqx5M
+[22:45:05] -ghservo- 13servo/06auto 1421433eb 15bors-servo: Auto merge of #6591 - servo:rustup_2015-07-10, r=pcwalton...
+[22:45:05] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[22:51:32] *** Quits: bdero (bran@moz-0e2lk5.sns9.e6pb.0197.2601.IP) (Ping timeout: 121 seconds)
+[22:55:26] *** Joins: bdero (bran@moz-0e2lk5.sns9.e6pb.0197.2601.IP)
+[23:03:10] *** Joins: dwins (dwins@moz-9sdv1c.va.comcast.net)
+[23:03:12] *** Quits: dwins (dwins@moz-9sdv1c.va.comcast.net) (Quit: Leaving...)
+[23:03:58] *** Quits: bdero (bran@moz-0e2lk5.sns9.e6pb.0197.2601.IP) (Ping timeout: 121 seconds)
+[23:13:06] *** Joins: dlight (dlight@moz-d7n.hlq.135.177.IP)
+[23:17:00] *** Joins: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP)
+[23:17:39] *** Quits: ldng (ldng@moz-j945dl.abo.bbox.fr) (Quit: Leaving)
+[23:21:17] *** Quits: jensnockert (jensnockert@moz-pvj.o2f.219.84.IP) (Ping timeout: 121 seconds)
+[23:28:54] *** Quits: enaqx (enaqx@moz-dtk.cpv.163.188.IP) (A TLS packet with unexpected length was received.)
+[23:30:22] *** Quits: mt2d2 (mt2@moz-a76qqb.ph.cox.net) (Client exited)
+[23:35:46] *** Quits: barosl (barosl@moz-tmp.qma.67.220.IP) (Connection closed)
+[23:36:04] *** Joins: barosl (barosl@moz-tmp.qma.67.220.IP)
+[23:38:37] *** Quits: lerc (quassel@moz-oqgenk.telstraclear.net) (Quit: No Ping reply in 180 seconds.)
+[23:39:45] *** Joins: lerc (quassel@moz-oqgenk.telstraclear.net)
+[23:57:51] *** Quits: zxq9 (ceverett@moz-qsm369.mesh.ad.jp) (Ping timeout: 121 seconds)
+[23:57:56] *** Joins: zxq9 (ceverett@moz-fe3mfn.mesh.ad.jp)

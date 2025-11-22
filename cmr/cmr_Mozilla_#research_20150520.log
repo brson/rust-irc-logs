@@ -1,0 +1,214 @@
+[00:01:50] *** Quits: mbx (textual@moz-l8ebtf.sfo1.mozilla.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[00:12:23] *** Quits: roc (chatzilla@moz-h8ll9b.dqqd.b0fh.0cb0.2001.IP) (Connection closed)
+[00:14:51] *** Joins: roc (chatzilla@moz-h8ll9b.dqqd.b0fh.0cb0.2001.IP)
+[00:15:19] <roc> khuey: ping
+[00:15:26] <roc> er, pong
+[00:17:19] <khuey> roc: so I'm trying to record intr_poll
+[00:18:12] <khuey> and I'm failing the assertion at https://github.com/khuey/rr/blob/arm/src/record_syscall.cc#L1134
+[00:18:19] <khuey> I assume there was some earlier special casing of this
+[00:18:21] <khuey> but I can't find it
+[00:20:18] <khuey> in particular, is_disarm_desched_event_syscall() returns true here
+[00:26:24] *** Quits: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com) (Quit: quit)
+[00:32:44] *** Joins: bjz (bjz@moz-b43.1aa.161.202.IP)
+[00:43:36] *** Quits: bjz (bjz@moz-b43.1aa.161.202.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[00:53:40] <roc> mmmm
+[00:55:20] <roc> we shouldn't get there because disarming of the desched event should be doing an untraced syscall
+[00:55:57] <khuey> ah
+[00:55:59] <khuey> interesting
+[00:56:23] <roc> if we do an untraced syscall which gets interrupted (which we do in this test IIRC), we should get into a desched state on the task and then RecordSession::desched_state_changed should take over and get us out of the syscall buffering code
+[00:56:46] *** Quits: jdm (jdm@moz-um8o9m.dsl.teksavvy.com) (Quit: )
+[00:56:48] <roc> I'm afraid this is all a bit complicated and I need to page it in
+[00:56:55] <roc> though it's a lot simpler than it was last year
+[00:57:28] <roc> you may find it profitable to trace through what happens on x86 so you know what this code is supposed to do
+[00:58:15] <khuey> is there a good technique for tracing through what happens in librrpreload?
+[00:59:00] <roc> sure, you can do a recording and step through it during replay
+[00:59:18] *** Quits: jweathersby (Adium@moz-djc.9vm.130.40.IP) (Quit: Leaving.)
+[00:59:45] <roc> going afk
+[01:00:37] <khuey> ah, ok, this is something dumb most likely
+[01:04:18] <samth> shu: thanks
+[01:05:20] <shu> samth: will you be attending?
+[01:05:32] <samth> shu: yeah
+[01:05:36] <samth> You?
+[01:05:43] <shu> you bet
+[01:06:53] * khuey grumbles about subtle differences between arm/x86
+[01:11:16] *** Joins: bjz (bjz@moz-puppgq.tpgi.com.au)
+[01:11:26] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[01:35:21] <khuey> roc: we are going through the untraced syscall there
+[01:35:27] <khuey> for some reason that still triggers the ptrace trap
+[01:35:30] * khuey will look at the kernel code later
+[01:35:34] *** khuey is now known as khuey|away
+[01:37:19] <roc> khuey|away: was it a PTRACE_CONT_SYSCALL, or a PTRACE_CONTINUE?
+[01:37:36] <roc> khuey|away: the former will trigger a ptrace trap even on "untraced" syscalls, which can be confusing
+[01:52:49] *** Joins: mbx (textual@moz-l8ebtf.sfo1.mozilla.com)
+[02:02:40] *** Quits: mbx (textual@moz-l8ebtf.sfo1.mozilla.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[02:11:01] *** Quits: mchang (mchang@moz-q472sa.res.rr.com) (Client exited)
+[02:13:14] *** khuey|away is now known as khuey
+[02:13:31] <khuey> roc: oh, that could be fun
+[02:14:32] *** Quits: cjones (cjones@moz-t19.bab.126.76.IP) (Client exited)
+[02:14:48] <khuey> roc: don't we basically always do PTRACE_SYSCALL to resume execution during recording?
+[02:18:18] <khuey> roc: yeah, this is after a PTRACE_SYSCALL
+[02:21:13] <roc> khuey: no, with seccomp enabled, we don't
+[02:21:33] <roc> see RecordSession::task_continue
+[02:23:02] <khuey> mmm
+[02:53:11] <khuey> roc: what makes these negative https://github.com/khuey/rr/blob/arm/src/RecordSession.cc#L127 ?
+[02:53:56] <roc> two things
+[02:54:06] <roc> 1) someone trying to make a syscall with a negative syscall number
+[02:54:30] <roc> 2) an application seccomp filter that sets original_syscallno to a negative number to force the syscall to fail with an errno
+[02:54:42] <roc> the chromium Linux sandbox does #2
+[02:55:42] <khuey> roc: oh, so that's not the "normal" path?
+[02:56:07] <roc> correct
+[02:56:25] <roc> oh wait, my #2 there was wrong, that's handled later
+[02:56:57] <roc> so that line is just for case #1
+[03:05:47] *** Joins: jweathersby (Adium@moz-djc.9vm.130.40.IP)
+[03:08:46] <roc> rr needs a logo
+[03:11:58] <khuey> roc: afaict the difference between x86 and ARM is because x86 restarts the poll, and ARM doesn't
+[03:12:49] <roc> mmmm
+[03:13:03] <roc> syscall restarts are mysterious
+[03:13:22] <roc> you'll want to examine /proc/pid/stack a lot alongside the kernel source
+[03:15:34] <roc> my limited understanding of what happens is that when the kernel resumes execution in certain states (e.g. original_syscallno >= 0 and syscall_result set to ERESTARTSYS or similar, and possibly other conditions applying) it automatically munges the task state to restart the syscall
+[03:15:51] <roc> and reenters the kernel
+[03:20:27] <khuey> oh wow this part of hte kernel is horrifying
+[03:21:42] *** Quits: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net) (Ping timeout: 121 seconds)
+[03:22:02] *** Joins: c74d3 (c74d3a4ebb6@moz-mii588.mggc.hibn.4404.2002.IP)
+[03:24:02] *** c74d3 is now known as c74d
+[03:34:32] *** Joins: mbx (textual@moz-d9isok.ca.comcast.net)
+[03:39:04] *** khuey is now known as khuey|away
+[03:41:25] *** Joins: cjones (cjones@moz-ljujh0.ca.comcast.net)
+[03:47:00] <Gankro> aturon: your supervisor's proposal appears to just be a legit paper on Rust
+[03:55:31] *** Quits: c74d (c74d3a4ebb6@moz-mii588.mggc.hibn.4404.2002.IP) (Connection closed)
+[03:56:49] *** Joins: c74d (c74d3a4ebb6@moz-mii588.mggc.hibn.4404.2002.IP)
+[04:20:49] *** Quits: roc (chatzilla@moz-h8ll9b.dqqd.b0fh.0cb0.2001.IP) (Connection closed)
+[04:43:19] *** shu is now known as shu`pto
+[04:52:46] *** Joins: c74d3 (c74d3a4ebb6@moz-0ersgu.oc.cox.net)
+[04:53:05] *** Joins: roc (chatzilla@moz-9pekdo.orcon.net.nz)
+[04:53:43] *** Quits: c74d (c74d3a4ebb6@moz-mii588.mggc.hibn.4404.2002.IP) (Ping timeout: 121 seconds)
+[04:54:52] *** c74d3 is now known as c74d
+[04:59:31] *** Quits: reqshark (reqshark@moz-942p6h.static.wiline.com) (Quit: Be back later ...)
+[05:35:28] *** Joins: ddamjano (Instantbird@moz-j5gt3f.dynamic.surfer.at)
+[05:45:33] *** Quits: ddamjano (Instantbird@moz-j5gt3f.dynamic.surfer.at) (Ping timeout: 121 seconds)
+[06:29:51] *** Joins: Dexter (Alessio@moz-992a9r.retail.telecomitalia.it)
+[07:09:45] *** Quits: jweathersby (Adium@moz-djc.9vm.130.40.IP) (Quit: Leaving.)
+[07:28:50] *** jandem-away is now known as jandem
+[07:30:40] *** Joins: ddamjano (Instantbird@moz-j5gt3f.dynamic.surfer.at)
+[08:05:50] *** Quits: cjones (cjones@moz-ljujh0.ca.comcast.net) (Client exited)
+[08:25:46] *** Quits: roc (chatzilla@moz-9pekdo.orcon.net.nz) (Quit: ChatZilla 0.9.87-8.1450hg.fc20 [XULRunner 32.0/20140902134853])
+[08:32:33] *** nrc is now known as nrc|afk
+[08:44:29] *** Dexter is now known as Dexter|Hawaii
+[09:11:14] *** Joins: roc (chatzilla@moz-9pekdo.orcon.net.nz)
+[09:26:02] <roc> hmm, for some reason rr is slowing down Octane-Mandreel by a factor of 10
+[09:31:21] <roc> that appears to be about the slowdown you get when just by running on a single core. Interesting.
+[09:41:58] *** Quits: mbx (textual@moz-d9isok.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[10:35:07] *** Quits: nrc|afk (nrc@moz-14pjgj.xtra.co.nz) (Ping timeout: 121 seconds)
+[11:08:49] *** Quits: terrence (terrence@moz-4opk9i.sd.cox.net) (Ping timeout: 121 seconds)
+[11:19:07] *** Dexter|Hawaii is now known as Dexter
+[11:35:04] *** Joins: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP)
+[12:24:41] *** Joins: mukilan (mukilan@moz-rp5.2ma.164.122.IP)
+[12:29:04] *** Quits: oldskirt (oldskirt@moz-tpvdkd.dip0.t-ipconnect.de) (Connection closed)
+[12:30:17] *** Joins: oldskirt (oldskirt@moz-tpvdkd.dip0.t-ipconnect.de)
+[13:06:30] *** Joins: jdm (jdm@moz-mu9.06r.98.75.IP)
+[13:20:37] *** Joins: tadh (quassel@moz-csidhs.biz.rr.com)
+[13:49:34] *** Quits: mukilan (mukilan@moz-rp5.2ma.164.122.IP) (A TLS packet with unexpected length was received.)
+[14:02:18] *** Quits: tadh (quassel@moz-csidhs.biz.rr.com) (Ping timeout: 121 seconds)
+[14:03:38] *** Joins: tadh (quassel@moz-csidhs.biz.rr.com)
+[14:15:05] *** Joins: ehsan (ehsan@moz-i5m.05u.207.66.IP)
+[14:16:11] *** Joins: jweathersby (Adium@moz-djc.9vm.130.40.IP)
+[14:58:34] *** Joins: reqshark (reqshark@moz-942p6h.static.wiline.com)
+[15:04:48] *** Quits: jdm (jdm@moz-mu9.06r.98.75.IP) (Quit: )
+[15:27:13] *** Joins: jdm (jdm@moz-r3ae0i.ckpj.s0pt.0450.2001.IP)
+[15:27:53] *** Quits: tadh (quassel@moz-csidhs.biz.rr.com) (Connection closed)
+[15:35:06] <jack> On a multi-monitor Linux system, right clicking to bring up some context menu or clicking a select box always puts the options on a different monitor than the firefox window is on. I figured this was an artifact of i3wm, but I was checking out the new Gnome 3.16 yesterday and noticed the same problem. Is this just a known bug or did I do something crazy when
+[15:35:07] <jack> I compiled it?
+[15:37:43] <mbrubeck> jack: I've seen similar bugs in Nightly in the past, but right now context menus are working correctly on both monitors for me, using xmonad on Debian jessie.
+[15:38:28] <jack> mbrubeck: I'll rebuild and test. Is there any special flag you passed for that?
+[15:39:32] <mbrubeck> jack: I'm just running the binaries from https://nightly.mozilla.org/
+[15:40:05] <mbrubeck> jack: Maybe pull from m-c again in case it was a short-lived regression.
+[15:40:09] * mbrubeck updates to the latest nightly
+[15:42:01] <jack> mbrubeck: I was under the impression running the nightly binaries didn't get you nice fonts and such
+[15:42:31] <mbrubeck> I haven't had any problems with them, or seen any differences from my development builds.
+[15:43:02] * jack tries that first
+[15:43:12] <mbrubeck> Then again I'm not running GNOME 3 or anything, so I don't really notice that Firefox still uses gtk+2 by default.
+[15:50:47] *** Joins: terrence (terrence@moz-4opk9i.sd.cox.net)
+[16:26:53] *** Quits: azakai|2 (alon@moz-l3ofdg.sntcca.sbcglobal.net) (Quit: Ex-Chat)
+[16:29:26] *** Quits: ddamjano (Instantbird@moz-j5gt3f.dynamic.surfer.at) (Ping timeout: 121 seconds)
+[16:34:04] *** khuey|away is now known as khuey
+[16:39:25] <ted> jack: firefox nightlies are virtually identical to what we release, FYI
+[16:39:41] <ted> (just different branding and a few fiddly things like experimental stuff is enabled)
+[16:41:11] <jack> mbrubeck: nightly binary has the same menus appearing on the other monitor problem :(
+[16:41:52] <samth> jack: i use gnome3 (with 2 monitors and FF nightly) and i don't see that problem
+[16:44:25] <jack> If the main window is on the monitor where the menus appears, it works fine. If the window is on a different monitor, the menus appear on the original (primary) one and are aligned with the right edge of the monitor (ie, they don't appear in the correct x,y coordinate but on a different monitor)
+[16:47:32] *** Joins: jweathersby1 (Adium@moz-g8ntrj.ip.windstream.net)
+[16:50:13] *** Quits: bruceadams (sid15869@moz-gcaej2.uxbridge.irccloud.com) (Quit: )
+[16:50:15] *** Joins: bruceadams (sid15869@moz-8humjg.highgate.irccloud.com)
+[16:51:12] *** Quits: jweathersby (Adium@moz-djc.9vm.130.40.IP) (Ping timeout: 121 seconds)
+[16:52:16] *** Joins: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com)
+[16:52:51] *** Joins: pcwalton (pcwalton@moz-nh2.o1i.216.216.IP)
+[16:52:51] *** ChanServ sets mode: +o pcwalton
+[16:55:17] *** Joins: azakai (alon@moz-15srl4.ujol.1ibb.0101.2620.IP)
+[17:02:23] *** Quits: pcwalton (pcwalton@moz-nh2.o1i.216.216.IP) (Client exited)
+[17:04:20] *** Joins: tadh (quassel@moz-pg51s5.CWRU.Edu)
+[17:05:36] *** Quits: tadh (quassel@moz-pg51s5.CWRU.Edu) (Connection closed)
+[17:06:56] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[17:06:56] *** ChanServ sets mode: +o brson
+[17:07:54] *** Quits: oldskirt (oldskirt@moz-tpvdkd.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[17:11:15] *** Joins: oldskirt (oldskirt@moz-39rvhl.dip0.t-ipconnect.de)
+[17:14:58] *** Quits: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP) (Quit: rcirc on GNU Emacs 24.5.1)
+[17:21:54] *** Quits: jandem (sid16255@moz-s8ebmu.uxbridge.irccloud.com) (Quit: )
+[17:21:57] *** Joins: jandem (sid16255@moz-2gehe3.highgate.irccloud.com)
+[17:27:16] <seth> jack: FWIW i see the same bug even on OS X from time to time. it's a cross platform issue
+[17:27:38] <seth> (or both platforms have similar issues =)
+[17:36:31] *** Quits: Dexter (Alessio@moz-992a9r.retail.telecomitalia.it) (Quit: Leaving)
+[17:41:38] *** Joins: mchang (mchang@moz-q472sa.res.rr.com)
+[17:50:25] <aturon> are there any moz research folks based in the Portland office?
+[17:50:41] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[17:50:41] *** ChanServ sets mode: +o pcwalton
+[17:56:09] <mbrubeck> aturon: AWB, I think
+[17:57:00] *** Joins: mbx (textual@moz-l8ebtf.sfo1.mozilla.com)
+[17:57:16] <mbrubeck> (Allen Wirfs-Brock)
+[17:57:36] <larsberg> mbrubeck: I'm pretty sure allen works from home and doesn't have a desk at the portland office, but I assume we could ask him to come in if we need.
+[18:03:45] <aturon> thanks both!
+[18:09:31] <larsberg> azita: dherman: planning meeting cancelled this week?
+[18:17:03] <azita> No. I am in another meeting. Can you start?  I'll join soon
+[18:34:54] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[18:35:38] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[18:35:38] *** ChanServ sets mode: +o pcwalton
+[18:43:42] *** Quits: jweathersby1 (Adium@moz-g8ntrj.ip.windstream.net) (Quit: Leaving.)
+[18:49:56] *** Joins: jweathersby (Adium@moz-g8ntrj.ip.windstream.net)
+[19:01:53] *** Joins: tadh (quassel@moz-88tk3f.res.rr.com)
+[19:58:22] *** Joins: cjones (cjones@moz-ljujh0.ca.comcast.net)
+[20:15:59] *** Quits: reqshark (reqshark@moz-942p6h.static.wiline.com) (Quit: Be back later ...)
+[20:49:29] *** Joins: nrc|afk (nrc|afk@moz-14pjgj.xtra.co.nz)
+[20:56:56] *** Quits: mchang (mchang@moz-q472sa.res.rr.com) (Client exited)
+[20:58:47] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[20:59:25] *** Joins: mchang (mchang@moz-q472sa.res.rr.com)
+[21:01:16] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[21:01:16] *** ChanServ sets mode: +o pcwalton
+[21:13:07] *** Quits: jack (sid19593@moz-d7cue0.uxbridge.irccloud.com) (Quit: )
+[21:13:10] *** Joins: jack (sid19593@moz-fhlsm9.highgate.irccloud.com)
+[21:13:10] *** ChanServ sets mode: +o jack
+[21:23:36] *** Joins: ddamjano (Instantbird@moz-j5gt3f.dynamic.surfer.at)
+[21:31:40] *** Quits: ddamjano (Instantbird@moz-j5gt3f.dynamic.surfer.at) (Ping timeout: 121 seconds)
+[21:49:58] *** nrc|afk is now known as nrc
+[21:57:24] *** khuey is now known as khuey|away
+[22:04:30] *** Quits: roc (chatzilla@moz-9pekdo.orcon.net.nz) (Connection closed)
+[22:13:35] *** Quits: ehsan (ehsan@moz-i5m.05u.207.66.IP) (A TLS packet with unexpected length was received.)
+[22:16:51] *** Quits: oldskirt (oldskirt@moz-39rvhl.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[22:27:09] *** Quits: jdm (jdm@moz-r3ae0i.ckpj.s0pt.0450.2001.IP) (Quit: )
+[22:31:20] *** Quits: bjz (bjz@moz-puppgq.tpgi.com.au) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[22:39:48] *** Quits: disnet (sid21735@moz-oc6g2p.uxbridge.irccloud.com) (Quit: )
+[22:39:51] *** Joins: disnet (sid21735@moz-fig26u.highgate.irccloud.com)
+[22:45:38] *** Joins: roc (chatzilla@moz-h8ll9b.dqqd.b0fh.0cb0.2001.IP)
+[22:50:54] *** khuey|away is now known as khuey
+[22:55:35] <jack> So where did the Rust wiki go?
+[22:55:49] <jack> There used to be a page of talks and presentations and such things that I pointed people to, but it seems to be gone now.
+[22:56:19] <nrc> jack: https://github.com/rust-lang/rust-wiki-backup
+[22:56:22] <cmr> jack: https://github.com/rust-lang/rust-wiki-backup
+[22:56:31] <cmr> was taken down due to copyright concerns.
+[22:56:32] <nrc> :-)
+[22:56:45] <jack> Is there a new official repo for this stuff, or we decided it was unimportant?
+[22:58:10] <nrc> no decision has been made, it comes up occasionally in the meetings but no one seems bothered enough to actually do anything
+[23:20:03] *** Joins: oldskirt (oldskirt@moz-edtn5f.dip0.t-ipconnect.de)
+[23:22:34] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[23:23:06] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[23:23:06] *** ChanServ sets mode: +o pcwalton
+[23:40:59] *** Quits: cjones (cjones@moz-ljujh0.ca.comcast.net) (Client exited)
+[23:57:00] *** Quits: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com) (Quit: quit)

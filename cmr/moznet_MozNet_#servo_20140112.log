@@ -1,0 +1,690 @@
+[00:03:27] *** Joins: eholk (eholk@moz-58C5EE6F.wavecable.com)
+[00:05:26] *** Joins: jdm (jdm@moz-AC9499B2.cable.teksavvy.com)
+[00:05:26] *** ChanServ sets mode: +o jdm
+[00:06:12] <jdm> jack: /home/jdm/sdb/servo/src/components/script/dom/node.rs:791:31: 791:99 error: type `dom::node::LayoutDataRef` does not implement any method in scope named `unwrap`
+[00:06:18] <jdm> /home/jdm/sdb/servo/src/components/script/dom/node.rs:791             let layout_data = util::replace(&mut self.layout_data, LayoutDataRef::new()).unwrap();
+[00:07:25] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[00:08:17] <larsberg> jdm: thanks for spearheading - I'm still rebuilding rust. I haven't figured out why it wants to rebuild itself from scratch every time I update a branch... ugh.
+[00:09:08] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[00:10:22] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[00:14:43] *** Joins: brson (brson@981AA104.E81F12CD.76F66111.IP)
+[00:14:43] *** ChanServ sets mode: +o brson
+[00:18:17] <jack> jdm: how in the world does it compile for me?
+[00:19:41] <jack> odd. i get that error too now.
+[00:24:40] <jack> jdm: you can remove unwrap() i think and it should work.
+[00:25:01] <jdm> hokay
+[00:25:56] <jack> i pushed the fix to the branch as well
+[00:27:49] <jack> a backtrace for the segfault would be lovely if either of you can reproduce
+[00:28:02] <jack> test_childnodes.html is the one that segfaults for me
+[00:28:20] <jack> and one of the other ones. test_title works most of the time, and the rest of the time it hangs.
+[00:28:34] <jack> sometimes it give send on a closed channel
+[00:34:55] <larsberg> jack: test_childnodes backtrace: https://gist.github.com/larsbergstrom/8378894
+[00:35:23] <jack> what is that??
+[00:35:45] <jack> weird drop glue thing
+[00:35:51] <jack> hmmm.
+[00:35:56] <jack> i'll be back in a bit and can dig into it
+[00:39:04] <larsberg> and here's the bt in the freeze in test_title: https://gist.github.com/larsbergstrom/8378921
+[00:39:19] <larsberg> it looks like there are some other tasks failing, so I'm not convinced the freeze is meaningful
+[00:39:29] <jdm> test_title succeeds for me
+[00:39:39] <larsberg> it fails 1 in about 30 tries
+[00:39:49] <larsberg> (I'm watching niko's talk in the background <grin>)
+[00:39:53] *** Joins: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca)
+[00:39:58] <jdm> what the heck is test_childnodes doing
+[00:40:03] <jdm> endless printouts of vectors
+[00:40:06] <larsberg> will try to get a bt for the failure, though I've seen that ReaderRng one before, and I think it's related to one of our resource tasks
+[00:40:25] <jdm> segfault outside of gdb
+[00:40:25] <jdm> nice
+[00:40:30] <larsberg> not endless! it totally makes sense from frames 86-94 or so :-)
+[00:40:44] <jdm> larsberg: no, I mean that it doesn't stop executing
+[00:40:59] <jdm> some debug printing in servo never stops
+[00:41:10] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[00:41:13] <jdm> that time I got a segfault
+[00:41:41] *** Quits: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca) (Ping timeout)
+[00:42:23] <larsberg> here's the break on rust_fail in test_title: https://gist.github.com/larsbergstrom/8378964
+[00:44:16] <larsberg> jack: yes, test_childnodes completes fine when you remove the debug print in Node::drop
+[00:47:34] <jack> Do all the content tests pass now?
+[00:49:05] <larsberg> three generate failures during their run but still get an OK and pass (tesT_event_dispatch, test_load_event, and test_title)
+[00:49:15] <larsberg> test_img_width_height fails and generates an error
+[00:49:22] <larsberg> tests freeze after test_window runs 
+[00:49:32] <larsberg> I haven't determined in the last one if it's a new test that freezes or the test runner
+[00:50:17] <larsberg> note that those three failure-but-ok results only happen from the commandline
+[00:50:26] <larsberg> under the debugger timing must change enough that they pass
+[00:51:38] <larsberg> jack: got it: https://gist.github.com/larsbergstrom/8379071
+[00:51:49] <larsberg> that seems to be the more random failure for those three
+[00:51:57] <larsberg> not convinced it's tied into the spidermonkey madness :-)
+[00:53:11] <larsberg> test_img_width_height bt: https://gist.github.com/larsbergstrom/8379079
+[00:56:33] <jdm> there's a rust issue filed about that, afair
+[00:57:11] * jdm wishes github's search was better
+[00:58:04] <larsberg> I got a bt on the freeze. it seems to be after all of the content tests have run and we're just hanging out in a bunch of uv_epolls on 7 threads with the main thread waiting on a mutex: https://gist.github.com/larsbergstrom/8379120
+[01:00:47] *** Joins: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net)
+[01:02:33] <jdm> I want to see a list of github issues to which I'm cced :(
+[01:07:56] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[01:09:45] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[01:10:05] <jdm> I swear I have seen the failure before, but it's not on rust-dev and I haven't found it on github yert
+[01:11:20] <larsberg> jdm: which failure? the freeze or one of the crashes?
+[01:11:31] <jdm> larsberg: the "ReaderRng.fill_bytes could not fill buffer"
+[01:13:52] <larsberg> Yeah, I actually think that's something I've seen intermittently and shamefully ignored as well in the past
+[01:14:26] <larsberg> maybe we should use acrichto-search :-)
+[01:14:47] <jdm> is he rust's gavinbot?
+[01:15:12] <jdm> (http://quotes.burntelectrons.org/search?query=gavinbot)
+[01:16:07] <larsberg> I love it! That's even better than "larsbors"
+[01:23:26] *** Quits: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net) (Quit: tikue)
+[01:27:13] *** kimundi is now known as zz_kimundi
+[01:27:25] *** Quits: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca) (Quit: eatkinson)
+[01:31:29] *** Joins: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net)
+[01:34:41] *** Joins: sedman_ (sedman@E4D2F0A.47298EC7.57E8EAD3.IP)
+[01:39:45] *** Quits: eddyb (eddy@EDE07015.D51DAF03.FB866788.IP) (Ping timeout)
+[01:40:35] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[01:40:46] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[01:42:23] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Ping timeout)
+[01:49:18] <larsberg> jdm: I guess we'll have to try to make a small repro and open an issue
+[01:49:26] <jdm> yep
+[01:49:59] <jdm> maybe something about 1:1 I/O
+[01:50:02] <jdm> since this is in the script task
+[01:50:29] <larsberg> aha, possibly. is that occurring when it allocates a new HashMap?
+[01:50:57] <larsberg> or maybe there are two threads both allocating HashMaps and there's something weird about two pthreads accessing it simultaneously 
+[01:51:02] * larsberg is just making things up, at this point
+[01:54:52] *** Quits: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net) (Quit: tikue)
+[01:57:29] <larsberg> hrmph, even just spinning creating HashMaps doesn't reproduce it (even with 2 tasks). 
+[01:58:01] <dbaupp> What about https://gist.github.com/huonw/9b2abcdb09d30d76471d ?
+[02:00:04] <larsberg> dbaupp: unfortunately, no, that didn't either
+[02:00:20] <larsberg> I even wrapped the inner part in a loop {} and can't repro it
+[02:00:28] <larsberg> hrm...
+[02:00:37] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Client exited)
+[02:00:47] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[02:00:56] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Client exited)
+[02:01:04] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[02:04:47] <jdm> larsberg: what if you use a HashMap<~str, @*libc::c_void>?
+[02:06:08] <jdm> no difference
+[02:06:16] <jack> script task is not 1:1
+[02:06:33] <jack> only the profiler and compositor are in 1:1
+[02:08:15] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[02:08:34] <larsberg> jdm: yeah, no difference for me either
+[02:09:57] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[02:13:50] *** Joins: harth_ (heather@moz-42412102.hsd1.ca.comcast.net)
+[02:13:50] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Connection reset by peer)
+[02:15:09] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[02:15:31] <larsberg> jack, jdm: note that if we fix test_img_width_height (https://gist.github.com/larsbergstrom/8379079 ), we can probably land the PR and investigate the rest at our leisure
+[02:15:53] <jack> larsberg: what about the freeze?
+[02:15:58] <larsberg> that's the one failure for content tests about 80% of the time (the other 20% being the hang at shutdown)
+[02:17:56] <larsberg> so, if you would like the weekend back, you could just change that to a try_send() and we can log some issues for the other intermittent failures :-)
+[02:19:43] <jack> it's the cancel timer?
+[02:19:49] <jack> so it's canceling after its been fired?
+[02:19:56] <jack> did i implement that wrong?
+[02:20:36] <jdm> no, it looks like the timers are never removed from active_timers when they fire
+[02:20:50] <jack> yeah i was just looking at that.
+[02:20:55] <larsberg> yeah, and then when the Window drops, they get killed, but the timer thread is gone
+[02:22:05] <jack> ugh.
+[02:22:20] <jack> how to remove them... the proc can't look at self
+[02:23:05] <jdm> sending a message seems like the best bet
+[02:23:07] <jack> i guess the script taks handlin the message will have to do it somehow
+[02:23:24] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Quit: Gone to save the world!)
+[02:25:07] <jack> there's a good spot to add it in handle_fire_timer_msg
+[02:25:28] <jdm> this is true
+[02:25:32] <jdm> makes sense to me
+[02:26:34] <jdm> we also need to remove when cancelling, right?
+[02:26:37] <jdm> that's a bit harder
+[02:26:55] <jdm> I guess that also needs to go through the script channel
+[02:27:04] <jack> man. timers suck.
+[02:27:30] <strcat> timers as in rust timers? or some servo thing
+[02:27:42] <jack> javascript timers
+[02:27:45] <strcat> ah
+[02:27:53] <jack> ok. i'm still getting send on closed channel.
+[02:27:59] <jack> pushing this branch then i have to read to the kids
+[02:28:02] <jack> maybe one of you will spot the error
+[02:28:05] <jdm> sure thing
+[02:28:23] <strcat> do browsers have schedulers? how do they handle a bunch of timers on one page?
+[02:28:35] <jack> pushed.
+[02:28:35] <jdm> strcat: handle in what sense?
+[02:28:49] <jack> strcat: setTimeout is often abused.
+[02:28:51] <strcat> jdm: well, some sense of fairness or whatever if they can't keep up
+[02:29:02] * strcat shrug
+[02:29:03] <strcat> s
+[02:29:08] <jack> strcat: on ie6 setTimeout's minimum resolution was 13ms or something
+[02:29:34] <jdm> strcat: in gecko there's no real scheduler
+[02:29:43] <jdm> there's throttling that occurs for pages that aren't the current one
+[02:29:44] <jdm> that's it
+[02:30:01] * strcat knows about the throttling because it saved his battery life
+[02:30:56] *** Joins: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca)
+[02:33:19] <jdm> which test should I be running?
+[02:37:03] <larsberg> OK, so content_test is frozen because it's waiting on child servo processes that haven't exited
+[02:37:13] <larsberg> attaching to them, there are freezes in two places: https://gist.github.com/larsbergstrom/8380023
+[02:37:49] <larsberg> jdm: I think he's working on test_img_width_height
+[02:38:04] <larsberg> which is our last crash-that-leads-to-failure
+[02:38:16] <larsberg> I'm looking at the intermittent content_test freeze
+[02:38:19] <jdm> I see the same freezes you are
+[02:39:11] *** Joins: ramitos (ramitos@moz-60679625.socal.res.rr.com)
+[02:39:35] <larsberg> looks like it's waiting for the exit response from the constellation
+[02:40:06] <jdm> and the profiler is sitting there doing nothing
+[02:42:12] <jack> i got it on test_title
+[02:42:15] * jdm can't reproduce test_img_width_height :(
+[02:42:16] <jack> the send on closed channel
+[02:42:19] <jdm> oh, good
+[02:42:32] <jack> happens pretty much every time.
+[02:42:36] <jack> (on osx)
+[02:42:48] <jdm> huh, I got fun runtime failures loading a page that doesn't exist :D
+[02:42:52] <larsberg> brave man: back on OSX by choice? Or is your linux VM still broken?
+[02:42:54] <jdm> also sending on a closed channel
+[02:43:50] <jack> vm still broken. or rather it works fine but now has no networking mysteriously.
+[02:43:51] <jdm> what's the symbol to break on to catch failure now?
+[02:43:55] <jack> i might have to reinstall :(
+[02:43:59] <jack> rust_fail
+[02:44:57] <larsberg> jack: did you switch randomly between "switched" and "bridged" network modes? that seems to often sate my VMWare images' random network failures :-) 
+[02:45:16] <larsberg> s/switched/NAT
+[02:45:41] <jack> i didn't touch anythign since i set it up
+[02:45:49] <jack> my macbook is having all kinds of myster problems.
+[02:46:19] <larsberg> oh, with the content_test hangs, it occurs to me that they might be the result of the failures we were seeing reported that never turned into errors
+[02:46:28] <larsberg> they might be freezing instead of completely crashing the process
+[02:46:55] <jack> i'm kind of amazed how mcuh of a change removing linked failure turned out to be
+[02:47:19] *** Quits: ramitos (ramitos@moz-60679625.socal.res.rr.com) (Quit: Textual IRC Client: www.textualapp.com)
+[02:47:40] <larsberg> yeah, we were really relying on that to tear down a set of subtasks cleanly
+[02:48:02] <larsberg> and the new failure cases for task failure result in freeze an awful lot of the time
+[02:48:31] <larsberg> though maybe that'll go away if we convince brson & acrichto to drain message queues if the port-side dies :-)
+[02:49:49] <jack> there's a patch for that i think
+[02:49:58] <jack> i think brson decided they should do it
+[02:51:06] <larsberg> excellent :-)
+[02:52:41] <larsberg> so, we're still getting failures like:
+[02:52:45] <larsberg> task 'dropping HTMLElement
+[02:52:45] <larsberg> <unnamed>' failed at 'sending on a closed channel', /home/larsberg/servo/src/compiler/rust/src/libstd/comm/mod.rs:635
+[02:52:53] <larsberg> that I think are what are causing the content test to freeze
+[02:53:08] <larsberg> I'm having a lot of trouble reproducing them outside that context
+[02:53:12] <larsberg> it's happening in most of the tests
+[02:53:19] <larsberg> but just running them in cycles under gdb doesn't work
+[02:53:34] <larsberg> and I can't figure out how to make gdb autoattach to subprocesses created by the contenttest binary
+[02:53:38] <jack> man i look forward to rust printing its own back traces
+[02:53:55] <larsberg> that's like cheating :-)
+[02:54:21] <larsberg> I actually just want the equivalent of the Windows ::DebugBreak() - if you generate an INT 3 on Windows, it'll auto-attach the debugger to the process
+[02:54:37] <larsberg> it's like ez-mode debugging for this stuff if you have a way to turn assert into int3 on debug builds
+[02:54:42] <jack> yay. i have networking again.
+[02:54:48] * jack can build servo and use gdb
+[02:58:57] * jack loves that random moment of panic when he thinks there's a whole new bug but really he just forgot to set DISPLAY
+[03:00:03] <jack> here's my bt from test_title.html: https://gist.github.com/metajack/8380164
+[03:00:09] <jack> is that what you're both seeing?
+[03:03:31] <larsberg> hrm, I thought that I'd addressed those issues with resize messages hitting the constellation after it had shutdown already with the patch a couple of days ago
+[03:03:32] <jdm> jack: I'm seeing that with a raft of other failures when loading nonexistent pages
+[03:03:34] <larsberg> I must have missed a case
+[03:04:57] <larsberg> jdm: on the noneistent pages, I see three task failures associated with HTML parsing, which I don't think we've started to harden yet, sadly
+[03:05:10] <jdm> larsberg: yeah, I've got a patch that gets those out of the way
+[03:05:37] <larsberg> nice!
+[03:05:56] <larsberg> I miss linked task failure
+[03:06:10] <jack> larsberg: can you send me that diff again? i'll double check that i applied it
+[03:06:11] <larsberg> I'm almost thinking it would be less work for us to implement it in Rust than to handle all the task shutdown goo in Servo
+[03:06:32] <larsberg> https://gist.github.com/larsbergstrom/8343023
+[03:07:26] <larsberg> I think it's all applied, though. It was meant to handle both belated mouse messages getting delivered and some cases with the resize getting sent after everything was shut down
+[03:07:30] <larsberg> I must have missed one
+[03:08:21] <jack> i missed teh fn close() part
+[03:08:30] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[03:08:57] <jack> sorry, no that was the same file on the old machine.
+[03:09:30] <jack> larsberg: yeah. it's all applied
+[03:10:12] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[03:11:43] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Leaving...)
+[03:12:55] <jack> it looks like al lthe constellation messages just come in after all the other work is done.
+[03:13:05] <jack> not sure what hte fix is here.
+[03:13:41] <larsberg> are there no other task failures before that one?
+[03:13:46] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[03:13:47] <jack> not for me.
+[03:13:51] <jdm> ps: https://gist.github.com/jdm/8380281 for parser sub-task failures
+[03:13:51] <jack> but i'll double check
+[03:14:43] *** Quits: eholk (eholk@moz-58C5EE6F.wavecable.com) (Quit: eholk)
+[03:15:08] <larsberg> jack: this is on test_title? that's one of the few that just runs cleanly to completion for me
+[03:15:11] <jack> will apply jdm's patch too
+[03:15:15] <jack> larsberg: yes
+[03:15:19] <jack> it's just a race
+[03:15:35] <jack> basically the script goes goh wild, finishes, shuts down everythign, then constellation gets a chance to run
+[03:15:45] <jack> and it has all the messages from the whole run left ot process, but script is long gone.
+[03:18:55] <jack> ok. switching handle_resized_window_msg to try_send fixed that.
+[03:18:58] <larsberg> oh, yeah, I guess the pipelines just need to let the constellation know when they're gone
+[03:18:59] *** Quits: zz_kimundi (kimundi@moz-805FAAC7.dip0.t-ipconnect.de) (Ping timeout)
+[03:19:03] <larsberg> or that just has to become a try_send
+[03:19:12] <jack> not sure what the preferred way is.
+[03:19:32] <jack> is the pipeline gone at the point? are we missed some sync event between pipeline and constellation?
+[03:19:45] <jack> omg!
+[03:19:50] <jack> all content tests passed
+[03:19:55] <larsberg> :-)
+[03:20:06] <larsberg> ship it
+[03:20:08] <jack> also, they are wicked fast now
+[03:20:19] <jdm> yay
+[03:20:56] <larsberg> I'm guessing that if you hold a channel, then either you have to use try_send OR you have to be quite sure that during the shutdown of the holder of the port end of it, they will notify you and wait for you to drain any related messages before shutting themselves down
+[03:21:06] <larsberg> Or, I guess, you have to be the only one who can shut it down
+[03:21:20] <larsberg> we've been fine in the past because in non-content tests the constellation shuts down the pipeline
+[03:21:35] <larsberg> but in this other path, script tears it down and there's the race condition
+[03:22:02] <jack> i'm happy to fix it "right" if either of you knows what that is.
+[03:22:25] <jack> this is just because of window.close?
+[03:22:31] <larsberg> yes
+[03:22:42] <larsberg> window.close takes this other path through the code that exposes a bunch of race conditions
+[03:22:47] *** Joins: zz_kimundi (kimundi@moz-6726BDB1.dip0.t-ipconnect.de)
+[03:22:49] *** zz_kimundi is now known as kimundi
+[03:23:00] <larsberg> because I think most of the code assumes shutdown requests come from the windowing system through the compositor
+[03:23:06] <larsberg> but that one comes up from script
+[03:23:31] <larsberg> or they come from an iframe_load, which again is from the "top" of the ownership tree
+[03:23:40] <larsberg> (if there really is a "top")
+[03:24:04] <jack> jdm: i can't get thath patch to apply. can you do a quikc PR against my branch?
+[03:24:11] <jdm> yep
+[03:24:30] <jack> larsberg: let's file a bug and try to get this landed.
+[03:24:39] <larsberg> jack: agreed
+[03:26:34] <jdm> I'm struggling to figure out how to make a PR to your branch
+[03:26:46] <jdm> mine is jdm/rustup
+[03:27:07] <jdm> oh, edit button at the top
+[03:31:54] <jack> ok. squashing and force pushing to the PR
+[03:39:23] <jack> jdm: does acid1 and stuff still work for you?
+[03:39:46] <jack> i can't get it to pop a window now.
+[03:40:01] <jack> but my machine just froze a little while ago so i have no idea if it's just me or what
+[03:40:16] <jdm> jack: acid1 works for me
+[03:40:31] <jdm> as does about-mozilla
+[03:42:14] <jack> ok. the PR should be ready for review
+[03:42:29] <jack> i'm going to reboot and run a memory test
+[03:45:30] *** Quits: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[03:51:55] *** Quits: canhtak (canhtak@moz-DB18D73D.wl.t.ulaval.ca) (Quit: canhtak)
+[03:56:47] *** Joins: canhtak (canhtak@moz-DB18D73D.wl.t.ulaval.ca)
+[03:59:15] *** Joins: eholk (eholk@moz-58C5EE6F.wavecable.com)
+[04:06:15] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[04:06:15] *** ChanServ sets mode: +qo dherman dherman
+[04:09:08] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[04:10:29] *** Quits: sedman_ (sedman@E4D2F0A.47298EC7.57E8EAD3.IP) (Ping timeout)
+[04:10:53] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[04:16:10] *** Joins: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca)
+[04:17:50] *** Quits: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[04:19:14] *** Joins: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net)
+[04:20:26] *** Joins: sedman_ (sedman@E4D2F0A.47298EC7.57E8EAD3.IP)
+[04:26:27] <jdm> woah woah woah
+[04:26:32] <jdm> github has diff expansion now
+[04:50:03] *** Quits: sedman_ (sedman@E4D2F0A.47298EC7.57E8EAD3.IP) (Ping timeout)
+[05:09:26] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[05:10:32] *** Joins: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca)
+[05:11:10] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[05:11:22] *** Quits: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net) (Ping timeout)
+[05:11:50] *** Joins: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net)
+[05:26:50] <jack> jdm: really?
+[05:27:00] <jack> if they add side by side diffs that would be amazing.
+[05:32:12] *** Quits: brson (brson@981AA104.E81F12CD.76F66111.IP) (Quit: leaving)
+[05:33:37] <jack> jdm: btw, memory checked out fine but after reboot my servo build works normally.
+[05:33:41] * jack hates this machine
+[05:42:09] *** Quits: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net) (Quit: tikue)
+[05:45:37] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Leaving...)
+[05:58:03] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[05:58:07] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[06:05:00] *** Joins: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca)
+[06:09:59] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[06:11:41] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[06:19:16] *** Joins: sedman_ (sedman@126A3CA2.9D2FC6E7.1E901589.IP)
+[06:39:04] *** Quits: hoverbear (hoverbear@moz-86FCBF4B.gv.shawcable.net) (Quit: Taking a nap.)
+[06:40:07] *** Quits: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca) (Quit: eatkinson)
+[06:40:33] *** Quits: eholk (eholk@moz-58C5EE6F.wavecable.com) (Quit: eholk)
+[06:46:00] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[06:47:47] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Connection reset by peer)
+[06:47:48] *** Joins: miketaylrrrr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[06:50:03] *** Quits: miketaylrrrr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Ping timeout)
+[07:00:13] <jack> jdm: do you mean a message to the script task?
+[07:00:19] <jdm> jack: yes
+[07:00:22] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[07:00:43] <jdm> jack: like I said, a fixme is also fine and I can address it
+[07:01:11] <jdm> I think I don't have any other concerns about the PR
+[07:01:26] <jack> what would call it?
+[07:02:09] <jack> i assume there is some cancelTimeout thing?
+[07:03:28] *** Joins: eholk (eholk@moz-58C5EE6F.wavecable.com)
+[07:03:43] <jdm> jack: right, there's cleartimeout in window
+[07:03:47] <jdm> oh wait
+[07:03:51] <jdm> that removes from active timers
+[07:04:08] <jdm> you can totally ignore the comment, in that case
+[07:04:16] <jack> oh, shoulnd't that also cancel them?
+[07:04:30] <jack> so there is a bug that a removed timer will still fire.
+[07:04:32] <jdm> except yeah
+[07:04:42] <jdm> I don't see how ClearTimeout is expected to work right now
+[07:04:57] <jdm> it searches for an element with no cancel channel
+[07:05:11] <jack> well only the handle is needed
+[07:05:14] <jack> the chan is an option
+[07:05:34] <jack> Chan's don't implement iter_bytes so they can't be part of hte hash
+[07:05:42] <jdm> oh, fascinating
+[07:05:48] <jack> really this should be a HashMap of handle -> Chan
+[07:06:05] <jack> i'll put that in a FIXME and fix this canceling problem
+[07:06:05] <jdm> that sounds much more logical to me
+[07:07:04] <jdm> jack: I don't think there's a problem; in script_task we check whether the timer is in active_timers before firing
+[07:07:27] <jack> ah
+[07:07:36] <jack> still, it will leave procs lying around
+[07:07:43] <jack> anyway you can't get the value out uof a hashset
+[07:07:49] <jack> so i can't fix it anyway without changing to hashmap
+[07:07:51] <jack> so FIXME it is
+[07:09:22] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[07:09:22] <ghservo> [13servo] 15metajack opened issue #1477: active_timers should be a hashmap 02http://git.io/6eyyCw
+[07:09:22] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[07:10:18] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[07:10:37] <jack> ok. your comments all addressed.
+[07:10:41] <jack> want me to squash?
+[07:12:00] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[07:19:52] <jdm> sure
+[07:20:31] <jdm> should I r+ it now, or do we want someone else to sign off too?
+[07:29:10] *** Quits: eholk (eholk@moz-58C5EE6F.wavecable.com) (Quit: eholk)
+[07:29:53] *** Quits: sedman_ (sedman@126A3CA2.9D2FC6E7.1E901589.IP) (Ping timeout)
+[07:32:06] <jack> repushed. i think let it land. we can fix it up, but ms2ger and others are waiting
+[07:32:19] <jack> pcwalton already reviewed, and lars has looked over a lot of it as well.
+[07:43:19] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[07:43:19] <ghservo> 01[13servo01] 15bors-servo pushed 0 new commits to 06auto: 02http://git.io/I2d-Cg
+[07:43:19] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[07:43:20] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[07:43:20] <ghservo> 01[13servo01] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/wGQ__Q
+[07:43:20] <ghservo> 13servo/06auto 14021cd0b 15Jack Moffitt: Upgrade to latest Rust.
+[07:43:20] <ghservo> 13servo/06auto 14e57de5b 15bors-servo: auto merge of #1473 : metajack/servo/rustup-20131219, r=jdm
+[07:43:20] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[07:48:32] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[07:50:52] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Ping timeout)
+[07:51:47] *** Quits: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[07:54:55] *** Joins: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca)
+[07:56:40] *** Quits: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca) (Ping timeout)
+[08:01:28] *** Quits: jdm (jdm@moz-AC9499B2.cable.teksavvy.com) (Quit: Lost terminal)
+[08:04:24] *** Joins: Ms2ger (Ms2ger@D324D80C.3387515C.187A1082.IP)
+[08:05:27] *** Joins: eholk (eholk@moz-58C5EE6F.wavecable.com)
+[08:10:38] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[08:12:24] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[08:13:46] *** Joins: victorporof (victorporo@416E2802.271BFD43.9B1E38F4.IP)
+[08:16:28] *** Joins: simlay (name@moz-490DE04A.amandrai.net)
+[08:18:45] *** Joins: jackneill (jackneill@moz-E4F5A8EC.pool.digikabel.hu)
+[08:20:01] *** Joins: six600110 (six600110@moz-C663577C.hsd1.il.comcast.net)
+[08:20:19] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[08:20:24] *** Quits: six600110 (six600110@moz-C663577C.hsd1.il.comcast.net) (Quit: Ex-Chat)
+[08:20:54] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[08:22:35] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[08:24:16] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Ping timeout)
+[08:25:10] *** Quits: eholk (eholk@moz-58C5EE6F.wavecable.com) (Quit: eholk)
+[08:25:42] <Ms2ger> Dammit bors!
+[08:29:31] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[08:29:47] <Ms2ger> jack, still around?
+[08:34:04] *** Joins: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net)
+[08:46:07] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[08:47:16] *** Quits: victorporof (victorporo@416E2802.271BFD43.9B1E38F4.IP) (Quit: victorporof)
+[08:48:20] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Ping timeout)
+[08:57:07] *** Quits: dbaron (dbaron@moz-A9D01D68.dsl.dynamic.sonic.net) (Ping timeout)
+[08:59:42] *** Quits: harth_ (heather@moz-42412102.hsd1.ca.comcast.net) (Client exited)
+[09:00:11] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[09:01:01] *** Joins: six600110 (six600110@moz-C663577C.hsd1.il.comcast.net)
+[09:01:55] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Ping timeout)
+[09:02:29] *** Quits: six600110 (six600110@moz-C663577C.hsd1.il.comcast.net) (Quit: Ex-Chat)
+[09:06:02] *** Quits: canhtak (canhtak@moz-DB18D73D.wl.t.ulaval.ca) (Quit: canhtak)
+[09:06:42] *** Joins: eddyb (eddy@EDE07015.D51DAF03.FB866788.IP)
+[09:10:23] *** Quits: eddyb (eddy@EDE07015.D51DAF03.FB866788.IP) (Ping timeout)
+[09:10:53] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[09:11:37] *** Joins: eddyb (eddy@EDE07015.D51DAF03.FB866788.IP)
+[09:12:38] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[09:23:15] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[09:24:58] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Ping timeout)
+[09:40:22] *** Joins: victorporof (victorporo@416E2802.271BFD43.9B1E38F4.IP)
+[09:43:00] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[09:46:08] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[09:47:52] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Connection reset by peer)
+[09:47:55] *** Joins: miketaylrrrr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[09:50:15] *** Quits: miketaylrrrr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Ping timeout)
+[09:54:43] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[10:04:19] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[10:11:27] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[10:13:09] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[10:18:56] *** Joins: Kostic (marko@moz-6E10EF7B.mbb.telenor.rs)
+[10:24:00] *** Joins: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca)
+[10:24:06] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[10:25:46] *** Quits: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca) (Ping timeout)
+[10:46:07] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[10:47:55] *** Quits: bhearsum|afk (bhearsum@moz-FBAE94.members.linode.com) (Ping timeout)
+[10:48:21] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Ping timeout)
+[10:48:36] *** Joins: bhearsum (bhearsum@moz-FBAE94.members.linode.com)
+[11:11:44] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[11:13:31] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[11:16:11] *** Quits: robn (robn@moz-76B0302C.static.internode.on.net) (Quit: Coyote finally caught me)
+[11:16:28] *** Joins: robn (robn@moz-76B0302C.static.internode.on.net)
+[11:17:00] *** Quits: robn (robn@moz-76B0302C.static.internode.on.net) (Quit: Coyote finally caught me)
+[11:17:11] *** Joins: robn (robn@moz-76B0302C.static.internode.on.net)
+[11:24:45] *** Joins: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca)
+[11:26:32] *** Quits: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca) (Ping timeout)
+[11:28:55] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[11:34:45] *** Quits: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net) (Quit: tikue)
+[11:35:29] *** Quits: robn (robn@moz-76B0302C.static.internode.on.net) (Quit: Coyote finally caught me)
+[11:35:44] *** Joins: robn (robn@moz-76B0302C.static.internode.on.net)
+[11:39:03] *** Quits: lurk_ (chatzilla@moz-F088D030.hsd1.in.comcast.net) (Client exited)
+[11:39:37] *** Joins: lurk_ (chatzilla@moz-F088D030.hsd1.in.comcast.net)
+[11:49:24] *** Quits: Kostic (marko@moz-6E10EF7B.mbb.telenor.rs) (Ping timeout)
+[11:50:34] *** Joins: Kostic (marko@moz-6E10EF7B.mbb.telenor.rs)
+[11:53:04] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[11:54:42] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[11:55:11] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[12:12:16] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[12:13:59] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[12:20:02] *** Quits: Kostic (marko@moz-6E10EF7B.mbb.telenor.rs) (Client exited)
+[12:20:07] *** Quits: khodzha1 (khodzha@E048973E.2AEE264E.CA6E2165.IP) (Ping timeout)
+[12:25:29] *** Joins: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca)
+[12:25:51] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[12:27:17] *** Quits: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca) (Ping timeout)
+[12:27:33] *** Joins: khodzha (khodzha@E048973E.2AEE264E.CA6E2165.IP)
+[12:30:07] *** Quits: khodzha (khodzha@E048973E.2AEE264E.CA6E2165.IP) (Ping timeout)
+[12:48:14] *** Joins: khodzha (khodzha@56E1B165.FF90EB8A.4595224C.IP)
+[12:50:15] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse)
+[13:00:28] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[13:01:59] *** Quits: khodzha (khodzha@56E1B165.FF90EB8A.4595224C.IP) (Ping timeout)
+[13:02:22] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Ping timeout)
+[13:12:43] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[13:13:22] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[13:14:25] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[13:14:55] *** Quits: lurk_ (chatzilla@moz-F088D030.hsd1.in.comcast.net) (Ping timeout)
+[13:22:35] *** Joins: khodzha (khodzha@E048973E.2AEE264E.CA6E2165.IP)
+[13:26:13] *** Joins: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca)
+[13:26:42] *** kimundi is now known as zz_kimundi
+[13:27:54] *** Quits: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca) (Ping timeout)
+[13:33:47] *** zz_kimundi is now known as kimundi
+[13:41:51] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[13:42:01] *** Joins: sedman_ (sedman@E4D2F0A.47298EC7.57E8EAD3.IP)
+[13:43:14] *** Quits: Ms2ger (Ms2ger@D324D80C.3387515C.187A1082.IP) (Connection reset by peer)
+[13:55:20] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[13:55:20] <ghservo> 01[13servo01] 15bors-servo 04force-pushed 06auto from 14e57de5b to 14e8b0eae: 02http://git.io/c8GovQ
+[13:55:20] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[13:55:29] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Leaving...)
+[13:59:24] *** Joins: Ms2ger (Ms2ger@AA55AE55.592AEF45.F15B0BB3.IP)
+[14:01:51] * Ms2ger crosses fingers
+[14:13:18] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[14:15:02] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[14:21:29] *** Joins: canhtak (canhtak@moz-DB18D73D.wl.t.ulaval.ca)
+[14:26:58] *** Joins: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca)
+[14:27:03] *** Joins: miketaylr (mtaylor@moz-D4421043.lightspeed.austtx.sbcglobal.net)
+[14:28:39] *** Quits: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca) (Ping timeout)
+[14:42:17] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[14:42:17] *** ChanServ sets mode: +qo dherman dherman
+[14:43:07] <jack> sigh.
+[14:44:37] <larsberg> yeah, I've never seen that rust build failure before. ugh.
+[14:48:06] *** Joins: yusukesuzuki (yusukesuzu@moz-43160292.net218219047.t-com.ne.jp)
+[14:49:18] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[14:49:18] <ghservo> 01[13servo01] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/ZVP0KQ
+[14:49:18] <ghservo> 13servo/06auto 14021cd0b 15Jack Moffitt: Upgrade to latest Rust.
+[14:49:18] <ghservo> 13servo/06auto 1459d5189 15bors-servo: auto merge of #1473 : metajack/servo/rustup-20131219, r=jdm
+[14:49:18] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[14:49:20] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[14:49:20] <ghservo> 01[13servo01] 15bors-servo 04force-pushed 06auto from 1465a6c1a to 14e8b0eae: 02http://git.io/c8GovQ
+[14:49:20] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[14:51:48] <jack> ok. just killed the objdirs
+[14:51:51] <jack> hopefully that will fix it.
+[15:12:56] *** Quits: miketaylr (mtaylor@moz-D4421043.lightspeed.austtx.sbcglobal.net) (Quit: Leaving...)
+[15:13:47] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[15:15:31] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[15:19:15] *** Joins: miketaylr (mtaylor@moz-D4421043.lightspeed.austtx.sbcglobal.net)
+[15:24:11] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[15:27:43] *** Joins: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca)
+[15:29:26] *** Quits: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca) (Ping timeout)
+[15:30:30] <jack> jdm: i think i killed the objdir during the linux buidler build phase
+[15:30:36] <jack> but he mac buidler was cleaned before the build started.
+[15:31:09] <jack> oh damn. it switched slaves on me
+[15:34:19] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[15:34:19] <ghservo> 01[13servo01] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/XAJJGg
+[15:34:19] <ghservo> 13servo/06auto 14021cd0b 15Jack Moffitt: Upgrade to latest Rust.
+[15:34:19] <ghservo> 13servo/06auto 142979df9 15bors-servo: auto merge of #1473 : metajack/servo/rustup-20131219, r=jdm
+[15:34:19] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[15:40:11] <Ms2ger> jack, sneaky slaves...
+[15:49:03] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[15:51:50] *** Joins: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca)
+[16:06:32] <jack> jdm: it's failing in `ar` now
+[16:07:00] <Ms2ger> Arr!
+[16:07:04] <larsberg> we're not out of free disk space or anything, are we?
+[16:07:55] <jack> chekcing that. linux has 60G free
+[16:08:47] <jack> and 16G of ram, so it's not running out of that.
+[16:09:33] <larsberg> the only thing I've found in trawling internet archives are trying to compile with the 10.7 toolchain on OSX, which did not support some of the newer AVX instructions
+[16:09:38] <larsberg> is this OSX-only, or linux too?
+[16:09:49] <jack> linux fails a weird way too
+[16:14:23] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[16:16:12] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[16:18:22] <larsberg> yeah, looks like on linux there are a bunch of missing LLVM symbols. ugh
+[16:18:35] <larsberg> we need @bors: retry-and-just-delete-the-whole-tree
+[16:19:20] <Ms2ger> @bors: whatever, just merge?
+[16:21:26] <larsberg> Ms2ger: we are *not* returning to the dark, dark days of larsbors
+[16:21:49] <Ms2ger> Aren't we?
+[16:23:30] *** Quits: sedman_ (sedman@E4D2F0A.47298EC7.57E8EAD3.IP) (Ping timeout)
+[16:24:18] <jack> larsberg: i did delete the whole tree.
+[16:24:33] <larsberg> jack: ugh!
+[16:24:54] <jack> well i deleted objdir
+[16:24:59] <jack> i didn't delete srcdir.
+[16:25:06] <jack> maybe the llvm pointer wasn't updated right?
+[16:25:29] <jack> i logged in the mac builder and am just trying to build rust.
+[16:25:33] <larsberg> that's the only thing I can imagine
+[16:25:48] <larsberg> I just finished a complete clean build on my mac of your PR from a clean tree and it succeeded fine
+[16:26:29] <larsberg> Even did it with a 'no-args' configure to mimic the build slave
+[16:29:23] *** Quits: miketaylr (mtaylor@moz-D4421043.lightspeed.austtx.sbcglobal.net) (Quit: Leaving...)
+[16:31:18] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[16:31:36] <jack> ar: fatal error in /usr/bin/ranlib
+[16:31:47] <jack> wow.
+[16:33:10] <Ms2ger> Such error
+[16:33:52] <larsberg> yeah, that's the one where the only thing I found was the random statements about the 10.7 toolchain and AVX instructions
+[16:35:31] <jack> still doesn't explain the linux build failures.
+[16:36:05] <jack> git status shows us pointing to the right rust etc
+[16:40:22] <larsberg> the missing LLVM symbols on linux?
+[16:41:07] <larsberg> oh, you're right
+[16:41:15] <larsberg> those same symbols are there, too, as in that first mac failure
+[16:41:33] <larsberg> (the missing rust_pthread_cond_t_size, etc.)
+[16:41:44] <jack> i'm running a rust build on the linux slave without parallelism to see what happens
+[16:41:57] <larsberg> make sense
+[16:42:06] <larsberg> I seem to remember a very recent fix to the rust build for broken parallel builds
+[16:42:46] <larsberg> https://github.com/mozilla/rust/pull/11355
+[16:43:13] <larsberg> files were "flying around" :-)
+[16:45:24] *** Joins: hoverbear (hoverbear@moz-86FCBF4B.gv.shawcable.net)
+[16:46:23] *** Joins: sedman_ (sedman@E4D2F0A.47298EC7.57E8EAD3.IP)
+[16:51:26] *** Quits: yusukesuzuki (yusukesuzu@moz-43160292.net218219047.t-com.ne.jp) (Ping timeout)
+[16:51:51] *** Joins: yusukesuzuki (yusukesuzu@moz-43160292.net218219047.t-com.ne.jp)
+[16:51:52] <jack> great. the linux build slave turned itself off while i was trying.
+[16:58:08] *** Joins: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca)
+[16:58:19] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[16:58:19] <ghservo> 01[13servo01] 15bors-servo 04force-pushed 06auto from 142979df9 to 14e8b0eae: 02http://git.io/c8GovQ
+[16:58:19] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[17:03:57] <jack> when the current build on the linux slave fails i can try again.
+[17:14:42] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[17:15:05] <jack> not going to wait for this one i guess. i'm going to go run. i'll try this again later.
+[17:16:27] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[17:31:39] *** Joins: Kostic (marko@moz-6E10EF7B.mbb.telenor.rs)
+[17:32:08] *** Quits: sedman_ (sedman@E4D2F0A.47298EC7.57E8EAD3.IP) (Ping timeout)
+[17:36:34] *** Joins: dbaron (dbaron@moz-A9D01D68.dsl.dynamic.sonic.net)
+[17:46:16] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[18:07:07] *** Quits: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca) (Quit: eatkinson)
+[18:15:13] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[18:16:58] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[18:18:36] <jack> wat? the linux build succeeded!?!
+[18:18:55] <Ms2ger> !
+[18:21:40] <jack> bhearsum: ping.  ar seems to be failing on the 10.7 builders. do they need a toolchain update or something. i'm stumped as to what this could be.
+[18:22:19] *** Joins: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP)
+[18:22:19] <ghservo> 01[13servo01] 15bors-servo 04force-pushed 06auto from 1423c1854 to 14e8b0eae: 02http://git.io/c8GovQ
+[18:22:19] *** Parts: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP) ()
+[18:22:19] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[18:22:19] <ghservo> 01[13servo01] 15bors-servo pushed 2 new commits to 06auto: 02http://git.io/8tHWBA
+[18:22:19] <ghservo> 13servo/06auto 14021cd0b 15Jack Moffitt: Upgrade to latest Rust.
+[18:22:19] <ghservo> 13servo/06auto 140a8a509 15bors-servo: auto merge of #1473 : metajack/servo/rustup-20131219, r=jdm
+[18:22:19] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[18:27:34] *** Joins: maxiepoo (mnew@moz-6F50ADE.hsd1.il.comcast.net)
+[18:41:00] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[18:54:51] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[19:07:15] *** Quits: khodzha (khodzha@E048973E.2AEE264E.CA6E2165.IP) (Ping timeout)
+[19:15:46] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[19:17:31] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[19:19:49] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[19:21:35] *** Joins: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca)
+[19:23:57] *** Joins: khodzha (khodzha@56E1B165.FF90EB8A.4595224C.IP)
+[19:35:20] *** Joins: Jayflux (Jason@moz-C6443785.as13285.net)
+[19:46:33] *** Quits: Kostic (marko@moz-6E10EF7B.mbb.telenor.rs) (Client exited)
+[20:02:52] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[20:16:16] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[20:18:02] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[20:18:36] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[20:18:36] *** ChanServ sets mode: +qo dherman dherman
+[20:22:23] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[20:48:39] *** Joins: lurk_ (chatzilla@moz-F088D030.hsd1.in.comcast.net)
+[20:54:52] *** Quits: eddyb (eddy@EDE07015.D51DAF03.FB866788.IP) (Ping timeout)
+[20:55:03] <larsberg> jack: it looks like the mac Rust build is still running in parallel. is there a way to disable that? it definitely appears we don't have the fix from https://github.com/mozilla/rust/pull/11355
+[21:05:14] *** Quits: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca) (Quit: eatkinson)
+[21:10:23] *** Quits: alex-abreu (alex@moz-7421D6C9.mc.videotron.ca) (Ping timeout)
+[21:10:27] *** Joins: alex-abreu (alex@moz-7421D6C9.mc.videotron.ca)
+[21:16:54] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[21:18:42] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[21:35:54] *** Quits: khodzha (khodzha@56E1B165.FF90EB8A.4595224C.IP) (Ping timeout)
+[21:43:12] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[21:43:31] *** Joins: six600110 (six600110@moz-C663577C.hsd1.il.comcast.net)
+[21:43:43] *** Quits: six600110 (six600110@moz-C663577C.hsd1.il.comcast.net) (Quit: Ex-Chat)
+[21:44:56] *** Joins: miketaylrrrr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[21:45:31] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Ping timeout)
+[21:47:09] *** Quits: miketaylrrrr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Ping timeout)
+[21:47:22] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Client exited)
+[21:56:34] *** Quits: Ms2ger (Ms2ger@AA55AE55.592AEF45.F15B0BB3.IP) (Quit: nn)
+[21:58:21] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[21:58:22] *** ChanServ sets mode: +o brson
+[22:02:56] *** nrc is now known as nrc|afk
+[22:06:36] *** Quits: jackneill (jackneill@moz-E4F5A8EC.pool.digikabel.hu) (Ping timeout)
+[22:17:14] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[22:19:00] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[22:23:32] *** Quits: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[22:23:51] *** Joins: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca)
+[22:33:35] *** Joins: valenting (Thunderbir@23EF5095.ECBF5C84.FB866788.IP)
+[22:44:09] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[22:45:37] <jack> larsberg: it's doesn't affect anything.
+[22:45:47] <jack> i've run it several times by hand without parallelism and it fails the same way.
+[22:46:20] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Ping timeout)
+[22:48:53] *** Quits: dbaron (dbaron@moz-A9D01D68.dsl.dynamic.sonic.net) (Ping timeout)
+[22:49:05] <larsberg> darn :-(
+[22:52:28] *** nrc|afk is now known as nrc
+[22:53:05] <larsberg> are the Rust buildbots on a different configuration of OSX and tools? weird that they don't see it
+[22:54:53] <jack> i think so, because they dont' use the releng infrastructure and we do.
+[22:55:13] <jack> brson: what OS X do the rust buildbots use?
+[22:57:46] *** Quits: valenting (Thunderbir@23EF5095.ECBF5C84.FB866788.IP) (Ping timeout)
+[22:59:18] <brson> jack: 10.7 and 10.8
+[23:00:12] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: leaving)
+[23:00:16] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[23:00:16] *** ChanServ sets mode: +o brson
+[23:00:30] <jack> brson: have you ever seen this fatal error in `ar` before?
+[23:00:42] <jack> what xcode are the buildbots using for rust?
+[23:00:48] <jack> (this is a build error building rust, not servo)
+[23:03:27] <larsberg> error: http://servo-buildbot.pub.build.mozilla.org/builders/mac/builds/740/steps/shell/logs/stdio
+[23:05:54] <brson> jack: no i haven't seen that before. i'll check the xcode version
+[23:06:30] <jack> Xcode 4.1
+[23:06:31] <jack> Build version 4B110
+[23:06:35] <jack> tha'ts what servo has
+[23:06:49] <jack> (xcodebuild -version)
+[23:07:10] <brson> rust3 is using Xcode 4.4
+[23:07:10] <brson> Build version 4F250
+[23:07:17] <brson> rust5 Xcode 4.6.3
+[23:07:22] <brson> Build version 4H1503
+[23:09:42] *** Joins: Kostic (marko@moz-6E10EF7B.mbb.telenor.rs)
+[23:11:01] <jack> hmm. i wonder what changed in rust that broke old `ar`
+[23:11:13] *** Joins: deokjinkim (Mibbit@B4104EBB.3CC170B1.1E14B209.IP)
+[23:11:50] <brson> it might be possible to get rustc to print the ar command it's using
+[23:12:23] <brson> is this servo's first upgrade to a rust with static linking?
+[23:12:35] <jack> probably
+[23:12:53] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse)
+[23:12:58] <jack> can we turn off static linking?
+[23:13:04] <cmr> -Z prefer-dynamic
+[23:13:15] <cmr> and use --lib instead of --rlib (same for crate_tye)
+[23:13:38] <jack> does the rust makefile have this already or can i just use RUSTFLAGS=-Z prefer-dynamic?
+[23:13:56] <cmr> you can use rustflags I think
+[23:14:56] <jack> brson: the command is `ar s libstd.....rlib`
+[23:16:01] <larsberg> did this build also start emitting more AVX instructions? I've seen some notes online about this version of ar on OSX having trouble linking binaries that generate instructions that are too "new"
+[23:16:48] <brson> jack: literally '.....'? that's pretty odd
+[23:17:08] <jack> brson: no, i was just too lazy to cut and paste. normal hash/version is there
+[23:17:41] <jack> brson: error: ar s x86_64-apple-darwin/stage1/lib/rustc/x86_64-apple-darwin/lib/librustc-8b28e8d8-0.9.rlib failed with: exit code: 1
+[23:17:44] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[23:18:49] <brson> maybe ar just doesn't support 's'
+[23:19:40] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[23:22:00] <jack> it's in the manpage.
+[23:31:35] <jack> prefer-dynamic doesnt' prevent the rlibs :(
+[23:32:50] <brson> removing #[crate_type = "rlib"] from all the crates may make it stop
+[23:39:48] *** Joins: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca)
+[23:46:01] <jack> brson, larsberg, jdm: https://bugzilla.mozilla.org/show_bug.cgi?id=959005
+[23:47:04] <larsberg> jack: looks great - hopefully that's the final missing link :-)
+[23:51:21] *** Quits: dbaupp (Thunderbir@moz-BB237A70.lns20.syd6.internode.on.net) (Ping timeout)
+[23:52:31] *** Quits: Kostic (marko@moz-6E10EF7B.mbb.telenor.rs) (Quit: Kostic)
+[23:55:29] *** Joins: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net)
+[23:56:23] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)

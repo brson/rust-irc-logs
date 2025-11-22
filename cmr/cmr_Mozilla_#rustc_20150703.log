@@ -1,0 +1,128 @@
+[00:12:14] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[00:32:39] <eddyb> uh oh, NamedTupleConstructor looks broken
+[00:33:20] <eddyb> aatch, nrc: so NamedTupleConstructor contains some substs, and in callee::trans_call_inner, they're applied to callee_ty
+[00:33:31] <eddyb> but callee_ty is supposed to be monomorphic (at least AFAICT)
+[00:33:54] <eddyb> and then trans_named_tuple_constructor is called *without* the substs
+[00:34:30] <eddyb> so what will happen in ambiguous cases?!
+[00:35:50] <eddyb> oh. the return type /facepalm
+[01:08:01] *** Quits: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se) (Ping timeout: 121 seconds)
+[01:09:07] *** Joins: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se)
+[01:31:44] *** Joins: acharles (acharles@moz-ulbdcn.ca.comcast.net)
+[01:32:47] *** Quits: acharles (acharles@moz-ulbdcn.ca.comcast.net) (Client exited)
+[01:34:11] *** Joins: acharles (acharles@moz-ulbdcn.ca.comcast.net)
+[01:34:30] <eddyb> nmatsakis: bonus "feature": assert_eq!(a, b) works with types and other things now
+[01:34:55] <eddyb> so you could do sanity checks that print almost as nicely as a type error when they fail
+[01:36:21] <eddyb> hopefully that will tell me where I screwed up
+[01:39:03] <eddyb> thread 'rustc' panicked at 'assertion failed: `(left == right)` (left: `fn() -> f32 {f32::f32.Float::infinity}`, right: `fn() -> f32 {num::Float::infinity}`)', src/librustc_trans/trans/callee.rs:580
+[01:39:05] <eddyb> cool
+[01:40:43] <eddyb> that's funny, the type on the right was the previous one, the type on the left is the new one, which in some other case happens to have a projection
+[01:41:05] *** Parts: aatch (james@moz-is4j4r.cable.telstraclear.net) ("Leaving")
+[01:41:13] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[01:42:06] <eddyb> so my change is positive except in some case it's broken
+[01:47:48] <eddyb> new=fn(&mut &'static mut iter::Enumerate<str::Chars>) -> option::Option<<iter::Enumerate<str::Chars> as iter::Iterator>::Item> {iter::&'a mut I.Iterator::next} old=fn(&mut &'static mut iter::Enumerate<str::Chars>) -> option::Option<(usize, char)> {iter::Iterator::next} expr=expr(724: ::core::iter::Iterator::next)
+[01:48:16] <eddyb> so it's the type from the right impl, but with no substitutions applied. uh oh
+[01:48:43] <eddyb> actually, substititons are applied, but it's not normalized
+[01:51:24] <bluss> what kind of wizardry allows types as values?
+[01:51:38] <eddyb> bluss: what do you mean?
+[01:51:49] <bluss> so you can pass them to assert_eq
+[01:52:04] <eddyb> bluss: rustc::middle::ty::Ty<'tcx> :P
+[01:52:09] <bluss> oh I understand, yeah
+[01:52:16] <bluss> no magic
+[01:52:49] <eddyb> bluss: https://github.com/rust-lang/rust/pull/26351
+[01:52:56] <eddyb> that's the change I'm referring to
+[01:58:15] *** Quits: kimundi (kimundi@moz-1r1qk7.bv9k.pbdn.57bc.2002.IP) (Ping timeout: 121 seconds)
+[02:05:04] *** Joins: kimundi (kimundi@moz-hp6g5k.dip0.t-ipconnect.de)
+[02:07:04] <eddyb> oh dear, monomorphic_fn returns the right type the first time
+[02:07:21] <eddyb> but then it doesn't normalize it if it's cached
+[02:07:39] <eddyb> so few things have proper type discipline in trans that it went unnoticed
+[02:13:50] <eddyb> so that wasted me like half a day, trying to find where my code was going wrong
+[02:53:28] *** Quits: kimundi (kimundi@moz-hp6g5k.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[02:55:05] *** Joins: kimundi (kimundi@moz-7qf02q.u2oo.e3ub.57bc.2002.IP)
+[03:43:19] *** Quits: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se) (Ping timeout: 121 seconds)
+[03:50:23] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Connection closed)
+[03:52:58] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[04:08:05] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[04:21:08] <eddyb> jroesch, nmatsakis: remind me to open an issue about TyBareFn's from trait methods not matching TyBareFn's from impl methods of those traits
+[04:21:35] <eddyb> given the refactoring I'm doing to MethodOrigin, it's pretty clear using *only* trait methods for types is the best way forward
+[04:21:47] <eddyb> (with substs' Self to distinguish between impls)
+[04:39:12] <jroesch> eddyb: as in not using TyBareFn?
+[04:39:16] <jroesch> just curious
+[04:39:20] <jroesch> don't have that much context
+[07:05:24] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[07:42:32] *** Joins: laumann (thomas@moz-3m6.3kq.109.2.IP)
+[07:56:34] *** Joins: doener (doener@moz-fnh.n4j.147.5.IP)
+[07:57:26] *** Quits: acharles (acharles@moz-ulbdcn.ca.comcast.net) (Ping timeout: 121 seconds)
+[08:02:21] *** Joins: acharles (acharles@moz-ulbdcn.ca.comcast.net)
+[08:06:06] *** Joins: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se)
+[08:53:06] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[09:58:53] *** Quits: barosl (barosl@moz-tmp.qma.67.220.IP) (Quit: Leaving)
+[10:01:48] *** Joins: barosl (barosl@moz-tmp.qma.67.220.IP)
+[10:59:54] *** Joins: Rym (uid91135@moz-n2i7qm.charlton.irccloud.com)
+[11:07:33] <eddyb> jroesch: no, as in using the DefId from the trait method instead of the impl method
+[11:07:37] <eddyb> even when the impl method is known
+[11:08:09] <eddyb> this change shouldn't break anything, since it will allow more types to unify
+[11:14:44] <eddyb> rusti: "foo"
+[11:25:32] *** Joins: arielb1 (Ariel@moz-fvk.j5m.66.109.IP)
+[11:27:06] <eddyb> jroesch: so method lookup can't find trait impl methods, it just doesn't
+[11:27:11] <eddyb> it's even more clear with my changes
+[11:27:16] <eddyb> and UFCS lookup uses that
+[11:27:39] <eddyb> so the types I'm thinking of should not appear outside of trans
+[11:27:48] <eddyb> only a VtableImpl can produce them
+[11:28:11] <eddyb> or iterating impls, I guess
+[11:33:23] <eddyb> jroesch, nmatsakis: yeah, I can't find a way to create the types I wanted to open an issue against. all is good :D
+[11:46:03] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Ping timeout: 121 seconds)
+[11:55:49] *** Quits: arielb1 (Ariel@moz-fvk.j5m.66.109.IP) (Connection closed)
+[13:51:31] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (Quit: Leaving.)
+[14:15:23] *** Quits: laumann (thomas@moz-3m6.3kq.109.2.IP) (Ping timeout: 121 seconds)
+[14:41:13] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[15:42:45] *** Quits: Rym (uid91135@moz-n2i7qm.charlton.irccloud.com) (Quit: Connection closed for inactivity)
+[16:05:00] *** Joins: brson (brson@moz-07r.r96.3.74.IP)
+[16:05:01] *** ChanServ sets mode: +qo brson brson
+[16:51:00] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (A TLS packet with unexpected length was received.)
+[16:56:21] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[17:10:50] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[17:27:19] *** Joins: playbot-mini (playbot-min@moz-1vk5qd.compute.amazonaws.com)
+[17:27:19] *** Joins: playbot (playbot@moz-1vk5qd.compute.amazonaws.com)
+[17:40:46] *** Quits: brson (brson@moz-07r.r96.3.74.IP) (Quit: leaving)
+[18:21:08] *** Quits: c74d (c74d3a4ebb6@moz-iclfcj.mggc.hibn.4404.2002.IP) (Connection closed)
+[18:33:10] *** Joins: c74d (c74d3a4ebb6@moz-iclfcj.mggc.hibn.4404.2002.IP)
+[19:11:04] *** Quits: doener (doener@moz-fnh.n4j.147.5.IP) (Quit: leaving)
+[19:42:55] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[20:12:35] <jroesch> eddyb: I see what you are saying, I got the core default fallback algorithm working, just need to find all the places where default constraints are introduced 
+[20:12:39] <jroesch> so far only method calls work
+[20:14:31] <jroesch> are there any pinch points besides instantiate_path? it seems that default constraints could crop up in quite a few places and I don't see a unified way to get them all without writing similar code in a bunch of different places 
+[20:53:59] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[21:07:08] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[21:20:33] *** Joins: arielb1 (Ariel@moz-fvk.j5m.66.109.IP)
+[21:26:01] <arielb1> nrc: ping
+[21:26:48] <nrc> arielb1: pong
+[21:26:59] <arielb1> nrc: about  Make associated type defaults closer to the spec #26728 
+[21:27:16] <arielb1> I thought we are planning for warning 1.2 + error 1.3
+[21:27:51] <arielb1> I guess I should make the code closer in that direction
+[21:28:45] <arielb1> https://github.com/rust-lang/rust/pull/26728
+[21:30:25] <nrc> that's what I thought too, but the PR makes it an error - are you planning to land this on master and nominate a different version with a warning for 1.2?
+[21:30:46] <arielb1> nrc: I guess
+[21:30:56] <arielb1> I will refactor it a bit through before
+[21:31:08] <arielb1> anyway, I think the error is fine
+[21:31:13] <arielb1> maybe we should give it an E-number
+[21:31:20] <arielb1> can you do it with notes?
+[21:31:42] <nrc> I think the E-number needs to be an actual error
+[21:32:10] <arielb1> nrc: this seems more like a note
+[21:32:25] <bluss> arielb1: nit, spelling is `overridden`
+[21:32:36] <nrc> I wouldn't worry too much about the E-number
+[21:32:55] <arielb1> I spanned it to the problematic associated type override
+[21:33:44] <arielb1> you are right the message is a bit cryptic, so I would prefer an E-number
+[21:34:43] <arielb1> maybe add a separate error message for the items that need to be overridden because
+[21:34:56] <arielb1> of the override?
+[21:35:08] <arielb1> not all trait items implemented, missing: {}
+[21:35:21] <arielb1> the following trait items need to be reimplemented because {} was overridden: {}
+[21:35:46] <arielb1> the last one spanned on the associated type
+[21:40:36] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[22:05:45] *** Quits: c74d (c74d3a4ebb6@moz-iclfcj.mggc.hibn.4404.2002.IP) (Ping timeout: 121 seconds)
+[22:09:50] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[23:06:32] <arielb1> nrc: <updated gh26728>
+[23:18:37] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[23:24:38] *** Joins: doener (doener@moz-fnh.n4j.147.5.IP)
+[23:35:28] *** Joins: eddyb_ (eddyb@moz-h7s.q07.26.188.IP)
+[23:38:31] *** Quits: eddyb (eddyb@moz-vvc.hlc.26.188.IP) (Ping timeout: 121 seconds)
+[23:55:43] <arielb1> nrc: could you r+?

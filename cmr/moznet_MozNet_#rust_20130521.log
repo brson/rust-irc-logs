@@ -1,0 +1,2107 @@
+[00:02:36] *** Quits: Excureo (c@moz-DE8C33F1.static.yakm.wa.charter.com) (Input/output error)
+[00:04:23] <bjz> hmm error: https://gist.github.com/bjz/e3174ef058b743445c5e
+[00:05:12] <bjz> trying to put references to those destroyable window handles in a HashMap in TLS
+[00:06:56] <bjz> nmatsakis: lifetime wizard, any assistance you can give?
+[00:06:57] *** Joins: Excureo (c@moz-DE8C33F1.static.yakm.wa.charter.com)
+[00:07:27] <bjz> I tried priv fn tls_key(_: @@mut WindowDataMap<'self>) {}
+[00:07:29] *** Quits: snadon (chatzilla@moz-3BC727E8.mc.videotron.ca) (Ping timeout)
+[00:07:33] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke. It's all a joke.)
+[00:07:42] <nmatsakis> bjz: you can't put lifetime stuff into TLS.
+[00:07:51] <nmatsakis> bjz: at least, not without transmuting to an unsafe pointer,
+[00:07:51] <bjz> ack
+[00:08:06] <nmatsakis> bjz: this is because the TLS API is just not safe for that, since it doesn't constrain the lifetime
+[00:08:11] <nmatsakis> bjz: the TLS API needs some love
+[00:08:13] <bjz> mmk
+[00:08:28] <bjz> I think I could put the C handle there
+[00:08:30] *** Quits: q66 (q66@6EE9DE40.46454B5D.33AABD5F.IP) (Client exited)
+[00:08:36] <bjz> yeah that might be an idea
+[00:08:42] <nmatsakis> bjz: you can look at what conditions do as an example, but basically *if you can guarantee that the lifetime pointer will be safe*, you can cast it to a *() or whatever
+[00:08:54] <nmatsakis> bjz: the trick is that you have to both set the TLS value and unset it within the lifetime
+[00:09:04] <brson> conditions are not sound
+[00:09:15] <brson> because of lifetime pointers
+[00:09:16] <nmatsakis> brson: yes, but that's a separate thing. 
+[00:09:27] * nmatsakis actively working on that
+[00:09:33] * bjz shudders at the stuff he is attempting to do
+[00:10:49] *** Joins: SiegeLord (siege@moz-CAF07B4C.hsd1.ma.comcast.net)
+[00:12:48] <nmatsakis> brson: my current fix for closures breaks iterators though :( (in that they do not type check)
+[00:12:55] <nmatsakis> brson: trying to see if I can figure out another way to be more accepting
+[00:13:36] *** Quits: mschifer1 (Adium@2557E599.66715431.D25A875A.IP) (Quit: Leaving.)
+[00:16:35] *** Joins: doomrobo (michael@moz-C0E21A2B.nyc.res.rr.com)
+[00:18:27] *** Quits: dherman (dherman@moz-B31C6965.dsl.pltn13.sbcglobal.net) (Quit: dherman)
+[00:21:01] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[00:21:24] <bjz> brson: ok, another destructor problem: https://gist.github.com/bjz/72cee26b56f5589c55df
+[00:21:48] <bjz> callbacks.rs:10:21: 10:99 error: instantiating a type parameter with an incompatible type `glfw::Window`, which does not fulfill `Copy`
+[00:21:48] <bjz> callbacks.rs:10 let window = glfw::Window::create(800, 600, "Hello, I am a window.", glfw::Windowed).get();
+[00:22:15] <bjz> where Window::create returns a Result<Window,~str>
+[00:22:38] <bjz> do I need to return a ~? I tried that, but got the same error
+[00:22:45] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Ping timeout)
+[00:22:50] *** Quits: cscott (cscott@moz-2577C94A.net) (Ping timeout)
+[00:24:22] *** Joins: sonwow (sonwow@5AB4884B.FCC4549.14D5B978.IP)
+[00:26:35] *** Joins: seth (seth@5AAE35B2.5EFFC0B8.24454B25.IP)
+[00:28:18] *** Quits: seth (seth@5AAE35B2.5EFFC0B8.24454B25.IP) (Ping timeout)
+[00:28:24] <nmatsakis> bjz: I think you want unwrap
+[00:29:01] <nmatsakis> bjz: this is probably a case of the wrong defaults, but get() does not consume the Result<> it is invoked upon, but rather copies the result out
+[00:29:01] *** Quits: themgt (themgt@moz-F5F3FFDF.dhcp.gnvl.sc.charter.com) (Quit: Pogoapp - http://www.pogoapp.com)
+[00:29:18] <nmatsakis> bjz: whereas unwrap consumes the result it is invoked upon
+[00:29:39] <nmatsakis> bjz: I'm inclined to think get() should consume, and you could do what get does today via result.clone().get(), but oh well
+[00:30:08] <bjz> cool, that works!
+[00:30:11] <bjz> thanks!
+[00:30:25] <bjz> why do we need two anyway?
+[00:31:52] <brson> +1
+[00:32:14] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[00:32:14] *** ChanServ sets mode: +o dherman
+[00:32:26] *** Quits: blitter (blitter@moz-A2170B75.dyn.centurytel.net) (Ping timeout)
+[00:32:39] *** Joins: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com)
+[00:32:47] *** Joins: Thad (chatzilla@moz-C35F90AE.tx.res.rr.com)
+[00:33:07] <bjz> ok, perhaps I should just do it
+[00:33:27] <bjz> which would you like me to remove? unwrap or get?
+[00:33:44] <bjz> and I'll make it consume
+[00:33:59] <bjz> I mean, I'll make the remaining one consume
+[00:34:09] <Thad> brson: Updated the getting started wiki page, to complete the Windows portion, finally.  I think it looks cleaner, concise, and works.
+[00:34:17] <bjz> (for Option as well)
+[00:35:33] <pcwalton> +1 on that
+[00:35:33] *** Quits: mcomella (mcomella@moz-B10FF54F.ri.ri.cox.net) (Connection reset by peer)
+[00:35:33] *** Quits: mcomella_ (mcomella@moz-B10FF54F.ri.ri.cox.net) (Connection reset by peer)
+[00:35:55] *** Quits: jclements (jclements@BE2C733F.BE115975.BABD49BE.IP) (Quit: jclements)
+[00:36:14] *** Joins: mcomella (mcomella@moz-B10FF54F.ri.ri.cox.net)
+[00:36:22] *** Joins: mcomella_ (mcomella@moz-B10FF54F.ri.ri.cox.net)
+[00:37:11] *** Quits: steveklabnik (steve@moz-5EF6C37C.socal.res.rr.com) (Ping timeout)
+[00:37:35] <bjz> ok, I like `get` better
+[00:38:27] <nmatsakis> bjz: def. get()
+[00:38:45] *** Quits: SimonSapin (simon@8ACF1000.5EFFC0B8.24454B25.IP) (Ping timeout)
+[00:38:54] *** Joins: steveklabnik (steve@moz-5EF6C37C.socal.res.rr.com)
+[00:39:28] <bjz> why does get_or_default copy?
+[00:40:56] <nmatsakis> bjz: presumably because get() did
+[00:41:02] *** Quits: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP) (Ping timeout)
+[00:41:11] <nmatsakis> bjz: it's kind of strange, since both of them take self by value it seems?
+[00:41:12] *** Joins: igl1 (igl@moz-26AAE4A9.adsl.alicedsl.de)
+[00:41:24] <Jeaye> xchange heap not empty on exit
+[00:41:25] <Jeaye> 1 dangling allocations
+[00:41:31] <Jeaye> What would cause that?
+[00:41:39] <nmatsakis> Jeaye: memory leak.
+[00:41:50] <Jeaye> Seems like a hard thing to do in Rust.
+[00:42:03] <nmatsakis> Jeaye: presumably a bug, if you're not hacking on the compiler itself
+[00:42:05] *** Quits: igl (igl@moz-77A7F38D.adsl.alicedsl.de) (Ping timeout)
+[00:42:30] <nmatsakis> pcwalton: so I have this problem with the extern fn stuff. I wanted to run this sol'n by you and see if you can come up with anything else
+[00:42:45] <pcwalton> sure
+[00:42:50] <nmatsakis> pcwalton: basically the problem seems to be that if you have two crates, modules, whatever that both declare the same extern fn with distinct types
+[00:43:18] <nmatsakis> pcwalton: we keep a hashmap so you only get one llvm decl, but it has one of those two types, chosen arbitrary
+[00:43:28] <nmatsakis> pcwalton: so then you get llvm errors later on for the other one
+[00:43:39] <nmatsakis> pcwalton: problem is, this can arise legitimately in a couple of ways
+[00:44:05] <nmatsakis> for example, you might hvae a function that can be called in multiple ways---
+[00:44:11] <nmatsakis> ---but the other case is for libcore
+[00:44:21] <nmatsakis> when we compile with --test, you get more than one copy of each of the extern fns,
+[00:44:24] *** Quits: [o__o] (~o__o@moz-24EBFAC7.me) (Input/output error)
+[00:44:28] *** Joins: [o__o] (~o__o@moz-24EBFAC7.me)
+[00:44:30] <nmatsakis> and although they are declared the same,
+[00:44:35] <nmatsakis> the types are nominal, so LLVM gets unhappy
+[00:44:52] <nmatsakis> so in short the only sol'n I can see is to bitcast the function pointers
+[00:44:56] <nmatsakis> whenever they are referenced
+[00:44:59] <nmatsakis> to the types we expect them to have
+[00:45:14] <nmatsakis> which is kind of unsatisfying.
+[00:45:18] *** Quits: bnicholson (bnicholson@2557E599.66715431.D25A875A.IP) (Ping timeout)
+[00:45:22] <pcwalton> yeah, I guess that's the best thing to do.
+[00:45:28] <pcwalton> it doesn't seem too terrible to me
+[00:46:25] <nmatsakis> I suppose not. I just hate working around the LLVM type system, it can be useful
+[00:46:25] *** Quits: azita (Azita@2557E599.66715431.D25A875A.IP) (Quit: azita)
+[00:46:37] <nmatsakis> on the other hand, I hate the idea of crates that just won't link even more :0
+[00:47:01] <nmatsakis> which can happen if they inline code that both declare compatible bindings to the same external library
+[00:47:14] <pcwalton> yeah
+[00:47:22] <pcwalton> I think it's the right choice, unfortunate as it is
+[00:47:32] <nmatsakis> ok, so I put the casting fix in, but I didn't *quite* do it right
+[00:47:39] <nmatsakis> going to go fix it now, hopefully I'll be able to open a PR soon
+[00:48:18] <brson> Thad: the new windows instructions look great. thank you
+[00:53:20] *** Quits: a__ (a__@moz-250D9B4.nycmny.fios.verizon.net) (Client exited)
+[00:53:34] *** Joins: a__ (a__@moz-250D9B4.nycmny.fios.verizon.net)
+[00:56:43] *** Quits: tiffany (kawaii@moz-1E0FE6E8.dhcp.embarqhsd.net) (Ping timeout)
+[00:57:57] *** Joins: a_make (a__@moz-250D9B4.nycmny.fios.verizon.net)
+[00:58:17] *** Quits: a__ (a__@moz-250D9B4.nycmny.fios.verizon.net) (Ping timeout)
+[01:00:21] *** Quits: jack (jack@moz-F1B36F9F.hsd1.nm.comcast.net) (Ping timeout)
+[01:00:43] *** Joins: jack (jack@moz-F1B36F9F.hsd1.nm.comcast.net)
+[01:01:12] *** Quits: inolen (Adium@moz-9F4F17DF.tourcaster.com) (Quit: Leaving.)
+[01:03:25] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[01:03:26] <ghrust> 01[13rust01] 15bors merged 06auto into 06incoming: 02http://git.io/69lFog
+[01:03:26] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[01:04:06] *** Joins: bnicholson (bnicholson@moz-E98974C1.hsd1.ca.comcast.net)
+[01:06:26] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[01:06:26] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/KFNsRw
+[01:06:26] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[01:06:29] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[01:06:29] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/7AQFgQ
+[01:06:29] <ghrust> 13rust/06auto 145ca383b 15Niko Matsakis: Distinguish tuple elements by index in mem_categorization. Fixes #5362.
+[01:06:29] <ghrust> 13rust/06auto 1432e30aa 15bors: auto merge of #6576 : nikomatsakis/rust/issue-5362-tuple-indices, r=graydon...
+[01:06:29] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[01:08:46] <cmr> Thad: Great job indeed with with Windows
+[01:11:58] <bjz> Jeaye: I implemented Drop for glfw::Window
+[01:12:09] <bjz> Jeaye: let me know if you have any issues
+[01:12:27] <bjz> Jeaye: basically means you can't copy window
+[01:12:40] <bjz> *Windows
+[01:13:24] *** Joins: seth (seth@moz-99690620.hinet-ip.hinet.net)
+[01:14:34] *** Quits: Earnestly (earnest@6A917A59.5E1FD793.39C00A7A.IP) (Ping timeout)
+[01:15:09] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[01:16:17] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[01:16:53] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Ping timeout)
+[01:18:25] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[01:18:26] *** ChanServ sets mode: +o dherman
+[01:20:47] *** Quits: lkuper (lkuper@moz-D6AAFF3.cs.indiana.edu) (Ping timeout)
+[01:21:30] *** Quits: MrFahrenheit (RageOfThou@3FEF494C.29C984D5.783DEDCA.IP) (Ping timeout)
+[01:25:56] *** Quits: brson (brson@2557E599.66715431.D25A875A.IP) (Quit: leaving)
+[01:27:17] *** Quits: steveklabnik (steve@moz-5EF6C37C.socal.res.rr.com) (Ping timeout)
+[01:30:27] *** Joins: SimonSapin (simon@moz-99690620.hinet-ip.hinet.net)
+[01:31:42] *** Quits: thomaslee_ (thomaslee@moz-6C3931E3.static.twtelecom.net) (Client exited)
+[01:31:53] *** Quits: SiegeLord (siege@moz-CAF07B4C.hsd1.ma.comcast.net) (Connection reset by peer)
+[01:34:55] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[01:35:33] *** Joins: jgilbert (jgilbert@moz-2B13D048.dynamic.hinet.net)
+[01:36:02] *** Joins: inolen (Adium@moz-FA2406D8.socal.res.rr.com)
+[01:41:27] <Thad> cmr: Welcome !
+[01:42:12] *** Joins: ssn (ssn@moz-FB2CDEE1.lightspeed.snjsca.sbcglobal.net)
+[01:42:36] <aatch> bjz, I assume that you didn't implement Drop /just/ to make it non-copyable?
+[01:42:45] <bjz> aatch: no
+[01:43:00] <aatch> Good, because I /think/ #[non_owned] does that.
+[01:43:13] *** Quits: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com) (Quit: Computer has gone to sleep.)
+[01:43:25] <bjz> aatch: in order to close a window in GLFW, you have to call glfwWindowDestroy
+[01:43:52] <aatch> seems like a good thing to put in a destructor :D
+[01:44:15] <bjz> aatch: I want Rust to be able to prevent uses of the window after it has been destroyed at compile time
+[01:44:22] <bjz> :)
+[01:45:01] *** Quits: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com) (Client exited)
+[01:45:09] <aatch> The other option would be to make the destroy wrapper take it by value, or take a ~ (if appropriate)
+[01:45:22] *** Joins: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com)
+[01:45:33] <aatch> Wait, for that to work, it would have to be ~
+[01:45:38] <aatch> so probably not ideal, eh?
+[01:45:45] <bjz> mm
+[01:46:49] *** Quits: tikue (tkuehn@2557E599.66715431.D25A875A.IP) (Quit: tikue)
+[01:47:08] *** Quits: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com) (Ping timeout)
+[01:47:09] *** Quits: eatkinson (eatkinson@2557E599.66715431.D25A875A.IP) (Quit: eatkinson)
+[01:47:24] *** Joins: tikue (tkuehn@2557E599.66715431.D25A875A.IP)
+[01:50:29] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[01:50:40] *** Joins: hjr3 (hradtke@AF4FC8FE.D2A4E84D.523CBD62.IP)
+[01:50:55] *** Quits: hjr3 (hradtke@AF4FC8FE.D2A4E84D.523CBD62.IP) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[01:56:51] *** Quits: EXetoC (ex@moz-2DBEB1E4.customer.t3.se) (Quit: WeeChat 0.4.0)
+[01:56:55] *** Joins: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com)
+[01:57:14] *** Joins: ysuzuki (ysuzuki@moz-A563888C.ics.keio.ac.jp)
+[02:00:11] *** Quits: doomrobo (michael@moz-C0E21A2B.nyc.res.rr.com) (Quit: Leaving)
+[02:00:11] *** Quits: ysuzuki (ysuzuki@moz-A563888C.ics.keio.ac.jp) (Client exited)
+[02:04:11] *** Joins: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net)
+[02:06:17] *** Joins: snadon (chatzilla@moz-3BC727E8.mc.videotron.ca)
+[02:09:14] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[02:09:25] *** Quits: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com) (Client exited)
+[02:09:46] *** Joins: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com)
+[02:10:15] *** Quits: bblum (bblum@moz-2B41ACB5.andrew.cmu.edu) (Ping timeout)
+[02:10:17] *** Joins: bblum (bblum@moz-2B41ACB5.andrew.cmu.edu)
+[02:11:04] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Ping timeout)
+[02:11:06] *** Joins: lkuper (lkuper@moz-C0CD33ED.hsd1.in.comcast.net)
+[02:11:14] *** Joins: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com)
+[02:11:32] *** Quits: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com) (Ping timeout)
+[02:12:10] *** Quits: snadon (chatzilla@moz-3BC727E8.mc.videotron.ca) (Ping timeout)
+[02:12:38] *** Quits: justinfront (chatzilla@moz-5B826A1D.saqnet.co.uk) (Ping timeout)
+[02:16:42] *** Joins: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com)
+[02:17:03] *** Quits: echristo (echristo@D423593A.D6CCE4AE.77834EAA.IP) (Quit: echristo)
+[02:21:15] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[02:21:15] <ghrust> 01[13rust01] 15bors merged 06auto into 06incoming: 02http://git.io/7AQFgQ
+[02:21:15] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[02:21:37] *** Joins: Benvie (brandon@5FD20F9A.53D07D95.EFF8B7BF.IP)
+[02:22:11] *** Quits: Jesse (jruderman@2557E599.66715431.D25A875A.IP) (Quit: Jesse)
+[02:22:40] *** Joins: Jesse (jruderman@2557E599.66715431.D25A875A.IP)
+[02:24:12] *** Joins: eatkinson (eatkinson@2557E599.66715431.D25A875A.IP)
+[02:26:03] *** Quits: SimonSapin (simon@moz-99690620.hinet-ip.hinet.net) (Quit: Leaving.)
+[02:27:15] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[02:27:15] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/SZhYww
+[02:27:15] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[02:27:19] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[02:27:19] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/sSdW6A
+[02:27:19] <ghrust> 13rust/06auto 14474d998 15Brian Anderson: rustllvm: Use target alignment for atomic load/store
+[02:27:19] <ghrust> 13rust/06auto 146c0a469 15bors: auto merge of #6649 : brson/rust/atomic-load-align, r=graydon
+[02:27:19] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[02:27:28] <Jeaye> bjz: Shouldn't affect me. :P
+[02:27:32] <Jeaye> Thanks for the heads up.
+[02:28:40] <thomaslee> looking through the issue tracker ... ICE -> internal compiler error, right?
+[02:28:44] <cmr> yes.
+[02:28:46] *** Quits: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com) (Client exited)
+[02:28:47] <bjz> yah
+[02:28:52] <thomaslee> cheers
+[02:28:55] *** Quits: tikue (tkuehn@2557E599.66715431.D25A875A.IP) (Quit: tikue)
+[02:29:07] *** Joins: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com)
+[02:29:13] *** Quits: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com) (Quit: Computer has gone to sleep.)
+[02:29:48] *** Joins: infynyxx_ (infynyxx@moz-E95B370B.nyc.res.rr.com)
+[02:29:48] *** Quits: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com) (Connection reset by peer)
+[02:32:37] <strcat> rusti: core::run::run_program("ls", [~"/proc"]);
+[02:32:39] -rusti- more than 5 lines of output, pastebinned: http://sprunge.us/ZNeI
+[02:34:28] *** Joins: tikue (tkuehn@2557E599.66715431.D25A875A.IP)
+[02:35:23] *** Quits: pcwalton (pcwalton@2557E599.66715431.D25A875A.IP) (Quit: pcwalton)
+[02:35:35] *** Quits: Diablo-D3 (diablo@moz-6317EE8A.port.east.myfairpoint.net) (Quit: This computer has gone to sleep)
+[02:36:41] *** Quits: bytbox (s@moz-D83E9B31.wireless.umd.edu) (Ping timeout)
+[02:38:00] *** Joins: pcwalton (pcwalton@2557E599.66715431.D25A875A.IP)
+[02:38:00] *** ChanServ sets mode: +o pcwalton
+[02:38:21] *** Quits: jgilbert (jgilbert@moz-2B13D048.dynamic.hinet.net) (Max SendQ exceeded)
+[02:38:25] *** Quits: paulproteus (quassel@rose.makesad.us) (Ping timeout)
+[02:38:28] *** Joins: snadon (chatzilla@moz-3BC727E8.mc.videotron.ca)
+[02:38:45] *** Joins: paulproteus (quassel@moz-E86A3B42.makesad.us)
+[02:40:21] <cmr> syntastic has rust support.
+[02:40:25] <cmr> (vim)
+[02:41:13] *** Joins: jgilbert (jgilbert@moz-2B13D048.dynamic.hinet.net)
+[02:41:39] *** Parts: judder (maradukewa@CF01B517.FDE2B133.950D3BB5.IP) ()
+[02:44:51] <cmr> rusti: 5 as i16
+[02:44:52] -rusti- 5
+[02:46:24] *** Joins: brson (brson@58B3E13.EF2694B5.DFAC6AA7.IP)
+[02:46:24] *** ChanServ sets mode: +o brson
+[02:48:39] *** Quits: rhelmer (rhelmer@moz-DB4A9C19.scl3.mozilla.com) (Quit: leaving)
+[02:48:43] *** Quits: zz_kimundi (kimundi@moz-542D5FB6.dip0.t-ipconnect.de) (Ping timeout)
+[02:51:56] *** Joins: zz_kimundi (kimundi@moz-7D8AC97.dip0.t-ipconnect.de)
+[02:52:21] *** zz_kimundi is now known as kimundi
+[02:53:55] *** Joins: pnathan (Adium@moz-C9498006.west.biz.rr.com)
+[02:54:23] *** Quits: seth (seth@moz-99690620.hinet-ip.hinet.net) (Input/output error)
+[02:55:12] *** Quits: catpig (catpig@moz-5EA88CFE.dip0.t-ipconnect.de) (Quit: Verlassend)
+[02:58:13] *** Quits: Thad (chatzilla@moz-C35F90AE.tx.res.rr.com) (Quit: ChatZilla 0.9.90 [Firefox 21.0/20130506154904])
+[02:58:41] <cmr> so debug-info is completely broken
+[02:59:00] <cmr> anyone plan on fixing that in the short term? ;[
+[02:59:16] *** Joins: seth (seth@moz-99690620.hinet-ip.hinet.net)
+[02:59:16] *** Quits: tikue (tkuehn@2557E599.66715431.D25A875A.IP) (Quit: tikue)
+[02:59:50] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[03:01:31] <cmr> (ie, before 0.7)
+[03:02:03] *** Joins: echristo (echristo@moz-CE1AD9FD.hsd1.ca.comcast.net)
+[03:04:04] *** Quits: Ralith (ralith@moz-50F3C77.vc.shawcable.net) (Ping timeout)
+[03:05:00] *** Joins: Ralith (ralith@moz-50F3C77.vc.shawcable.net)
+[03:05:55] *** Quits: nmatsakis (nmatsakis@moz-DB4A9C19.scl3.mozilla.com) (Ping timeout)
+[03:06:08] *** Quits: Aj (afernandez@moz-DB4A9C19.scl3.mozilla.com) (Ping timeout)
+[03:06:15] *** Quits: AutomatedTester (David@moz-DB4A9C19.scl3.mozilla.com) (Ping timeout)
+[03:06:15] *** Quits: Yoric (Yoric@moz-DB4A9C19.scl3.mozilla.com) (Ping timeout)
+[03:06:15] *** Quits: gavin (gavin@moz-DB4A9C19.scl3.mozilla.com) (Ping timeout)
+[03:06:18] *** Quits: froydnj (nfroyd@moz-DB4A9C19.scl3.mozilla.com) (Ping timeout)
+[03:08:43] *** Quits: ssn (ssn@moz-FB2CDEE1.lightspeed.snjsca.sbcglobal.net) (Quit: Leaving)
+[03:12:50] *** Quits: pnathan (Adium@moz-C9498006.west.biz.rr.com) (Quit: Leaving.)
+[03:15:08] <brson> aatch: how's the deque going?
+[03:15:18] <aatch> brson, it's going ok.
+[03:15:32] <aatch> I haven't had much time this week so far though.
+[03:17:18] <brson> aatch: ok. i've made bindings to libuv's async handles, which we're going to use to signal schedulers
+[03:17:29] <aatch> brson, ah, awesome
+[03:17:52] <aatch> I was going to do that, but I don't have much experience with libuv so just ended up confusing myself
+[03:18:11] <brson> aatch: what are you planning on doing next?
+[03:19:19] *** Quits: jack (jack@moz-F1B36F9F.hsd1.nm.comcast.net) (Ping timeout)
+[03:19:23] <aatch> After finishing the deque? Probably something related to threading.
+[03:19:40] *** Joins: jack (jack@moz-F1B36F9F.hsd1.nm.comcast.net)
+[03:23:41] *** Quits: eatkinson (eatkinson@2557E599.66715431.D25A875A.IP) (Quit: eatkinson)
+[03:25:58] *** Joins: nmatsakis (nmatsakis@moz-DB4A9C19.scl3.mozilla.com)
+[03:25:58] *** ChanServ sets mode: +o nmatsakis
+[03:26:08] *** Joins: gavin_ (gavin@moz-DB4A9C19.scl3.mozilla.com)
+[03:30:14] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[03:30:14] <ghrust> 01[13rust01] 15bors merged 06auto into 06incoming: 02http://git.io/sSdW6A
+[03:30:14] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[03:30:33] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke. It's all a joke.)
+[03:33:13] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[03:33:13] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/HN_YlA
+[03:33:13] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[03:33:14] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[03:33:14] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/FElQsw
+[03:33:14] <ghrust> 13rust/06auto 14d1e091a 15Brendan Zabarauskas: Add Ptr::to_option method
+[03:33:14] <ghrust> 13rust/06auto 14eef03c3 15Brendan Zabarauskas: Update to stop unsolicited copying and mark methods as unsafe
+[03:33:14] <ghrust> 13rust/06auto 14adaae45 15bors: auto merge of #6604 : bjz/rust/ptr-to-option, r=brson
+[03:33:17] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[03:38:52] *** Joins: tikue (tkuehn@moz-CF8BEBEF.dia.static.qwest.net)
+[03:41:10] *** Joins: int3_ (int3_@moz-B7B5F043.singnet.com.sg)
+[03:42:47] *** Joins: int3__ (int3_@moz-B7B5F043.singnet.com.sg)
+[03:42:48] *** Quits: int3_ (int3_@moz-B7B5F043.singnet.com.sg) (Connection reset by peer)
+[03:43:39] <bjz> any idea what might be causing this error? https://gist.github.com/bjz/66bd592ef48baa7a9d74
+[03:43:46] <bjz> (macro expansion)
+[03:45:56] <aatch> bjz, basically, it can't tell the difference between the delimiting `()`s and the `()` as an expression
+[03:46:31] <bjz> but there isn't an expression there right?
+[03:47:16] <aatch> what happens if you remove them from the before-the-'=>' side?
+[03:47:27] <aatch> fn window_close_callback => ();
+[03:48:50] <bjz> window-hint-macro.rs:19:58: 19:60 error: No rules expected the token: =>
+[03:48:50] <bjz> window-hint-macro.rs:19     fn window_close_callback                              => ();
+[03:48:57] <aatch> gah.
+[03:49:25] <aatch> You could make another matching that handles that special case
+[03:49:34] <bjz> pauls pauls_: ?
+[03:49:38] <bjz> :(
+[03:49:47] <aatch> (not ideal, I know)
+[03:52:34] *** Quits: pcwalton (pcwalton@2557E599.66715431.D25A875A.IP) (Quit: pcwalton)
+[03:53:21] <bjz> aatch: yeah same issue when I try individual macros: https://gist.github.com/bjz/66bd592ef48baa7a9d74#file-glfw-window-hint2-error
+[03:53:45] <bjz> probably will have to make a base case :(
+[03:54:37] <aatch> bjz, that's what I meant
+[03:54:42] *** Quits: tikue (tkuehn@moz-CF8BEBEF.dia.static.qwest.net) (Quit: tikue)
+[03:55:00] <bjz> but you can't do it with the ones where it's nested inside
+[03:55:34] <bjz> ie. if you want to do them all at once, rather than doing individual macros
+[03:55:50] <aatch> bjz, oh yeah.
+[03:55:53] <aatch> I forgot that.
+[03:56:58] * bjz hates macros sometimes
+[03:57:01] <bjz> :P
+[03:57:30] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[03:59:12] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Ping timeout)
+[04:02:33] <brson> aatch: I am going to start adding multithreading to the scheduler
+[04:02:47] <brson> aatch: sorry that this will step on your toes a bit
+[04:03:05] <aatch> brson, cool. I'm just looking at what I still need to do for the deque, though it looks like I was further ahead than I though
+[04:03:12] <brson> I want to start simply though with a work *sharing* queue
+[04:03:40] <bjz> aatch: got it to work: https://gist.github.com/bjz/66bd592ef48baa7a9d74#file-glfw-window-hint3-rs
+[04:03:41] <brson> and set it up so that you can use alternate scheduling policies
+[04:03:57] <bjz> aatch: the duplicated code is unfortunate though... :(
+[04:04:00] <aatch> brson, yeah, I currently have a config option to turn on using the lock-free queue
+[04:04:17] <brson> aatch: great
+[04:13:09] <aatch> ARGLEBARGLEARGH!
+[04:13:55] <aatch> My debug printing causes an abort because it happens before there are any local services...
+[04:14:16] <brson> aatch: use rtdebug! and turn it on by editing the source in core/macros.rs
+[04:14:50] <aatch> brson, I did. It uses fmt!, which uses a @Writer, which needs the local heap...
+[04:15:02] *** Joins: solancile (solancile@moz-A1CFFAE5.hsd1.wa.comcast.net)
+[04:15:19] <brson> aatch: fmt works I think when you don't use %?
+[04:15:25] <aatch> brson, probably
+[04:15:58] <brson> I hope to fix that soon so that the scheduler itself runs in a task
+[04:16:33] *** Quits: rntz_ (daedalus@moz-7E35218B.cmdnnj.fios.verizon.net) (Ping timeout)
+[04:19:37] *** Joins: rntz_ (daedalus@moz-7E35218B.cmdnnj.fios.verizon.net)
+[04:19:46] <aatch> Hey, what function should I break on to see task failures?
+[04:21:49] <brson> aatch: rust_begin_unwind
+[04:22:07] <aatch> brson, thanks
+[04:22:08] *** Joins: steveklabnik (steve@moz-5EF6C37C.socal.res.rr.com)
+[04:26:54] *** Quits: heftig (heftig@moz-F9E37FC0.dip0.t-ipconnect.de) (Ping timeout)
+[04:27:10] *** Joins: dbaupp (Thunderbir@97F6CF8.D5A1DCF.37681C44.IP)
+[04:27:15] <brson> aatch: can I check out the deque?
+[04:27:29] *** Joins: heftig (heftig@moz-C25BB677.dip0.t-ipconnect.de)
+[04:27:37] <aatch> brson, sure, my par-deque branch is more-or-less up-to-date
+[04:30:15] *** Quits: mzabaluev (mzabaluev@moz-91FFD755.dhcp.inet.fi) (Ping timeout)
+[04:31:15] <aatch> it's a little rough shod atm, since I was working around borrowchk limitations and now don't need to.
+[04:31:47] *** gavin_ is now known as gavin
+[04:32:01] *** Quits: Jesse (jruderman@2557E599.66715431.D25A875A.IP) (Ping timeout)
+[04:33:52] *** Joins: pnathan (Adium@moz-C9498006.west.biz.rr.com)
+[04:39:15] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[04:39:15] <ghrust> 01[13rust01] 15bors merged 06auto into 06incoming: 02http://git.io/FElQsw
+[04:39:15] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[04:42:15] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[04:42:15] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/4EfJ8Q
+[04:42:15] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[04:42:15] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[04:42:15] <ghrust> 01[13rust01] 15bors pushed 16 new commits to 06auto: 02http://git.io/gC0-yA
+[04:42:16] <ghrust> 13rust/06auto 14f03c9bd 15Brian Anderson: core::rt: Rename WorkQueue methods, remove extra push method
+[04:42:16] <ghrust> 13rust/06auto 14ee06ed2 15Brian Anderson: core::rt: Put a lock on the work queue
+[04:42:16] <ghrust> 13rust/06auto 14d2a1378 15Brian Anderson: core::rt: Add MessageQueue type...
+[04:42:18] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[04:48:43] <brson> aatch: the deque is looking very promising. nice work
+[04:49:07] <aatch> brson, I just got the concurrency test working again, I'm pretty sure there are no obvious race conditions
+[04:50:36] *** Joins: Jesse (jruderman@2557E599.66715431.D25A875A.IP)
+[04:51:29] *** Quits: pnathan (Adium@moz-C9498006.west.biz.rr.com) (Quit: Leaving.)
+[04:51:36] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[04:53:19] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Ping timeout)
+[04:54:04] <brson> aatch: that spin lock will probably behave badly under valgrind
+[04:54:14] <brson> *in the test case
+[04:54:16] <aatch> brson, I'm removing it now anyway
+[04:54:36] <aatch> making that test specifically for concurrent steal
+[05:00:35] *** Joins: SimonSapin (simon@moz-99690620.hinet-ip.hinet.net)
+[05:04:09] *** Quits: anshin (nbs@441B8B9E.2055B963.D2A6B5.IP) (Quit: Lost terminal)
+[05:06:23] *** Quits: int3__ (int3_@moz-B7B5F043.singnet.com.sg) (Client exited)
+[05:12:54] *** Quits: dbaupp (Thunderbir@97F6CF8.D5A1DCF.37681C44.IP) (Ping timeout)
+[05:13:30] *** Joins: int3_ (int3_@moz-B7B5F043.singnet.com.sg)
+[05:24:46] <brson> aatch: can you put your AtomicUInt in it's own commit in unstable::sync so I can cherry-pick it?
+[05:25:15] <aatch> brson, sure I'm just cleaning up everything now anyway.
+[05:27:36] *** Quits: ssbr (scorchsabe@A9D9D38C.B6F034AC.72A31D6.IP) (Ping timeout)
+[05:27:44] *** Quits: ssbr_ (ssbr@A9D9D38C.B6F034AC.72A31D6.IP) (Ping timeout)
+[05:29:42] *** Joins: BitPuffin (quassel@moz-8370D1B9.bredband.comhem.se)
+[05:30:43] *** Joins: sanxiyn (tinuviel@858F408C.B797260D.EF43EC08.IP)
+[05:31:30] *** Quits: BitPuffin (quassel@moz-8370D1B9.bredband.comhem.se) (Ping timeout)
+[05:31:57] *** Joins: BitPuffin (quassel@moz-8370D1B9.bredband.comhem.se)
+[05:32:32] *** Joins: ssbr (scorchsabe@A9D9D38C.B6F034AC.72A31D6.IP)
+[05:33:05] *** Quits: BitPuffin (quassel@moz-8370D1B9.bredband.comhem.se) (Client exited)
+[05:34:01] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[05:34:01] *** ChanServ sets mode: +o dherman
+[05:37:45] *** Joins: eatkinson (eatkinson@moz-5CF47426.dia.static.qwest.net)
+[05:39:59] *** Quits: seth (seth@moz-99690620.hinet-ip.hinet.net) (Input/output error)
+[05:40:27] *** Joins: seth (seth@moz-99690620.hinet-ip.hinet.net)
+[05:42:15] *** Quits: seth (seth@moz-99690620.hinet-ip.hinet.net) (Ping timeout)
+[05:45:24] *** Joins: seth (seth@moz-99690620.hinet-ip.hinet.net)
+[05:45:41] *** Joins: mzabaluev (mzabaluev@moz-91FFD755.dhcp.inet.fi)
+[05:45:43] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[05:47:01] *** Joins: pyrac (pyrac@moz-D851FA22.w92-149.abo.wanadoo.fr)
+[05:47:22] *** Quits: solancile (solancile@moz-A1CFFAE5.hsd1.wa.comcast.net) (Ping timeout)
+[05:47:27] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Ping timeout)
+[05:48:56] *** Joins: bbrittain (ben@moz-A7CDB794.dia.static.qwest.net)
+[05:51:10] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[05:51:10] <ghrust> 01[13rust01] 15bors merged 06auto into 06incoming: 02http://git.io/gC0-yA
+[05:51:10] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[05:51:41] <aatch> brson, I just pushed a bunch a changes to my branch
+[05:51:49] <aatch> including the AtomicUint commit
+[05:52:20] <sanxiyn> acrichto: Are you there?
+[05:54:09] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[05:54:09] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/ip9x1w
+[05:54:09] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[05:54:11] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[05:54:11] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/ggjcEw
+[05:54:11] <ghrust> 13rust/06auto 14b5be7d8 15Björn Steinbrink: Avoid range checks in HashMap::each()
+[05:54:11] <ghrust> 13rust/06auto 1419dc728 15Björn Steinbrink: Optimize the lookup of traits containing a given method...
+[05:54:11] <ghrust> 13rust/06auto 14d49a9db 15bors: auto merge of #6646 : dotdash/rust/method_lookup, r=brson
+[05:54:13] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[05:56:19] *** Joins: Yoric (Yoric@moz-DB4A9C19.scl3.mozilla.com)
+[05:58:01] *** Quits: Jesse (jruderman@2557E599.66715431.D25A875A.IP) (Quit: Jesse)
+[05:59:12] *** Quits: pyrac (pyrac@moz-D851FA22.w92-149.abo.wanadoo.fr) (Quit: pyrac)
+[05:59:17] *** Quits: robn (robn@moz-76B0302C.static.internode.on.net) (Ping timeout)
+[05:59:37] *** Quits: steveklabnik (steve@moz-5EF6C37C.socal.res.rr.com) (Connection reset by peer)
+[05:59:42] *** Joins: steveklabnik (steve@moz-5EF6C37C.socal.res.rr.com)
+[06:00:51] *** Joins: robn (robn@moz-76B0302C.static.internode.on.net)
+[06:02:37] <brson> aatch: thanks
+[06:03:01] <aatch> brson, dammit, I was a bit hasty and the atomics stuff doesn't actually compile...
+[06:04:20] *** Quits: lkuper (lkuper@moz-C0CD33ED.hsd1.in.comcast.net) (Quit: lkuper)
+[06:04:38] *** Joins: solancile (solancile@moz-A1CFFAE5.hsd1.wa.comcast.net)
+[06:05:22] *** Quits: mzabaluev (mzabaluev@moz-91FFD755.dhcp.inet.fi) (Ping timeout)
+[06:07:06] <aatch> brson, just force-pushed to fix the atomics stuff I did
+[06:09:50] *** Quits: bbrittain (ben@moz-A7CDB794.dia.static.qwest.net) (Client exited)
+[06:10:54] *** Quits: tedh (tedh@moz-F0B37C08.hsd1.il.comcast.net) (Ping timeout)
+[06:11:00] *** Joins: tedh (tedh@moz-F0B37C08.hsd1.il.comcast.net)
+[06:11:19] *** Quits: seth (seth@moz-99690620.hinet-ip.hinet.net) (Input/output error)
+[06:12:01] *** Joins: Diablo-D3 (diablo@moz-6317EE8A.port.east.myfairpoint.net)
+[06:12:32] *** Quits: int3_ (int3_@moz-B7B5F043.singnet.com.sg) (Client exited)
+[06:13:04] *** Joins: seth (seth@moz-99690620.hinet-ip.hinet.net)
+[06:15:15] *** Quits: eatkinson (eatkinson@moz-5CF47426.dia.static.qwest.net) (Quit: eatkinson)
+[06:17:20] *** Quits: brson (brson@58B3E13.EF2694B5.DFAC6AA7.IP) (Ping timeout)
+[06:21:00] *** Quits: Mowah (Mowah@moz-59D1A475.cust.bredbandsbolaget.se) (Ping timeout)
+[06:21:24] *** Quits: seth (seth@moz-99690620.hinet-ip.hinet.net) (Input/output error)
+[06:22:27] *** Quits: igl1 (igl@moz-26AAE4A9.adsl.alicedsl.de) (Quit: Leaving.)
+[06:22:50] *** Joins: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net)
+[06:33:14] *** Joins: seth (seth@moz-99690620.hinet-ip.hinet.net)
+[06:33:50] *** Joins: dbaupp (Thunderbir@moz-856B3C14.lns20.syd6.internode.on.net)
+[06:34:28] *** Quits: sanxiyn (tinuviel@858F408C.B797260D.EF43EC08.IP) (Ping timeout)
+[06:35:20] *** Quits: SimonSapin (simon@moz-99690620.hinet-ip.hinet.net) (Ping timeout)
+[06:39:36] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[06:39:49] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[06:41:17] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Ping timeout)
+[06:41:32] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Ping timeout)
+[06:42:27] *** Quits: Diablo-D3 (diablo@moz-6317EE8A.port.east.myfairpoint.net) (Quit: do coders dream of sheep()?)
+[06:42:33] *** Joins: Diablo-D3 (diablo@moz-6317EE8A.port.east.myfairpoint.net)
+[06:43:05] *** Quits: solancile (solancile@moz-A1CFFAE5.hsd1.wa.comcast.net) (Quit: Leaving)
+[06:49:10] *** Quits: steveklabnik (steve@moz-5EF6C37C.socal.res.rr.com) (Ping timeout)
+[06:50:08] *** Joins: SimonSapin (simon@moz-99690620.hinet-ip.hinet.net)
+[06:54:08] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[06:54:08] <ghrust> 01[13rust01] 15bors merged 06auto into 06incoming: 02http://git.io/ggjcEw
+[06:54:08] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[06:57:05] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[06:57:05] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/l9_cNA
+[06:57:06] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[06:57:09] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[06:57:09] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/vFiSTA
+[06:57:09] <ghrust> 13rust/06auto 14074799b 15Alex Crichton: Implement a lint mode to detect unnecessary allocations
+[06:57:09] <ghrust> 13rust/06auto 1482fa001 15Alex Crichton: Remove all unnecessary allocations (as flagged by lint)
+[06:57:09] <ghrust> 13rust/06auto 145a3e320 15bors: auto merge of #6647 : alexcrichton/rust/unnecessary-alloc, r=graydon...
+[06:57:11] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[06:58:12] *** Quits: dbaupp (Thunderbir@moz-856B3C14.lns20.syd6.internode.on.net) (Input/output error)
+[06:59:03] *** Joins: dbaupp (Thunderbir@moz-856B3C14.lns20.syd6.internode.on.net)
+[07:04:12] *** aatch is now known as aatch|away
+[07:07:04] *** Quits: infynyxx_ (infynyxx@moz-E95B370B.nyc.res.rr.com) (Client exited)
+[07:07:30] *** Joins: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com)
+[07:07:56] *** Quits: seth (seth@moz-99690620.hinet-ip.hinet.net) (Input/output error)
+[07:09:21] *** Quits: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com) (Ping timeout)
+[07:10:15] *** Quits: ksev (DrunkenPan@5688B28D.841F5BFE.B9B3705E.IP) (Ping timeout)
+[07:10:56] *** Joins: int3_ (int3_@moz-B7B5F043.singnet.com.sg)
+[07:13:21] *** Joins: zq (p@moz-4A6945B7.de)
+[07:13:58] *** Joins: pyrac (pyrac@F9CC429.73C89388.AD05C589.IP)
+[07:14:51] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[07:16:40] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Ping timeout)
+[07:17:06] *** Quits: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se) (Ping timeout)
+[07:17:19] <dbaupp> heh, http://osrc.dfm.io/bors
+[07:17:45] <dbaupp> "bors is a high caliber Rust expert"
+[07:18:48] <thomaslee> hahaha
+[07:19:05] <bjz> HAAA
+[07:19:14] <bjz> he's like me apparently
+[07:19:38] *** kimundi is now known as zz_kimundi
+[07:21:40] *** Quits: naq (naq@D5C2D2DF.E4265FCD.E481B5B.IP) (Ping timeout)
+[07:22:14] *** Joins: seth (seth@moz-99690620.hinet-ip.hinet.net)
+[07:22:15] *** Joins: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se)
+[07:23:34] *** Joins: Blub\w (wry@7E3BB9D.71150E1A.237AE2BA.IP)
+[07:26:50] *** zz_kimundi is now known as kimundi
+[07:27:09] *** Joins: hansjorg (hansjorg@moz-EECB5F79.static.cust.telenor.com)
+[07:33:55] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[07:35:45] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Ping timeout)
+[07:38:09] *** Quits: nielsle (nielsle@moz-5CE8ECCD.boa.fiberby.dk) (Ping timeout)
+[07:39:27] *** Joins: nielsle (nielsle@moz-5CE8ECCD.boa.fiberby.dk)
+[07:39:55] *** Joins: berak (chatzilla@B5E6C009.5F42470D.16E13E53.IP)
+[07:41:08] <Jesse> "It seems—from their activity streams—that bors and mozilla are probably friends or at least virtual friends."
+[07:41:13] *** Joins: jviereck (Adium@moz-57512FAD.dynamic.hispeed.ch)
+[07:42:20] <bjz> :)
+[07:42:59] <dbaupp> "Mozilla is a champion Pythonista"
+[07:43:12] <Jesse> "Since Jesse's most active time is around 9pm, I would conclude that Jesse works best in the late evening." you call 9pm late??
+[07:43:18] <bjz> I am apparently virtual friends with mozilla
+[07:43:24] <bjz> :O
+[07:43:47] <bjz> OHH
+[07:43:52] <bjz> you can get graphs
+[07:44:02] <bjz> click on some of the links
+[07:44:20] <dbaupp> scroll down?
+[07:44:40] <kimundi> bjz apparently you do also more regular work than mozilla :p
+[07:44:55] *** Joins: fabiand (fabiand@moz-6C90E338.adsl.alicedsl.de)
+[07:45:20] <dbaupp> My old account name appears... but both it and my new name are 404s :(
+[07:45:31] <bjz> hey h3r3tic, we're virtual friends according to this thingy
+[07:45:44] <bjz> h3r3tic: I hope that's ok
+[07:46:47] <bjz> dbaupp: :(
+[07:46:58] <dbaupp> I don't exist :(
+[07:48:04] <bjz> no!
+[07:48:39] *** Quits: Voomer (Voomer@moz-E97E8EB7.br.br.cox.net) (Ping timeout)
+[07:49:03] <bjz> dbaupp: maybe you should complain
+[07:49:32] <dbaupp> I'll send angry emails! How dare they erase me from the face of the earth!
+[07:49:52] * dbaupp is outraged
+[07:50:27] <bjz> dbaupp: you know, bots never lie
+[07:51:18] <bjz> dbaupp: perhaps you really were just a figment of my imagination
+[07:51:18] * bjz prods dbaupp and tries to gauge his solidity
+[07:51:20] * dbaupp fades out of existence
+[07:51:33] *** Joins: Voomer (Voomer@moz-E97E8EB7.br.br.cox.net)
+[07:51:48] *** dbaupp is now known as nothing
+[07:51:48] <bjz> hey Voomer, do you exist?
+[07:52:01] <bjz> o_o
+[07:52:44] * bjz wishes nothing would come back
+[07:53:08] <bjz> HAHA
+[07:53:11] <bjz> "Tomasz's behavior is quite similar to lifthrasiir's but lifthrasiir is more foul mouthed"
+[07:53:17] <bjz> http://osrc.dfm.io/h3r2tic
+[07:53:31] *** Quits: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se) (Ping timeout)
+[07:53:55] <bjz> this is too entertaining
+[07:53:56] *** nothing is now known as dbaupp
+[07:54:09] <dbaupp> bjz: it was a struggle
+[07:54:30] <bjz> ./nick?
+[07:55:47] *** Joins: youknowone (youknowone@A826BD81.8A0DEF81.38747683.IP)
+[07:55:47] *** Quits: youknowone (youknowone@A826BD81.8A0DEF81.38747683.IP) (Z:lined (Open Proxy found on your host. Please visit www.blitzed.org/proxy?ip=115.68.131.49 for more information.))
+[07:59:46] *** Joins: doener (bs@moz-AA189A5A.unitymedia.biz)
+[08:00:46] *** Quits: devbug (quassel@moz-E1DE087C.bchsia.telus.net) (Connection reset by peer)
+[08:02:17] *** Quits: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[08:03:08] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[08:03:08] <ghrust> 01[13rust01] 15bors merged 06auto into 06incoming: 02http://git.io/vFiSTA
+[08:03:08] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[08:03:20] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[08:06:03] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[08:06:03] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/jc3_7g
+[08:06:03] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[08:06:03] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[08:06:04] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/9dPSjg
+[08:06:04] <ghrust> 13rust/06auto 1415f97ac 15Alex Crichton: Correctly track the source of imports with the same name
+[08:06:04] <ghrust> 13rust/06auto 14329d8e2 15bors: auto merge of #6648 : alexcrichton/rust/issue-6633, r=graydon...
+[08:06:04] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[08:08:33] *** Quits: int3_ (int3_@moz-B7B5F043.singnet.com.sg) (Ping timeout)
+[08:09:06] *** Joins: int3_ (int3_@moz-B7B5F043.singnet.com.sg)
+[08:09:27] *** Quits: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[08:10:42] *** Joins: BizarreCake (BizarreCak@32C9829A.151E84E7.561471F8.IP)
+[08:11:57] *** Joins: donri (dag@moz-9BB61102.tbcn.telia.com)
+[08:13:23] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[08:14:42] *** Joins: victorporof (victorporo@CDD95F1.20718EE9.79933D60.IP)
+[08:14:51] <bjz> Jeaye h3r3tic: do you think I should expose 'glfw{Get|Set}WindowUserPointer' in the high level api?
+[08:15:15] <Jeaye> How would you?
+[08:15:23] <bjz> it already is
+[08:15:33] <Jeaye> What's the signature?
+[08:15:56] <bjz> Window::set_user_pointer(&self, pointer: *c_void)
+[08:16:07] <bjz> Window::get_user_pointer(&self) -> *c_void
+[08:16:12] <Jeaye> I don't think that's very high level.
+[08:16:42] <Jeaye> Simply because you're working with *c_voids.
+[08:17:04] *** Quits: jviereck (Adium@moz-57512FAD.dynamic.hispeed.ch) (Ping timeout)
+[08:17:06] <bjz> and if I get rid of that, should I get rid of Window::create_shared
+[08:17:24] <bjz> since the point of that is to share data with another window
+[08:17:36] <Jeaye> hmm
+[08:17:38] <Jeaye> mayhaps
+[08:18:00] <bjz> yaybe?
+[08:19:10] *** Joins: ksev (DrunkenPan@5688B28D.841F5BFE.B9B3705E.IP)
+[08:21:10] *** Quits: ksev (DrunkenPan@5688B28D.841F5BFE.B9B3705E.IP) (Ping timeout)
+[08:23:15] <Jeaye> bjz: error: instantiating a type parameter with an incompatible type `glfw::Window`, which does not fulfill `Copy`
+[08:23:30] <Jeaye> Just got that after pulling.
+[08:23:34] <bjz> Jeaye: use unwrap instead of get
+[08:23:48] <Jeaye> ahh, changed the return type.
+[08:23:58] <Jeaye> It's odd how Rust has so many optional types.
+[08:24:03] <bjz> I'm going to do a puch tonight that removes Option/Return::unwrap
+[08:24:14] <bjz> and makes get consume
+[08:24:29] *** Quits: int3_ (int3_@moz-B7B5F043.singnet.com.sg) (Client exited)
+[08:24:38] <bjz> basically Result/Option::get makes a copy
+[08:24:42] *** Parts: berak (chatzilla@B5E6C009.5F42470D.16E13E53.IP) ()
+[08:25:33] <bjz> nmatsakis and I talked about it today and agree that if the user wants to make a copy the should just do .get().clone()
+[08:26:28] <Jeaye> Uh oh
+[08:26:31] <Jeaye> bjz: https://gist.github.com/Jeaye/b020390c27e6dd17454d
+[08:26:54] <Jeaye> On exit.
+[08:26:56] <bjz> eh
+[08:27:00] *** Joins: CarpNet (ac@moz-FD24B77.sohonet.co.uk)
+[08:27:12] <bjz> could you show me where you're using it?
+[08:27:27] <Jeaye> Where I'm using what?
+[08:27:33] <bjz> the Window
+[08:27:42] <bjz> and initialising glfw
+[08:27:47] <Jeaye> Sure.
+[08:27:50] *** Quits: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net) (Quit: Jesse)
+[08:28:00] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[08:28:15] <bjz> WindowDataMap holds the Rust callbacks
+[08:28:22] <bjz> for each window
+[08:28:25] <Jeaye> https://github.com/Jeaye/q3/blob/ui/src/main.rs#L44
+[08:29:00] *** Joins: haard (fredrik@moz-6A86987C.dynamic.se.alltele.net)
+[08:29:12] <Jeaye> get becomes unwrap, of course (only change, just yet to be commited and pushed)
+[08:29:34] <Jeaye> On line 52
+[08:29:36] <bjz> yup
+[08:29:39] <bjz> hum
+[08:29:42] <bjz> curious
+[08:29:47] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Ping timeout)
+[08:29:58] <bjz> that's not good
+[08:30:13] <bjz> it works on my 'baby' examples
+[08:30:17] <Jeaye> glfw init ends on line 68
+[08:30:20] <bjz> but not on this
+[08:30:24] <bjz> yeah, I see
+[08:31:46] *** Joins: int3_ (int3_@moz-B7B5F043.singnet.com.sg)
+[08:31:50] <bjz> I wonder if something is holding onto the window until after the data map is removed
+[08:32:33] *** Quits: KindOne (KindOne@moz-7BBBE9B9.dynamic.ip.windstream.net) (Ping timeout)
+[08:32:39] <Jeaye> I need to head to bed now, mate (it's 01:30). I can look more at this tomorrow after work.
+[08:32:44] *** Joins: KindTwo (KindOne@moz-7BBBE9B9.dynamic.ip.windstream.net)
+[08:32:53] <bjz> ok sure
+[08:32:55] <bjz> sorry!
+[08:33:13] <Jeaye> No worries! :) Catch you tomorrow.
+[08:33:21] *** Quits: Jeaye (Jeaye@moz-FD505E54.hsd1.ca.comcast.net) (Quit: zzzZZZzzz)
+[08:33:41] *** KindTwo is now known as KindOne
+[08:39:14] *** Joins: wuwei`lab (wuwei@1A513F49.818D7924.FAA9ED67.IP)
+[08:40:08] *** Joins: tiffany (kawaii@moz-1E0FE6E8.dhcp.embarqhsd.net)
+[08:41:18] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[08:43:16] *** Joins: justinfront (chatzilla@moz-5B826A1D.saqnet.co.uk)
+[08:45:26] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[08:48:34] *** Quits: int3_ (int3_@moz-B7B5F043.singnet.com.sg) (Client exited)
+[08:49:50] *** Joins: int3_ (int3_@moz-B7B5F043.singnet.com.sg)
+[08:51:24] *** Joins: naq (naq@D5C2D2DF.E4265FCD.E481B5B.IP)
+[08:52:07] *** Quits: int3_ (int3_@moz-B7B5F043.singnet.com.sg) (Client exited)
+[08:53:40] *** Joins: int3_ (int3_@moz-B7B5F043.singnet.com.sg)
+[08:54:38] *** Joins: lucian (lucian@6B2B4644.4304AE1E.CE5E78F6.IP)
+[09:00:12] *** Quits: int3_ (int3_@moz-B7B5F043.singnet.com.sg) (Client exited)
+[09:02:58] *** Joins: klapaucius (klapaucius@272B8F8B.5692770D.BB41F968.IP)
+[09:04:57] *** Joins: davbo (dave@moz-3FFA637C.oucs.ox.ac.uk)
+[09:10:27] *** Quits: fabiand (fabiand@moz-6C90E338.adsl.alicedsl.de) (Quit: Verlassend)
+[09:10:40] *** Quits: cdidd (cdidd@moz-A88A5259.broadband.corbina.ru) (Input/output error)
+[09:13:26] *** Quits: pyrac (pyrac@F9CC429.73C89388.AD05C589.IP) (Quit: pyrac)
+[09:13:43] *** Joins: fabiand (fabiand@moz-6C90E338.adsl.alicedsl.de)
+[09:17:39] *** Quits: sonwow (sonwow@5AB4884B.FCC4549.14D5B978.IP) (Quit: leaving)
+[09:18:45] *** Quits: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[09:21:07] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[09:21:07] <ghrust> 01[13rust01] 15bors merged 06auto into 06incoming: 02http://git.io/9dPSjg
+[09:21:07] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[09:23:21] *** Joins: DasIch (dasich@moz-756B08B1.clients.your-server.de)
+[09:29:01] *** Quits: snadon (chatzilla@moz-3BC727E8.mc.videotron.ca) (Ping timeout)
+[09:29:48] *** Quits: ILyoan (ILyoan@B4104EBB.3CC170B1.1E14B209.IP) (Ping timeout)
+[09:31:03] *** Joins: ILyoan (ILyoan@B4104EBB.3CC170B1.1E14B209.IP)
+[09:42:16] *** Quits: justinfront (chatzilla@moz-5B826A1D.saqnet.co.uk) (Ping timeout)
+[09:44:04] *** Joins: EXetoC (ex@moz-2DBEB1E4.customer.t3.se)
+[10:03:04] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[10:03:04] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/FQTeNA
+[10:03:04] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[10:03:05] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[10:03:05] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/o-h4XA
+[10:03:05] <ghrust> 13rust/06auto 14d86a32b 15Jyun-Yan You: fix mips stack alignment
+[10:03:05] <ghrust> 13rust/06auto 14dc7b83d 15bors: auto merge of #6650 : crabtw/rust/mips-rt, r=sanxiyn...
+[10:03:05] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[10:03:43] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Client exited)
+[10:06:50] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[10:08:18] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Client exited)
+[10:16:56] *** Joins: z0w0 (zack@moz-780F7535.lns9.cha.bigpond.net.au)
+[10:18:53] <cmr> acrichto: yay it landed!
+[10:21:52] *** Quits: seth (seth@moz-99690620.hinet-ip.hinet.net) (Input/output error)
+[10:24:15] *** Quits: SimonSapin (simon@moz-99690620.hinet-ip.hinet.net) (Quit: Leaving.)
+[10:24:32] *** Quits: jgilbert (jgilbert@moz-2B13D048.dynamic.hinet.net) (Ping timeout)
+[10:26:16] *** Joins: jviereck (Adium@moz-5B13C809.ethz.ch)
+[10:32:24] *** Quits: Blub\w (wry@7E3BB9D.71150E1A.237AE2BA.IP) (Ping timeout)
+[10:33:56] *** Quits: jviereck (Adium@moz-5B13C809.ethz.ch) (Quit: Leaving.)
+[10:36:15] *** Quits: klapaucius (klapaucius@272B8F8B.5692770D.BB41F968.IP) (Quit: klapaucius)
+[10:36:19] *** Joins: brendan (brendaneic@9343535F.FC95818.5EFB9497.IP)
+[10:41:45] *** Joins: vmx (vmx@moz-78FCAE2D.pools.arcor-ip.net)
+[10:50:01] *** Joins: Blub\w (wry@94FF9CEF.71150E1A.237AE2BA.IP)
+[10:52:03] *** Joins: sk (sk@A42836EC.71F9CB99.78DD174B.IP)
+[11:00:15] *** Joins: q66 (q66@6EE9DE40.46454B5D.33AABD5F.IP)
+[11:03:03] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[11:03:03] <ghrust> 01[13rust01] 15bors merged 06auto into 06incoming: 02http://git.io/o-h4XA
+[11:03:03] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[11:08:18] *** Joins: SimonSapin (simon@8ACF1000.5EFFC0B8.24454B25.IP)
+[11:08:35] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[11:09:10] *** Joins: samnardo_ (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[11:09:10] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Connection reset by peer)
+[11:10:08] *** Quits: samnardo_ (samnardoni@moz-ECB14881.cable.virginmedia.com) (Client exited)
+[11:16:15] *** Joins: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com)
+[11:17:53] *** Quits: mcomella (mcomella@moz-B10FF54F.ri.ri.cox.net) (Input/output error)
+[11:17:54] *** Quits: mcomella_ (mcomella@moz-B10FF54F.ri.ri.cox.net) (Input/output error)
+[11:18:08] *** Joins: mcomella (mcomella@moz-B10FF54F.ri.ri.cox.net)
+[11:19:42] *** Joins: justinfront (chatzilla@moz-5B826A1D.saqnet.co.uk)
+[11:20:16] *** Joins: jviereck (Adium@moz-5B13C809.ethz.ch)
+[11:20:59] *** Quits: jviereck (Adium@moz-5B13C809.ethz.ch) (Quit: Leaving.)
+[11:21:10] *** Quits: tedh (tedh@moz-F0B37C08.hsd1.il.comcast.net) (Ping timeout)
+[11:24:16] *** Joins: tedh (tedh@moz-F0B37C08.hsd1.il.comcast.net)
+[11:27:29] *** Joins: bytbox (s@moz-D83E9B31.wireless.umd.edu)
+[11:30:39] *** Joins: pyrac (pyrac@F9CC429.73C89388.AD05C589.IP)
+[11:31:29] *** Quits: bytbox (s@moz-D83E9B31.wireless.umd.edu) (Ping timeout)
+[11:35:34] *** Quits: Blub\w (wry@94FF9CEF.71150E1A.237AE2BA.IP) (Ping timeout)
+[11:48:10] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[11:52:52] *** Quits: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com) (Quit: Computer has gone to sleep.)
+[11:53:07] *** Joins: Blub\w (wry@7E3BB9D.71150E1A.237AE2BA.IP)
+[11:57:05] *** Joins: noam_ (noam@F6B530A7.720527A7.416762B.IP)
+[11:57:45] *** Quits: noam (noam@F6B530A7.720527A7.416762B.IP) (Ping timeout)
+[12:03:46] <lucian> this looks wrong http://www.rust-lang.org/
+[12:03:52] <lucian> perhaps just to me?
+[12:04:37] <dbaupp> which part?
+[12:06:31] <doener> it just says:  unknown domain: www.rust-lang.org
+[12:09:39] <dbaupp> oh, I see it fine
+[12:09:57] <hansjorg> I get unknown domain with https
+[12:10:20] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[12:12:05] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Ping timeout)
+[12:12:16] *** Joins: anshin (nbs@441B8B9E.2055B963.D2A6B5.IP)
+[12:16:02] *** Joins: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com)
+[12:17:38] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[12:17:38] *** ChanServ sets mode: +o dherman
+[12:26:20] *** Joins: maxli (maxli@F2D29657.F60B0462.67AC9B1.IP)
+[12:30:16] *** Quits: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com) (Client exited)
+[12:30:41] *** Joins: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com)
+[12:32:33] *** Quits: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com) (Ping timeout)
+[12:34:09] *** Joins: jorendorff (jorendorff@moz-1747FB68.hsd1.tn.comcast.net)
+[12:35:25] *** Quits: pyrac (pyrac@F9CC429.73C89388.AD05C589.IP) (Quit: pyrac)
+[12:39:03] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[12:39:03] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/ZaQz8Q
+[12:39:03] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[12:39:09] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[12:39:09] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/hWxgEw
+[12:39:09] <ghrust> 13rust/06auto 149390cda 15Seo Sanghyeon: Correct span for expr_vec
+[12:39:09] <ghrust> 13rust/06auto 14258d20e 15Seo Sanghyeon: Correct span for unused_import
+[12:39:09] <ghrust> 13rust/06auto 14808aada 15bors: auto merge of #6654 : sanxiyn/rust/accurate-span-2, r=bstrie
+[12:39:10] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[12:41:48] *** Joins: bytbox (s@moz-D83E9B31.wireless.umd.edu)
+[12:44:21] *** Joins: pyrac (pyrac@moz-88F57AAB.math.u-bordeaux1.fr)
+[12:50:42] <bjz> h3r3tic: ping
+[12:51:51] *** Joins: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com)
+[12:52:45] *** Parts: pyrac (pyrac@moz-88F57AAB.math.u-bordeaux1.fr) ()
+[12:53:01] *** Joins: pyrac (pyrac@moz-88F57AAB.math.u-bordeaux1.fr)
+[12:54:13] *** Joins: BitPuffin (quassel@moz-8370D1B9.bredband.comhem.se)
+[12:56:07] *** Quits: BitPuffin (quassel@moz-8370D1B9.bredband.comhem.se) (Ping timeout)
+[12:56:19] *** Joins: BitPuffin (quassel@moz-8370D1B9.bredband.comhem.se)
+[12:56:37] <fabiand> doener, I've also seen that emssage last week!
+[12:56:50] <fabiand> lucian, ^^ 
+[13:01:45] <bstrie> please file a bug if you notice any brokenness on the website
+[13:04:22] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[13:04:27] *** Quits: naq (naq@D5C2D2DF.E4265FCD.E481B5B.IP) (Quit: leaving)
+[13:04:41] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[13:04:54] *** Joins: xazax (Mibbit@6655692F.3B222813.3F580572.IP)
+[13:06:29] *** Joins: wilsonk-laptop (kvirc@moz-39EFBFC2.cg.shawcable.net)
+[13:06:36] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Ping timeout)
+[13:07:04] *** Quits: wilsonk|2 (kvirc@moz-39EFBFC2.cg.shawcable.net) (Ping timeout)
+[13:07:08] *** Joins: saml (sam@moz-14C16814.cst.lightpath.net)
+[13:11:48] *** Quits: justinfront (chatzilla@moz-5B826A1D.saqnet.co.uk) (Ping timeout)
+[13:12:20] <lucian> bstrie: it seems to have fixed itself
+[13:12:35] <bstrie> are you using https?
+[13:12:37] *** Joins: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se)
+[13:12:42] <lucian> no, http
+[13:12:51] <lucian> with https i fails to connect
+[13:12:59] <cmr> https has a bad cert
+[13:13:13] <lucian> cmr: for me, i get a connection error
+[13:13:16] <cmr> it's a cert for github pages but it's served on www.rust-lang.org
+[13:13:24] <cmr> lucian: the www. is necessary
+[13:13:24] <lucian> i don't even get far enough to see if it's a bad cert or not
+[13:13:47] <lucian> ah, that works. and it displays "unknown domain: www.rust-lang.org"
+[13:14:01] <lucian> and now i get it on the http version as well
+[13:14:31] <cmr> I have never had a problem with it and it is working fine for me
+[13:14:38] <cmr> lucian: What DNS server are you using, who is your ISP?
+[13:14:44] *** Joins: jorendorff_ (jorendorff@moz-1747FB68.hsd1.tn.comcast.net)
+[13:15:03] <lucian> company DNS rooted at google's, BT
+[13:15:19] <cmr> hm
+[13:15:32] *** Joins: justinfront (chatzilla@moz-5B826A1D.saqnet.co.uk)
+[13:15:39] <lucian> i don't mean that as an error my browser shows, that's the content on the page
+[13:15:39] *** Quits: jorendorff (jorendorff@moz-1747FB68.hsd1.tn.comcast.net) (Ping timeout)
+[13:15:39] *** jorendorff_ is now known as jorendorff
+[13:16:27] <cmr> oh weird
+[13:16:40] <lucian> now it works again
+[13:18:00] <lucian> cmr: bstrie: https://github.com/mozilla/rust/issues/6656
+[13:22:48] *** Quits: maxli (maxli@F2D29657.F60B0462.67AC9B1.IP) (Quit: Leaving.)
+[13:25:55] *** Joins: maxli (maxli@F2D29657.F60B0462.67AC9B1.IP)
+[13:28:35] *** Quits: zxcdw (r-a@moz-4E99E901.ip13.netikka.fi) (Quit: leaving)
+[13:29:33] *** Joins: zxcdw (r-a@moz-C7C5467B.cust.bredband2.com)
+[13:29:45] *** Quits: justinfront (chatzilla@moz-5B826A1D.saqnet.co.uk) (Ping timeout)
+[13:33:44] *** Joins: justinfront (chatzilla@moz-5B826A1D.saqnet.co.uk)
+[13:34:28] *** Joins: doomlord_ (servitor@moz-B63745D8.range86-176.btcentralplus.com)
+[13:35:25] *** Quits: Blub\w (wry@7E3BB9D.71150E1A.237AE2BA.IP) (Ping timeout)
+[13:36:03] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[13:36:03] <ghrust> 01[13rust01] 15bors merged 06auto into 06incoming: 02http://git.io/hWxgEw
+[13:36:03] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[13:36:28] *** Quits: SimonSapin (simon@8ACF1000.5EFFC0B8.24454B25.IP) (Quit: Leaving.)
+[13:41:18] *** Joins: novabyte (Instantbir@38DA005D.5B3CB247.B8C0F609.IP)
+[13:42:04] *** Joins: Blub\w (wry@7E3BB9D.71150E1A.237AE2BA.IP)
+[13:42:28] *** Joins: josh (josh@moz-348C4790.hsd1.mn.comcast.net)
+[13:55:06] *** Joins: jviereck (Adium@moz-587DE482.ethz.ch)
+[13:55:18] *** Joins: jeff (jeff@4231C034.745B261B.F12515B4.IP)
+[13:58:21] *** Joins: seth (seth@5AAE35B2.5EFFC0B8.24454B25.IP)
+[13:58:46] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[13:58:47] *** Joins: judder (maradukewa@CF01B517.FDE2B133.950D3BB5.IP)
+[13:59:51] *** Quits: justinfront (chatzilla@moz-5B826A1D.saqnet.co.uk) (Ping timeout)
+[14:00:36] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Ping timeout)
+[14:01:27] *** Joins: vosen (vosen@moz-266BA656.icpnet.pl)
+[14:01:32] *** Joins: justinfront (chatzilla@moz-5B826A1D.saqnet.co.uk)
+[14:02:01] *** Joins: hjr3 (hradtke@AF4FC8FE.D2A4E84D.523CBD62.IP)
+[14:03:13] *** Joins: AutomatedTester (David@moz-DB4A9C19.scl3.mozilla.com)
+[14:03:17] *** Quits: klutzy (th@BA61F396.8E859986.ECA1BB11.IP) (Quit: ->)
+[14:12:15] *** Quits: justinfront (chatzilla@moz-5B826A1D.saqnet.co.uk) (Ping timeout)
+[14:12:33] *** Quits: haard (fredrik@moz-6A86987C.dynamic.se.alltele.net) (Ping timeout)
+[14:16:28] *** Quits: BizarreCake (BizarreCak@32C9829A.151E84E7.561471F8.IP) (Quit: Leaving)
+[14:18:50] *** Joins: Benvie_ (brandon@5FD20F9A.53D07D95.EFF8B7BF.IP)
+[14:19:50] <nmatsakis> does anyone know off hand if there is a way to flag an extern fn as safe?
+[14:19:51] *** Quits: Benvie (brandon@5FD20F9A.53D07D95.EFF8B7BF.IP) (Ping timeout)
+[14:20:13] *** Joins: haard (fredrik@moz-6A86987C.dynamic.se.alltele.net)
+[14:20:52] <bstrie> nmatsakis: I thought you were supposed to make wrapper functions that contained unsafe blocks if you wanted a safe way to call extern fns
+[14:21:04] <bjz> yeah
+[14:21:05] <bstrie> I hear there are new servo interns, are they in here?
+[14:21:20] <bjz> nmatsakis: that's what I thought
+[14:21:40] <nmatsakis> bstrie: yes, you are. I'm asking because I'm testing a specific scenario (extern "C" fn in a constant without a cast)
+[14:21:45] <nmatsakis> bstrie: which is apparently not possible right now
+[14:22:06] <nmatsakis> bstrie: partly this is because the code that checks unsafety is a bit overaggressive right now (dates from an earlier time)
+[14:22:12] <bstrie> ah
+[14:22:14] <nmatsakis> bstrie: anyway, no biggie, and it appears that you cannot make an extern fn that is safe
+[14:24:06] <bjz> nmatsakis:" not when it comes to unsafe methods :)
+[14:24:28] <bjz> nmatsakis: it warns you not to use 'unsafe' :D
+[14:31:47] *** Quits: jviereck (Adium@moz-587DE482.ethz.ch) (Quit: Leaving.)
+[14:32:54] <nmatsakis> bjz: yes, I know, I was thinking I might fix that today (should be easy...)
+[14:33:11] *** Joins: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP)
+[14:33:12] <nmatsakis> bjz: I am SO CLOSE to getting extern fns
+[14:33:20] <bjz> nmatsakis: orly
+[14:33:28] <bjz> nmatsakis: xD
+[14:33:32] <nmatsakis> bjz: I was about to open a PR, but I thought "I'll just add one more test" and now I seem to have stumbled across some bug in fastffi
+[14:33:39] <nmatsakis> bjz: however, the compiler works, all tests pass etc
+[14:33:48] <bjz> nmatsakis: dw sir, all in good time
+[14:33:50] <nmatsakis> bjz: so I might just open the PR with the test xfail'd and make pcwalton look at it later :)
+[14:34:12] <bjz> it is good you have found a bug
+[14:34:28] <nmatsakis> yes, and it's a very simple test, hopefully easy to fix
+[14:34:40] *** Quits: markluffel (markluffel@179F0C2A.5C4C7C24.8354FB35.IP) (Ping timeout)
+[14:34:41] *** Joins: markluffel (markluffel@179F0C2A.5C4C7C24.8354FB35.IP)
+[14:35:46] *** Quits: sk (sk@A42836EC.71F9CB99.78DD174B.IP) (Quit: Leaving)
+[14:35:52] *** Joins: jviereck (Adium@moz-587DE482.ethz.ch)
+[14:36:53] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[14:37:03] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[14:39:25] * bjz was naughty today. He used cast::forget 12 times
+[14:39:30] <bjz> :o
+[14:43:26] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Input/output error)
+[14:44:25] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[14:45:25] *** kimundi is now known as zz_kimundi
+[14:46:14] *** Joins: Scriptor (historium@moz-E06F46F0.corp.bitshelter.com)
+[14:47:18] *** Joins: klutzy (th@BA61F396.8E859986.ECA1BB11.IP)
+[14:49:12] *** Quits: dbaupp (Thunderbir@moz-856B3C14.lns20.syd6.internode.on.net) (Ping timeout)
+[14:52:53] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[14:52:58] *** Joins: ksev (DrunkenPan@745B767B.989A61DC.CA5B6332.IP)
+[14:53:00] *** Quits: hjr3 (hradtke@AF4FC8FE.D2A4E84D.523CBD62.IP) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[14:54:41] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Ping timeout)
+[14:55:15] *** Quits: echristo (echristo@moz-CE1AD9FD.hsd1.ca.comcast.net) (Quit: echristo)
+[14:55:42] *** Quits: seth (seth@5AAE35B2.5EFFC0B8.24454B25.IP) (Ping timeout)
+[14:56:01] *** Joins: jdm (jdm@DB05BBF2.BB1F48F2.971E19F6.IP)
+[14:56:39] *** Joins: seth (seth@5AAE35B2.5EFFC0B8.24454B25.IP)
+[14:56:42] *** Quits: BitPuffin (quassel@moz-8370D1B9.bredband.comhem.se) (Ping timeout)
+[14:59:37] *** Quits: Blub\w (wry@7E3BB9D.71150E1A.237AE2BA.IP) (Quit: train)
+[14:59:44] *** zz_kimundi is now known as kimundi
+[15:01:59] <bstrie> When no one was looking, bjz forgot *twelve* casts. He forgot twelve casts. That's as many as two sixes. And that's terrible.
+[15:02:26] <bjz> what
+[15:02:29] <bjz> never
+[15:02:29] *** Quits: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net) (Broken pipe)
+[15:02:34] *** Joins: bent (chatzilla@moz-932324BF.hsd1.ca.comcast.net)
+[15:02:52] *** Joins: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net)
+[15:04:11] *** Joins: sk (sk@61A494B3.BA40E8A.AAC02D62.IP)
+[15:06:05] *** Quits: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net) (Ping timeout)
+[15:06:31] *** Quits: jviereck (Adium@moz-587DE482.ethz.ch) (Quit: Leaving.)
+[15:08:41] *** Joins: BitPuffin (quassel@moz-8370D1B9.bredband.comhem.se)
+[15:09:31] *** Joins: jviereck (Adium@moz-587DE482.ethz.ch)
+[15:10:57] *** Quits: jviereck (Adium@moz-587DE482.ethz.ch) (Quit: Leaving.)
+[15:12:49] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[15:15:52] *** Joins: jviereck (Adium@moz-587DE482.ethz.ch)
+[15:16:54] <cmr> Where is graydon :(
+[15:17:59] *** Joins: jensnockert (jensnocker@moz-9438EEE0.wireless.lu.se)
+[15:18:16] <bjz> cmr: not here
+[15:20:11] <bjz> :)
+[15:21:47] *** Joins: snadon (chatzilla@moz-3BC727E8.mc.videotron.ca)
+[15:24:51] *** Joins: burg (burg@moz-9084829B.hsd1.ca.comcast.net)
+[15:25:04] *** Quits: snadon (chatzilla@moz-3BC727E8.mc.videotron.ca) (Client exited)
+[15:25:32] *** Quits: seth (seth@5AAE35B2.5EFFC0B8.24454B25.IP) (Ping timeout)
+[15:26:32] *** Joins: snadon (chatzilla@moz-3BC727E8.mc.videotron.ca)
+[15:27:31] *** Joins: Jesin (Jessin_@moz-5654D37.washdc.fios.verizon.net)
+[15:28:36] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[15:28:48] *** Joins: steveklabnik (steve@moz-5EF6C37C.socal.res.rr.com)
+[15:30:52] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[15:32:15] *** Quits: brendan (brendaneic@9343535F.FC95818.5EFB9497.IP) (Ping timeout)
+[15:32:27] *** Joins: wilmoore (wilmoore@moz-7EE4D9D6.mystrotv.com)
+[15:36:41] <bytbox> am I right to infer that cargo (as in cargo-central) = rustpkg?
+[15:38:28] <bjz> bytbox: cargo is no-more
+[15:38:47] <bjz> it is going to be replaced with rustpkg
+[15:39:00] <bjz> but rustpkg isn't really ready yet
+[15:39:06] <bjz> needs some TLC
+[15:39:34] <bytbox> bjz: ok, thanks
+[15:41:06] *** Joins: seth (seth@5AAE35B2.5EFFC0B8.24454B25.IP)
+[15:42:53] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Client exited)
+[15:46:22] *** Joins: Jeaye (Jeaye@moz-FD505E54.hsd1.ca.comcast.net)
+[15:48:40] <bjz> Jeaye: hoya
+[15:49:04] <bjz>  Jeaye: could you try out your thingy again?
+[15:49:22] <bjz> I made a couple of changes in the latest commit
+[15:51:03] *** Joins: infynyxx (infynyxx@DB780A29.749BA1D.DCC373F0.IP)
+[15:51:58] *** Joins: Earnestly (earnest@6A917A59.5E1FD793.39C00A7A.IP)
+[15:51:59] *** Quits: burg (burg@moz-9084829B.hsd1.ca.comcast.net) (Quit: burg)
+[15:53:33] *** Joins: graydon (graydon@3853DDD.39EEDBB3.D758B1AA.IP)
+[15:53:33] *** ChanServ sets mode: +qo graydon graydon
+[15:53:35] <bstrie> bytbox: cargo central is entirely obsolete by this point. rustpkg is decentralized, although mozilla might eventually provide its own trusted location for packages to live
+[15:53:51] <bstrie> as opposed to, say, github or wherever
+[15:54:41] <bytbox> bstrie: yeah, I understand
+[15:54:57] <graydon> most likely that'll take the form of a community-run redirector for "more stable" URLs.
+[15:55:17] *** Joins: cdidd (cdidd@moz-DAE2ABAF.broadband.corbina.ru)
+[15:55:26] *** Joins: seth_ (seth@5AAE35B2.5EFFC0B8.24454B25.IP)
+[15:55:31] <bjz> graydon: cmr was calling your name
+[15:55:37] <graydon> oh?
+[15:55:47] <bjz> graydon: I thought you must have heard him
+[15:55:50] *** Quits: seth_ (seth@5AAE35B2.5EFFC0B8.24454B25.IP) (Input/output error)
+[15:55:51] <graydon> :)
+[15:55:56] <bjz> with your super powers
+[15:56:10] *** Joins: clements (clements@moz-180CB07A.members.linode.com)
+[15:56:13] <graydon> nope, just logging in to work
+[15:56:20] <bjz> aww
+[15:56:35] *** Quits: seth (seth@5AAE35B2.5EFFC0B8.24454B25.IP) (Ping timeout)
+[15:56:37] <bstrie> just being modest
+[15:56:41] <bjz> yes
+[15:57:07] <bjz> graydon really does have Rustic powers
+[15:57:46] *** Quits: victorporof (victorporo@CDD95F1.20718EE9.79933D60.IP) (Quit: victorporof)
+[16:02:36] <benh> 'cargo' sounds like a cute name, is it going to be reused for rustpkg? :)
+[16:02:47] <z0w0> so when is the cargo-central repo going to be destroyed?
+[16:03:07] *** Parts: clements (clements@moz-180CB07A.members.linode.com) ()
+[16:03:09] <graydon> https://etherpad.mozilla.org/Meeting-weekly-2013-05-21
+[16:03:20] <bjz> benh: yeah I liked 'cargo' :(
+[16:03:37] <z0w0> benh: i liked cargo or "haul", but rustpkg is more inline with the other tools. most languages have a cute name for their package managers though
+[16:03:38] <graydon> benh: no we decided that uniformity trumped cuteness in subcommand names
+[16:03:44] <bstrie> alias cargo="rustpkg"
+[16:03:54] <bjz> 'crates' aren't really as good without cargo
+[16:04:26] <graydon> ah, but most languages have package managers that grow in the wilderness of the existing ad-hoc ecosystem and fight to the death for supremacy. they have unique personalities by then.
+[16:04:34] <z0w0> graydon: how exactly is tjc coming along with rustpkg?
+[16:04:50] <bstrie> z0w0: there's a metabug somewhere
+[16:04:58] *** Joins: tjc (tjc@moz-E0677B46.vc.shawcable.net)
+[16:04:58] *** ChanServ sets mode: +o tjc
+[16:05:09] <graydon> z0w0: https://github.com/mozilla/rust/wiki/Bikeshed-rustpkg
+[16:05:23] <bjz> graydon: forgive me :)
+[16:05:32] <z0w0> i wouldn't mind investing some time in rustpkg again but i don't want to intrude with WIP code
+[16:05:42] *** Quits: xazax (Mibbit@6655692F.3B222813.3F580572.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[16:06:05] <bstrie> bjz: cargo.com is a parked domain, time to set up your own rust package hosting service :)
+[16:06:40] *** Joins: azita (Azita@2557E599.66715431.D25A875A.IP)
+[16:07:02] <z0w0> rustpkg doesn't really have "hosted services"
+[16:07:02] *** Joins: clements (clements@moz-180CB07A.members.linode.com)
+[16:07:42] <z0w0> i might look into that static rustpkg package finder thing i was gonna make ages ago again
+[16:07:56] <z0w0> static website that is
+[16:09:09] <tjc> graydon: CYA or MTV-CYA? I always forget
+[16:09:10] <z0w0> tjc: can you let me know when the tree will be stable enough for me to start helping out again? :)
+[16:09:27] <jack> tjc: CYA. MTV-CYA is still borked i believe
+[16:10:07] *** Joins: hjr3 (hradtke@AF4FC8FE.D2A4E84D.523CBD62.IP)
+[16:10:29] <tjc> is anybody else in CYA? nmatsakis ?
+[16:10:33] <nmatsakis> tjc: we all are.
+[16:10:35] *** Joins: devinus (devinus@moz-B4AF84BC.ptr.us.xo.net)
+[16:10:39] <tjc> hmm
+[16:10:43] <graydon> yeah, jack, nmatsakis and I are
+[16:10:44] <tjc> Azita and I were both the only ones 
+[16:10:47] <nmatsakis> tjc: where by "all" I mean graydon and jack and I
+[16:10:47] <tjc> for a couple minutes
+[16:12:41] <nmatsakis>  tjc: you did "join room", not "call direct", right?
+[16:12:52] <tjc> nmatsakis: I think so… I'm going to try logging out and in again
+[16:16:05] *** Joins: eatkinson (eatkinson@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[16:16:06] *** Quits: jviereck (Adium@moz-587DE482.ethz.ch) (Quit: Leaving.)
+[16:18:54] *** Joins: tikue (tkuehn@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[16:19:20] *** Joins: jviereck (Adium@moz-587DE482.ethz.ch)
+[16:20:09] *** Joins: brson (brson@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[16:20:09] *** ChanServ sets mode: +o brson
+[16:20:14] <brson> https://etherpad.mozilla.org/Meeting-weekly-2013-05-21
+[16:21:06] *** Quits: snadon (chatzilla@moz-3BC727E8.mc.videotron.ca) (Ping timeout)
+[16:21:12] <tjc> z0w0: I would say that once item 9 is finished on the schedule ( https://github.com/mozilla/rust/wiki/Bikeshed-rustpkg ) , the remaining things are fairly self-contained
+[16:21:29] <tikue> brson: i didn't get the link
+[16:21:30] <tikue>  /join rust
+[16:21:32] <tjc> so at that point, I'd welcome your help on any open bugs that are labeled "pkg"
+[16:25:16] *** Quits: jorendorff (jorendorff@moz-1747FB68.hsd1.tn.comcast.net) (Ping timeout)
+[16:25:46] *** Quits: devinus (devinus@moz-B4AF84BC.ptr.us.xo.net) (Quit: Computer has gone to sleep.)
+[16:27:10] *** Joins: devinus (devinus@moz-B4AF84BC.ptr.us.xo.net)
+[16:28:24] *** Joins: BizarreCake (BizarreCak@32C9829A.151E84E7.561471F8.IP)
+[16:31:12] *** Quits: devinus (devinus@moz-B4AF84BC.ptr.us.xo.net) (Quit: Computer has gone to sleep.)
+[16:32:30] *** Quits: novabyte (Instantbir@38DA005D.5B3CB247.B8C0F609.IP) (Quit: bye bye)
+[16:32:50] *** Joins: brendan (brendaneic@9343535F.FC95818.5EFB9497.IP)
+[16:35:28] <cmr> graydon: re https://github.com/mozilla/rust/issues/6568, I did https://github.com/mozilla/rust/pull/6625 which should make it more useful. I just need a way to get the value of a ValueRef returned from the various LLVMConst* functions
+[16:37:29] <cmr> graydon: I think I can use middle::trans::consts::get_const_val, but I'm not sure. I'll push my code when I'm back in a few hours
+[16:38:37] *** Quits: davbo (dave@moz-3FFA637C.oucs.ox.ac.uk) (Client exited)
+[16:39:25] *** Joins: int3_ (int3_@moz-B7B5F043.singnet.com.sg)
+[16:40:40] *** Quits: brendan (brendaneic@9343535F.FC95818.5EFB9497.IP) (Quit: brendan)
+[16:41:47] *** Joins: lmandel (lmandel@F2D29657.F60B0462.67AC9B1.IP)
+[16:41:47] *** Quits: KindOne (KindOne@moz-7BBBE9B9.dynamic.ip.windstream.net) (Ping timeout)
+[16:42:21] *** Joins: jorendorff (jorendorff@moz-B860E258.hsd1.tn.comcast.net)
+[16:42:28] *** Joins: spider-mario (spidermari@moz-2F72F6FF.dsl.quantic-telecom.net)
+[16:43:16] *** Quits: pyrac (pyrac@moz-88F57AAB.math.u-bordeaux1.fr) (Ping timeout)
+[16:45:56] *** Quits: z0w0 (zack@moz-780F7535.lns9.cha.bigpond.net.au) (Quit: Leaving.)
+[16:47:54] *** Joins: KindTwo (KindOne@A8739416.256A6F8A.EC6A1518.IP)
+[16:49:06] *** KindTwo is now known as KindOne
+[16:49:59] *** Quits: jviereck (Adium@moz-587DE482.ethz.ch) (Quit: Leaving.)
+[16:52:45] *** Quits: infynyxx (infynyxx@DB780A29.749BA1D.DCC373F0.IP) (Client exited)
+[16:53:06] *** Joins: infynyxx (infynyxx@DB780A29.749BA1D.DCC373F0.IP)
+[16:53:13] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[16:54:15] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Connection reset by peer)
+[16:54:30] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[16:54:49] *** Quits: infynyxx (infynyxx@DB780A29.749BA1D.DCC373F0.IP) (Ping timeout)
+[16:56:30] *** Joins: snadon (chatzilla@moz-3BC727E8.mc.videotron.ca)
+[16:56:51] *** Quits: inolen (Adium@moz-FA2406D8.socal.res.rr.com) (Quit: Leaving.)
+[16:57:10] *** Joins: inolen (Adium@moz-FA2406D8.socal.res.rr.com)
+[16:58:13] *** Quits: inolen (Adium@moz-FA2406D8.socal.res.rr.com) (Quit: Leaving.)
+[17:02:04] *** Joins: Blub\w (wry@moz-F451595C.wireless.dyn.drei.com)
+[17:02:09] *** Joins: cyndis (cyndis@moz-FA10A1CD.fi)
+[17:03:21] *** Quits: tjc (tjc@moz-E0677B46.vc.shawcable.net) (Quit: Places to go, people to annoy)
+[17:03:21] *** Quits: tikue (tkuehn@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: tikue)
+[17:04:00] *** Joins: tikue (tkuehn@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[17:05:07] *** Joins: thomaslee_ (thomaslee@moz-6C3931E3.static.twtelecom.net)
+[17:05:31] *** Joins: mschifer (Adium@2557E599.66715431.D25A875A.IP)
+[17:05:31] *** Joins: echristo (echristo@D423593A.D6CCE4AE.77834EAA.IP)
+[17:07:25] *** Joins: themgt (themgt@moz-248BBB96.dhcp.gnvl.sc.charter.com)
+[17:15:18] *** Joins: infynyxx (infynyxx@DB780A29.749BA1D.DCC373F0.IP)
+[17:15:42] *** Quits: vosen (vosen@moz-266BA656.icpnet.pl) (Quit: Leaving)
+[17:15:47] *** Joins: devinus (devinus@moz-B4AF84BC.ptr.us.xo.net)
+[17:16:13] <brson> https://github.com/mozilla/rust/wiki/Meeting-weekly-2013-05-21
+[17:16:39] *** Joins: victorporof (victorporo@96E478A3.6D2FB7A4.79933D60.IP)
+[17:18:21] *** Quits: paulproteus (quassel@rose.makesad.us) (Ping timeout)
+[17:18:21] *** Joins: devbug (quassel@moz-E1DE087C.bchsia.telus.net)
+[17:18:44] *** Quits: bnicholson (bnicholson@moz-E98974C1.hsd1.ca.comcast.net) (Ping timeout)
+[17:19:41] *** Quits: jorendorff (jorendorff@moz-B860E258.hsd1.tn.comcast.net) (Quit: jorendorff)
+[17:19:52] *** Joins: paulproteus (quassel@moz-E86A3B42.makesad.us)
+[17:20:02] <bstrie> delicious minutes
+[17:23:16] *** Joins: steven_is_false (user@moz-144077DE.bchsia.telus.net)
+[17:25:45] <benh> delicious syntax bikeshedding
+[17:26:00] <steven_is_false> Hello! Rust's support for external documentation (documenting library interfaces, types, etc..) is really great but unfortunately it does not seem to have any support for internal documentation (algorithm implementation details.) I understand that the suggested approach would be too simply include the documentation inline but this makes the source file really bulky, and difficult to read.
+[17:26:12] *** Joins: Cromulent (Cromulent@moz-983B638D.cable.virginmedia.com)
+[17:26:19] *** Joins: erickt1 (erickt@8C9ECD8F.3A598286.F12515B4.IP)
+[17:27:50] <steven_is_false> My approach at looking at right now is to have a markdown document written up alongside the source file to be read in parallel.
+[17:28:51] <steven_is_false> Unfortunately, that only works with the source markdown file because the conversion to html removes spacing information.
+[17:29:52] <steven_is_false> Does anyone here has ideas for alternative solutions to internal documentation for Rust source files?
+[17:30:44] <erickt1> nmatsakis: ping
+[17:31:18] *** Joins: bnicholson (bnicholson@2557E599.66715431.D25A875A.IP)
+[17:32:11] *** Joins: burg (burg@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[17:32:34] <zxcdw> Has there been any blog posts written which criticize Rust, or which are written in critical tone?
+[17:32:55] *** Quits: Cromulent (Cromulent@moz-983B638D.cable.virginmedia.com) (Quit: KVIrc 4.2.0 Equilibrium http://www.kvirc.net/)
+[17:33:44] *** Joins: pcwalton (pcwalton@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[17:33:44] *** ChanServ sets mode: +o pcwalton
+[17:33:49] <doomlord_> i've seen one criticizing rust/go in light of c++11.
+[17:33:56] *** Quits: doener (bs@moz-AA189A5A.unitymedia.biz) (Quit: leaving)
+[17:34:06] <doomlord_> simply saying c++11 means there's no need.
+[17:34:17] <doomlord_> "c++11 makes competitors Go Rusty"£
+[17:34:27] *** Quits: int3_ (int3_@moz-B7B5F043.singnet.com.sg) (Client exited)
+[17:34:27] <doomlord_> lol
+[17:35:11] <SiegeLord> Some people just can't be helped
+[17:35:15] <EXetoC> yeah that's silly
+[17:35:21] <doomlord_> i have an ongoing argument with a fan of C++OOP every other day who is convinced rust is un-necasery because c++ is perfect (lol)
+[17:35:22] <thomaslee_> profound sadness
+[17:35:52] <doomlord_> i'm trying to explain the trait thing to them and the problem of C++OOP leading to excessive coupling
+[17:36:37] <doomlord_> D's solution is 'uniform call syntax', rusts' solution is traits, go's is interfaces, C# is extention methods , .... C++ has non-member functions but the syntax herds people to make methods
+[17:36:41] *** Joins: int3_ (int3_@moz-B7B5F043.singnet.com.sg)
+[17:36:58] *** Quits: CarpNet (ac@moz-FD24B77.sohonet.co.uk) (Quit: Leaving)
+[17:37:11] *** Quits: int3_ (int3_@moz-B7B5F043.singnet.com.sg) (Connection reset by peer)
+[17:37:13] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Client exited)
+[17:37:53] <EXetoC> perfect. good one
+[17:38:20] <jesse98> I think there are much more compelling reasons to choose rust over C++11 than more sensible OOP
+[17:39:06] *** Joins: int3_ (int3_@moz-B7B5F043.singnet.com.sg)
+[17:39:32] <zxcdw> doomlord_: Ahh cool, thanks. Need to read through all that :)
+[17:39:33] *** Quits: int3_ (int3_@moz-B7B5F043.singnet.com.sg) (Connection reset by peer)
+[17:39:59] <benh> module system :))
+[17:40:08] <doomlord_> is there a summary of everything in rust contrasting with C++11. 
+[17:40:23] <jesse98> heh, compile (and link) times in c++ are so awful :-)
+[17:40:52] <jesse98> not to mention the insane template error messages
+[17:40:54] <doomlord_> for me the draw is [1] no header files [2] struct/trait/impl [3] the idea of the concurency support [4] cleaner syntax
+[17:40:56] <strcat> rust compile/link times are longer
+[17:41:05] *** Quits: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com) (Ping timeout)
+[17:41:06] *** Joins: int3_ (int3_@moz-B7B5F043.singnet.com.sg)
+[17:41:35] <jesse98> but I bet rust compile times scale better, and it should be easier to improve rust compile speed
+[17:41:36] *** Quits: int3_ (int3_@moz-B7B5F043.singnet.com.sg) (Connection reset by peer)
+[17:41:59] <jesse98> I like safety, concurrency, and the type system the most
+[17:42:00] <doomlord_> the macro system seems about even at the minute: i'm finding myself emulating things that c++11 has various tricks for. I'm looking forward to when the macros can do multiple blocks, then they will definitely be superior
+[17:42:02] <strcat> jesse98: C++ has incremental/parallel building of libraries ;p
+[17:42:04] <engla> doomlord_: concepts is a long-awaited future feature of C++
+[17:42:21] <engla> so their traits are coming
+[17:42:37] <benh> see it this way, our compile times are going to make C++ users feel right at home
+[17:42:38] <strcat> engla: they won't be in C++14
+[17:42:40] <strcat> so...
+[17:42:54] <SiegeLord> Until they start removing features from C++, C++ will never catch up to its successors
+[17:42:55] <doomlord_> but will you get the unification of comiple and runtime polymorphism ... rust traits/trait-objects  versus template-concepts/overloading & virtuals
+[17:43:01] <strcat> they aren't really coming, it's still a debate on whether they will ever land
+[17:43:05] <strcat> there's a "concept lite" thing now
+[17:43:11] <jesse98> I dunno, big c++ projects are so awful to compile
+[17:43:32] <strcat> jesse98: big $LANGUAGE projects are awful to compile
+[17:43:35] <jesse98> took like 40 mins or something to compile InDesign
+[17:43:40] <strcat> 200k lines of rust compiles a lost slower than 2 million lines of C++
+[17:43:42] <benh> SiegeLord: time to add a feature that can selectively disable other features, right? :)
+[17:43:43] <strcat> lot*
+[17:43:45] <strcat> right now
+[17:43:52] *** Joins: catpig (catpig@moz-9B6886CA.dip0.t-ipconnect.de)
+[17:43:59] <doomlord_> top of my wishlist for C++ is extention methods, if you could just declare struct Foo{}   Foo::whatever()/* not declared inside*/ that would fix half my frustration right there
+[17:44:08] <strcat> I'm sure it will get better, but we say compile-time is a feature of rust right now
+[17:44:19] <strcat> especially since we can't do incremental builds
+[17:44:28] <strcat> change one file -> recompile whole crate, you always have LTO
+[17:44:33] <benh> I still think the free function/method distinction should be used to signify *something* and leaving it up to the taste of the caller is confusing, but I'm not sure what argument to make there :(
+[17:44:54] <engla> strcat: ok, I don't know about the politics of it.. but even the idea of concepts shows a C++ parallel to traits
+[17:45:04] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[17:45:04] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/mYKajA
+[17:45:04] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[17:45:05] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[17:45:05] <ghrust> 01[13rust01] 15bors pushed 7 new commits to 06auto: 02http://git.io/2S9OrA
+[17:45:05] <ghrust> 13rust/06auto 148e9eba8 15Huon Wilson: syntax/ext: remove the ~str dependence of the deriving code.
+[17:45:06] <ghrust> 13rust/06auto 14eea265e 15Huon Wilson: syntax/ext: Remove the trait-object indirection of the ext_ctxt object.
+[17:45:06] *** Joins: int3_ (int3_@moz-B7B5F043.singnet.com.sg)
+[17:45:06] <ghrust> 13rust/06auto 144045da9 15Huon Wilson: syntax/ext: modernise ext_ctxt to be CamelCase and use new.
+[17:45:08] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[17:45:09] <strcat> engla: well, kind of
+[17:45:11] <doomlord_> the problem is people need to refactor code-bases, moving functions in and out of & between classes
+[17:45:52] <doomlord_> foo.bar(baz) is simply convinient to type... (drop box of potential functions appears, less parens nesting..) so that incentivizes people to un-necaserily make methods
+[17:45:52] *** Quits: int3_ (int3_@moz-B7B5F043.singnet.com.sg) (Connection reset by peer)
+[17:46:07] <benh> ah
+[17:46:09] <doomlord_> and there's an OOP culture from Java that incentivizes it aswell
+[17:46:12] *** Joins: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com)
+[17:46:22] <doomlord_> people brainwashed that functions are bad, methods are good
+[17:46:26] <doomlord_> THAT is the problem
+[17:46:30] <benh> I recall herb sutter suggesting that you should default to free function and try to make the method interface minimal but I guess that never caught on
+[17:46:33] <EXetoC> -.-
+[17:46:53] *** Quits: zxcdw (r-a@moz-C7C5467B.cust.bredband2.com) (Client exited)
+[17:46:59] <doomlord_> exactly, the whole syntax and culture is toward methods. even through functions are usually better :) 
+[17:47:05] <engla> good point doomlord_. Sometimes foo.bar(baz) is unecessarily asymmetric and should really be an "operator" of two equal objects
+[17:47:15] <benh> doomlord_: in rust there isn't a strong argument either way, is there?
+[17:47:43] <doomlord_> its true its asymetric, that does kind of bug me, but the syntax is convenient... a bit like |> in F# for sucessively applying operations to values
+[17:48:02] <doomlord_> that convinience should be decoupled from scope/acess rights etc
+[17:48:14] <doomlord_> decoupled from what module something is in
+[17:48:23] <strcat> benh: generic code in rust *has* to use (static) methods
+[17:48:25] <benh> if you can slap methods onto any type, you can make it symmetric again with (foo, baz).bar() ;)
+[17:48:49] <strcat> free functions vs default methods will be similar I guess, except for being able to override default methods
+[17:48:51] <benh> strcat: can't you invent a new trait and impl it for T?
+[17:48:57] <doomlord_> benh , i would like to have that option sure
+[17:49:01] <strcat> benh: yes, you add methods to T
+[17:49:17] <benh> right
+[17:49:25] <strcat> rust just uses 'method' to mean a function associated with a type or trait
+[17:49:38] *** Joins: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net)
+[17:49:40] <benh> ok, i was really thinking of the static method/regular method distintion and got confused
+[17:49:44] <benh> sorry
+[17:49:46] <benh> +c
+[17:50:47] *** Joins: MrFahrenheit (RageOfThou@3FEF494C.29C984D5.783DEDCA.IP)
+[17:51:06] *** Joins: int3_ (int3_@moz-B7B5F043.singnet.com.sg)
+[17:51:13] *** Joins: inolen (Adium@moz-9F4F17DF.tourcaster.com)
+[17:51:57] *** Quits: int3_ (int3_@moz-B7B5F043.singnet.com.sg) (Connection reset by peer)
+[17:52:08] <pcwalton> nmatsakis: I can't quite make "making crust functions no longer *u8" work until wrappers are gone
+[17:52:12] <pcwalton> how's your work on that going?
+[17:53:20] *** Quits: lucian (lucian@6B2B4644.4304AE1E.CE5E78F6.IP) (Input/output error)
+[17:53:29] *** Joins: zxcdw (r-a@moz-C7C5467B.cust.bredband2.com)
+[17:54:11] *** Quits: fabiand (fabiand@moz-6C90E338.adsl.alicedsl.de) (Quit: Verlassend)
+[17:55:00] <engla> benh: I like it. Also, you can do that
+[17:56:29] <engla> benh: actually sounds like a good way to make .zip() (for iterators) polymorphic across 2,3,4, etc more iterators
+[17:56:58] *** Quits: zxcdw (r-a@moz-C7C5467B.cust.bredband2.com) (Quit: leaving)
+[17:58:04] *** Joins: zxcdw (r-a@moz-C7C5467B.cust.bredband2.com)
+[17:59:07] <steven_is_false> So I implemented a weak form of GADTs (generalized abstract datatypes) a couple of days ago, and was told I should bring it up later when more people would be around. Here's the link https://gist.github.com/sstewartgallus/5605948 . I think this is pretty cool, and could potentially be useful for some other people, but it's a bit weak right now. Does anyone have some suggestions on how to improve it?
+[17:59:47] *** Quits: hjr3 (hradtke@AF4FC8FE.D2A4E84D.523CBD62.IP) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[18:00:20] *** Joins: jviereck (Adium@moz-57512FAD.dynamic.hispeed.ch)
+[18:00:26] <bstrie> steven_is_false: are enums not already ADTs? I'm bad with the lingo...
+[18:00:48] <doomlord_> 'tagged unions' ?
+[18:00:50] *** Quits: zxcdw (r-a@moz-C7C5467B.cust.bredband2.com) (Client exited)
+[18:01:10] <doomlord_> whats the most common cross-language name for the concept
+[18:01:32] <benh> Every time I read up on GADTs I'm, like, that totally makes sense and is a natural extension, and a day later I've forgotten what the difference to ADTs is already :(
+[18:01:46] <steven_is_false> bstrie: All, they need to be generalized a bit more is the @Is <S, T> type which insists that two types are nominally the same (or should the current implementation is weaker.)
+[18:01:58] *** Quits: tikue (tkuehn@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: tikue)
+[18:02:03] *** Quits: eatkinson (eatkinson@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: eatkinson)
+[18:02:23] *** Quits: burg (burg@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: burg)
+[18:02:33] <nmatsakis> pcwalton: hey, sorry, Iwas in a meeting
+[18:02:38] <nmatsakis> pcwalton: I wanted to ping you about that
+[18:02:48] <nmatsakis> pcwalton: I am about to push the PR, but there is a bug that is somewhat confounding to me
+[18:02:58] <nmatsakis> pcwalton: I think I will however just open the bug as a separate issue, since it's not blocking the code
+[18:03:16] <nmatsakis> pcwalton: for some reason that I don't know, the "big stack" attribute seems to get lost in some cases
+[18:03:43] *** Quits: brson (brson@moz-BE33DA21.fw1.sfo1.mozilla.net) (Ping timeout)
+[18:03:49] <nmatsakis> pcwalton: but the case where it occurs seems to be so narrow that I fear it may be my fault...
+[18:04:26] <steven_is_false> GADTs are ADTS plus type constraints. Consider the following weak implementation in Haskell.
+[18:04:52] <steven_is_false> class IsAnInt a
+[18:05:01] *** Joins: int3_ (int3_@moz-B7B5F043.singnet.com.sg)
+[18:05:02] <steven_is_false> instance IsAnInt Int
+[18:05:21] <steven_is_false> Then one has to make sure no other type implements IsAnInt.
+[18:05:51] *** Joins: burg (burg@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[18:06:04] <steven_is_false> And then one could do data Foo a = IsAnInt a => Foo a
+[18:06:26] <benh> and that's better than data Foo = Foo Int?
+[18:06:32] *** Joins: eatkinson (eatkinson@moz-C03D0C61.vlan426.asr1.sfo1.gblx.net)
+[18:06:47] <steven_is_false> benh: That's the simple case the more complicated case is like in the code I linked.
+[18:06:47] *** Quits: telotortium (rmi1@moz-90BFA359.dhcp.mdsn.wi.charter.com) (Ping timeout)
+[18:07:07] <steven_is_false> benh: I could extend my code to handle strings, floats, and other types as well.
+[18:07:09] *** Joins: brson (brson@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[18:07:09] *** ChanServ sets mode: +o brson
+[18:07:16] *** Quits: brson (brson@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: leaving)
+[18:07:17] <bstrie> steven_is_false: given the string "then one could do data Foo a = IsAnInt a => Foo a", I'm not 100% sure where the haskell stars
+[18:07:20] *** Joins: brson (brson@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[18:07:20] *** ChanServ sets mode: +o brson
+[18:07:28] *** Quits: snadon (chatzilla@moz-3BC727E8.mc.videotron.ca) (Ping timeout)
+[18:07:37] <benh> data
+[18:07:43] *** Joins: telotortium (rmi1@moz-90BFA359.dhcp.mdsn.wi.charter.com)
+[18:08:43] <steven_is_false> The Haskell type stores a dictionary structure giving the implementation of IsAnInt similar to how the Rust code stores @Is<T, uint>
+[18:09:10] *** Joins: alisdair (textual@moz-EBE9F394.bchsia.telus.net)
+[18:09:24] *** Joins: tikue (tkuehn@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[18:09:51] *** Joins: snadon (chatzilla@moz-3BC727E8.mc.videotron.ca)
+[18:10:27] *** Quits: int3_ (int3_@moz-B7B5F043.singnet.com.sg) (Ping timeout)
+[18:10:33] <steven_is_false> I sort of wish macro expansion ran ater some type inference. 
+[18:10:43] *** Joins: jorendorff (jorendorff@moz-B860E258.hsd1.tn.comcast.net)
+[18:10:52] <steven_is_false> Then I could create a cast! macro which infers the casts automatically.
+[18:10:59] *** Joins: doener (doener@moz-121949B3.unitymediagroup.de)
+[18:11:30] <pauls> steven_is_false: is the good news is that, if my research pans out, that kind of stuff should be possible in 10-15 years. / :
+[18:12:23] <kimundi> pauls: Oh, that sounds interesting. what plans are they?
+[18:12:28] <pauls> steven_is_false: actually, I'm being unfair; what you ask might be in some sense easier... but how do you type-infer code that contains macros?
+[18:12:48] <kimundi> ... oh... years, not days
+[18:12:57] <steven_is_false> pauls I said some type inference. But it shouldn't be too difficult. Here goes
+[18:13:00] <kimundi> nevermind
+[18:13:04] *** Quits: BizarreCake (BizarreCak@32C9829A.151E84E7.561471F8.IP) (Quit: Leaving)
+[18:13:06] <doomlord_> its funny how C #defines let you emulate some cases for macros that are quite complex otherwise. (albeit in a very dangerous, error prone way)
+[18:13:27] <pauls> kimundi: the idea is to make macros declare what they do with binding so that it becomes possible to verify that the macro produces well-typed code.
+[18:13:45] *** Quits: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP) (Ping timeout)
+[18:13:49] <pauls> ...then you can typecheck before expanding: it will be awesome. And we will have flying cars.
+[18:14:01] <kimundi> heh ;)
+[18:15:08] <steven_is_false> pauls: So it's difficult to explain but starting off with a quote! macro one could do let _ : Expr uint = quote! (3 + 4);
+[18:16:38] <pauls> steven_is_false: "could"? I'm lost; under what circumstances?
+[18:18:21] <steven_is_false> pauls: Okay I'm not really good at explaining this stuff.
+[18:19:03] <Jesse> pauls: self-flying cars
+[18:20:45] <bjz> Jeaye: ping
+[18:20:46] <steven_is_false> Anyways, macros aren't that well supported right now so it'd probable not be a good idea to use them right now for a GADT implementation.
+[18:21:14] <pauls> steven_is_false: I'm just conversation-contextily lost; the technical explanations you've given seem fine.
+[18:21:51] <Jeaye> bjz: pong
+[18:21:52] *** Quits: jorendorff (jorendorff@moz-B860E258.hsd1.tn.comcast.net) (Quit: jorendorff)
+[18:21:52] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[18:22:01] <Jeaye> bjz: Wasn't able to test again before going to work.
+[18:22:07] <bjz> Jeaye: oki
+[18:22:07] <Jeaye> I'll be able to look at it tonight.
+[18:22:11] <bjz> Jeaye: sure
+[18:22:40] <steven_is_false> pauls: Now that I think about it what I want is an infer! macro.
+[18:23:02] <Jeaye> Oppers, what's the status of statically linked libs with Rust?
+[18:23:31] <steven_is_false> pauls: But I don't think that would work.
+[18:23:39] <pauls> steven_is_false: it'd be possible to hack something up (I think), provided that you didn't have any macro invocations in the arg. I think that's a serious limitation, though.
+[18:24:04] <steven_is_false> pauls: Okay.
+[18:24:22] *** Joins: jorendorff (jorendorff@moz-B860E258.hsd1.tn.comcast.net)
+[18:25:33] *** Joins: lkuper (lkuper@290F781E.FFCF2A3B.51B6877.IP)
+[18:25:50] *** Joins: zxcdw (r-a@moz-C7C5467B.cust.bredband2.com)
+[18:26:35] *** Quits: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net) (Quit: Jesse)
+[18:27:07] *** Joins: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net)
+[18:27:10] *** Quits: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net) (Input/output error)
+[18:27:12] <steven_is_false> I'm using the ltor, and rtor functions but what I really want (in pseudo-syntax) is fn context (&self, &fn : T = uint () -> ~util::Void) -> ~util::Void (The void pointers are to hack around the lack of generic method calls. By : T = uint, I want some way of explaining that the function assumes that the type T is nominally the same as uint.
+[18:28:23] <steven_is_false> ;) Forgot a parenthesis.
+[18:29:25] <bjz> what's ltor and rtor?
+[18:30:21] <steven_is_false> bjz: They're the methods that are currently in the Is <S, T> trait, and I want to replace them.
+[18:30:48] <steven_is_false>  Now that I think about it I don't need a trait I can just use functions directly.
+[18:31:04] <bjz> oh, you mean that gist you had?
+[18:31:16] <steven_is_false> bjz: Yes.
+[18:35:13] *** Quits: devinus (devinus@moz-B4AF84BC.ptr.us.xo.net) (Quit: Computer has gone to sleep.)
+[18:39:11] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[18:39:11] <ghrust> 01[13rust01] 15bors merged 06auto into 06incoming: 02http://git.io/2S9OrA
+[18:39:11] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[18:39:56] *** Joins: devinus (devinus@moz-B4AF84BC.ptr.us.xo.net)
+[18:40:03] *** Parts: inolen (Adium@moz-9F4F17DF.tourcaster.com) ()
+[18:40:51] *** Quits: tiffany (kawaii@moz-1E0FE6E8.dhcp.embarqhsd.net) (Ping timeout)
+[18:42:28] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[18:42:28] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/h3wdYg
+[18:42:28] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[18:42:29] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[18:42:29] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/tJQWfQ
+[18:42:29] <ghrust> 13rust/06auto 14d543354 15Seo Sanghyeon: Remove unnecessary allocations flagged by lint from rustdoc
+[18:42:29] <ghrust> 13rust/06auto 14d4724c1 15Seo Sanghyeon: Remove unnecessary allocations flagged by lint from rustpkg
+[18:42:30] <ghrust> 13rust/06auto 1470222b7 15Seo Sanghyeon: Remove unnecessary allocations flagged by lint from fuzzer
+[18:42:32] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[18:43:04] *** Joins: tiffany (kawaii@moz-1E0FE6E8.dhcp.embarqhsd.net)
+[18:43:57] *** Quits: jensnockert (jensnocker@moz-9438EEE0.wireless.lu.se) (Input/output error)
+[18:46:56] *** Quits: BitPuffin (quassel@moz-8370D1B9.bredband.comhem.se) (Ping timeout)
+[18:49:18] *** Quits: clements (clements@moz-180CB07A.members.linode.com) (Quit: Leaving)
+[18:51:21] *** Quits: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com) (Ping timeout)
+[18:51:35] *** Quits: Excureo (c@moz-DE8C33F1.static.yakm.wa.charter.com) (Input/output error)
+[18:51:54] *** Joins: Excureo (c@moz-DE8C33F1.static.yakm.wa.charter.com)
+[18:52:32] <steven_is_false> Hoorah! I found a much better implementation of the Is type. https://gist.github.com/sstewartgallus/5605948
+[18:55:24] *** Joins: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com)
+[18:55:55] *** Quits: brson (brson@moz-BE33DA21.fw1.sfo1.mozilla.net) (Ping timeout)
+[18:57:31] *** Joins: kud1ing (Mibbit@moz-9680481.pools.arcor-ip.net)
+[18:57:48] * kud1ing is struggeling with use foo; and mod foo;
+[18:58:24] <kud1ing> if i only do a "mod foo;" the types are not available in the crate
+[18:58:48] <thiez> steven_is_false: I have absolutely no idea how that works :D
+[18:58:49] <kud1ing> if i add a "use foo:*;" i get a `use` and `extern mod` declarations must precede items
+[18:59:18] <thiez> kud1ing: is your code online?
+[18:59:34] <kud1ing> thiez: not yet
+[18:59:44] *** Joins: brson (brson@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[18:59:44] *** ChanServ sets mode: +o brson
+[19:00:15] <steven_is_false> thiez: Earlier, it was even worse. I had made a lot of stupid mistakes. I think that most of the fault is on me for not writing the best code.
+[19:00:17] <kud1ing> thiez: there is code in bar.rc which uses "pub enum ResultCode"
+[19:00:21] <kud1ing> from foo.rs
+[19:00:55] <doener> kud1ing: "mod foo;" means that foo.rs will be compiled and included in the crate. You can then use e.g. foo:bla();.
+[19:01:13] <doener> kud1ing: "use foo::*" imports the names into the namespace, so you could use just bla()
+[19:01:17] <thiez> foo::bla()*
+[19:01:21] <doener> right
+[19:01:34] *** Joins: BitPuffin (quassel@moz-8370D1B9.bredband.comhem.se)
+[19:01:52] <kud1ing> doener: thanks, but what about this "`use` and `extern mod` declarations must precede items"
+[19:01:55] *** Quits: prudhvi (prudhvi@moz-154A460A.supr.io) (Ping timeout)
+[19:02:03] <thiez> and 'use' must precede 'mod', so 'use foo::*; mod foo' would be the right order, assuming you have no other instances of 'use' and 'mod'
+[19:02:05] <kud1ing> the order of the use/mod seems to matter
+[19:02:27] <thiez> yup, it's a little bit weird :)
+[19:02:32] <kud1ing> there are more uses and one extern mod std;
+[19:03:12] <kud1ing> ah! i've moved all uses between the extern mod and the mods
+[19:03:15] <kud1ing> that seems to work
+[19:03:20] <kud1ing> thanks guys
+[19:03:32] <doener> kud1ing: IIRC the order is enforced because it matches the shadowing rules
+[19:04:17] <kud1ing> the error message could be more helpful
+[19:04:32] <kud1ing> now it makes sense
+[19:05:13] *** Joins: gareth0 (gareth0@moz-F8241382.dynamic.dsl.as9105.com)
+[19:05:24] <thiez> the message is quite clear, but the rule seems to surprise people
+[19:05:35] <thiez> I think that's why it's confusing
+[19:05:39] *** Joins: prudhvi (prudhvi@moz-154A460A.supr.io)
+[19:05:40] *** Quits: eatkinson (eatkinson@moz-C03D0C61.vlan426.asr1.sfo1.gblx.net) (Quit: eatkinson)
+[19:05:49] *** Quits: pcwalton (pcwalton@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: pcwalton)
+[19:05:51] *** Quits: tikue (tkuehn@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: tikue)
+[19:05:59] *** Quits: burg (burg@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: burg)
+[19:06:15] <gareth0> brson, any chance of an r? on https://github.com/mozilla/rust/pull/6433
+[19:06:20] <kud1ing> in hindsight it is clear, indeed
+[19:06:39] *** Quits: brson (brson@moz-BE33DA21.fw1.sfo1.mozilla.net) (Ping timeout)
+[19:07:47] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Client exited)
+[19:08:14] *** Quits: jviereck (Adium@moz-57512FAD.dynamic.hispeed.ch) (Ping timeout)
+[19:08:17] *** Joins: jviereck (Adium@moz-340574DC.dclient.hispeed.ch)
+[19:12:47] *** Joins: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net)
+[19:13:43] *** Joins: hjr3 (hradtke@AF4FC8FE.D2A4E84D.523CBD62.IP)
+[19:15:08] *** Quits: bytbox (s@moz-D83E9B31.wireless.umd.edu) (Ping timeout)
+[19:17:07] *** Quits: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com) (Ping timeout)
+[19:20:40] *** Joins: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com)
+[19:23:16] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[19:23:27] *** Quits: hjr3 (hradtke@AF4FC8FE.D2A4E84D.523CBD62.IP) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[19:24:11] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[19:24:11] *** ChanServ sets mode: +o dherman
+[19:24:41] *** Joins: pyrac (pyrac@moz-D851FA22.w92-149.abo.wanadoo.fr)
+[19:28:41] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[19:29:12] *** Quits: mimcpher (uid11663@moz-C944F5EC.irccloud.com) (Quit: Connection closed for inactivity)
+[19:29:39] *** Joins: hjr3 (hradtke@AF4FC8FE.D2A4E84D.523CBD62.IP)
+[19:29:40] <nmatsakis> has anyone seen sanxiyn lately?
+[19:30:47] <strcat> nmatsakis: yes he was here earlier today
+[19:30:51] *** Joins: mindbound (Mibbit@C83F40FA.C3C4EFEF.4BC5EF08.IP)
+[19:31:28] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Client exited)
+[19:31:32] *** Quits: hjr3 (hradtke@AF4FC8FE.D2A4E84D.523CBD62.IP) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[19:31:38] <strcat> well I guess night for him ;p
+[19:32:19] <mindbound> Hello, guys. Two things I'd want to find out - one, is there any documentation for using lifetimes, and two, is there/will there be any support in Rust for parameter defaults (think fn foo(x: int = 5) -> int or along those lines)?
+[19:33:22] *** Joins: cscott (cscott@moz-2577C94A.net)
+[19:33:33] <nmatsakis> strcat: ok, mostly curious if he was around in general
+[19:33:36] <cscott> is the iterator protocol documented anywhere?
+[19:33:45] <nmatsakis> strcat: ^
+[19:33:52] <strcat> cscott: core::iter and core::iterator
+[19:33:54] <steveklabnik> mindbound: http://static.rust-lang.org/doc/tutorial-borrowed-ptr.html#named-lifetimes might help with lifetimes
+[19:34:04] <nmatsakis> mindbound: there is some documentation, not entirely up to date.
+[19:34:04] <mindbound> Thanks!
+[19:34:15] <nmatsakis> mindbound: default parameter values are not planned, though not ruled out
+[19:34:42] <mindbound> I see, thank you.
+[19:34:46] <engla> mindbound: Option<T>, in this case Option<int> is sometimes used for some kinds of parameter defaults
+[19:34:48] <steveklabnik> see this list
+[19:34:48] <steveklabnik> https://mail.mozilla.org/pipermail/rust-dev/2012-August/002228.html
+[19:34:57] <steveklabnik> for some discussion from a few months back
+[19:35:09] *** Quits: devinus (devinus@moz-B4AF84BC.ptr.us.xo.net) (Quit: Computer has gone to sleep.)
+[19:35:13] <cscott> strcat: that documentation could be improved.  in particular the signature of vec::each is (roughly) fn each(T, &fn(T)->bool)->bool
+[19:35:18] *** Quits: devbug (quassel@moz-E1DE087C.bchsia.telus.net) (Client exited)
+[19:35:32] *** Joins: tjc (tjc@A5087023.2354C43D.D8E68FF6.IP)
+[19:35:32] *** ChanServ sets mode: +o tjc
+[19:35:36] <cscott> the closure returns false to break out of the loop (that part is documented).  but what does the return value of each() itself mean?
+[19:35:43] <strcat> cscott: it was a recent change, the core::iter documentation wasn't updated
+[19:35:52] <strcat> the return value indicates whether it was broken out of
+[19:36:03] <mindbound> Yes, Option<T> is what I am using myself for that purpose, I just wanted to find out. Anyway, that should do it.
+[19:36:04] <cscott> and don't for loops support internal 'return'?
+[19:36:29] <strcat> cscott: for loops rely on the iterator breaking when they ask to break/return
+[19:36:42] <cscott> really the perl6 semantics for loop closures are much cleaner.  but that would require rust to support exceptions of some kind.
+[19:36:58] *** Quits: mindbound (Mibbit@C83F40FA.C3C4EFEF.4BC5EF08.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[19:37:08] <cscott> strcat: but how does the for loop detect that the closure wanted to return (as opposed to break)?
+[19:37:29] <strcat> don't know what you mean
+[19:37:32] <strcat> the for loop is the closure
+[19:37:59] <cscott> for each() |x| { return; }  vs for each() |x| { break; }
+[19:38:06] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[19:38:12] *** Quits: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net) (Quit: Jesse)
+[19:38:15] <strcat> cscott: the iterator doesn't see a difference
+[19:38:16] <cscott> one of these compiles a closure equivalent to |x| { return false; }
+[19:38:24] <strcat> cscott: both are
+[19:38:27] <gareth0> cscott, the compiler does magic rewriting
+[19:38:37] <cscott> yes, i'm asking for the details of that magic rewriting
+[19:38:43] *** Joins: devinus (devinus@moz-B4AF84BC.ptr.us.xo.net)
+[19:38:51] <strcat> cscott: break breaks, return breaks and returns
+[19:39:10] <strcat> if the iterator is buggy it will keep going
+[19:39:12] *** Quits: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com) (Quit: Computer has gone to sleep.)
+[19:39:19] <cscott> is for each() |x| { return; } using a closure equivalent to |x| { _magic_local_var_return_now=true; return false; }
+[19:39:44] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Client exited)
+[19:40:43] <cscott> (and why does each() need to return a bool at all?  surely we could just check _magic_local_var_return_now?)
+[19:41:49] <kud1ing> are lint passes run by default?
+[19:41:53] <strcat> cscott: that was a recent change
+[19:41:56] <strcat> it didn't used to
+[19:42:02] <strcat> it returns a bool for convenience
+[19:42:11] <strcat> so the caller can easily check if the loop was broken out of
+[19:42:19] *** Quits: erickt1 (erickt@8C9ECD8F.3A598286.F12515B4.IP) (Quit: Leaving.)
+[19:42:56] *** Joins: erickt (erickt@8C9ECD8F.3A598286.F12515B4.IP)
+[19:43:18] <cscott> fwiw, perl6 has break/continue/return-inside-closure compile to 'throw break();' 'throw continue();' 'throw return()', and the for/etc loop constructs just set up a try/catch to Do The Right Thing. ie, "catch return { return; }"
+[19:43:19] <tjc> kud1ing: some are, some aren't
+[19:43:27] <tjc> the best way to check is to look at src/middle/lint.rs
+[19:43:35] <tjc> although it should be documented better
+[19:43:50] *** Quits: vmx (vmx@moz-78FCAE2D.pools.arcor-ip.net) (Quit: Leaving)
+[19:43:52] <cscott> i think it's a little more complicated; ie the return points to the frame it wants to return from, so you can do non-local returns cleanly.
+[19:44:43] *** dherman is now known as dherman-lunch
+[19:46:14] *** Joins: webber46 (webber46@moz-F6310FF0.lha.sgsnet.se)
+[19:47:32] *** Quits: steveklabnik (steve@moz-5EF6C37C.socal.res.rr.com) (Connection reset by peer)
+[19:47:47] *** Joins: steveklabnik (steve@moz-5EF6C37C.socal.res.rr.com)
+[19:48:07] <kud1ing> tjc: thanks
+[19:48:20] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[19:48:20] <ghrust> 01[13rust01] 15bors merged 06auto into 06incoming: 02http://git.io/tJQWfQ
+[19:48:20] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[19:50:08] *** Quits: lkuper (lkuper@290F781E.FFCF2A3B.51B6877.IP) (Ping timeout)
+[19:51:21] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[19:51:21] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/0QDc3w
+[19:51:21] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[19:51:22] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[19:51:22] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/vx_2QQ
+[19:51:22] <ghrust> 13rust/06auto 146b525ec 15Seo Sanghyeon: Take string slices
+[19:51:22] <ghrust> 13rust/06auto 14743e4b0 15Seo Sanghyeon: Use static strings
+[19:51:22] <ghrust> 13rust/06auto 140252c30 15bors: auto merge of #6658 : sanxiyn/rust/static-string-2, r=thestinger
+[19:51:22] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[19:51:58] <strcat> cscott: it has to be usable outside of 'for', and has to perform well
+[19:52:15] <strcat> the internal iteration protocol isn't very good but I don't have ideas on how to make it better
+[19:52:34] *** Quits: josh (josh@moz-348C4790.hsd1.mn.comcast.net) (Quit: josh)
+[19:52:42] <cscott> strcat: the benefit of the perl solution is that user code can throw/catch the same exceptions, so it's not a special thing baked into the compiler
+[19:52:54] <cscott> strcat: and exceptions can be efficient; you use the same escape analysis which rust is already doing
+[19:53:15] <cscott> these are special exceptions which aren't escaping the loop, they can be stack allocated or optimized away entirely
+[19:53:20] *** Quits: jviereck (Adium@moz-340574DC.dclient.hispeed.ch) (Quit: Leaving.)
+[19:53:23] <strcat> but they won't be
+[19:53:27] <strcat> they *could* be but LLVM won't
+[19:53:39] <cscott> i'm not saying you should use LLVM's exception mechanism
+[19:53:43] *** Quits: kud1ing (Mibbit@moz-9680481.pools.arcor-ip.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[19:53:57] <strcat> rust uses LLVM to optimize, and LLVM won't do something like that 99% of the time
+[19:54:34] <cscott> strcat: proposal: return a tuple from every function: (exception, retval).  after the function call, look at the exception and if non-null return (exception, null).
+[19:54:41] <cscott> voila! you now have fast exception processing!
+[19:54:46] <strcat> no, that's really, really slow
+[19:54:53] <cscott> i've implemented it, it's not
+[19:55:01] <cscott> especially if you handle returning small structs sanely
+[19:55:07] <strcat> you're adding a branch to every function call
+[19:55:07] <cscott> ie, in two registers.
+[19:55:26] <cscott> you're adding a branch which is almost always not taken.  which is not slow, it gets eaten up by the superscalar processor
+[19:55:32] <cscott> i've benchmarked this, so I know
+[19:55:47] <strcat> dwarf exceptions exist *because* it's too slow
+[19:55:49] <cscott> this was for a static java compiler, fwiw
+[19:56:00] *** Joins: erickt1 (erickt@8C9ECD8F.3A598286.F12515B4.IP)
+[19:56:13] <strcat> table based unwinding wasn't just some thing dreamed up by bureaucrats
+[19:57:06] <strcat> at the very least returning a exception value loses you a word you could be using for the return value
+[19:57:11] <cscott> there are tradeoffs, sure.  if you throw exceptions a lot, the tuple-return is definitely faster.  if you almost never use exceptions, then table unwinding wins, even though the table unwinding itself is dog slow
+[19:57:11] *** Quits: erickt (erickt@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[19:57:28] <cscott> strcat: you have plenty of registers, and you're typically only using one to return a retval.
+[19:58:00] <cscott> registers aren't the issue.  the test-and-branch is the issue, if any, and you can optimize that away as well if you're careful with how you define your language
+[19:58:24] <Ralith> strcat: using LLVM to perform low-level optimizations does not preclude doing high-level optimizations elsewhere
+[19:58:28] <Ralith> indeed, that's how LLVM is usually used
+[19:58:28] <strcat> a branch after every function won't be magically optimized away
+[19:58:29] <cscott> ie, in the closure case i was describing, the entire return-and-test is all inlined and optimized away, and you don't end up with anything other than control flow.
+[19:58:39] *** Quits: erickt1 (erickt@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[19:58:57] *** Quits: ssbr (scorchsabe@A9D9D38C.B6F034AC.72A31D6.IP) (Connection reset by peer)
+[19:59:02] <strcat> Ralith: clang doesn't do any frontend optimizations beyond choosing how to return values
+[19:59:03] <cscott> strcat: that's what escape analysis is for.
+[19:59:16] <strcat> cscott: how does escape analysis figure out how to remove the branch?
+[19:59:19] *** Quits: mcomella (mcomella@moz-B10FF54F.ri.ri.cox.net) (Connection reset by peer)
+[19:59:21] <Ralith> strcat: fairly sure that's wrong
+[19:59:22] *** Joins: ssbr (scorchsabe@A9D9D38C.B6F034AC.72A31D6.IP)
+[19:59:48] <cscott> strawman: require all methods which throw (escaping) exceptions to have "throws" in their function signature.  now you only pay for exceptions if you use them.  if you catch all exceptions within your body, you don't have to declare throws.
+[20:00:03] *** Joins: mcomella (mcomella@moz-B10FF54F.ri.ri.cox.net)
+[20:00:19] <nmatsakis> cscott: we've talked about this, we even have a branch that does it (return value based exceptions, I mean)
+[20:00:25] *** Parts: steven_is_false (user@moz-144077DE.bchsia.telus.net) (ERC Version 5.3 (IRC client for Emacs))
+[20:00:27] <cscott> voila: just as fast as current rust, plus a sane iteration protocol, plus you can use exceptions if you want to pay for them.
+[20:00:28] <Ralith> cscott: rust's smart enough that you shouldn't even need to explicitly declare it
+[20:00:34] <nmatsakis> cscott: partially just because the DWARF stuff that we're relying on now doesn't work on windows
+[20:00:40] <Ralith> it's a pretty easy inference problem compared to type unification
+[20:00:40] <cscott> Ralith: it's an interprocedural analysis; declaring is safer.
+[20:00:44] *** Joins: ssbr_ (ssbr@A9D9D38C.B6F034AC.72A31D6.IP)
+[20:00:54] <Ralith> I don't know about that
+[20:00:54] <strcat> cscott: we aren't going to have catchable exceptions for other reasons - it's not about performance
+[20:01:00] <cscott> where by "safer" i mean, "don't potentially require whole-program analysis"
+[20:01:40] *** Joins: bytbox (s@moz-D83E9B31.wireless.umd.edu)
+[20:01:52] <strcat> a function doesn't know if it throws if it uses trait bounds or closures
+[20:02:07] <cscott> strcat: i think we can leave off this discussion; i'm not really going to redesign rust via irc.  but i'm just saying that perl6 uses exceptions to solve the "return from closure" problem in a nice clean way which integrated with its exception mechanism.  if i were looking to redesign the iteration protocol, i might take inspiration from that.
+[20:02:31] <cscott> strcat: it's in the function signature.  it's a simple intraprocedural analysis.
+[20:02:38] <graydon> cscott: we have a return-based failure implementation. it is expensive. same ballpark as other forms of EH though.
+[20:02:54] *** Joins: Jesse (jruderman@2557E599.66715431.D25A875A.IP)
+[20:02:57] <graydon> it's not the cost that's the prohibitive of all these schemes, it's the infection-of-semantics
+[20:03:02] <strcat> cscott: so anything with array indexing somewhere under the hood thinks it will throw
+[20:03:10] <nmatsakis> cscott: I...kind of think the for loop stuff is working just fine?
+[20:03:21] <nmatsakis> not sure what problem is being solved, exactly
+[20:03:25] <cscott> graydon: but it might enable simplification-of-semantics elsewhere.
+[20:03:42] <graydon> cscott: tradeoffs abound, yes.
+[20:03:45] <benh> I'm still sad you can't return early from non-loop lambdas :)
+[20:03:52] <cscott> strcat: i don't see why you think that array indexing is special.  unless your type system is unsound?
+[20:04:12] <strcat> cscott: it's not special, it's just an example of how pervasive things that can fail are
+[20:04:33] <strcat> if you just bubble up something like nofail, pretty much everything will possibly fail
+[20:04:38] <strcat> based on the compiler's understanding
+[20:05:40] *** Joins: naq (naq@D5C2D2DF.E4265FCD.E481B5B.IP)
+[20:05:48] <cscott> strcat: the java API uses explicit exception declarations, and it does tend to infect things, but only because they use it.  you can always control the spread with try/catch if you wish to.  most user code does not end up declaring thrown exceptions.
+[20:06:00] <graydon> the java API has checked and unchecked exceptions
+[20:06:30] <cscott> graydon: yes, but the checked version behaves exactly as I was proposing exceptions in rust would behave -- ie, explicitly being declared in the function signature.
+[20:06:42] <graydon> that is: really pervasive stuff, they don't even try to bound
+[20:06:51] <cscott> so you can use checked exceptions in java as proxies for how infectious (or not) declared exceptions in rust would be.
+[20:07:05] <graydon> I do. I think they're generally detrimental to the language.
+[20:07:25] <strcat> java doesn't have a checked exception for array[0] or 'x' (could be null) afaik
+[20:07:29] <cscott> graydon: i think that is due to the Java API, which uses them heavily.
+[20:07:58] <cscott> strcat: yes, and so that shouldn't throw a declared exception in rust.  (it doesn't currently, why would it?)
+[20:08:27] <graydon> I think both the catchability and the encapsulation breakage hurt java. the latter could be solved but nobody has bothered to investigate lightweight pervasive encapsulation mechamisms, such as "every foo, bar and baz exception passing outwards from this module should map to a quux exception".
+[20:08:30] <strcat> so when/why would stuff declare a checked exception?
+[20:08:47] <strcat> if you *have* to deal with the exception, is it really any different than returning a sum type?
+[20:08:49] <cscott> all i'm saying is that you *could* add exceptions as a simple language extension, based on return value, which wouldn't affect the performance of any code which didn't use them.
+[20:08:54] <graydon> the result is a whole lot of code that is not catch-safe and a whole lot of catch (Exception e) { /* ignore */ } or { rethrow different } junk
+[20:09:00] <graydon> neither of which is helpful to robustness
+[20:09:23] <cscott> i'm confused by both graydon and strcat's reactions, and i don't think i can try to understand both of them at once.
+[20:09:56] <graydon> I'm reacting to the supposed positioning of java exceptions as a positive role model. if you're not making that position, I'll quiet down.
+[20:10:06] <cscott> graydon: seems to be misled by my mention of java checked exceptions, which i was just using an a demonstration (to strcat) that declared exceptions and a sound type system are not incompatible.
+[20:10:08] <graydon> (I think they're a terrible example)
+[20:10:22] <graydon> I don't think strcat believes that
+[20:10:47] *** Joins: lkuper (lkuper@moz-D6AAFF3.cs.indiana.edu)
+[20:10:56] <graydon> we all know checked exceptions exist and can be implemented soundly
+[20:11:11] *** Joins: novabyte (Instantbir@moz-3E0F9699.cable.virginmedia.com)
+[20:11:12] *** Quits: novabyte (Instantbir@moz-3E0F9699.cable.virginmedia.com) (Input/output error)
+[20:11:20] <cscott> graydon: i agree.  in a rust world i'd expect very little code to declare exceptions, with the exception of closures in iterators, which would do so implicitly/by inference and would get inlined away so the exceptions never spread.
+[20:11:33] <graydon> we disagree about their desirability in a language. most implementations seem to do more harm than good.
+[20:11:51] <cscott> graydon: exceptions in general, or checked-exceptions in particular?
+[20:11:56] * strcat has doubts that catchable exceptions could be implemented in rust anyway ;p
+[20:12:07] <strcat> would wreck real havoc with regions afaict
+[20:12:17] <cscott> for exceptions in general, you should read guy steele's paper on exceptions as a control flow mechanism.  they can be very useful, as the loop iterator example demonstrates.
+[20:12:29] <graydon> cscott: do you recognize the problems with them?
+[20:12:39] *** Quits: jaen (jaen@moz-E0979827.copit.pl) (Ping timeout)
+[20:12:40] <cscott> strcat: i've written region-based memory management for java.  it is possible.
+[20:12:43] <graydon> the "all code has to become transactional in order to be safe after a catch" problem?
+[20:12:46] <benh> cscott: you're basically recommending checked exceptions as a syntax-sugar level wrapper around returning a lot of sum types for convenience?
+[20:12:52] <graydon> cscott: no look, stop just on this point
+[20:12:53] *** Joins: jaen (jaen@moz-E0979827.copit.pl)
+[20:12:59] <cscott> graydon: you are making a broad generalization about exceptions.
+[20:13:01] <strcat> cscott: I mean rust's borrowed pointers
+[20:13:08] <graydon> cscott: catchable ones. yes.
+[20:13:13] <graydon> I am making that generalization.
+[20:13:34] <graydon> that's why we're generally not into them as a design-feature of the language.
+[20:13:37] <cscott> graydon: i think we should stop and be more precise about "exception" then, and "exception handling".
+[20:13:38] <graydon> catchable exceptions. all of them.
+[20:13:46] <graydon> ok
+[20:14:04] *** Quits: xenocons (otk@moz-C675529E.members.linode.com) (Ping timeout)
+[20:14:04] <graydon> I'm talking about the kind where user code can interrupt unwinding and resume at some unwound-point.
+[20:14:09] <strcat> unwinding and still having state from before the unwind
+[20:14:11] *** Joins: jviereck (Adium@moz-340574DC.dclient.hispeed.ch)
+[20:14:17] <cscott> hang on, let me do some google, and i'll get you a list of very different "exception" implementations, as well as very different semantics for "exception handlers".
+[20:14:17] <graydon> in the same heap as the throw site
+[20:14:36] <cscott> graydon: that's "resumable exceptions". but i thought rust tried not to do new things.  why would you want those?
+[20:14:43] <benh> can't you do that with, like, rwarcs
+[20:14:52] <graydon> cscott: no, look, I ... I have implemented several _mechanisms_ as well. please don't get all preachy about this. I'm talking just about catching.
+[20:15:00] <graydon> cscott: no, not resumable, catchable
+[20:15:04] <graydon> try + catch
+[20:15:06] <graydon> + throw
+[20:15:12] <strcat> benh: if you go out of your way to do it ;p
+[20:15:20] <graydon> that's it. nothing fancy. unwind-to-a-point-then-stop-and-continue-at-that-point.
+[20:15:32] <strcat> benh: and rwarcs already have to be sound during weird access patterns
+[20:15:36] <graydon> all inner frames destroyed, all dtors unwound. what java and C++ have.
+[20:15:54] <benh> strcat: I'm now picturing a translation of java code to rust where all state is in rwarcs and all try-blocks are task::try, and...
+[20:15:54] <graydon> cscott: we don't want _that_
+[20:15:55] <cscott> graydon: why is preserving unwound state so hard?  i can do a syntax-level transformation with the tuple return type, and it doesn't obviously break rust.
+[20:16:04] <cscott> "throw" is just "return"
+[20:16:17] <graydon> no, it's absolutely not
+[20:16:24] <cscott> graydon: ok, explain why not.
+[20:16:28] <graydon> it's return from this function from any subexpression
+[20:16:35] <graydon> i.e. if my function reads like:
+[20:17:12] <graydon> fn foo(&mut v) { let x = take_a_thing(v); do_some_stuff(); restore_a_thing(v, x); }
+[20:17:15] *** Joins: xenocons (otk@moz-C675529E.members.linode.com)
+[20:17:18] <graydon> any sequence point in there may throw
+[20:17:22] <cscott> can't I already embed 'return' inside an arbitrary expression?
+[20:17:22] <strcat> here
+[20:17:25] <graydon> which means I do not know when I will be leaving the frame
+[20:17:29] <graydon> so I have to write in transactional style
+[20:17:36] <indutny> it really makes me sad that I can't use `use` literal
+[20:17:38] <indutny> err
+[20:17:39] <graydon> you can _see_ all the return points
+[20:17:42] <indutny> s/literal/identifier/
+[20:17:58] <graydon> the throw points are _every sequence point in the program_
+[20:18:14] <graydon> that makes reasoning about how to restore mutable state to a self-consistent state very very difficult
+[20:18:25] <graydon> and most code that tries to, fails
+[20:19:09] <cscott> so you just want take_a_think, do_some_stuff, and restore_a_think to not declare exceptions.  you can enforce that with the function signature.
+[20:19:09] <nmatsakis> benh: (regarding rwarcs---unless something has changed, they follow the "failbox" model---meaning that if your task fails while holding the lock, the rwarc is poisoned, and anyone who tries to aquire the lock later also fails)
+[20:19:24] <strcat> vec::consume is an example of a function that can't exist if we had catchable exceptions
+[20:19:45] <benh> nmatsakis: ah, I didn't look at them closely enough. that explain that :)
+[20:19:50] <cscott> in fact, since fn foo() doesn't declare exceptions, the compiler will check and enforce the fact that the other three also don't declare exceptions.
+[20:19:53] <tjc> nmatsakis: r? https://github.com/mozilla/rust/pull/6665
+[20:20:15] <strcat> well, I guess you could make it respect moves
+[20:20:22] <cscott> strcat: so the closure need to not declare exceptions.  as I read its signature, that's what it already does.
+[20:20:36] <nmatsakis> tjc: r+
+[20:20:41] <tjc> nmatsakis: thx
+[20:20:53] <cscott> can i break from vec::consume?
+[20:20:59] <strcat> yes
+[20:21:17] <cscott> so i can throw an exception which is caught by vec::consume
+[20:21:26] *** Joins: mattin (user@60DE62B6.DC7A989C.7F8AB798.IP)
+[20:21:33] <benh> (i'm still worried about accidentally emulating shared mutable state with, I dunno, pipes and a dedicated container task, safe enough to not trip the compiler but still making not transactiony enough code enter an inconsistent state)
+[20:21:51] <strcat> benh: you can have race conditions
+[20:21:57] *** Quits: pyrac (pyrac@moz-D851FA22.w92-149.abo.wanadoo.fr) (Quit: pyrac)
+[20:22:05] <graydon> cscott: right, so your response is "the only way to fix the badness of catchable exceptions is with checked exceptions"
+[20:22:10] <strcat> you can do that with files, networking, message passing, shared atomic variables, etc.
+[20:22:17] <graydon> cscott: which brings us back to "checked exceptions wind up infecting everything anyways"
+[20:22:24] <strcat> rust just eliminates *data* races
+[20:22:26] <gareth0> rust follows the yoda school of error handling: do, or do not, there is no try
+[20:22:32] <bstrie> haha
+[20:22:46] <benh> there is a try though!
+[20:22:54] <benh> the catch, though, is that there's none
+[20:23:01] <cscott> graydon: hm, i'm not sure that's exactly what i'm saying.  i'm saying "declared exceptions allow you to limit the places where exceptions have to be handled" (both for correctness and performance)
+[20:23:02] <tjc> try or try not, there is no do
+[20:23:04] <tjc> oh wait
+[20:23:06] <tjc> there's a do
+[20:23:39] <strcat> from my POV `fn next(&mut self) -> Option<A>` is a much saner iteration protocol than python's throwing StopIteration at the end
+[20:23:51] <cscott> certainly that's not "the only way".
+[20:24:11] *** Joins: burg (burg@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[20:24:30] <benh> strcat: I like that ruby has both "raise/rescue" exceptions and a separate catch/throw mechanism for control-structures-not-error-handling cases
+[20:24:31] <cscott> strcat: the benefit of the exception-based protocol is for non-local returns.
+[20:24:32] <graydon> cscott: in what way does it differ from working with values that you return?
+[20:25:14] <strcat> cscott: when is it a benefit for iteration?
+[20:25:29] <graydon> cscott: and .. what are people supposed to do in code that _does_ have exceptions in the signature?
+[20:25:39] <strcat> you can't do a non-local return because each layer has to catch StopIteration
+[20:25:48] <graydon> ("be careful / write in transactional style" is not really ... getting us anywhere)
+[20:26:00] *** Quits: haard (fredrik@moz-6A86987C.dynamic.se.alltele.net) (Ping timeout)
+[20:26:32] * strcat has nightmares every time he writes an operator= implementation in C++ ;p
+[20:27:14] <graydon> aside: is anyone aware of how to get logging flags set in core? I see the std:: crate map, but not the core:: one
+[20:27:15] * benh fondly remembers stumbling over a bug in boost.filesystem in exception-throwing non-transactional code
+[20:28:03] *** Quits: jviereck (Adium@moz-340574DC.dclient.hispeed.ch) (Quit: Leaving.)
+[20:28:05] <cscott> sorry, i'm off googling to find a canonical reference to the non-local return issue
+[20:28:09] <benh> (the boost people don't seem to check their issue tracker often)
+[20:28:21] <strcat> benh: well they are a lot of groups of people ;p
+[20:28:48] <cscott> graydon: the declared exception is a warning that you need to think carefully.  often it is possible to do so.
+[20:28:57] <benh> yeah, i suspect the format of their project doesn't leave them with clearly delineated module owners
+[20:29:00] *** Joins: vcl (chatzilla@741D4FEA.76F9E272.DA40C4B3.IP)
+[20:29:04] *** Joins: josh (josh@moz-348C4790.hsd1.mn.comcast.net)
+[20:29:19] *** Quits: vcl (chatzilla@741D4FEA.76F9E272.DA40C4B3.IP) (Quit: ChatZilla 0.9.90 [Firefox 21.0/20130511120803])
+[20:29:22] <strcat> benh: I think they do but lots of it is a graveyard
+[20:29:31] <graydon> cscott: and this is something you're suggesting all iteration code would benefit from being tasked with?
+[20:29:33] <strcat> afaik boost filesystem isn't well regarded anymore
+[20:29:41] <graydon> ("think carefully")
+[20:29:48] <strcat> it has horrible issues like platform specific error handling
+[20:29:48] *** Joins: brson (brson@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[20:29:48] *** ChanServ sets mode: +o brson
+[20:29:53] *** Joins: vcl (chatzilla@741D4FEA.76F9E272.DA40C4B3.IP)
+[20:30:25] *** Quits: alisdair (textual@moz-EBE9F394.bchsia.telus.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[20:30:40] *** Joins: eatkinson (eatkinson@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[20:31:30] *** Quits: josh (josh@moz-348C4790.hsd1.mn.comcast.net) (Quit: josh)
+[20:33:22] <cscott> graydon: this is an issue for careful language design (ie, not a strawman proposal floated on irc).  the sweet spot would allow user-defined control structures (not baked into the language) in such a way that the exception handling is cleanly encapsulated inside the control structure and doesn't "leak out" into the surrounding code
+[20:34:20] <strcat> I don't really understand what you get over return values
+[20:34:33] <strcat> if you have to either check for the exception or explicitly bubble it up
+[20:35:16] <cscott> strcat: if you like, replace the &fn(T)->bool iterator signature with &fn(T)->(Exception,bool)
+[20:35:23] *** Joins: tikue (tkuehn@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[20:35:34] <graydon> cscott: I .. ok .. this all just feels a bit overwrought to me, I guess? for catchable exceptions to be used as a regular control-transfer idiom they have to be implemented using a return-style (i.e. not entering the unwind tables), and for semantic containment you have to enforce a level of checking and declaring congruent with using return values also.
+[20:35:54] <cscott> the real change is how return/break/continue are implemented by the compiler; it also allows for nested return/break/continue.
+[20:36:20] <graydon> if there's unwinding-through-user-code with a catch on the other side, you're forcing users in there to code transactionally; if there's not, then it's equivalent to the return-style
+[20:36:28] <graydon> (in terms of the amount they write)
+[20:36:41] <graydon> I don't see the 3rd option
+[20:37:14] <cscott> graydon: it was just a suggestion.  strcat said, "the internal iteration protocol isn't very good but I don't have ideas on how to make it better" so I floated a strawman proposal for how a rusty version of perl6's iteration protocol would work.
+[20:37:23] *** Quits: victorporof (victorporo@96E478A3.6D2FB7A4.79933D60.IP) (Quit: victorporof)
+[20:37:33] <graydon> ok.
+[20:37:57] <graydon> sigh. I apologize for the ... aggressive response. I know a late apology is worse than not doing it in the first place.
+[20:37:57] *** dherman-lunch is now known as dherman
+[20:38:20] <graydon> we have a bit of a pattern whereby we have to re-argue this point with people every few weeks/months and it's a bit of a sore spot
+[20:38:25] <cscott> if i were to turn this into a real proposal, i'd have to sit down and think harder about containment, and other issues.
+[20:39:02] *** Quits: bleibig (bleibig@moz-58EF3B3A.rochester.res.rr.com) (Ping timeout)
+[20:39:06] <tjc> Has there been a really bad performance regression lately?
+[20:39:08] <graydon> "why not just use catchable exceptions" is a bit of a baby-with-bathwater thing for us. the iteration protocol's problems would not, I think, really change much in the presence of exceptions.
+[20:39:14] <graydon> or not improve much!
+[20:39:17] <cscott> i agree that infection is the problem.  you'd want to be able to use them in (say) iterators without requiring the author of the closure from having to deal with all the new possible failure points.
+[20:39:27] *** Joins: pcwalton (pcwalton@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[20:39:27] *** ChanServ sets mode: +o pcwalton
+[20:39:32] <tjc> (113 seconds to typeck stage1 librustc -- I'm running two builds at once but don't seem to be thrashing)
+[20:39:39] *** Quits: themgt (themgt@moz-248BBB96.dhcp.gnvl.sc.charter.com) (Quit: themgt)
+[20:39:43] <cscott> i forget -- does rust currently have break/continue out of nested loops?
+[20:39:47] <graydon> tjc: huh. um. maybe?
+[20:39:57] *** Joins: bleibig (bleibig@moz-58EF3B3A.rochester.res.rr.com)
+[20:40:00] <pcwalton> cscott: yeah, but only with "loop" constructs
+[20:40:02] <graydon> tjc: http://huonw.github.io/isrustfastyet/ says no. that does seem pretty long.
+[20:40:17] <cscott> right.  so the with-exceptions model gets you that.
+[20:40:40] <cscott> i've got to go offline for a couple hours, i think we can let this rest now.
+[20:40:42] <graydon> k
+[20:41:55] <cscott> i'll use my idle brain-cycles to think about the containment issues, which i agree are the crux.
+[20:42:15] <indutny> can I get stack trace after assertion has happened?
+[20:42:22] <strcat> tjc: there were memory usage regressions
+[20:42:27] <tjc> indutny: you can in gdb
+[20:42:43] <strcat> tjc: it uses 2500MiB RES for librustc now, are you sure you have enough to run 2? ;p
+[20:42:49] <indutny> rust: task failed at 'Some tests failed', /Users/indutny/Code/mozilla/rust/src/libstd/test.rs:92
+[20:42:49] <indutny> rust: domain main @0x101007810 root task failed
+[20:42:52] <indutny> (gdb) bt
+[20:42:53] <indutny> No stack.
+[20:43:05] <indutny> tjc: probably that's because I'm running it inside test suite?
+[20:43:05] <tjc> strcat: I have 16 GB of RAM, and `top` isn't showing any pageouts, so...
+[20:43:07] <jdm> indutny: break on rust_task_fail
+[20:43:10] <vcl> Hi, does anyone here regularly use Rust toolchain on Windows?
+[20:43:13] <indutny> ah, thanks
+[20:43:17] *** Joins: mzabaluev (mzabaluev@moz-91FFD755.dhcp.inet.fi)
+[20:43:28] <tjc> vcl: graydon has used it regularly on Windows, not sure if he still is
+[20:43:53] <graydon> yup
+[20:44:13] <vcl> ok, is it just me or does it have performance problems on win?
+[20:44:39] <graydon> it has performance problems everywhere. what are you observing?
+[20:44:51] <vcl> as in, even running rustc without parameters takes 0.5 seconds to complete
+[20:44:56] <cscott> (oh, and i'm curious -- when you prototyped exceptions-as-tuple-return, did you get both elements of the tuple returning in registers?  rust right now returns all structs in memory, but if you implemented this at the LLVM level maybe that wasn't an issue)
+[20:45:16] <vcl> compiling rustc takes 5 minutes
+[20:45:47] *** Joins: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com)
+[20:45:51] <graydon> cscott: yes. speed wasn't the main issue. it wasn't super fast but it was ok.
+[20:46:17] *** Joins: victorporof (victorporo@96E478A3.6D2FB7A4.79933D60.IP)
+[20:46:27] <graydon> vcl: yeah, those speeds are congruent with what we see. I think the startup time thing has to do with use of DLLs and no prelinking (i.e. we're relocating the binary)
+[20:46:51] *** Joins: victorporof_ (victorporo@96E478A3.6D2FB7A4.79933D60.IP)
+[20:46:53] <graydon> vcl: the slow compile is a problem everywhere. short-program copiles are usually gated on reading metadata from the data section, which we have a lot of pending work to eliminate.
+[20:46:57] <graydon> *compiles
+[20:47:00] *** Quits: bleibig (bleibig@moz-58EF3B3A.rochester.res.rr.com) (Ping timeout)
+[20:47:12] *** Joins: RogueVector (victorporo@96E478A3.6D2FB7A4.79933D60.IP)
+[20:47:35] <graydon> large-program compiles are just a matter of the compiler being inefficient in a lot of other ways. mostly generating too much code. some areas we've been working on features and correctness before performance.
+[20:47:48] <vcl> graydon: okay, I thought it might be Windows-specific problem
+[20:48:21] *** Quits: victorporof (victorporo@96E478A3.6D2FB7A4.79933D60.IP) (Ping timeout)
+[20:48:26] <graydon> vcl: no, though it's definitely worse on windows due to (I think) the relocation problem.
+[20:48:36] *** Quits: victorporof_ (victorporo@96E478A3.6D2FB7A4.79933D60.IP) (Ping timeout)
+[20:48:42] *** Quits: mattin (user@60DE62B6.DC7A989C.7F8AB798.IP) (Ping timeout)
+[20:48:56] <vcl> that wouldn't affect compilation time for large projects though, right?
+[20:49:32] *** Quits: webber46 (webber46@moz-F6310FF0.lha.sgsnet.se) (Quit: webber46)
+[20:49:37] <vcl> so even on Linix building stage1 rustc + libcore + libstd takes more than 10 minutes?
+[20:49:57] <bstrie> vcl: only ten minutes? how luxurious... :)
+[20:50:03] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[20:50:08] <graydon> vcl: yes.
+[20:50:36] <graydon> vcl: it is essentially always building with optimization turned on and link-time-optimization, and generating too much code.
+[20:51:56] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Ping timeout)
+[20:52:22] *** Joins: bleibig (bleibig@moz-58EF3B3A.rochester.res.rr.com)
+[20:52:33] <tjc> So… if I opened an RFC to suggest we change the `for` loop protocol to return an enum instead of a bool, would that be too bikesheddy?
+[20:52:44] <tjc> reason is I still can't remember what `true` does in that case and what `false` does
+[20:52:56] <tjc> I know we've talked about it before, but I forgot what the outcome was
+[20:52:58] <bstrie> tjc: I think that discussion was on the mailing list a loooong time ago...
+[20:53:04] *** Quits: RogueVector (victorporo@96E478A3.6D2FB7A4.79933D60.IP) (Quit: RogueVector)
+[20:53:07] <graydon> false means stop, true means go
+[20:53:13] <sp3d> tjc: sounds bikesheddy but I really agree that true/false is hard to remember
+[20:53:14] <nmatsakis> pcwalton: fyi https://github.com/mozilla/rust/pull/6661
+[20:53:18] <benh> I had managed to make rust build llvm with -O0 somehow. For the longest time my builds were taking 1-2 hours until I wised up to that not being expected. ;)
+[20:53:18] <graydon> because while
+[20:53:20] <tjc> Sure, but I'll have to keep looking it up each time
+[20:53:26] <graydon> while f() { ... }
+[20:53:33] <pcwalton> sweet
+[20:53:36] <pcwalton> nmatsakis: ^
+[20:53:53] <vcl> Another Q: how do you guys debug it?   Right now debug info emitter seems to be broken...   So just log!() ?
+[20:54:42] <graydon> vcl: logging, assertions and unit testing, mostly
+[20:55:19] <vcl> graydon: combined with 10+ min compile times this sounds painful :)
+[20:55:42] <tjc> it is
+[20:55:58] <graydon> vcl: so is debugging. but yes. we are all aware of how painful it is to work with. it's ... much easier to work with than firefox, fwiw. but we want (and expect) major perf improvements.
+[20:56:01] <bstrie> it just means that you have to get it right the first time :)
+[20:56:01] <tjc> disabling optimization helps with the compile times somewhat
+[20:56:10] <tjc> but not enough
+[20:56:25] <steveklabnik> what's the current best way to do that?
+[20:56:36] <steveklabnik> ive been mostly doing docs but even 'make check' on them takes a long damn while
+[20:56:38] <tjc> steveklabnik: so far as I know, by setting CFG_DISABLE_OPTIMIZE in the environment
+[20:56:42] <tjc> there's also a configure flag
+[20:56:43] <brson> when I'm working on core now I have a pretty involved series of build invocations to build some things with opts, some things, without, and to avoid rebuilding stage0, etc.
+[20:56:48] <vcl> bstrie: sadly, I'm not that perfect :(
+[20:56:56] <steveklabnik> tjc: word
+[20:57:35] <benh> when hacking on the compiler, do you just build the particular crate or the last stage?
+[20:57:54] <steveklabnik> .... it'd be great to write all this up somewhere. do we have that anywhere?
+[20:58:03] <bstrie> vcl: you can also learn to be a brilliant multitasker and work on six different issues at the same time while five of them compile in the background at all times!
+[20:58:05] <steveklabnik> maybe start a wiki page?
+[20:58:39] <vcl> brson: I was asking about build shortcuts the other day, was told to try "make rustc-stage1", which builds both rustc and core+std libs
+[20:58:51] <tjc> bstrie: if you have any tips for learning to do that, let me know
+[20:58:53] *** cscott is now known as cscottnet_away
+[20:58:54] <tjc> 2 is usually my max
+[20:59:16] <tjc> benh: for most purposes, building stage1 is enough. depending on what you're working on you can just build a particular crate, sometimes...
+[20:59:24] <graydon> brson: ping
+[20:59:31] <bstrie> tjc: let me guess... you have two halves to your brain? you just need to get the surgery that adds four more halves
+[20:59:43] <tjc> bstrie: oh ok thx -- I'll go check if our health insurance covers that
+[20:59:45] *** Quits: burg (burg@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: burg)
+[20:59:47] <bstrie> I have to wear this stylish top hat, but I'm a much better multitasker
+[20:59:51] <tjc> heh
+[21:01:02] *** Quits: maxli (maxli@F2D29657.F60B0462.67AC9B1.IP) (Quit: Leaving.)
+[21:01:48] <brson> vcl: here's what I do: ../configure (configure with optimizations); make check-stage1-core (build compiler with opts); make check-stage1-core NO_REBUILD=1 CFG_DISABLE_OPTIMIZATIONS=1 (rebuild just coretest without opts)
+[21:02:11] <jdm> graydon: ping
+[21:02:16] <graydon> jdm: pong
+[21:02:19] <brson> vcl: build the compiler, then do the build/test cycle with NO_REBUILD=1 and opts off
+[21:02:34] <brson> graydon: pong
+[21:02:41] <jdm> graydon: I'm trying to track down the source of many memory allocations in servo
+[21:02:44] <vcl> brson: thanks! will try this
+[21:02:45] <jdm> graydon: do you have any strategies?
+[21:02:56] <graydon> brson: was just trying to figure out if you knew a way to turn on logging in core
+[21:03:19] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[21:03:19] <ghrust> 01[13rust01] 15bors merged 06auto into 06incoming: 02http://git.io/vx_2QQ
+[21:03:19] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[21:03:27] <graydon> jdm: massif works. I am told we can do some stuff with tcmalloc built in profiling, but haven't tried.
+[21:03:33] <vcl> btw, is anybody looking into fixing debug info?   I can investigate, if noone is on it.
+[21:03:34] <graydon> I use massif generally
+[21:03:36] *** Quits: devinus (devinus@moz-B4AF84BC.ptr.us.xo.net) (Quit: Computer has gone to sleep.)
+[21:03:47] <jdm> vcl: please do.
+[21:04:05] <jdm> vcl: it would be great to have it working again in time for the GSoC project, if it's accepted
+[21:04:07] <graydon> vcl: there's an open bug. https://github.com/mozilla/rust/issues/5836
+[21:04:20] *** Joins: mattin (user@E8F297A5.DC7A989C.7F8AB798.IP)
+[21:04:22] *** Joins: josh (josh@moz-348C4790.hsd1.mn.comcast.net)
+[21:04:29] <brson> graydon: I don't know that it's different than anywhere else, except that inlining probably breaks the logging paths and lots of core is inline. if that's the case then usually the crate name in the logging path is wrong, and it uses the 'local' crate as the name instead of the original create, so e.g. `vec::map` might actually be loggable as `rustc::map`
+[21:05:34] *** Quits: gareth0 (gareth0@moz-F8241382.dynamic.dsl.as9105.com) (Quit: Leaving)
+[21:06:11] <graydon> brson: hm. nope, in this case it's just not visible.
+[21:06:15] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[21:06:16] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/sfrqbQ
+[21:06:16] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[21:06:16] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[21:06:16] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/UDibvQ
+[21:06:16] <ghrust> 13rust/06auto 14b6cf84f 15Tim Chevalier: testsuite: Test for #4780
+[21:06:16] <ghrust> 13rust/06auto 1402c59bc 15bors: auto merge of #6662 : catamorphism/rust/issue-4780, r=catamorphism
+[21:06:16] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[21:06:20] <graydon> brson: does the enclosing impl need to be pub or something?
+[21:07:00] *** Joins: devinus (devinus@moz-B4AF84BC.ptr.us.xo.net)
+[21:08:07] <brson> graydon: no, visibility doesn't effect logging that I know of
+[21:08:13] <graydon> hm. k. just a bug then.
+[21:10:35] <benh> Hm, what is it that NO_REBUILD=1 does not rebuild?
+[21:10:46] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[21:11:01] *** Quits: saml (sam@moz-14C16814.cst.lightpath.net) (Quit: Leaving)
+[21:11:51] <brson> benh: it breaks coretest and stdtest's dependency on std
+[21:12:10] <cmr> oh man
+[21:12:14] <cmr> I wish I knew about that a week ago
+[21:12:15] <brson> only currently useful for testing those two things
+[21:12:25] <benh> So it lets you test core and downwards without rebuilding std?
+[21:12:28] <cmr> that is incredibly useful
+[21:13:05] <brson> it let's you test core and std without rebuilding std, not arbitrary downstream crates though afaik
+[21:13:36] <cmr> " removal of let foo = 1, bar = 2; "
+[21:13:38] <benh> i don't understand testing std without rebuilding std
+[21:13:40] <cmr> Why is that being removed?
+[21:13:58] <cmr> benh: if you change the tests, the build system will think std needs to be rebuilt, but really only stdtest needs to be rebuilt
+[21:14:03] <benh> ah!
+[21:14:41] *** Quits: Ralith (ralith@moz-50F3C77.vc.shawcable.net) (Ping timeout)
+[21:17:51] *** Quits: spider-mario (spidermari@moz-2F72F6FF.dsl.quantic-telecom.net) (Input/output error)
+[21:19:13] *** Joins: erickt (erickt@8C9ECD8F.3A598286.F12515B4.IP)
+[21:19:51] *** Joins: jviereck (Adium@moz-340574DC.dclient.hispeed.ch)
+[21:20:12] *** Quits: josh (josh@moz-348C4790.hsd1.mn.comcast.net) (Quit: josh)
+[21:20:46] <graydon> cmr: because it's a curious hazard wrt. mutability (it distributes over the bindings, but nobody can agree on whether it _should_) and is asymmetric with static (there's no static x = 10, y = 11; statics all require type declarations, no inference) and is a complication on the grammar that annoys those hacking on the grammar. 
+[21:21:09] <cmr> graydon: Ok.
+[21:21:52] <cmr> rusti: let (a, b, c) = (1, 2, 3); a
+[21:21:53] -rusti- more than 5 lines of output, pastebinned: http://sprunge.us/XNdF
+[21:22:17] <cmr> rusti: let mut (a, b, c) = (1, 2, 3); a=4; b; c; a
+[21:22:18] -rusti- more than 5 lines of output, pastebinned: http://sprunge.us/QDcd
+[21:22:27] *** Quits: jviereck (Adium@moz-340574DC.dclient.hispeed.ch) (Quit: Leaving.)
+[21:22:27] <graydon> I think there was some unfortunate "worst case" problem with it as well that I don't recall, but basically the cost of fixing its problems was felt to outweigh the benefits anyone seemed to be getting from it.
+[21:22:47] <cmr> rusti: let (mut a, b, c) = (1, 2, 3); a=4; a
+[21:22:49] -rusti- more than 5 lines of output, pastebinned: http://sprunge.us/XHGH
+[21:22:59] <cmr> I think that would be nice syntax
+[21:23:09] <cmr> mut outside distributes, but can have muts inside
+[21:23:23] *** Quits: mattin (user@E8F297A5.DC7A989C.7F8AB798.IP) (Ping timeout)
+[21:23:40] *** Joins: victorporof (victorporo@96E478A3.6D2FB7A4.79933D60.IP)
+[21:25:01] <graydon> I think that would complicate the pattern grammar's interaction with types, as types do not support mutable fields
+[21:26:11] <erickt> graydon: we do have a similar construct with function argument, for what it's worth
+[21:26:16] <erickt> argument*s*
+[21:26:31] <engla> cmr: mixing mut and non-mut sounds like an antipattern anyway
+[21:26:38] *** Quits: Blub\w (wry@moz-F451595C.wireless.dyn.drei.com) (Quit: night)
+[21:26:53] <cmr> yeah, I wouldn't do it
+[21:27:00] <cmr> The existing syntax works and is fine
+[21:27:42] <graydon> erickt: I think the construct in function args only supports mut at the per-argument level, yes?
+[21:27:53] <graydon> (or type-supported inner levels)
+[21:27:57] <erickt> yeah, as in "fn foo(mut a: int) { … }"
+[21:29:16] <erickt> even though I was the one to suggest the mut argument, I'm not sure how much I actually like it.
+[21:30:08] <erickt> It's really just saving you from writing "let mut x = x;" and doesn't have an impact on the function declaration
+[21:30:19] *** Quits: victorporof (victorporo@96E478A3.6D2FB7A4.79933D60.IP) (Ping timeout)
+[21:31:11] <graydon> yeah. I use it occasionally, but will not cry too much if it goes away.
+[21:32:43] *** Quits: jorendorff (jorendorff@moz-B860E258.hsd1.tn.comcast.net) (Quit: jorendorff)
+[21:33:44] <strcat> graydon: we have ref and ref mut, so mut wouldn't be that bad but then you'd have 'mut ref mut' ;p
+[21:34:09] <strcat> mut ref and ref mut would be different things... probably bad
+[21:34:16] <graydon> yesh
+[21:37:26] *** Joins: mattin (user@579C1D31.DC7A989C.7F8AB798.IP)
+[21:37:30] <strcat> so I guess we do already have that
+[21:37:32] <jdm> graydon: massif looks super useful, thanks
+[21:37:33] <strcat> hm
+[21:38:07] <strcat> rusti: fn foo(ref x: int) { }
+[21:38:08] -rusti- foo.rs:5:16: 5:21 warning: unused variable: `x` [-W unused-variable (default)]
+[21:38:08] -rusti- foo.rs:5          fn foo(ref x: int) { }
+[21:38:08] -rusti-                          ^~~~~
+[21:38:08] -rusti- note: in expansion of fmt!
+[21:38:08] -rusti- foo.rs:4:12: 6:7 note: expansion site
+[21:38:33] <strcat> rusti: fn foo(ref mut x: int) { println(fmt!("%?", x)) } foo(5)
+[21:38:35] -rusti- line longer than 150 columns, pastebinned: http://sprunge.us/fKXP
+[21:38:41] <strcat> heh
+[21:39:03] *** Quits: mzabaluev (mzabaluev@moz-91FFD755.dhcp.inet.fi) (Ping timeout)
+[21:39:06] <strcat> rusti: fn foo(mut ref mut x: int) { println(fmt!("%?", x)) } foo(5)
+[21:39:08] *** Joins: Ralith (ralith@moz-6809779E.wireless.sfu.ca)
+[21:39:08] -rusti- line longer than 150 columns, pastebinned: http://sprunge.us/EYNF
+[21:39:10] <nmatsakis> erickt: graydon: I sometimes want to get rid of mut locals/arguments altogether and just make them all mut, like it used to be (even though I was the one to suggest declaring mutability)
+[21:39:26] <strcat> so I guess we already have 'mut ref mut' ;p
+[21:39:31] <benh> huh
+[21:39:50] <strcat> patterns just don't work well in let and fn params...
+[21:40:13] <graydon> nmatsakis: I'm happy with the current scheme
+[21:40:16] <benh> rusti: let x = 42; let ref y = x; y
+[21:40:16] * nmatsakis feels guilty for not finishing his patch that fixes that
+[21:40:16] <graydon> (fwiw)
+[21:40:17] -rusti- line longer than 150 columns, pastebinned: http://sprunge.us/SbYX
+[21:40:24] <benh> oh dear
+[21:40:25] <graydon> the muts stand out, as intended
+[21:40:30] <strcat> benh: it gets worse
+[21:40:48] <nmatsakis> graydon: there is one scenario where I don't like it. sometimes you must use `&mut` just to enforce uniqueness, not because you plan to mutate, and then you need a mut on the variable
+[21:40:50] <benh> it worked in my local rusti!
+[21:40:58] <benh> like, the repl, not the bot
+[21:41:04] <nmatsakis> graydon: but this is admittedly rather rare
+[21:41:19] <benh> when it was multiple lines, huh
+[21:41:20] <strcat> benh: well how up-to-date is it?
+[21:41:26] <nmatsakis> graydon: anyway, I don't feel like going into the details of my example right now so I hsouldn't have brought it up :)
+[21:41:39] *** Joins: devbug (quassel@moz-E1DE087C.bchsia.telus.net)
+[21:41:43] <strcat> the bot is only half a day behind
+[21:41:51] <benh> let x = 42; enter, let ref y = x; enter, y worked and said 42, but the same thing in one line crashes just the same
+[21:42:02] <strcat> huh.
+[21:42:20] <benh> 'ref' is a weird pattern anyway
+[21:42:29] <benh> should be spelled * imo
+[21:42:45] <strcat> we have * for raw pointers though
+[21:42:54] *** Quits: Ralith (ralith@moz-6809779E.wireless.sfu.ca) (Ping timeout)
+[21:43:02] *** Joins: Ralith (ralith@moz-6809779E.wireless.sfu.ca)
+[21:43:45] *** Quits: mattin (user@579C1D31.DC7A989C.7F8AB798.IP) (Ping timeout)
+[21:44:12] <benh> It's also pointer deref for any pointer, and making *x match y in a pattern would imply that x is a pointer to y... ;)
+[21:45:28] <nmatsakis> benh: yeah, we considered it. but nobody felt that "let *y = x" clearly conveyed the intent
+[21:46:25] <strcat> benh: well it seems like 'let *x = y' could be similar to 'let &x = y' since & and * are both symbols for ptrs
+[21:47:18] <benh> let &x = y seems closer to let x = *y!
+[21:47:18] *** Quits: erickt (erickt@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[21:47:33] <strcat> patterns mirror the type definition
+[21:47:51] <benh> I thought they mirror the value constructor
+[21:47:58] *** Quits: azita (Azita@2557E599.66715431.D25A875A.IP) (Quit: azita)
+[21:48:00] <strcat> well that too
+[21:48:22] <benh> (which makes let *x = ... a stretch on the same level as n+k patterns, but, aaah!)
+[21:54:12] *** Joins: josh (josh@moz-348C4790.hsd1.mn.comcast.net)
+[21:55:38] *** Quits: burntsushi (burntsushi@moz-27A1B1D8.dhcp.oxfr.ma.charter.com) (Ping timeout)
+[21:55:49] <strcat> nmatsakis: huh, I decided to stick a region annotation on the hashmap mutate_values method and a borrow seems to conflict with itself
+[21:56:07] <strcat> nmatsakis: http://ix.io/5Ki
+[21:56:10] <strcat> maybe the error is just wrong
+[21:57:12] <strcat> oh it's because of the loop.
+[21:57:30] <strcat> I guess I need to use each_mut
+[21:57:55] <graydon> jdm: 1gb/sec performance problem: possibly an implicit vec-copy? we were seeing this in rustc frontend a while back
+[21:57:56] <nmatsakis> strcat: because borrow checker doesn't distinguish element indices,
+[21:58:04] <nmatsakis> strcat: I think you need unsafe code to do what each_mut does
+[21:58:09] *** Quits: lmandel (lmandel@F2D29657.F60B0462.67AC9B1.IP) (Quit: lmandel)
+[21:58:10] <jdm> graydon: not according to massif.
+[21:58:13] <nmatsakis> strcat: if you want to have maximal lifetime
+[21:58:23] <nmatsakis> strcat: (if that makes sense)
+[21:58:24] <jdm> graydon: I'm pretty sure it's cycles in the layout dat.
+[21:58:26] <jdm> *data
+[21:58:32] <graydon> gerg
+[21:58:59] <jdm> luckily there's a fairly clear place where I should be able to break them
+[22:00:52] *** Quits: josh (josh@moz-348C4790.hsd1.mn.comcast.net) (Quit: josh)
+[22:01:15] <jdm> man, encountering dynamic borrow checks feels surprising disappointing
+[22:01:21] <jdm> *surprisingly
+[22:01:39] *** Parts: jeff (jeff@4231C034.745B261B.F12515B4.IP) ()
+[22:04:18] *** Quits: Ralith (ralith@moz-6809779E.wireless.sfu.ca) (Ping timeout)
+[22:04:25] *** Joins: Ralith (ralith@moz-6809779E.wireless.sfu.ca)
+[22:05:35] <acrichto> brson: ping
+[22:05:38] *** Quits: vcl (chatzilla@741D4FEA.76F9E272.DA40C4B3.IP) (Quit: ChatZilla 0.9.90 [Firefox 21.0/20130511120803])
+[22:06:14] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[22:06:15] <ghrust> 01[13rust01] 15bors merged 06auto into 06incoming: 02http://git.io/UDibvQ
+[22:06:15] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[22:09:12] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[22:09:12] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/MTbUUQ
+[22:09:12] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[22:09:13] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[22:09:13] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/sYDrfA
+[22:09:13] <ghrust> 13rust/06auto 141fadb97 15Tim Chevalier: testsuite: Update test for #2478. Still xfailed
+[22:09:13] <ghrust> 13rust/06auto 141df8a54 15Tim Chevalier: testsuite: Add xfailed test cases
+[22:09:13] <ghrust> 13rust/06auto 14799f281 15bors: auto merge of #6664 : catamorphism/rust/issue-3796, r=catamorphism
+[22:09:15] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[22:09:30] *** Quits: Jesse (jruderman@2557E599.66715431.D25A875A.IP) (Quit: Jesse)
+[22:13:08] *** Quits: donri (dag@moz-9BB61102.tbcn.telia.com) (Client exited)
+[22:13:26] *** Quits: eatkinson (eatkinson@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: eatkinson)
+[22:13:27] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Client exited)
+[22:15:41] *** Joins: maxli (maxli@C03F2759.C70D537E.2FA4EA88.IP)
+[22:16:45] *** Joins: erickt (erickt@8C9ECD8F.3A598286.F12515B4.IP)
+[22:17:31] *** Quits: maxli (maxli@C03F2759.C70D537E.2FA4EA88.IP) (Ping timeout)
+[22:19:32] *** Joins: eatkinson (eatkinson@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[22:19:54] *** Joins: maxli (maxli@C03F2759.C70D537E.2FA4EA88.IP)
+[22:22:11] *** Quits: erickt (erickt@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[22:23:05] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.0)
+[22:23:44] *** Joins: brendan (brendaneic@45A3491F.A5FB4ABA.FE58E87C.IP)
+[22:23:50] *** Quits: devinus (devinus@moz-B4AF84BC.ptr.us.xo.net) (Quit: Textual IRC Client: www.textualapp.com)
+[22:23:56] *** Quits: brendan (brendaneic@45A3491F.A5FB4ABA.FE58E87C.IP) (Quit: brendan)
+[22:24:01] *** Joins: brendan (brendaneic@45A3491F.A5FB4ABA.FE58E87C.IP)
+[22:25:56] *** Quits: EXetoC (ex@moz-2DBEB1E4.customer.t3.se) (Ping timeout)
+[22:26:47] *** Joins: EXetoC (ex@moz-C741B177.customer.t3.se)
+[22:28:09] <brson> acrichto: pong
+[22:28:26] <acrichto> brson: how do I set the llvm-clean property with bors for https://github.com/mozilla/rust/pull/6570
+[22:28:43] *** Joins: victorporof (victorporo@96E478A3.6D2FB7A4.79933D60.IP)
+[22:28:46] *** Quits: mschifer (Adium@2557E599.66715431.D25A875A.IP) (Quit: Leaving.)
+[22:29:35] *** Joins: jeff (jeff@93F4F120.DC47D717.3D1CA460.IP)
+[22:29:56] *** Joins: noam__ (noam@F6B530A7.720527A7.416762B.IP)
+[22:30:08] *** Quits: chadz (uid979@moz-D8B63698.irccloud.com) (Ping timeout)
+[22:30:08] *** Quits: jihyun (uid7128@moz-D8B63698.irccloud.com) (Ping timeout)
+[22:30:08] *** Quits: sawrubh (uid6719@moz-C944F5EC.irccloud.com) (Ping timeout)
+[22:30:08] *** Quits: wilfred (uid159@moz-C944F5EC.irccloud.com) (Ping timeout)
+[22:30:20] *** Joins: jihyun (uid7128@moz-D8B63698.irccloud.com)
+[22:30:34] *** Quits: noam_ (noam@F6B530A7.720527A7.416762B.IP) (Ping timeout)
+[22:30:46] *** Quits: victorporof (victorporo@96E478A3.6D2FB7A4.79933D60.IP) (Ping timeout)
+[22:30:48] *** Quits: decoder (quassel@moz-D7023D7D.own-hero.net) (Ping timeout)
+[22:32:05] <brson> acrichto: good question. bors won't do it for you. you could start by pushing your branch to 'try'. then on the builder page (http://buildbot.rust-lang.org/builders/try-linux), put `clean-llvm` and `1` in the appropriate boxes, username/password 'rust', correct branch and revision. see if that builds correctly
+[22:32:17] *** Quits: nass (nass@4F314BB3.5408CE6B.B38D1DE0.IP) (Ping timeout)
+[22:32:26] <brson> I'm not sure how to get bors to clean-llvm while integrating it though
+[22:32:27] *** Joins: nass (nass@4F314BB3.5408CE6B.B38D1DE0.IP)
+[22:32:29] *** Quits: lkuper (lkuper@moz-D6AAFF3.cs.indiana.edu) (Ping timeout)
+[22:32:45] <acrichto> if it makes it through try, does that rebuild llvm for the auto builders as well?
+[22:32:48] *** Joins: chadz (uid979@moz-D8B63698.irccloud.com)
+[22:32:49] <brson> maybe we just need to push to incoming directly then go rm things on th ebots
+[22:32:52] <brson> acrichto: nope
+[22:32:52] *** Joins: decoder (quassel@moz-D7023D7D.own-hero.net)
+[22:33:21] <acrichto> brson: should I run through try, see that they pass, and then direct-push?
+[22:35:27] <brson> acrichto: yes, let's see a green build on all platforms (or at least linux/win) before we manually start wiping bots
+[22:35:35] * brson wondering if we should add the three patches here https://github.com/mozilla/rust/issues/6367
+[22:35:44] <brson> don't really want to
+[22:36:06] <acrichto> alright, I'll tryout try
+[22:36:27] <brson> thanks, sorry it's such a pain
+[22:37:40] <acrichto> no problem, I don't think this is something that should happen that often anyway
+[22:37:48] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[22:37:48] <ghrust> 01[13rust01] 15alexcrichton 04force-pushed 06try from 14a54cb30 to 1452da96a: 02http://git.io/k471pw
+[22:37:48] <ghrust> 13rust/06try 145bd50ca 15Alex Crichton: Remove all usage of the global LLVMContextRef...
+[22:37:48] <ghrust> 13rust/06try 1452da96a 15Alex Crichton: Have JIT execution take ownership of the LLVMContextRef...
+[22:37:48] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[22:38:32] <acrichto> brson: just forced a build on try-linux and try-win
+[22:39:20] *** Joins: wilfred (uid159@moz-C944F5EC.irccloud.com)
+[22:40:15] *** Quits: jdm (jdm@DB05BBF2.BB1F48F2.971E19F6.IP) (Quit: Lost terminal)
+[22:40:31] *** Joins: azita (Azita@2557E599.66715431.D25A875A.IP)
+[22:40:49] *** Joins: hjr3 (hradtke@AF4FC8FE.D2A4E84D.523CBD62.IP)
+[22:42:57] <brson> acrichto: ok, let me know if it fails and I'll start manually deleting things
+[22:43:09] <acrichto> brson: thanks for the help!
+[22:44:22] <brson> aatch|away: going to do some relaxed atomic tests now
+[22:45:44] *** Quits: maxli (maxli@C03F2759.C70D537E.2FA4EA88.IP) (Quit: Leaving.)
+[22:51:03] *** Joins: erickt (erickt@8C9ECD8F.3A598286.F12515B4.IP)
+[22:51:26] *** Joins: a_m0d (a_m0d@moz-9F925EFA.hm.shawcable.net)
+[22:52:46] *** Quits: erickt (erickt@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[22:54:51] *** aatch|away is now known as aatch
+[22:55:57] <aatch> brson, cool
+[22:56:11] <aatch> good timing btw, I just got into the office
+[22:56:22] <brson> aatch: also cherry-picking your AtomicUint and adding AtomicInt
+[22:57:13] <acrichto> brson: does the try-win bot need another configuration flag? It's not exactly getting very far http://buildbot.rust-lang.org/builders/try-win/builds/511/steps/compile/logs/stdio
+[22:58:48] *** Quits: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com) (Quit: Computer has gone to sleep.)
+[23:00:04] <brson> acrichto: *sigh* this is a recurring problem for some reason. a glob in the makefile is producing bogus paths like '/c/bot/slave/try-win/build/src/llvm/tools/clang/test/Index/Inputs/get-cursor-includes-1.h/PowerPCTargetInfo.cpp'. have you retried the build?
+[23:00:15] <acrichto> brson: yes, that was the second failure
+[23:00:44] <acrichto> previous was http://buildbot.rust-lang.org/builders/try-win/builds/510/steps/compile/logs/stdio
+[23:00:50] <brson> acrichto: I'll log in a poke around
+[23:01:07] <acrichto> brson: it's not super urgent if you're dealing with the atomic stuff, I'll just make sure it passes try-linux first
+[23:03:16] *** Quits: Ralith (ralith@moz-6809779E.wireless.sfu.ca) (Ping timeout)
+[23:03:27] *** Quits: Earnestly (earnest@6A917A59.5E1FD793.39C00A7A.IP) (Ping timeout)
+[23:04:08] *** Joins: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com)
+[23:04:46] *** Joins: Ralith (ralith@moz-6809779E.wireless.sfu.ca)
+[23:05:48] *** Quits: cdidd (cdidd@moz-DAE2ABAF.broadband.corbina.ru) (Input/output error)
+[23:07:29] *** Quits: eatkinson (eatkinson@moz-BE33DA21.fw1.sfo1.mozilla.net) (Quit: eatkinson)
+[23:11:56] *** Joins: cdidd (cdidd@moz-1CCC251B.broadband.corbina.ru)
+[23:12:11] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[23:12:12] <ghrust> 01[13rust01] 15bors merged 06auto into 06incoming: 02http://git.io/sYDrfA
+[23:12:12] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[23:12:47] *** Quits: Ralith (ralith@moz-6809779E.wireless.sfu.ca) (Ping timeout)
+[23:15:04] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[23:15:04] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/XLLadg
+[23:15:04] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[23:15:06] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[23:15:06] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/Peot6g
+[23:15:06] <ghrust> 13rust/06auto 148c68c4a 15Tim Chevalier: rustc: Don't generate code for unreachable expressions...
+[23:15:06] <ghrust> 13rust/06auto 1415e4438 15bors: auto merge of #6665 : catamorphism/rust/issue-5741, r=nikomatsakis...
+[23:15:07] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[23:16:02] *** Quits: infynyxx (infynyxx@DB780A29.749BA1D.DCC373F0.IP) (Client exited)
+[23:16:05] *** Quits: Nisstyre (wes@moz-FD86289.netflash.net) (Quit: Leaving)
+[23:16:24] *** Joins: infynyxx (infynyxx@DB780A29.749BA1D.DCC373F0.IP)
+[23:17:25] *** Quits: Scriptor (historium@moz-E06F46F0.corp.bitshelter.com) (Quit: Scriptor)
+[23:18:08] *** Quits: infynyxx (infynyxx@DB780A29.749BA1D.DCC373F0.IP) (Ping timeout)
+[23:19:43] *** Quits: a_m0d (a_m0d@moz-9F925EFA.hm.shawcable.net) (Quit: Leaving.)
+[23:19:49] *** Joins: burntsushi (burntsushi@moz-27A1B1D8.dhcp.oxfr.ma.charter.com)
+[23:19:53] * aatch is pruning ancient issues
+[23:20:56] *** Joins: eatkinson (eatkinson@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[23:22:02] *** Quits: markluffel (markluffel@179F0C2A.5C4C7C24.8354FB35.IP) (Ping timeout)
+[23:22:12] *** Joins: markluffel (markluffel@179F0C2A.5C4C7C24.8354FB35.IP)
+[23:24:13] *** Joins: infynyxx (infynyxx@DB780A29.749BA1D.DCC373F0.IP)
+[23:26:38] *** Joins: erickt (erickt@8C9ECD8F.3A598286.F12515B4.IP)
+[23:27:18] *** Quits: judder (maradukewa@CF01B517.FDE2B133.950D3BB5.IP) (Ping timeout)
+[23:28:01] *** Quits: hjr3 (hradtke@AF4FC8FE.D2A4E84D.523CBD62.IP) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[23:28:14] *** Quits: infynyxx (infynyxx@DB780A29.749BA1D.DCC373F0.IP) (Client exited)
+[23:28:35] *** Joins: infynyxx (infynyxx@DB780A29.749BA1D.DCC373F0.IP)
+[23:29:08] *** Quits: erickt (erickt@8C9ECD8F.3A598286.F12515B4.IP) (Quit: Leaving.)
+[23:29:12] *** Joins: victorporof (victorporo@96E478A3.6D2FB7A4.79933D60.IP)
+[23:30:19] *** Quits: infynyxx (infynyxx@DB780A29.749BA1D.DCC373F0.IP) (Ping timeout)
+[23:31:22] *** Quits: victorporof (victorporo@96E478A3.6D2FB7A4.79933D60.IP) (Ping timeout)
+[23:33:44] *** Quits: tgt (tgt@moz-D59EE478.aztw.cable.virginmedia.com) (Quit: Computer has gone to sleep.)
+[23:36:28] *** Quits: mcomella (mcomella@moz-B10FF54F.ri.ri.cox.net) (Input/output error)
+[23:37:09] <brson> acrichto: My mk-rwildcard branch has a patch that you can cherry-pick that I think will fix that error on the bots
+[23:37:11] *** Joins: Ralith (ralith@moz-50F3C77.vc.shawcable.net)
+[23:37:34] <acrichto> brson: awesome, will do
+[23:37:46] <brson> mk-wildcard
+[23:38:48] *** Joins: ghrust (ghrust@moz-4EF5B6E5.rs.github.com)
+[23:38:48] <ghrust> 01[13rust01] 15alexcrichton pushed 1 new commit to 06try: 02http://git.io/ia7gww
+[23:38:48] <ghrust> 13rust/06try 1466bd0f6 15Brian Anderson: Try to fix a periodic windows build failure due to broken rwildcard macro
+[23:38:48] *** Parts: ghrust (ghrust@moz-4EF5B6E5.rs.github.com) ()
+[23:39:52] *** Joins: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com)
+[23:45:09] *** Quits: doener (doener@moz-121949B3.unitymediagroup.de) (Quit: leaving)
+[23:46:01] *** Quits: samnardoni (samnardoni@moz-ECB14881.cable.virginmedia.com) (Ping timeout)
+[23:50:40] <jack> graydon: why does bors push 0 new commits before pushing the commits it attempts to integrate?
+[23:51:37] <aatch> jack, presumably it resets auto back to incoming before starting another build
+[23:51:42] <graydon> that's git trying to tell us that bors rewound auto
+[23:51:54] <graydon> er, github
+[23:52:12] <jack> ok
+[23:52:19] *** Joins: alisdair (textual@moz-EA60A466.dedicated.allstream.net)
+[23:52:32] <prudhvi> is there a plan to opensource bors?
+[23:52:57] <jack> graydon should offer it for money. he'd make a killing.
+[23:54:17] <graydon> there's a plan kinda sorta. I mean, releng is working on taking over its care and feeding, I think?
+[23:54:35] <graydon> it currently runs on a cron job on my workstation. not very sophisticated.
+[23:55:16] <jack> graydon: if you didn't already know, bors is integrating servo already
+[23:55:20] <prudhvi> is it implemented in Rust?
+[23:55:25] <cmr> I hope not
+[23:55:35] <graydon> I expect at some point along the way we'll open source it. I'm mostly dragging feet because security review tends to be kinda slow and this is slightly-more-conservative
+[23:55:39] <aatch> prudhvi, python
+[23:55:41] <graydon> no, it's a small python script
+[23:55:41] <graydon> real small
+[23:56:31] *** Quits: echristo (echristo@D423593A.D6CCE4AE.77834EAA.IP) (Quit: echristo)
+[23:57:48] <brson> pcwalton: how do you feel about completely removing visibility modifiers from 'impl' since we think that they are an antipattern
+[23:57:52] *** Quits: wilmoore (wilmoore@moz-7EE4D9D6.mystrotv.com) (Client exited)
+[23:58:05] <pcwalton> brson: I'm ok with it
+[23:58:14] *** Joins: wilmoore (wilmoore@moz-7EE4D9D6.mystrotv.com)
+[23:58:18] <brson> 'pattern' is probably too strong
+[23:58:24] <brson> but it's better to put the modifiers on methods
+[23:58:25] <pcwalton> it's also more consistent to say that "pub impl" is always forbidden
+[23:58:33] <brson> i'll open an issue
+[23:58:34] <aatch> presumably this is just on the impl itself?
+[23:58:41] <brson> aatch: yes
+[23:58:42] <pcwalton> because right now it's forbidden only for type implementations, not trait implementations
+[23:59:01] <aatch> That inconsistency is a bit of a code-smell to me
+[23:59:03] <brson> with big impls, it's easy to not know what your method visibility is
+[23:59:33] <brson> and now I keep running across code that does it the 'wrong' way and not knowing if the methods are all just priv

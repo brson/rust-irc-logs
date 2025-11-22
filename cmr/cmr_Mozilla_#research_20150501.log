@@ -1,0 +1,377 @@
+[00:00:02] <roc> so this is an interesting downside of having multiple implementations of an API
+[00:00:46] <larsberg> So in practice on native, hacks are only visible to apps the platform or framework enable them for and invisible to others.
+[00:01:18] <roc> that's not necessarily a good thing
+[00:01:23] <pcwalton> yeah, apparently NVIDIA drivers are full of game-specific hacks
+[00:01:35] <pcwalton> run strings against them and you find tons of names of game executables, etc
+[00:02:04] <roc> I spent some time trying to fix trackpad support for Firefox on Windows, where specific trackpad drivers sniffed firefox.exe and made special assumptions. Hellish.
+[00:02:55] <roc> in particular, hardcoded assumption about our HWND structure that we needed to change.
+[00:03:37] <roc> Opera did something similar for Web sites. Also hellish.
+[00:04:17] <roc> we've gone a little bit down that path with whitelisting exposure of specific features for a few sites, which I don't like but is relatively harmless AFAICT
+[00:04:46] <pcwalton> yeah, we were actually talking about something like this for solving the problem "how do we get people to stop using setTimeout() based animations"?
+[00:04:58] <pcwalton> we don't have any good solutions at the moment
+[00:05:14] <pcwalton> the best one is "submit patches to jQuery to make jQuery.animate() go faster"
+[00:05:19] <larsberg> Yeah, it stinks on both sides. Unresponsive app vendors (or sites) who won't fix bugs leave you in a bind. Apple has the same problem on iOS with the top tier apps, btw, according to their team
+[00:05:22] <roc> That's a good solution
+[00:05:30] <pcwalton> but that has the problem in that sites won't switch immediately
+[00:05:34] <roc> sure
+[00:05:38] <pcwalton> still, it is relatively free of downsides other than doing the work
+[00:06:13] <roc> exposing new features selectively seems OK because it doesn't really add the complexity of the landscape.
+[00:06:16] <pcwalton> tangentially related, I found another parallelism hazard in CSS 2.1
+[00:06:26] <roc> intersting
+[00:06:39] <pcwalton> thankfully, it's only in a section that CSS 2.1 leaves undefined and in which Gecko, WebKit, *and* Blink all do something different and incompatible :)
+[00:06:48] <roc> what is it?
+[00:07:34] <pcwalton> width of the containing block for absolute descendants of a positioned inline where that inline gets split across multiple lines
+[00:07:38] <pcwalton> let me link you a test case
+[00:08:07] <pcwalton> https://gist.github.com/pcwalton/9a6557cedd49ffa84cde
+[00:08:24] <pcwalton> resize the window in Firefox, Chrome, and Safari and observe different results when the span#cb gets split
+[00:08:57] <pcwalton> Gecko's behavior is the most sensible (the width becomes the part on the first line)
+[00:09:58] <pcwalton> emulating that is a parallelism hazard though because we need to determine widths of all tree ancestors before performing line breaking bottom-up
+[00:10:22] <pcwalton> if we really needed to emulate Gecko's behavior though we could do it by just speculating that the containing block won't get split and relaying out if it does
+[00:10:41] <pcwalton> but I hope we won't need to, given that the browsers all do wildly different things in this case anyway
+[00:11:16] <pcwalton> Servo just assumes the inline element won't get split and the containing block will overflow the line if it does
+[00:11:22] <pcwalton> (with my patch that implements this)
+[00:12:22] <roc> abs-pos kids of rel-pos inlines are rare
+[00:12:35] <pcwalton> yup, Servo master doesn't even implement it
+[00:12:38] <roc> some simple speculative thing would be totally fine
+[00:12:46] <pcwalton> sadly Google result pages rely on it
+[00:12:55] <pcwalton> but they don't rely on splitting
+[00:12:56] <pcwalton> so it's fine
+[00:13:22] <roc> I don't understand why it's a parallelism hazard though
+[00:14:19] <roc> can't you complete layout of the BFC containing the rel-pos inline(s), then lay out all their abs-pos children in parallel?
+[00:15:24] <pcwalton> sure, but that's an additional sequential dependency -- normally widths have no dependency on heights (line breaking is done during height assignment)
+[00:15:40] <pcwalton> it doesn't eliminate *all* parallelism but it introduces an extra dependency
+[00:15:44] <roc> ok
+[00:16:42] <pcwalton> "BFCs next to floats" are a much worse hazard but thankfully that one seems very amenable to speculation too :)
+[00:17:35] <pcwalton> I should really write a detailed blog post about how CSS is so parallelizable in practice despite coming so close to not being so
+[00:17:46] <pcwalton> it's really a small miracle
+[00:35:02] *** Quits: cjones (cjones@moz-ljujh0.ca.comcast.net) (Client exited)
+[00:40:36] *** Quits: till (till@moz-4s7lg3.dyn.telefonica.de) (A TLS packet with unexpected length was received.)
+[00:53:24] <dherman> pcwalton: I couldn't get a hold of stef so I asked wycats
+[00:53:37] <dherman> Lemme see if I can shared screen shots of IM...
+[00:53:43] <dherman> (On my phone)
+[00:54:31] <dherman> https://usercontent.irccloud-cdn.com/file/ct1sP5gL/IMG_2719.PNG
+[00:55:06] <dherman> https://usercontent.irccloud-cdn.com/file/tvsJmN4L/IMG_2720.PNG
+[00:55:15] <dherman> https://usercontent.irccloud-cdn.com/file/ntbDRxKj/IMG_2721.PNG
+[00:56:34] <dherman> I just wish I understood better what kind of tasks chrome is prioritizing
+[00:56:41] <dherman> Wonder if Alex or Domenic would share
+[00:56:42] <pcwalton> yeah, that's what I come away with too
+[00:56:48] <pcwalton> is it just rAF or setTimeout, etc
+[00:56:56] <pcwalton> we can easily do it in Servo
+[00:57:01] <pcwalton> I could write the patch in a few minutes
+[00:57:25] <dherman> Depends how cross cutting it is
+[00:57:26] <dherman> Like
+[00:57:35] <dherman> Is "do a minor GC" one of the tasks
+[00:57:39] <pcwalton> (although disabling the GC while there's an rAF in the queue will be trickier, of course)
+[00:57:53] <pcwalton> but I assume there's some SpiderMonkey API we can call to make it stop doing that
+[00:57:53] <dherman> Ha
+[00:58:33] <pcwalton> I'm asking on #jsapi
+[00:59:04] *** Quits: jweathersby (Adium@moz-58fg6i.ip.windstream.net) (Quit: Leaving.)
+[00:59:21] <wycats> pcwalton: GC prioritization has been a huge problem for us in Ember
+[00:59:28] <wycats> specifically, we have been unwilling to use rAF much
+[00:59:51] <wycats> because using rAF significantly increases the likelihood of a large GC pause in between data coming in and updating the UI
+[01:00:09] <wycats> but using rAF would mean that more Ember things would coalesce
+[01:00:12] <wycats> so ideally we would like to
+[01:00:15] <dherman> I just heard from stef
+[01:00:21] <dherman> He mentioned another thing
+[01:00:25] <pcwalton> ah, I see
+[01:00:33] <dherman> Heuristics like don't let an XHR land while scrolling
+[01:00:34] <pcwalton> well, we could probably disable the GC while certain events are in the queue
+[01:01:02] <pcwalton> why is letting an XHR land while scrolling bad?
+[01:01:19] <dherman> Triggers expensive JS callback
+[01:01:26] <wycats> pcwalton: because the work you do in response to an XHR landing is arbitrarily expensive
+[01:01:27] <shu> pcwalton: you want a C JS API?
+[01:01:30] <pcwalton> everything that is needed to render when scrolling is on a separate thread from script
+[01:01:34] <pcwalton> shu: yeah
+[01:01:38] <wycats> Ember tends to try to defer things but we don't have enough knowledge
+[01:01:56] <shu> pcwalton: i don't know if we have that, let me check
+[01:02:06] <wycats> pcwalton: you're assuming you can just scroll without ever firing scroll callbacks?
+[01:02:07] <shu> pcwalton: usually we use this RAII thing to suppress GC (both minor and major) https://dxr.mozilla.org/mozilla-central/source/js/src/jsgc.h?from=AutoSuppressGC&case=true#1369
+[01:02:12] <wycats> that seems... suspicious
+[01:02:30] <pcwalton> wycats: you can fire onscroll events, you just don't have to block on them (although see the conversation with roc earlier)
+[01:02:31] <wycats> XHRs landing during scroll will block scroll callbacks
+[01:02:39] <pcwalton> the problem here is the onscroll API
+[01:02:40] <wycats> you can only do one thing at a time
+[01:02:44] <wycats> not really... ?
+[01:02:47] <pcwalton> yes, it is
+[01:02:50] <shu> pcwalton: perhap you can come up with a rust shim for that C++ RAII class?
+[01:02:57] <wycats> are you assuming you can handle scroll callbacks off the main thread?
+[01:02:59] <pcwalton> native apps don't have this problem
+[01:03:00] <shu> pcwalton: i can't find a C API that suppresses GC
+[01:03:01] <pcwalton> yes
+[01:03:02] <wycats> sure they do
+[01:03:11] <wycats> that assumption is very suspicious to me
+[01:03:16] <wycats> you're assuming a lot of new APIs
+[01:03:22] <pcwalton> they just put "the thing that handles XHR" in a separate thread from "the thing that handles scrolling"
+[01:03:23] <wycats> that can run off the main thread and affect DOM
+[01:03:36] <wycats> except that both XHR and scroll callbacks can and do affect DOM
+[01:03:39] <pcwalton> or, I'm assuming people don't need onscroll to block scroll
+[01:03:51] <pcwalton> with what I've seen people use onscroll for that's been a safe assumption so far
+[01:03:55] <pcwalton> though there are probably exceptions
+[01:04:08] <wycats> canonical example: using scroll callbacks to update 10 divs that represent a window into a much larger collection
+[01:04:25] <pcwalton> can't that be async?
+[01:04:27] <wycats> you do not want XHRs to land that might also update the DOM
+[01:04:29] <wycats> pcwalton: how?
+[01:04:35] <wycats> it needs to manipulate the DOM
+[01:04:41] <wycats> possibly measure things
+[01:04:46] <pcwalton> I guess I don't know the example you're talking about specifically
+[01:04:47] <wycats> I'm not saying you can't create all of the needed APIs
+[01:04:54] <pcwalton> but I am very concerned that you are thinking too single-threaded here
+[01:05:05] <pcwalton> if we assume we can't move beyond the single-threaded model we're in big trouble
+[01:05:13] <wycats> pcwalton: I'm not thinking single-threaded -- I'm the first person who would push for new APIs
+[01:05:17] <wycats> but it's kind of boil the ocean
+[01:05:21] <pcwalton> no, it's not
+[01:05:30] <pcwalton> we're introducing them now -- Houdini, etc
+[01:05:47] <wycats> I can see you're working with Google peopel
+[01:05:49] <wycats> people*
+[01:06:02] <wycats> listen
+[01:06:17] <wycats> async APIs are fine but racing on async APIs doesn't fundamentally address the issue
+[01:06:31] <wycats> when you are scrolling you don't want external events to touch the UI
+[01:06:36] <pcwalton> there is not a single native platform I know of that blocks the equivalent of XHR on scroll
+[01:06:37] <wycats> no matter how they manipulate the DOM
+[01:06:53] <pcwalton> if we have to do it because it'll take a long time to get new things standardized, fine
+[01:06:55] <wycats> I think we're overrotating on this example
+[01:06:57] <pcwalton> but I think it's the wrong solution long-term
+[01:07:13] <wycats> so today you can do something like:
+[01:07:17] <wycats> get the XHR on a worker
+[01:07:21] <shu> well gl with suppress gc, gotta run
+[01:07:27] <wycats> and post back a sequence of operations to perform
+[01:07:32] <pcwalton> shu: thanks for the pointer, that was helpful
+[01:07:40] <wycats> I'm saying that you would not listen for that sequence of operations during scroll
+[01:07:44] <wycats> unless you want jank
+[01:07:58] <pcwalton> that's not how I build native apps though
+[01:08:00] <wycats> at some point actually updating the DOM is happening
+[01:08:24] <wycats> at some point you need to actually change what is in the document
+[01:09:27] <wycats> are you assuming that those changes typically have 0usec of side effects?
+[01:09:34] <wycats> I'm trying to understand the app model you have in mind
+[01:10:10] <pcwalton> yes, I see what you're saying
+[01:10:30] <pcwalton> I guess what I'm uncomfortable with is doing things like suppressing XHR because we assume the app is going to be slow about scrolling
+[01:10:41] <wycats> it's not about the slowness
+[01:10:43] <wycats> it's about races
+[01:10:46] <pcwalton> if the app is doing too many DOM manipulations and that's janking scrolling, that's bad
+[01:10:54] <pcwalton> fix the app
+[01:10:57] <wycats> let me give a concrete exampl
+[01:11:05] <wycats> I have 100 blog posts in a list
+[01:11:13] <wycats> I can fit 10 in the list at once
+[01:11:16] <wycats> so I render 10
+[01:11:22] <wycats> as I scroll, I update the 10 divs
+[01:11:28] <wycats> in the meantime, I have a websocket open 
+[01:11:38] <wycats> and it tells me that one of the titles has changed
+[01:11:52] <pcwalton> so the divs are going to move on the screen regardless of whether the app moves them
+[01:11:56] <roc> y'all know that Gecko schedules incremental GC slices immediately after a paint, right?
+[01:11:57] <wycats> if I let it land and trigger a DOM update, I may get two DOM updates in a single frame
+[01:12:00] <pcwalton> assuming you are taking advantage of off main thread scrolling
+[01:12:02] <pcwalton> which you should
+[01:12:17] <pcwalton> roc: I think I knew that at one point, but I had forgotten :)
+[01:12:20] <wycats> the divs are like a carousel
+[01:12:22] <roc> GCRuntime::notifyDidPaint
+[01:12:27] <wycats> when the scroll off the top they get moved to the bottom
+[01:12:37] <wycats> and get the new data
+[01:12:49] <wycats> the point is you do not want a div to get updated twice in one frame
+[01:12:56] <pcwalton> yes, but the divs will still feel fluid if you're letting the compositor do off main thread scrolling
+[01:13:14] <pcwalton> it may take a while for new ones to pop in but that seems beside the point
+[01:13:18] <wycats> you're assuming that the DOM updates don't trigger reflows or other measurement-dependent effects
+[01:13:20] <pcwalton> you're still hitting 60fps
+[01:13:29] <wycats> I don't understand why that would be
+[01:13:53] <pcwalton> because the *movement* of the divs is all controlled by the compositor, which blocks on nothing in its own thread
+[01:13:56] <pcwalton> since scrolling is all off main thread
+[01:13:59] <wycats> I need to understand the full model that you have in mind
+[01:14:07] <pcwalton> yeah, this is hard on IRC :)
+[01:14:10] <wycats> you actually need to intervene a lot
+[01:14:14] <wycats> you cannot just use the compositor
+[01:14:20] <pcwalton> so I think that is the main problem
+[01:14:22] <wycats> you have only 10 divs
+[01:14:24] <pcwalton> that intervention should be off the main thread
+[01:14:40] <wycats> I agree that this is a problem but I'm not aware of a solution that's far along, houdini or not
+[01:14:52] <wycats> also OMT doesn't mean once-per-frame
+[01:15:05] <wycats> you could have OMT and still end up doing two expensive DOM updates per frame
+[01:15:18] <wycats> the network thing isn't even a very good example tbqh
+[01:15:28] <wycats> dherman brought it up because Stef did
+[01:15:40] <wycats> the GC pause issue is much worse imop
+[01:15:41] <wycats> imo*
+[01:15:57] <wycats> unpredictable GC pauses during soft-realtime operations
+[01:16:05] <pcwalton> yes, I'm much more in favor of doing something to intelligently schedule GC pauses
+[01:16:55] <pcwalton> ultimately though I would like to see how many common patterns -- the carousel is a great one -- we can move to be implemented without GC and off the main thread
+[01:17:10] <pcwalton> I'm not saying we should try to cut main thread JS out of the equation entirely, that's not feasible
+[01:17:50] <pcwalton> I guess it comes down to the fact that the gap between native implementations and main-thread-JS-controlled things is significantly greater in Servo than in other engines
+[01:18:12] <pcwalton> because the native implementations can use multicore and shared memory multithreading
+[01:18:14] <wycats> pcwalton: the thing that worries me is that you're talking about a solution to scheduling that is inherently significantly more racy
+[01:18:25] <wycats> which means that I actually have *less* ability to control what happens in a single thread
+[01:18:37] <wycats> single frame*
+[01:18:50] <pcwalton> well, the thing that worries me about suppressing XHR for example is that it's a hack :)
+[01:19:00] <pcwalton> there's no reason your app should be counting on the browser to suppress XHR
+[01:19:05] <wycats> I don't understand how to use a "just do everything OMT with async callbacks that manipulates the DOM" model and be sure that I am only touching the DOM once per frame
+[01:19:13] <wycats> I know how to do it (somewhat hackily) with rAF
+[01:19:21] <wycats> but if the API is "browser: do this work whenever you get a sec"
+[01:19:36] <wycats> I feel that intelligent scheduling is even more urgent
+[01:19:54] <wycats> otherwise the browser may just end up doing a pile of work that could be coalesced or spread out
+[01:19:57] <wycats> in one frame
+[01:20:03] <pcwalton> I think "intelligent scheduling" is just hacks upon hacks that will not really solve much in the long run
+[01:20:18] <wycats> maybe we're talking about different things?
+[01:20:25] <pcwalton> quite possibly we are :)
+[01:20:48] <pcwalton> basically, I feel that making sure you don't jank scrolling in your XHR handler is something your JS framework should be handling, not the browser
+[01:20:55] <wycats> for me, intelligent scheduling is things like flushing the DOM top-down instead of operation-order so you can avoid doing work in a child that has become moot by something in the parent
+[01:21:09] <pcwalton> I'd be happy to add an API which is like "am I scrolling?" and "do this work when you have a sec"
+[01:21:13] <wycats> dherman: I'm gonna kill you :P
+[01:21:29] *** khuey is now known as khuey|away
+[01:21:36] <pcwalton> but just unconditionally throttling things like XHR in the script task feels a bit… heavy-handed I guess
+[01:21:38] <wycats> pcwalton: the problem is "when you have a sec" requires some intelligence
+[01:21:57] <wycats> honestly I agree that XHR handlers should happen in a worker
+[01:21:58] <pcwalton> that's fine
+[01:22:08] <wycats> but now you need a way to control when your resulting updates occur
+[01:22:10] <pcwalton> I'd just rather have the intelligence in one place
+[01:22:20] <wycats> I would quite frankly be ok with a lot more control over the existing scheduling
+[01:22:25] <wycats> I have been advocating that for ages
+[01:22:33] <wycats> callbacks right before and right after paint
+[01:22:35] <pcwalton> instead of spread all over in ad-hoc hacks hard-coded into the engine like "no XHR during scroll", "no mousemove during blahblah"
+[01:22:40] <wycats> pcwalton: confirm
+[01:22:49] <pcwalton> I think we're in agreement then
+[01:22:59] <wycats> I just want to know when things are happening
+[01:23:10] <wycats> and for GC not to pwn me
+[01:23:18] <pcwalton> sure, I'm in agreement there
+[01:27:09] <pcwalton> wycats: btw, I'd be interested in Ember testcases that you've found to have perf problems in existing browsers
+[01:27:16] <pcwalton> they would be good to look at and optimize in servo
+[01:27:22] <wycats> hm
+[01:28:11] <wycats> can you be more specific?
+[01:28:28] <pcwalton> well, you mentioned getting pwned by GC during scrolling
+[01:28:35] <pcwalton> it sounds like you've hit this
+[01:28:49] <pcwalton> would be curious to know where if you have a specific app that exhibited that
+[01:29:05] <wycats> it was mobile apps
+[01:29:46] <wycats> http://emberjs.com/list-view/
+[01:29:55] <wycats> these demos don't use rAF
+[01:30:08] <wycats> because when we used rAF it worked better except the occasional very bad GC
+[01:30:11] <wycats> that made it overall worse
+[01:30:11] <pcwalton> cool, I'll look at that
+[01:30:36] <roc> wycats: did you get that bad behavior in Gecko?
+[01:30:38] <wycats> it's a pretty canonical example of the case I'm talking about
+[01:30:43] <wycats> roc: stefan would know
+[01:30:45] <wycats> I'll ask
+[01:30:54] <wycats> I bet he only tested on iOS Safari and Android
+[01:31:02] <roc> like I said above, Gecko schedules a short incremental-GC phase immediately after each paint
+[01:31:27] <roc> so, using rAF should work reasonably well
+[01:31:28] <wycats> the problem we were having is that we'd schedule the render pass for rAF
+[01:31:31] <wycats> and then the rAF would never come
+[01:31:37] <wycats> well, not anytime soon
+[01:31:46] <pcwalton> roc: that's a good idea, and would be fairly easy to implement in Servo with the new refresh-driver infrastructure
+[01:31:47] <wycats> but we found if we did the rendering in the same microtask
+[01:31:51] <roc> well, I don't know what that's about
+[01:31:52] <wycats> we were much less likely to be interrupted
+[01:32:01] <wycats> probably not Firefox if what you're saying is true
+[01:32:04] <wycats> this was also maybe a year ago
+[01:32:12] <wycats> but I asked Chrome about it and they said it would not have been improved
+[01:32:23] <wycats> and their prioritization thing was about getting that kinda stuff under control
+[01:33:09] <pcwalton> if Chrome is doing event prioritization it would probably be good for them to let us know which events get to jump the queue, honestly
+[01:33:18] <pcwalton> developers should be able to count on this being consistent across browsers
+[01:34:10] <roc> yeah
+[01:34:32] <roc> GC aside, I think some more intelligent scheduling definitely makes sense for Gecko. I can imagine a two-level priority scheme working well, where input events and refresh ticks are higher priority than everything else
+[01:34:45] <pcwalton> yes, that sounds great
+[01:35:13] <pcwalton> and is dead simple for Servo to add too since it can already do this for squashing unneeded mousemove events -- I'll write the patch in a few minutes if someone tells me what to prioritize :)
+[01:35:20] <wycats> roc: Ember itself has a more involved prioritization scheme
+[01:35:28] <roc> as long as the lower priority level isn't getting starved
+[01:35:34] <roc> wycats: is that documented somewhere?
+[01:35:37] <wycats> roc: hm
+[01:35:57] <wycats> we have a bunch of queues: events, data binding sync, before render, render, after render, finalization
+[01:36:13] <wycats> and if a queue scheduled a callback in an earlier queue, we always go back and drain the previous queue
+[01:36:30] <wycats> so if before-render triggers a data binding sync, we go back and drain it before we render
+[01:36:40] <roc> ok
+[01:36:48] <roc> that sounds fairly app-specific, not something we should do in the browser
+[01:36:53] <wycats> it's not that relevant to browsers, EXCEPT that it would be nice if we knew when things were happening
+[01:37:02] <wycats> so we could schedule these buckets at a reasonable time
+[01:37:13] <wycats> right now the browser's timing is completely opaque
+[01:37:23] <wycats> you get a few high-level signals like rAF
+[01:37:54] <wycats> you can try to reverse engineer what's happening but it mostly isn't consistent enough to be worth it
+[01:38:03] <wycats> (that's not to say ppl don't do it)
+[01:38:18] <wycats> (plenty of people are doing synthetic microtask stuff via O.o or promises or mutation observers)
+[01:44:35] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[01:44:48] *** Quits: brson (brson@moz-u3dg2t.sfo1.mozilla.com) (Ping timeout: 121 seconds)
+[01:48:16] *** nrc|afk is now known as nrc
+[01:53:16] *** terrence is now known as terrence-afk
+[02:12:30] *** Quits: mchang (mchang@moz-q472sa.res.rr.com) (Client exited)
+[02:25:43] *** Joins: cjones (cjones@moz-ljujh0.ca.comcast.net)
+[03:38:14] *** Joins: brson (brson@moz-ues.tdl.56.172.IP)
+[03:38:14] *** ChanServ sets mode: +o brson
+[04:25:44] *** Quits: brson (brson@moz-ues.tdl.56.172.IP) (Ping timeout: 121 seconds)
+[04:25:56] *** Quits: ScottMichaud (ScottMichau@moz-ddoo12.cpe.pppoe.ca) (Connection closed)
+[04:27:08] *** Joins: brson (brson@moz-ues.tdl.56.172.IP)
+[04:27:08] *** ChanServ sets mode: +o brson
+[04:36:25] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[04:36:25] *** ChanServ sets mode: +o pcwalton
+[04:36:47] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (Client exited)
+[04:47:22] *** Quits: brson (brson@moz-ues.tdl.56.172.IP) (Ping timeout: 121 seconds)
+[05:53:52] *** Quits: azita (sid86@moz-q91elv.0j4i.jtu0.0101.2620.IP) (A TLS packet with unexpected length was received.)
+[05:53:52] *** Quits: mconley (sid32@moz-7kf488.0j4i.jtu0.0101.2620.IP) (A TLS packet with unexpected length was received.)
+[05:53:52] *** Quits: gw (sid60@moz-p8llle.0j4i.jtu0.0101.2620.IP) (A TLS packet with unexpected length was received.)
+[05:53:52] *** Quits: larsberg (sid89@moz-1a60qu.0j4i.jtu0.0101.2620.IP) (A TLS packet with unexpected length was received.)
+[05:53:52] *** Quits: ted (sid140@moz-ou6k55.0j4i.jtu0.0101.2620.IP) (A TLS packet with unexpected length was received.)
+[05:53:52] *** Quits: mbrubeck (sid61@moz-2pjnuf.0j4i.jtu0.0101.2620.IP) (A TLS packet with unexpected length was received.)
+[05:58:06] *** Joins: mconley (sid32@moz-7kf488.0j4i.jtu0.0101.2620.IP)
+[05:59:01] *** Joins: gw (sid60@moz-p8llle.0j4i.jtu0.0101.2620.IP)
+[05:59:05] *** Joins: mbrubeck (sid61@moz-2pjnuf.0j4i.jtu0.0101.2620.IP)
+[05:59:56] *** Joins: azita (sid86@moz-q91elv.0j4i.jtu0.0101.2620.IP)
+[06:00:05] *** Joins: larsberg (sid89@moz-1a60qu.0j4i.jtu0.0101.2620.IP)
+[06:00:05] *** ChanServ sets mode: +o larsberg
+[06:01:51] *** Joins: ted (sid140@moz-ou6k55.0j4i.jtu0.0101.2620.IP)
+[06:12:12] *** Quits: roc (chatzilla@moz-h8ll9b.dqqd.b0fh.0cb0.2001.IP) (Ping timeout: 121 seconds)
+[06:15:20] *** Joins: roc (chatzilla@moz-h8ll9b.dqqd.b0fh.0cb0.2001.IP)
+[06:16:17] *** Joins: mbx (textual@moz-jgccpd.res.rr.com)
+[06:18:45] *** Joins: ScottMichaud (ScottMichau@moz-ddoo12.cpe.pppoe.ca)
+[06:31:55] *** Joins: Dexter (Alessio@moz-c7qhmb.retail.telecomitalia.it)
+[07:21:57] *** Quits: roc (chatzilla@moz-h8ll9b.dqqd.b0fh.0cb0.2001.IP) (Ping timeout: 121 seconds)
+[07:45:59] *** Quits: cjones (cjones@moz-ljujh0.ca.comcast.net) (Client exited)
+[07:47:20] *** Joins: cjones (cjones@moz-ljujh0.ca.comcast.net)
+[08:24:27] *** Joins: roc (chatzilla@moz-ftb6vg.orcon.net.nz)
+[09:40:56] *** Quits: mbx (textual@moz-jgccpd.res.rr.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[09:58:57] *** Quits: Dexter (Alessio@moz-c7qhmb.retail.telecomitalia.it) (Quit: Leaving)
+[10:21:26] *** Quits: cjones (cjones@moz-ljujh0.ca.comcast.net) (Client exited)
+[11:23:30] *** Quits: nrc (nrc@moz-9v1svd.xtra.co.nz) (Ping timeout: 121 seconds)
+[11:43:49] *** Joins: till (till@moz-ml04hq.dyn.telefonica.de)
+[12:04:36] *** Joins: jlbhshluekg (ogryof@moz-hpi.2mo.194.197.IP)
+[12:04:43] *** Quits: jlbhshluekg (ogryof@moz-hpi.2mo.194.197.IP) (RecvQ exceeded)
+[12:04:51] *** Joins: jlbhshluekg (ogryof@moz-hpi.2mo.194.197.IP)
+[12:05:08] *** Parts: jlbhshluekg (ogryof@moz-hpi.2mo.194.197.IP) ()
+[13:06:55] *** Joins: tadh (quassel@moz-iq6hhs.biz.rr.com)
+[13:53:56] *** Joins: jweathersby (Adium@moz-djc.9vm.130.40.IP)
+[13:55:51] *** Joins: jdm (jdm@moz-4vu.06r.98.75.IP)
+[14:48:13] *** Joins: jweathersby1 (Adium@moz-58fg6i.ip.windstream.net)
+[14:50:58] *** Quits: jweathersby (Adium@moz-djc.9vm.130.40.IP) (Ping timeout: 121 seconds)
+[14:58:43] *** Joins: mchang (mchang@moz-q472sa.res.rr.com)
+[15:05:01] *** Joins: ehsan (ehsan@moz-i5m.05u.207.66.IP)
+[15:08:17] *** Joins: jweathersby (Adium@moz-djc.9vm.130.40.IP)
+[15:12:15] *** Quits: jweathersby1 (Adium@moz-58fg6i.ip.windstream.net) (Ping timeout: 121 seconds)
+[15:49:14] *** Joins: cjones (cjones@moz-ljujh0.ca.comcast.net)
+[15:57:50] *** Quits: till (till@moz-ml04hq.dyn.telefonica.de) (Ping timeout: 121 seconds)
+[16:12:10] *** terrence-afk is now known as terrence
+[16:34:14] *** Quits: terrence (terrence@moz-gmi.one.189.184.IP) (Ping timeout: 121 seconds)
+[16:48:44] *** Joins: terrence (terrence@moz-4opk9i.sd.cox.net)
+[16:49:50] *** Joins: mbx (textual@moz-jgccpd.res.rr.com)
+[17:07:45] *** Quits: jdm (jdm@moz-4vu.06r.98.75.IP) (Quit: )
+[17:40:39] *** khuey|away is now known as khuey
+[17:44:13] *** Joins: nrc (nrc@moz-9v1svd.xtra.co.nz)
+[17:47:19] *** Joins: jdm (jdm@moz-ul43ak.dsl.bell.ca)
+[17:47:48] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[17:47:48] *** ChanServ sets mode: +o brson
+[17:49:17] *** Quits: nrc (nrc@moz-9v1svd.xtra.co.nz) (Ping timeout: 121 seconds)
+[18:12:53] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[18:12:53] *** ChanServ sets mode: +o pcwalton
+[18:23:08] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[18:27:42] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[18:27:42] *** ChanServ sets mode: +o pcwalton
+[18:36:39] *** khuey is now known as khuey|away
+[18:37:24] *** Quits: cjones (cjones@moz-ljujh0.ca.comcast.net) (Client exited)
+[18:45:25] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[18:50:06] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[18:50:06] *** ChanServ sets mode: +o pcwalton
+[19:47:49] *** khuey|away is now known as khuey
+[19:49:09] *** Joins: cjones (cjones@moz-ljujh0.ca.comcast.net)
+[20:57:37] *** Quits: mbx (textual@moz-jgccpd.res.rr.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[21:39:12] *** Quits: tadh (quassel@moz-iq6hhs.biz.rr.com) (Connection closed)
+[22:04:36] *** vstamour is now known as vstamour`
+[22:30:05] *** jdm is now known as jdm|away
+[22:35:02] <khuey> roc: wow, I totally don't remember submitting that PR
+[22:35:14] * khuey must have been really tired this morning
+[22:36:06] *** jdm|away is now known as jdm
+[23:03:03] *** Quits: ehsan (ehsan@moz-i5m.05u.207.66.IP) (Quit: vanished into thin air...)
+[23:17:36] *** Quits: jweathersby (Adium@moz-djc.9vm.130.40.IP) (Quit: Leaving.)
+[23:30:41] *** Quits: jdm (jdm@moz-ul43ak.dsl.bell.ca) (Quit: )
+[23:48:32] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[23:51:10] *** Joins: jdm (jdm@moz-ul43ak.dsl.bell.ca)
+[23:54:09] *** khuey is now known as khuey|away

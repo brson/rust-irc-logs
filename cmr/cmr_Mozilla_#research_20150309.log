@@ -1,0 +1,273 @@
+[00:00:07] <larsberg> nrc: It worked pretty well, but IIRC figuring out the full lifecycle with storing project settings, etc. got really complicated (e.g., if the enterprise policy C indentation settings differ from the ones in the file, which win?)
+[00:00:09] <shu> kmc: differs from crash to crash, sometimes the instruction is valid but the other saved regs don't make sense
+[00:00:28] <larsberg> roc: now, the value of CS journals is that you get to actually finish the work and write up a version that other people could reproduce :-)
+[00:00:40] <shu> kmc: see https://bugzilla.mozilla.org/show_bug.cgi?id=1139386#c13
+[00:00:43] <larsberg> In all seriousness, I love journal versions of papers.
+[00:03:42] <shu> this bug is insane arghh
+[00:07:30] <shu> am i correct in understanding signals that, if the signal handler is an empty function, raising signals should never cause the interrupt program to crash?
+[00:08:24] <shu> the interrupted*
+[00:09:56] *** Quits: yury (yury@moz-9flvv8.ok.cox.net) (Ping timeout: 121 seconds)
+[00:14:26] <roc> no
+[00:14:34] <roc> various conditions can still cause a crash
+[00:14:51] <roc> for example if there's no room in the stack area to push the signal handler frame
+[00:14:59] <roc> or you specified a sigaltstack pointing to invalid memory
+[00:15:27] *** Joins: yury (yury@moz-9flvv8.ok.cox.net)
+[00:15:41] <shu> roc: definitely no to the latter
+[00:15:41] <roc> if you're running 32-bit code on a 64-bit CPU, there's some extra bizarre conditions that you'd rather not know about :-)
+[00:15:54] <shu> roc: this crash is ONLY reproducible on our linux32 EC2 test instances
+[00:16:03] <roc> mmmmmmmm
+[00:16:13] <roc> ok
+[00:16:21] <shu> roc: in my own VMs, in physical 32 bit machines with matching kernel and glibc versions, i have never been able to get it to crash
+[00:16:54] <shu> roc: no room in the stack area seems unlikely, as the bt is also reasonable
+[00:17:09] <roc> an extra-bizarre condition is that it's possible to use ptrace to set the upper 32-bits of RSP to something nonzero
+[00:17:44] <roc> everything continues to work normally until a signal is delivered, then the kernel looks at the full RSP when deciding whether it's safe to push a stackframe, and decides it's not
+[00:17:58] <shu> roc: well, these are 32bit EC2 instances are virtualized on 64bit cpus i suppose?
+[00:18:11] *** Joins: pnkfelix (pnkfelix@moz-eljppb.fbx.proxad.net)
+[00:18:31] <roc> I don't know if our Linux32 EC2 instances are running 64bkit kernels or not
+[00:18:34] <roc> that's the key
+[00:18:40] <shu> roc: they are definitely running 32bit kernels
+[00:18:47] <roc> ok, that's not it then
+[00:19:41] <roc> BTW
+[00:19:52] <shu> roc: 64bit kernels don't crash
+[00:20:38] <roc> when you see the saved IP at an illegal instruction, is it still in an executable page, or not? if EIP landed in a non-executable page, I'd expect SIGSEGV to fire before SIGILL
+[00:22:07] <shu> roc: hm, i assumed it was. it's always between 2 legal instructions in the .text section of libjemalloc
+[00:24:41] <roc> ok, that sounds ok
+[00:25:47] <shu> hm! if i don't use SA_RESTART, it now asserts in jemalloc instead
+[00:26:07] <shu> but strace showed no syscalls between the SIGPROF storm...
+[00:26:11] <shu> among*
+[00:30:28] *** Quits: roc (chatzilla@moz-0derjd.orcon.net.nz) (Connection closed)
+[00:36:37] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[00:36:37] *** ChanServ sets mode: +o pcwalton
+[00:36:41] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (Client exited)
+[00:54:14] *** Joins: azita (Azita@moz-v16.4ki.202.73.IP)
+[01:37:06] *** Quits: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net) (Client exited)
+[01:51:26] *** Joins: jdm (jdm@moz-ilbt2e.cable.teksavvy.com)
+[02:17:03] <kmc> shu: are the EC2 instances HVM or paravirt? have you tested in Xen locally?
+[02:40:27] <shu> kmc: i don't know to the first (how do i find out?) and no to the second (i don't know how to set up xen)
+[02:42:55] <kmc> the EC2 console will tell you
+[02:44:30] <kmc> VM bugs are great fun, although this sounds more like something you'd get from dynamic recompilation VMs rather than HVM or Xen paravirt
+[02:44:37] <shu> kmc: this is a slave borrowed from releng
+[02:44:48] <kmc> ask them I suppose
+[02:45:03] <shu> kmc: yeah, i'll do that tomorrow, don't think any of them are here on the weekends
+[02:47:43] <kmc> it could be a kernel bug that only manifests in pv builds
+[02:50:06] <shu> kmc: pv?
+[02:50:11] <shu> paravirt?
+[02:52:13] *** Joins: roc (chatzilla@moz-0derjd.orcon.net.nz)
+[02:53:06] *** Quits: azita (Azita@moz-v16.4ki.202.73.IP) (Client exited)
+[02:53:14] <kmc> yeah
+[02:53:32] <shu> kmc: let me lean your expertise a bit more. do you happen know what rt_sigreturn returning EINTR would mean? i thought rt_sigreturn was a continuation that jumped back to the interrupted code
+[02:53:49] <shu> kmc: strace, however, sometimes shows rt_sigreturn returning -1 and having errno = EINTR
+[02:58:02] <roc> er
+[02:58:36] <roc> I wonder if that's strace getting confused
+[03:00:11] <roc> after sigreturn, all registers include EAX are set to the values they had before signal entry
+[03:00:41] <shu> roc: right, that's my understanding
+[03:00:52] <roc> perhaps if EAX is -INTR strace thinks it's an errno return
+[03:01:14] <roc> but it's not
+[03:01:35] <roc> certainly in rr I've never seen sigreturn actually return an error
+[03:02:28] <shu> roc: it's probably strace getting confused, most of the time it prints a garbage number as the rval
+[03:02:50] <shu> roc: though the strange corruption always happens after strace reports an EINTR
+[03:04:08] <roc> have you tried inspecting the saved register state while you're in the handler?
+[03:04:50] <shu> roc: yep
+[03:05:01] <shu> roc: the IP is corrupted on entry
+[03:05:23] <shu> roc: i'm looking in ucontext->uc_mcontext.gregs[REG_EIP]
+[03:22:00] <roc> what signal is your handler for?
+[03:23:00] *** Quits: copumpkin (copumpkin@moz-regr09.dyn.optonline.net) (Ping timeout: 121 seconds)
+[03:23:00] <shu> roc: SIGPROF, for the gecko profiler
+[03:23:49] *** Joins: copumpkin (copumpkin@moz-regr09.dyn.optonline.net)
+[03:27:05] <Luqman> 33
+[03:33:05] *** Joins: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net)
+[03:33:51] *** Quits: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net) (Client exited)
+[03:51:06] *** Joins: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net)
+[03:59:37] *** Quits: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net) (Client exited)
+[04:00:08] *** Joins: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net)
+[04:12:28] *** Joins: azita (Azita@moz-v16.4ki.202.73.IP)
+[04:21:20] *** Quits: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net) (Connection closed)
+[04:22:37] *** Joins: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net)
+[04:30:18] * shu wonders if it's possible to examine another thread's state without sending a signal on linux
+[04:30:24] <shu> like how it is on mach
+[04:39:40] *** Quits: jdm (jdm@moz-ilbt2e.cable.teksavvy.com) (Quit: )
+[04:47:24] <kmc> what kind of state?
+[04:50:44] *** Quits: azita (Azita@moz-v16.4ki.202.73.IP) (Client exited)
+[04:54:22] <shu> kmc: registers
+[04:58:37] <kmc> if it's in a syscall, you can get that from /proc
+[05:01:55] <shu> if what's in a syscall?
+[05:02:00] <kmc> the thread whose state you want to inspect
+[05:03:11] * kmc thinks about methods for reading registers of a thread currently running on another core
+[05:03:36] <shu> kmc: well, chances are it's not in a syscall
+[05:05:04] <kmc> with OOE, registers are fictional and merely asking for the contents of a register would affect the pipeline
+[05:06:06] <shu> well, i'd like to see what the kernel sees
+[05:06:23] <kmc> the kernel is only running during a syscall :)
+[05:07:34] <shu> yeah... :(
+[05:07:35] <kmc> to query registers on another core would require an interprocessor interrupt
+[05:07:38] <kmc> so it's asynchronous
+[05:07:49] <shu> the problem is that by the time the signal handler is invoked, the state is already corrupted somehow
+[05:08:22] <kmc> you need an async mechanism to ask the kernel to stop the target process and get a coherent snapshot of its registers... and that starts to look like signal delivery
+[05:08:33] <kmc> hmm
+[05:09:12] <shu> for example
+[05:10:09] <shu> sometimes the instruction immediately preceding the saved EIP is a mov (%eax) -0x10(%ebp) or something like that
+[05:10:36] <shu> if i examined the saved $eax and $ebp-0x10, the values are different
+[05:10:58] <shu> err
+[05:10:59] <shu> mov %eax
+[05:11:03] <shu> not (%eax)
+[05:27:04] *** Quits: mbx (textual@moz-fjua8t.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[05:27:16] *** Joins: mbx (textual@moz-fjua8t.ca.comcast.net)
+[05:41:20] <roc> shu: it's not possible that your signal handler is corrupting the saved EIP in the sighandler saved stack frame, is it?
+[05:45:00] *** sunfish-away is now known as sunfish
+[05:57:54] <shu> roc: the signal handler is empty
+[05:58:07] <shu> roc: the function body is empty, that is
+[06:01:25] <shu> roc: i'm now bisecting the smallest region i can block SIGPROF in a particular jemalloc function to make the crash go away...
+[06:01:32] <shu> roc: it's all rather nonsensical
+[06:31:12] *** Joins: ddamjano (Instantbird@moz-fubqm7.cfl3.oeer.8388.2a02.IP)
+[06:32:46] <shu> what the hell
+[06:34:18] <shu> if i "lock" the *reads* from a heap data structure into a local, the crashes go away. i.e., sigprocmask(BLOCK,...); int g = bitmap[index]; sigprocmask(UNBLOCK);
+[06:37:15] *** Quits: ddamjano (Instantbird@moz-fubqm7.cfl3.oeer.8388.2a02.IP) (Ping timeout: 121 seconds)
+[06:40:32] <shu> oh no, it simply takes much much longer to crash
+[06:52:47] *** Quits: docwho (quassel@moz-ltp.bog.208.117.IP) (Connection closed)
+[07:05:52] *** Joins: ddamjano (Instantbird@moz-4scldf.cfl3.oeer.8388.2a02.IP)
+[07:32:42] *** Joins: shachaf (shachaf@moz-evr8ss.members.linode.com)
+[07:43:56] *** Quits: mbx (textual@moz-fjua8t.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[08:14:10] *** Quits: gw (uid31717@moz-hcr55a.charlton.irccloud.com) (Quit: Connection closed for inactivity)
+[08:40:03] *** Joins: mbx (textual@moz-fjua8t.ca.comcast.net)
+[08:42:21] *** Joins: gds (user@moz-5ag96u.range81-155.btcentralplus.com)
+[09:23:55] *** Quits: nrc (nrc@moz-4bhi2i.xtra.co.nz) (Ping timeout: 121 seconds)
+[09:25:28] *** Joins: nrc (nrc@moz-4bhi2i.xtra.co.nz)
+[09:29:54] *** Quits: nrc (nrc@moz-4bhi2i.xtra.co.nz) (Ping timeout: 121 seconds)
+[09:49:22] *** Joins: nrc (nrc@moz-4bhi2i.xtra.co.nz)
+[10:27:26] *** Quits: nrc (nrc@moz-4bhi2i.xtra.co.nz) (Ping timeout: 121 seconds)
+[10:48:00] *** Quits: mbx (textual@moz-fjua8t.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[11:54:00] *** Joins: sole (sole@moz-74a.0nt.218.207.IP)
+[11:59:13] *** Quits: pnkfelix (pnkfelix@moz-eljppb.fbx.proxad.net) (Ping timeout: 121 seconds)
+[12:37:49] *** Joins: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP)
+[12:38:47] *** Joins: docwho (quassel@moz-h93.j9h.206.117.IP)
+[13:32:38] *** Quits: reqshark (reqshark@moz-amtd83.cable.rcn.com) (Quit: Be back later ...)
+[13:45:22] *** Joins: jweathersby (Adium@moz-8egbga.ip.windstream.net)
+[13:58:12] *** Joins: jdm (jdm@moz-ilbt2e.cable.teksavvy.com)
+[14:02:56] *** jandem is now known as jandem-brb
+[14:07:00] *** Joins: till (till@moz-6sd.jfj.172.73.IP)
+[14:07:45] *** froydnj|nothere is now known as froydnj
+[14:17:10] *** Joins: tadh (quassel@moz-77pugv.res.rr.com)
+[14:21:45] *** Joins: reqshark (reqshark@moz-2v7.ffj.155.66.IP)
+[14:31:46] *** Quits: tadh (quassel@moz-77pugv.res.rr.com) (Connection closed)
+[14:48:35] *** Joins: mchang (mchang@moz-4b7hgp.res.rr.com)
+[14:54:38] *** Quits: mchang (mchang@moz-4b7hgp.res.rr.com) (Ping timeout: 121 seconds)
+[15:03:40] *** Joins: mchang (mchang@moz-4b7hgp.res.rr.com)
+[15:08:22] *** Joins: ehsan (ehsan@moz-icsc92.fnjk.s0pt.0450.2001.IP)
+[15:08:32] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[15:08:33] *** ChanServ sets mode: +o brson
+[15:28:57] <Manishearth> http://www.reddit.com/r/rust/comments/2yfsi9/rust_to_js_with_emscripten/
+[15:29:26] <Manishearth> now we just need rust-media to use Daala, and then we can put Servo through that to get the most Mozilla Research thing ever done
+[15:48:33] *** Quits: till (till@moz-6sd.jfj.172.73.IP) (A TLS packet with unexpected length was received.)
+[16:11:27] *** Quits: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP) (Connection closed)
+[16:14:28] *** Joins: azita (Azita@moz-cfhap5.mtv2.mozilla.com)
+[16:18:16] *** Joins: mbx (textual@moz-l8ebtf.sfo1.mozilla.com)
+[16:22:14] <dherman> http://googleprojectzero.blogspot.com/2015/03/exploiting-dram-rowhammer-bug-to-gain.html
+[16:22:15] <dherman> amazing
+[16:28:23] *** Joins: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com)
+[16:34:45] *** Joins: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP)
+[16:40:29] <kmc> nice
+[16:45:33] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[16:45:33] *** ChanServ sets mode: +o pcwalton
+[16:46:28] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (Client exited)
+[16:46:39] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[16:46:39] *** ChanServ sets mode: +o pcwalton
+[16:52:42] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (Ping timeout: 121 seconds)
+[16:53:24] <dherman> I guess it was only a matter of time after that initial paper came out
+[16:53:29] <dherman> but it's still pretty cool
+[16:53:59] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[16:53:59] *** ChanServ sets mode: +o pcwalton
+[16:55:20] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (Client exited)
+[16:55:53] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[16:55:53] *** ChanServ sets mode: +o pcwalton
+[16:56:03] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (Client exited)
+[16:56:19] *** Joins: pcwalton (pcwalton@moz-7fd.v3g.198.71.IP)
+[16:56:19] *** ChanServ sets mode: +o pcwalton
+[16:56:27] *** Quits: azakai|2 (alon@moz-l3ofdg.sntcca.sbcglobal.net) (Quit: Ex-Chat)
+[17:00:41] *** Joins: Savago (Savago@moz-8hd.3b6.246.162.IP)
+[17:02:12] <kmc> I have long thought that /proc/[pid]/pagemap would be useful in some exploits, this is the first time I've seen it used :)
+[17:08:08] *** Joins: faramarz (faramarz@moz-cfhap5.mtv2.mozilla.com)
+[17:16:20] *** Joins: till (till@moz-ogo8q3.72c9.v890.000a.2601.IP)
+[17:16:56] *** Quits: pcwalton (pcwalton@moz-7fd.v3g.198.71.IP) (Client exited)
+[17:17:34] *** Joins: tadh (quassel@moz-pg51s5.CWRU.Edu)
+[17:25:59] *** Joins: azakai (alon@moz-n0s82t.ujol.1ibb.0101.2620.IP)
+[17:30:34] *** Joins: pcwalton (pcwalton@moz-u92.384.6.71.IP)
+[17:30:34] *** ChanServ sets mode: +o pcwalton
+[17:37:01] *** Quits: sole (sole@moz-74a.0nt.218.207.IP) (A TLS packet with unexpected length was received.)
+[17:46:54] *** jandem-brb is now known as jandem
+[17:54:02] *** Quits: mbx (textual@moz-l8ebtf.sfo1.mozilla.com) (Connection closed)
+[17:54:13] *** Joins: mbx (textual@moz-l8ebtf.sfo1.mozilla.com)
+[17:58:52] *** khuey|away is now known as khuey
+[18:01:08] *** Quits: ehsan (ehsan@moz-icsc92.fnjk.s0pt.0450.2001.IP) (Quit: vanished into thin air...)
+[18:01:59] *** Quits: azita (Azita@moz-cfhap5.mtv2.mozilla.com) (Client exited)
+[18:02:54] *** Quits: pcwalton (pcwalton@moz-u92.384.6.71.IP) (Client exited)
+[18:09:22] *** Joins: sole (sole@moz-ombcsg.nemh.1887.0450.2001.IP)
+[18:15:48] *** Quits: sole (sole@moz-ombcsg.nemh.1887.0450.2001.IP) (A TLS packet with unexpected length was received.)
+[18:22:18] <mbrubeck> woohoo, Shumway in the Mozilla project meeting!
+[18:22:32] <till> indeed! \o/
+[18:27:55] *** Joins: nrc (nrc@moz-4bhi2i.xtra.co.nz)
+[18:30:22] *** Joins: azita (Azita@moz-cfhap5.mtv2.mozilla.com)
+[18:30:51] *** Quits: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP) (Connection closed)
+[18:31:35] *** Joins: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP)
+[18:38:36] *** Quits: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP) (Connection closed)
+[18:39:07] *** Joins: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP)
+[18:43:51] *** Quits: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP) (Connection closed)
+[18:43:53] *** Joins: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP)
+[18:50:14] *** Joins: ehsan (ehsan@moz-i5m.05u.207.66.IP)
+[18:55:12] *** khuey is now known as khuey|away
+[18:57:07] *** Quits: till (till@moz-ogo8q3.72c9.v890.000a.2601.IP) (A TLS packet with unexpected length was received.)
+[18:58:00] *** Joins: dannas (dannas@moz-gn5th6.mobileonline.telia.com)
+[19:00:02] *** Quits: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP) (Quit: rcirc on GNU Emacs 24.3.92.1)
+[19:08:30] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[19:08:30] *** ChanServ sets mode: +o pcwalton
+[19:15:38] *** Joins: sole (sole@moz-252ip4.range86-173.btcentralplus.com)
+[19:17:30] *** Quits: ddamjano (Instantbird@moz-4scldf.cfl3.oeer.8388.2a02.IP) (Ping timeout: 121 seconds)
+[19:18:43] *** Quits: larsberg (sid16141@moz-fnneme.uxbridge.irccloud.com) (Ping timeout: 121 seconds)
+[19:21:09] *** Joins: larsberg (sid16141@moz-fnneme.uxbridge.irccloud.com)
+[19:21:09] *** ChanServ sets mode: +o larsberg
+[19:25:02] *** Quits: sole (sole@moz-252ip4.range86-173.btcentralplus.com) (Connection closed)
+[19:25:24] *** Joins: sole (sole@moz-252ip4.range86-173.btcentralplus.com)
+[19:36:21] *** Joins: till (till@moz-946.al6.126.192.IP)
+[19:36:28] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Ping timeout: 121 seconds)
+[19:56:40] *** Quits: mbx (textual@moz-l8ebtf.sfo1.mozilla.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[19:57:32] *** Quits: jweathersby (Adium@moz-8egbga.ip.windstream.net) (Quit: Leaving.)
+[19:57:43] *** Joins: brson (brson@moz-mj1.c9m.56.172.IP)
+[19:57:43] *** ChanServ sets mode: +o brson
+[20:08:11] *** terrence-pto is now known as terrence
+[20:12:42] *** khuey|away is now known as khuey
+[20:21:56] *** jandem is now known as jandem-away
+[20:23:25] *** Joins: mbx (textual@moz-l8ebtf.sfo1.mozilla.com)
+[20:25:58] *** Joins: mbx_ (textual@moz-l8ebtf.sfo1.mozilla.com)
+[20:26:51] *** Quits: mbx (textual@moz-l8ebtf.sfo1.mozilla.com) (Connection closed)
+[20:28:37] *** Quits: bjz (bjz@moz-puppgq.tpgi.com.au) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[20:33:30] *** Quits: mbx_ (textual@moz-l8ebtf.sfo1.mozilla.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[20:36:11] <dherman> sunfish: didn't I promise you I'd send you info about some documentation-generation tools?
+[20:37:03] <dherman> https://github.com/domenic/ecmarkdown and https://github.com/bterlson/ecmarkup/ were what I was referring to
+[20:40:58] <dherman> sunfish: here's an example es7 draft spec: http://arv.github.io/ecmascript-object-observe/
+[20:47:30] *** Joins: mbx (textual@moz-l8ebtf.sfo1.mozilla.com)
+[20:59:47] *** Quits: tadh (quassel@moz-pg51s5.CWRU.Edu) (Ping timeout: 121 seconds)
+[21:00:56] *** Joins: gw (uid31717@moz-hcr55a.charlton.irccloud.com)
+[21:07:44] <sunfish> dherman: yes, you did. thanks for those links!
+[21:08:46] *** Joins: ddamjano (Instantbird@moz-4scldf.cfl3.oeer.8388.2a02.IP)
+[21:09:23] *** Quits: ehsan (ehsan@moz-i5m.05u.207.66.IP) (A TLS packet with unexpected length was received.)
+[21:12:31] *** Joins: ehsan (ehsan@moz-hfmt9a.ckpj.s0pt.0450.2001.IP)
+[21:16:33] *** Quits: ehsan (ehsan@moz-hfmt9a.ckpj.s0pt.0450.2001.IP) (Ping timeout: 121 seconds)
+[21:21:16] *** Quits: dannas (dannas@moz-gn5th6.mobileonline.telia.com) (Quit: leaving)
+[21:27:17] *** Joins: bjz (bjz@moz-lailbo.tpgi.com.au)
+[21:36:45] *** Quits: bjz (bjz@moz-lailbo.tpgi.com.au) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[21:38:16] *** Joins: bjz (bjz@moz-lailbo.tpgi.com.au)
+[21:38:33] *** Quits: bjz (bjz@moz-lailbo.tpgi.com.au) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[21:38:43] *** Quits: reqshark (reqshark@moz-2v7.ffj.155.66.IP) (Ping timeout: 121 seconds)
+[21:44:35] *** Quits: roc (chatzilla@moz-0derjd.orcon.net.nz) (Connection closed)
+[21:54:11] *** Quits: sole (sole@moz-252ip4.range86-173.btcentralplus.com) (Quit: )
+[22:20:18] *** Joins: roc (chatzilla@moz-h8ll9b.dqqd.b0fh.0cb0.2001.IP)
+[22:22:07] *** Quits: faramarz (faramarz@moz-cfhap5.mtv2.mozilla.com) (Client exited)
+[22:32:57] *** Joins: faramarz (faramarz@moz-cfhap5.mtv2.mozilla.com)
+[22:34:21] *** Quits: gds (user@moz-5ag96u.range81-155.btcentralplus.com) (Quit: Going offline)
+[22:35:50] *** Joins: L0uk3 (lukethedrif@moz-pefcoq.torproxy-readme-arachnide-fr-35.fr)
+[22:47:16] *** Quits: faramarz (faramarz@moz-cfhap5.mtv2.mozilla.com) (Client exited)
+[22:51:36] *** Quits: ddamjano (Instantbird@moz-4scldf.cfl3.oeer.8388.2a02.IP) (Ping timeout: 121 seconds)
+[22:55:42] *** Joins: faramarz (faramarz@moz-cfhap5.mtv2.mozilla.com)
+[23:09:22] *** khuey is now known as khuey|away
+[23:32:25] *** Quits: till (till@moz-946.al6.126.192.IP) (A TLS packet with unexpected length was received.)
+[23:34:29] *** Quits: faramarz (faramarz@moz-cfhap5.mtv2.mozilla.com) (Client exited)
+[23:38:49] *** Joins: cjones (cjones@moz-osv.rmn.162.73.IP)
+[23:45:35] *** Joins: tadh (quassel@moz-77pugv.res.rr.com)

@@ -1,0 +1,344 @@
+[00:08:02] *** Quits: ehsan (ehsan@moz-i5m.05u.207.66.IP) (A TLS packet with unexpected length was received.)
+[00:08:38] *** Quits: cjones (cjones@moz-ljujh0.ca.comcast.net) (Client exited)
+[00:12:11] *** Quits: kini (kini@moz-c0fl5n.members.linode.com) (Ping timeout: 121 seconds)
+[00:13:01] *** Joins: kini (kini@moz-c0fl5n.members.linode.com)
+[00:13:46] *** Joins: roc (chatzilla@moz-h8ll9b.dqqd.b0fh.0cb0.2001.IP)
+[00:15:45] *** khuey is now known as khuey|away
+[00:18:39] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Ping timeout: 121 seconds)
+[00:36:15] *** Joins: ehsan (ehsan@moz-4gmmoh.fibre.fibrestream.ca)
+[01:25:21] *** Quits: derf (derf@moz-797sd4.fios.verizon.net) (Ping timeout: 121 seconds)
+[01:26:38] *** Joins: ehsan_ (ehsan@moz-9av.764.213.67.IP)
+[01:27:27] *** Joins: derf (derf@moz-797sd4.fios.verizon.net)
+[01:28:59] *** Quits: ehsan (ehsan@moz-4gmmoh.fibre.fibrestream.ca) (Ping timeout: 121 seconds)
+[01:30:14] *** Quits: mbx (textual@moz-l8ebtf.sfo1.mozilla.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[01:38:21] *** Quits: azakai (alon@moz-vkkt6p.ujol.1ibb.0101.2620.IP) (Quit: Ex-Chat)
+[02:03:10] *** Joins: azakai|2 (alon@moz-l3ofdg.sntcca.sbcglobal.net)
+[02:27:34] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[02:27:34] *** ChanServ sets mode: +o pcwalton
+[02:42:12] *** Joins: cjones (cjones@moz-ljujh0.ca.comcast.net)
+[02:49:18] *** Joins: bjz (bjz@moz-puppgq.tpgi.com.au)
+[03:12:59] *** khuey|away is now known as khuey
+[03:18:54] *** Joins: int3_ (int3_@moz-qj4r31.ca.comcast.net)
+[03:19:43] *** Joins: int3__ (int3_@moz-qj4r31.ca.comcast.net)
+[03:19:43] *** Quits: int3_ (int3_@moz-qj4r31.ca.comcast.net) (Connection closed)
+[03:29:03] <roc> cjones: looks like we have to support Chromium-style sandboxing in rr
+[03:29:19] *** khuey is now known as khuey|away
+[03:29:39] *** khuey|away is now known as khuey
+[03:31:08] *** Joins: brendan (brendaneich@moz-d91.f56.30.207.IP)
+[03:34:16] <cjones> roc: the one built around seccomp? ouch
+[03:34:22] <roc> actually no
+[03:34:28] <roc> seccomp is not a problem as far as I can tell
+[03:34:44] <roc> it does get used, but additional seccomp filters being installed should Just Work
+[03:34:52] <roc> in fact I have a test for that already
+[03:35:24] <roc> the problem is the other part of the sandbox, the part that uses Linux namespaces
+[03:36:10] <cjones> rr knows what to do when a seccomp trap is raised?
+[03:36:17] <roc> yeah
+[03:36:22] <roc> we already handle that!
+[03:36:22] <cjones> cool :)
+[03:36:58] <cjones> i see where namespaces would get annoying
+[03:37:02] <roc> OK, if the tracee seccomp filter generates ptrace traps then we're kinda hosed
+[03:37:11] <roc> because of our rudimentary support for ptrace
+[03:37:20] <roc> and we'd get confused
+[03:37:34] <roc> but the sandbox doesn't do that
+[03:38:04] <cjones> what happens if an rr filter says to pass or trap a syscall, but a later installed one says to deny?
+[03:38:15] <cjones> i forget how that’s resolved. or maybe another filter can’t be appended?
+[03:38:32] <roc> AFAICT the main problem with namespaces is that after switching namespaces the sandbox does a chroot(), and then remote-syscalls that depend on filesystem paths (e.g. /proc/<tracee>/mem, /proc/<rr>/fd/N, /tmp/rr-tracee-fd-transfer-...) are broken
+[03:39:17] <roc> cjones: all filters run and the most-restrictive result value is used
+[03:40:13] <cjones> aha, that’s convenient
+[03:40:39] <roc> my seccomp test just tests a filter that causes a syscall to error out with a given errno. That works fine.
+[03:40:48] *** Joins: dyoung (dyoung@moz-sqo7j2.foa6.hhh5.0470.2001.IP)
+[03:40:54] *** Quits: brendan (brendaneich@moz-d91.f56.30.207.IP) (Client exited)
+[03:40:55] <roc> I haven't tried other combos
+[03:41:42] <cjones> i guess we can’t really emulate the chroot unless we take on emulating all of the other namespaced things like PIDs
+[03:42:01] <roc> yeah I'd like to just execute it
+[03:42:14] <roc> emulating chroot would be a massive task
+[03:43:27] <roc> I wonder if there's a way to install a back door that lets us escape from the chroot via a magic path or openat()
+[03:43:46] *** Parts: dyoung (dyoung@moz-sqo7j2.foa6.hhh5.0470.2001.IP) ()
+[03:44:28] <cjones> well, the problem is that the rr tracer needs to mount a new procfs right?
+[03:44:39] <roc> not if we give it a way to read the old one
+[03:44:58] <cjones> is the tracer affected by the chroot?
+[03:45:10] <roc> oh, the tracer --- no
+[03:45:31] <roc> the problem is that we ask the tracee to open things like its /proc/mem
+[03:45:49] <roc> and the other end of the magic socket that we use to transfer fds
+[03:46:12] <cjones> yeah, we’d have to deal with the procfs
+[03:46:20] <cjones> both for chroot and for a new PID namespace
+[03:46:23] <cjones> that’s fairly annoying
+[03:47:11] <cjones> for magic sockets we might be able to create an rr tmpfs, and then use a similar trick to mount it in the tracer
+[03:47:28] <cjones> i’m sure the sandbox does that eventually but no way we could safely rely on that being set up in time, i guess
+[03:47:33] <roc> I wonder if it would work to open rr's root directory in the tracee, under some magic file descriptor number. then that fd would be inherited through execs and forks
+[03:48:43] <cjones> it would be, but gecko’s fork/exec code closes extra fd’s
+[03:48:56] <cjones> maybe we could fool that
+[03:48:58] <roc> do you remember where that code is?
+[03:49:03] <roc> I'm pretty sure we could fool it
+[03:49:16] <roc> just silently deny any attempts to close that fd
+[03:50:10] <cjones> http://mxr.mozilla.org/mozilla-central/source/ipc/chromium/src/base/process_util_linux.cc#250
+[03:50:23] <roc> if we did that, then I think openat() could be used to open files relative to the tracer's root
+[03:51:14] <cjones> the problem is the fd remapping code might end up trying to map its own fd across rr’s magic one
+[03:52:09] *** Joins: brendan (brendaneich@moz-d91.f56.30.207.IP)
+[03:52:14] <cjones> there’s also FUSE
+[03:52:24] <cjones> kind of a nuclear weapon but would give a lot of flexibility
+[03:52:49] <roc> why would the fd remapping code try to map an fd over our magic one?
+[03:53:55] <cjones> clients of that code can tell it to set things up so that say, fd’s 4 and 5 are magically mapped to special files in the fork child
+[03:54:14] <roc> yeah, but they wouldn't pick our one, surely :-)
+[03:54:14] <cjones> the code thinks it closes all extraneous files, so if rr’s magic fd happens to be 4 or 5, there’ll be a conflict
+[03:54:22] <cjones> users (like gecko) specify those
+[03:54:24] <roc> I was thinking more like 999 :-)
+[03:54:26] <cjones> i know we used 4 and 5
+[03:54:29] <cjones> sure
+[03:54:59] <cjones> it’d be easy to detect a collision from errors in that code, but not clear what to do
+[03:55:21] <roc> I think we could do something tricky if necessary, like make the magic fd a variable per-FdTable, and if someone tries to use it, dup() ours out of the way first
+[03:55:52] <roc> anyway that won't be a problem for Firefox
+[03:56:40] <roc> the next problem I'm looking at is that the tracee needs to connect to the tracer's socket, and there's no connectat()
+[03:56:49] <cjones> i’m 99% sure openat() would work, and it sounds like it wouldn’t be too annoying
+[03:57:15] <cjones> we use unix sockets for that right?
+[03:57:29] <roc> yes
+[03:57:48] <cjones> hmm
+[03:59:25] <cjones> maybe fchdir() to parent fd plus a relative socket path?
+[03:59:37] <cjones> you’d need to emulate the current directory
+[03:59:55] <cjones> mounting a new procfs for the chroot tracee or FUSE would also work
+[04:00:15] <roc> fchdir() sounds great!
+[04:00:20] <cjones> where does the sandbox code chdir the process to before chroot?
+[04:00:22] <roc> what do you mean "emulate the current directory"?
+[04:00:39] <cjones> i mean that rr would be disturbing the process’s current directory
+[04:00:48] <roc> I think we can put it back
+[04:01:04] <cjones> that would work too
+[04:01:15] <cjones> i guess we rarely need to use that
+[04:01:15] <roc> cwdfd = open('.'); fchdir(rrfd); connect(); fchdir(cwdfd)
+[04:01:40] <cjones> do we ever have tracees open /proc/…/fd?
+[04:02:15] <cjones> IIRC it’s just /tmp paths
+[04:02:37] <roc> actually that's true
+[04:03:41] <roc> er no, create_pulseaudio_config sets PULSE_CLIENTCONFIG to /proc/<tracer>/fd
+[04:03:52] <roc> but I guess sandboxed clients shouldn't expect to run pulseaudio :-)
+[04:04:01] *** Quits: ehsan_ (ehsan@moz-9av.764.213.67.IP) (Quit: vanished into thin air...)
+[04:04:25] <cjones> not without setting it up themselves, yeah :)
+[04:04:49] *** Joins: mccr8 (mccr8@moz-m84lpe.ca.comcast.net)
+[04:05:38] <roc> ok
+[04:05:43] <roc> seems like this will work
+[04:05:45] <roc> thanks!!!
+[04:06:22] <roc> of course we'll be blowing the security guarantees of the sandbox wide open
+[04:06:28] <cjones> sounds like it should work, yeah
+[04:06:31] <cjones> any time :)
+[04:06:37] <cjones> yeah
+[04:06:43] <cjones> *shrug*
+[04:06:51] <roc> I don't think it's a good idea to run malicious code under rr with or without a sandbox
+[04:07:33] <cjones> agreed
+[04:07:45] <cjones> hardening rr would be about the last thing on my list
+[04:08:06] <cjones> given we’d need kernel help
+[04:08:17] <cjones> anyway
+[04:15:45] *** Quits: int3__ (int3_@moz-qj4r31.ca.comcast.net) (Connection closed)
+[04:16:06] *** Joins: int3_ (int3_@moz-qj4r31.ca.comcast.net)
+[04:20:08] *** Quits: int3_ (int3_@moz-qj4r31.ca.comcast.net) (Ping timeout: 121 seconds)
+[04:27:56] <khuey> roc: I think this is going to turn out to be busted clone handling
+[04:27:58] <khuey> inside rr
+[04:28:18] <khuey> the reason we're missing my instruction is that it's in the wrong process :P
+[04:28:34] <roc> argh
+[04:28:51] <khuey> yeah :(
+[04:28:55] <khuey> I feel pretty dumb now
+[04:29:26] <khuey> roc: in particular, what I think is happening is that we're looking at the clone flags after the syscall completes
+[04:29:36] <khuey> and on ARM the syscall result clobbers the first argument, which is hte flags
+[04:29:51] <khuey> so what we end up interpreting the flags as depends on the tid clone returns
+[04:29:55] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (Client exited)
+[04:30:01] <khuey> which explains the weird intermittent nature of this
+[04:30:13] <roc> oooh ouch
+[04:30:29] *** Quits: mccr8 (mccr8@moz-m84lpe.ca.comcast.net) (Quit: computer sleep)
+[04:47:00] *** Joins: ddamjano (Instantbird@moz-cagtuc.ehig.7h68.8388.2a02.IP)
+[05:01:05] *** Quits: ddamjano (Instantbird@moz-cagtuc.ehig.7h68.8388.2a02.IP) (Ping timeout: 121 seconds)
+[05:08:29] *** khuey is now known as khuey|away
+[05:16:25] *** Joins: int3_ (int3_@moz-qj4r31.ca.comcast.net)
+[05:20:28] *** Quits: int3_ (int3_@moz-qj4r31.ca.comcast.net) (Ping timeout: 121 seconds)
+[05:52:09] *** Joins: ddamjano (Instantbird@moz-cagtuc.ehig.7h68.8388.2a02.IP)
+[05:55:48] *** Quits: roc (chatzilla@moz-h8ll9b.dqqd.b0fh.0cb0.2001.IP) (Connection closed)
+[06:00:21] *** Quits: cjones (cjones@moz-ljujh0.ca.comcast.net) (Client exited)
+[06:19:30] *** Joins: int3_ (int3_@moz-qj4r31.ca.comcast.net)
+[06:20:40] *** Joins: mbx (textual@moz-fjua8t.ca.comcast.net)
+[06:23:33] *** Quits: int3_ (int3_@moz-qj4r31.ca.comcast.net) (Ping timeout: 121 seconds)
+[06:27:52] *** Joins: roc (chatzilla@moz-dq40ka.orcon.net.nz)
+[06:47:12] *** Joins: Dexter (Alessio@moz-lsijj5.retail.telecomitalia.it)
+[06:52:51] *** Quits: brendan (brendaneich@moz-d91.f56.30.207.IP) (Client exited)
+[06:58:16] *** Quits: mbx (textual@moz-fjua8t.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[07:05:15] *** Quits: reqshark (reqshark@moz-amtd83.cable.rcn.com) (Quit: peace out!)
+[07:05:45] *** Joins: till (till@moz-vhjvks.dyn.telefonica.de)
+[07:09:53] *** Joins: reqshark (reqshark@moz-amtd83.cable.rcn.com)
+[09:02:03] *** Joins: roc_ (chatzilla@moz-80r6kb.orcon.net.nz)
+[09:03:52] *** Quits: roc (chatzilla@moz-dq40ka.orcon.net.nz) (Ping timeout: 121 seconds)
+[09:03:55] *** roc_ is now known as roc
+[10:15:35] *** Joins: gds (user@moz-vt58bs.ic.ac.uk)
+[10:21:08] *** Quits: nrc (nrc@moz-4bhi2i.xtra.co.nz) (Ping timeout: 121 seconds)
+[10:52:57] *** Quits: pnkfelix (pnkfelix@moz-eljppb.fbx.proxad.net) (Quit: rcirc on GNU Emacs 24.3.92.1)
+[11:29:40] *** Joins: brendan (brendaneich@moz-d91.f56.30.207.IP)
+[11:39:22] *** Quits: brendan (brendaneich@moz-d91.f56.30.207.IP) (Client exited)
+[12:11:25] *** Quits: jschuster (schuster@moz-n100gq.ma.comcast.net) (*.net *.split)
+[12:11:25] *** Quits: yury (yury@moz-bchbuc.ok.cox.net) (*.net *.split)
+[12:11:25] *** Quits: reqshark (reqshark@moz-amtd83.cable.rcn.com) (*.net *.split)
+[12:11:25] *** Quits: jj2baile (jon@moz-e3f93l.csclub.uwaterloo.ca) (*.net *.split)
+[12:11:25] *** Quits: derf (derf@moz-797sd4.fios.verizon.net) (*.net *.split)
+[12:11:25] *** Quits: vstamour` (user@moz-03gv4a.ccs.neu.edu) (*.net *.split)
+[12:11:25] *** Quits: Luqman (laden@moz-qhp202.csclub.uwaterloo.ca) (*.net *.split)
+[12:11:25] *** Quits: mmun (mmun@moz-iar.moo.170.107.IP) (*.net *.split)
+[12:11:25] *** Quits: seth (seth@moz-gcen1e.sethfowler.org) (*.net *.split)
+[12:11:25] *** Quits: tdfischer (tdfischer@hackerbots.net) (*.net *.split)
+[12:11:26] *** Quits: copumpki_ (copumpkin@moz-regr09.dyn.optonline.net) (*.net *.split)
+[12:11:32] *** Joins: mmun (mmun@moz-iar.moo.170.107.IP)
+[12:11:32] *** Joins: seth (seth@moz-gcen1e.sethfowler.org)
+[12:11:32] *** Joins: jschuster (schuster@moz-n100gq.ma.comcast.net)
+[12:11:32] *** Joins: jj2baile (jon@moz-e3f93l.csclub.uwaterloo.ca)
+[12:11:32] *** Joins: copumpki_ (copumpkin@moz-regr09.dyn.optonline.net)
+[12:11:32] *** Joins: reqshark (reqshark@moz-amtd83.cable.rcn.com)
+[12:11:32] *** Joins: tdfischer (tdfischer@hackerbots.net)
+[12:11:32] *** Joins: yury (yury@moz-bchbuc.ok.cox.net)
+[12:11:32] *** Joins: derf (derf@moz-797sd4.fios.verizon.net)
+[12:11:32] *** Joins: vstamour` (user@moz-03gv4a.ccs.neu.edu)
+[12:11:32] *** Joins: Luqman (laden@moz-qhp202.csclub.uwaterloo.ca)
+[12:22:05] *** Quits: jschuster (schuster@moz-n100gq.ma.comcast.net) (*.net *.split)
+[12:22:05] *** Quits: yury (yury@moz-bchbuc.ok.cox.net) (*.net *.split)
+[12:22:05] *** Quits: reqshark (reqshark@moz-amtd83.cable.rcn.com) (*.net *.split)
+[12:22:05] *** Quits: jj2baile (jon@moz-e3f93l.csclub.uwaterloo.ca) (*.net *.split)
+[12:22:05] *** Quits: derf (derf@moz-797sd4.fios.verizon.net) (*.net *.split)
+[12:22:05] *** Quits: vstamour` (user@moz-03gv4a.ccs.neu.edu) (*.net *.split)
+[12:22:05] *** Quits: Luqman (laden@moz-qhp202.csclub.uwaterloo.ca) (*.net *.split)
+[12:22:05] *** Quits: mmun (mmun@moz-iar.moo.170.107.IP) (*.net *.split)
+[12:22:05] *** Quits: seth (seth@moz-gcen1e.sethfowler.org) (*.net *.split)
+[12:22:05] *** Quits: tdfischer (tdfischer@hackerbots.net) (*.net *.split)
+[12:22:05] *** Quits: copumpki_ (copumpkin@moz-regr09.dyn.optonline.net) (*.net *.split)
+[12:22:32] *** Joins: mmun (mmun@moz-iar.moo.170.107.IP)
+[12:22:32] *** Joins: seth (seth@moz-gcen1e.sethfowler.org)
+[12:22:32] *** Joins: jschuster (schuster@moz-n100gq.ma.comcast.net)
+[12:22:32] *** Joins: jj2baile (jon@moz-e3f93l.csclub.uwaterloo.ca)
+[12:22:32] *** Joins: copumpki_ (copumpkin@moz-regr09.dyn.optonline.net)
+[12:22:32] *** Joins: reqshark (reqshark@moz-amtd83.cable.rcn.com)
+[12:22:32] *** Joins: tdfischer (tdfischer@hackerbots.net)
+[12:22:32] *** Joins: yury (yury@moz-bchbuc.ok.cox.net)
+[12:22:32] *** Joins: derf (derf@moz-797sd4.fios.verizon.net)
+[12:22:32] *** Joins: vstamour` (user@moz-03gv4a.ccs.neu.edu)
+[12:22:32] *** Joins: Luqman (laden@moz-qhp202.csclub.uwaterloo.ca)
+[12:44:22] *** Joins: brendan (brendaneich@moz-d91.f56.30.207.IP)
+[12:55:20] *** Quits: brendan (brendaneich@moz-d91.f56.30.207.IP) (Client exited)
+[13:08:50] *** Joins: ehsan (ehsan@moz-9av.764.213.67.IP)
+[13:16:12] *** Joins: brendan (brendaneich@moz-d91.f56.30.207.IP)
+[13:24:22] *** Quits: brendan (brendaneich@moz-d91.f56.30.207.IP) (Client exited)
+[13:24:42] *** Joins: brendan (brendaneich@moz-d91.f56.30.207.IP)
+[13:25:17] *** Quits: brendan (brendaneich@moz-d91.f56.30.207.IP) (Client exited)
+[13:26:45] *** Quits: ddamjano (Instantbird@moz-cagtuc.ehig.7h68.8388.2a02.IP) (Ping timeout: 121 seconds)
+[13:31:46] *** Quits: till (till@moz-vhjvks.dyn.telefonica.de) (Ping timeout: 121 seconds)
+[13:32:29] *** Joins: till (till@moz-vhjvks.dyn.telefonica.de)
+[13:45:21] *** Joins: ddamjano (Instantbird@moz-cagtuc.ehig.7h68.8388.2a02.IP)
+[13:51:24] *** Joins: mchang (mchang@moz-i5m.05u.207.66.IP)
+[14:04:58] *** Quits: till (till@moz-vhjvks.dyn.telefonica.de) (Connection closed)
+[14:05:28] *** Joins: till (till@moz-vhjvks.dyn.telefonica.de)
+[14:17:23] *** Quits: reqshark (reqshark@moz-amtd83.cable.rcn.com) (Quit: Be back later ...)
+[14:21:55] *** Joins: mccr8 (mccr8@moz-m84lpe.ca.comcast.net)
+[14:26:27] *** Joins: jdm (jdm@moz-ilbt2e.cable.teksavvy.com)
+[14:29:32] *** Quits: bjz (bjz@moz-puppgq.tpgi.com.au) (Quit: Textual IRC Client: www.textualapp.com)
+[14:36:54] *** Joins: cjones (cjones@moz-ljujh0.ca.comcast.net)
+[14:38:14] *** Joins: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP)
+[14:39:56] *** Quits: cjones (cjones@moz-ljujh0.ca.comcast.net) (Client exited)
+[14:40:44] *** Quits: ehsan (ehsan@moz-9av.764.213.67.IP) (A TLS packet with unexpected length was received.)
+[14:53:37] *** Joins: brendan (brendaneich@moz-nu4.0ro.46.71.IP)
+[14:54:48] *** Quits: roc (chatzilla@moz-80r6kb.orcon.net.nz) (Connection closed)
+[15:02:54] *** Joins: ehsan (ehsan@moz-62foij.ckpj.s0pt.0450.2001.IP)
+[15:05:01] *** Joins: jweathersby (Adium@moz-trimim.ip.windstream.net)
+[15:14:50] *** Joins: tadh (quassel@moz-cvbs0t.bcvloh.sbcglobal.net)
+[15:30:14] *** Quits: gds (user@moz-vt58bs.ic.ac.uk) (Connection closed)
+[15:51:34] *** Quits: mccr8 (mccr8@moz-m84lpe.ca.comcast.net) (Quit: computer sleep)
+[15:53:49] *** Quits: brendan (brendaneich@moz-nu4.0ro.46.71.IP) (Client exited)
+[15:57:30] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[15:57:30] *** ChanServ sets mode: +o brson
+[16:03:41] *** Quits: Dexter (Alessio@moz-lsijj5.retail.telecomitalia.it) (Quit: Leaving)
+[16:06:36] *** Quits: tadh (quassel@moz-cvbs0t.bcvloh.sbcglobal.net) (Connection closed)
+[16:14:17] *** Joins: Dexter (Alessio@moz-lsijj5.retail.telecomitalia.it)
+[16:15:40] *** Joins: brendan (brendaneich@moz-behogl.sub-70-209-56.myvzw.com)
+[16:15:43] *** Joins: pcwalton (pcwalton@moz-nh2.o1i.216.216.IP)
+[16:15:43] *** ChanServ sets mode: +o pcwalton
+[16:18:07] *** Quits: azakai|2 (alon@moz-l3ofdg.sntcca.sbcglobal.net) (Quit: Ex-Chat)
+[16:19:39] *** Joins: mbx (textual@moz-fjua8t.ca.comcast.net)
+[16:21:43] *** Quits: brendan (brendaneich@moz-behogl.sub-70-209-56.myvzw.com) (Ping timeout: 121 seconds)
+[16:25:45] *** Joins: brendan (brendaneich@moz-nu4.0ro.46.71.IP)
+[16:33:45] *** Joins: tadh (quassel@moz-pg51s5.CWRU.Edu)
+[16:41:32] *** Joins: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com)
+[16:42:33] *** Quits: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP) (Quit: rcirc on GNU Emacs 24.3.92.1)
+[16:46:07] *** Quits: brendan (brendaneich@moz-nu4.0ro.46.71.IP) (Client exited)
+[16:50:59] *** Joins: azakai (alon@moz-jept20.mh2d.1ibb.0101.2620.IP)
+[17:00:01] *** Quits: pcwalton (pcwalton@moz-nh2.o1i.216.216.IP) (Client exited)
+[17:01:01] *** Joins: cjones (cjones@moz-ljujh0.ca.comcast.net)
+[17:04:29] *** Quits: till (till@moz-vhjvks.dyn.telefonica.de) (Quit: out)
+[17:14:43] *** Joins: jdm_ (jdm@moz-ilbt2e.cable.teksavvy.com)
+[17:14:47] *** Quits: jdm (jdm@moz-ilbt2e.cable.teksavvy.com) (Connection closed)
+[17:20:03] *** Quits: mbx (textual@moz-fjua8t.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[17:34:21] *** Joins: brendan (brendaneich@moz-nu4.0ro.46.71.IP)
+[17:38:47] *** Quits: brendan (brendaneich@moz-nu4.0ro.46.71.IP) (Ping timeout: 121 seconds)
+[17:47:36] *** Joins: brendan (brendaneich@moz-behogl.sub-70-209-56.myvzw.com)
+[17:51:22] *** Quits: brendan (brendaneich@moz-behogl.sub-70-209-56.myvzw.com) (Connection closed)
+[17:52:55] *** Joins: brendan (brendaneich@moz-nu4.0ro.46.71.IP)
+[17:58:32] *** Quits: brendan (brendaneich@moz-nu4.0ro.46.71.IP) (Client exited)
+[18:01:14] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[18:01:14] *** ChanServ sets mode: +o pcwalton
+[18:02:26] *** Joins: mbx (textual@moz-l8ebtf.sfo1.mozilla.com)
+[18:06:31] *** khuey|away is now known as khuey
+[18:31:03] *** ehsan is now known as ehsan|msg
+[18:31:06] *** ehsan|msg is now known as ehsan|mtg
+[18:42:02] *** Quits: cjones (cjones@moz-ljujh0.ca.comcast.net) (Client exited)
+[18:54:31] *** khuey is now known as khuey|away
+[18:57:41] *** khuey|away is now known as khuey
+[18:59:38] <pcwalton> you know, if someone wants to write a dynamic analysis for JS, "where the heck did this NaN/undefined value come from" would be really helpful
+[19:00:15] <shu> pcwalton: i think jalangi has such a NaN detection thing
+[19:00:21] <shu> pcwalton: but maybe it doesn't tell you where it comes from
+[19:06:07] *** Joins: nrc (nrc@moz-4bhi2i.xtra.co.nz)
+[19:17:14] *** Quits: ddamjano (Instantbird@moz-cagtuc.ehig.7h68.8388.2a02.IP) (Ping timeout: 121 seconds)
+[19:22:25] *** Joins: brendan (brendaneich@moz-nu4.0ro.46.71.IP)
+[19:40:41] *** ehsan|mtg is now known as ehsan_
+[19:42:55] *** Joins: system64 (uid17738@moz-7c4aav.uxbridge.irccloud.com)
+[20:01:05] <jack> pcwalton, larsberg, azita, dherman: meeting time
+[20:01:14] <pcwalton> jack: yup, coming now
+[20:01:15] <larsberg> already tehre :-)
+[20:02:11] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[20:03:01] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[20:03:01] *** ChanServ sets mode: +o pcwalton
+[20:09:31] *** Joins: cjones (cjones@moz-ljujh0.ca.comcast.net)
+[20:17:05] *** Quits: brendan (brendaneich@moz-nu4.0ro.46.71.IP) (Client exited)
+[20:25:31] *** Joins: ddamjano (Instantbird@moz-cagtuc.ehig.7h68.8388.2a02.IP)
+[20:35:43] *** Joins: brendan (brendaneich@moz-d91.f56.30.207.IP)
+[20:41:46] *** Quits: brendan (brendaneich@moz-d91.f56.30.207.IP) (Ping timeout: 121 seconds)
+[20:44:01] *** Quits: jdm_ (jdm@moz-ilbt2e.cable.teksavvy.com) (Quit: )
+[20:45:52] *** Joins: brendan (brendaneich@moz-d91.f56.30.207.IP)
+[20:46:37] *** Quits: brendan (brendaneich@moz-d91.f56.30.207.IP) (Client exited)
+[20:47:21] *** Quits: Dexter (Alessio@moz-lsijj5.retail.telecomitalia.it) (Quit: Leaving)
+[20:48:55] *** Quits: tadh (quassel@moz-pg51s5.CWRU.Edu) (Connection closed)
+[20:53:05] *** Joins: brendan (brendaneich@moz-d91.f56.30.207.IP)
+[20:58:53] *** Joins: roc (chatzilla@moz-80r6kb.orcon.net.nz)
+[21:03:03] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[21:09:33] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[21:09:33] *** ChanServ sets mode: +o pcwalton
+[21:11:23] *** Quits: roc (chatzilla@moz-80r6kb.orcon.net.nz) (Connection closed)
+[21:14:13] *** Joins: bjz (bjz@moz-puppgq.tpgi.com.au)
+[21:31:09] *** Quits: mchang (mchang@moz-i5m.05u.207.66.IP) (Client exited)
+[21:34:23] *** Joins: mchang (mchang@moz-i5m.05u.207.66.IP)
+[21:35:31] *** Joins: jdm (jdm@moz-mu9.06r.98.75.IP)
+[21:41:02] *** Quits: brendan (brendaneich@moz-d91.f56.30.207.IP) (Client exited)
+[21:55:02] *** Joins: roc (chatzilla@moz-80r6kb.orcon.net.nz)
+[22:01:11] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[22:06:20] *** Quits: ddamjano (Instantbird@moz-cagtuc.ehig.7h68.8388.2a02.IP) (Ping timeout: 121 seconds)
+[22:14:24] *** Joins: reqshark (reqshark@moz-amtd83.cable.rcn.com)
+[22:17:24] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[22:17:24] *** ChanServ sets mode: +o pcwalton
+[22:23:26] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Ping timeout: 121 seconds)
+[22:27:22] *** Quits: cjones (cjones@moz-ljujh0.ca.comcast.net) (Client exited)
+[22:31:37] *** Quits: mchang (mchang@moz-i5m.05u.207.66.IP) (Client exited)
+[22:33:17] *** Joins: ehsan__ (ehsan@moz-62foij.ckpj.s0pt.0450.2001.IP)
+[22:33:33] *** Quits: ehsan_ (ehsan@moz-62foij.ckpj.s0pt.0450.2001.IP) (Connection closed)
+[22:37:37] *** Quits: reqshark (reqshark@moz-amtd83.cable.rcn.com) (Quit: peace out!)
+[22:39:52] *** Joins: cjones (cjones@moz-ljujh0.ca.comcast.net)
+[22:45:17] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[22:45:17] *** ChanServ sets mode: +o pcwalton
+[22:53:30] *** Joins: c74d3 (c74d3a4ebb6@moz-0ersgu.oc.cox.net)
+[22:54:00] *** Quits: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net) (Ping timeout: 121 seconds)
+[22:57:23] *** c74d3 is now known as c74d
+[23:00:56] *** Quits: ehsan__ (ehsan@moz-62foij.ckpj.s0pt.0450.2001.IP) (A TLS packet with unexpected length was received.)
+[23:03:38] *** Quits: roc (chatzilla@moz-80r6kb.orcon.net.nz) (Connection closed)
+[23:17:10] *** Quits: jdm (jdm@moz-mu9.06r.98.75.IP) (Quit: )
+[23:32:52] *** Joins: tadh (quassel@moz-pg51s5.CWRU.Edu)
+[23:36:06] *** Quits: derf (derf@moz-797sd4.fios.verizon.net) (Ping timeout: 121 seconds)
+[23:38:09] *** Joins: derf (derf@moz-797sd4.fios.verizon.net)
+[23:39:10] *** Joins: ehsan_ (ehsan@moz-i5m.05u.207.66.IP)
+[23:49:12] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[23:57:10] *** Quits: ehsan_ (ehsan@moz-i5m.05u.207.66.IP) (A TLS packet with unexpected length was received.)
+[23:59:55] *** terrence is now known as terrence-bbiab

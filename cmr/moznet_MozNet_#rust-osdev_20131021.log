@@ -1,0 +1,796 @@
+[00:00:38] *** Quits: brson (brson@981AA104.E81F12CD.76F66111.IP) (Ping timeout)
+[00:01:09] <pcmattman> :(
+[00:01:46] <pcmattman> that is a pain.
+[00:01:52] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[00:02:06] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[00:02:14] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[00:34:27] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[00:36:10] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[00:39:54] *** Joins: brson (brson@981AA104.E81F12CD.76F66111.IP)
+[01:00:59] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[01:11:03] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[01:40:05] <devbug> strcat: hmm?
+[01:41:07] <devbug> I wouldn't use _aligned_malloc, _aligned_realloc, and _aligned_free.  It's really not worth it.
+[01:41:23] <devbug> Not to mention is broken on MinGW (esp. when you start using w64)
+[01:41:38] <strcat> devbug: so just do the calculation manually?
+[01:41:44] <devbug> strcat: Yep.
+[01:42:04] <devbug> You're going to waste a lil' memory, but not much.
+[01:42:34] <strcat> there's no aligned_realloc in C11/POSIX anyway ;p
+[01:43:19] <devbug> strcat: Is this for rust-core?
+[01:43:37] <devbug> https://github.com/thestinger/rust-core/issues/5
+[01:43:47] <strcat> devbug: yeah
+[01:43:51] <devbug> Ah.
+[01:44:06] <devbug> If I can figure out how to compile Rust on Windows I can give it shot
+[01:44:19] <strcat> need to do the alignment calculation for an aligned_realloc anyway
+[01:44:34] <devbug> strcat: just make sure you can recover the original ptr
+[01:45:19] <strcat> ah right, the tricky part...
+[01:45:23] <devbug> I've seen some implementations shove magic in the unaligned space
+[01:45:43] <devbug> not really
+[01:45:45] <devbug> but you have no guarantees
+[01:46:11] <strcat> well the issue is that it wouldn't be a drop-in replacement for aligned_alloc
+[01:46:16] <strcat> since you'd need a special free
+[01:46:32] <devbug> ah
+[01:46:39] <devbug> strcat: well
+[01:46:50] <devbug> It's a dirty hack, but it could work...
+[01:47:15] <devbug> Figure out the default alignment of malloc() on your platform, then use that to determine if you should free() or aligned_free()
+[01:47:38] <strcat> devbug: adds overhead to normal ones though
+[01:47:44] <strcat> probably just want a separate aligned allocator
+[01:47:45] <devbug> strcat: hmm? no
+[01:47:55] <devbug> It adds a little overhead to allocation, but doesn't tag.
+[01:48:29] <strcat> devbug: by overhead I mean it will probably make LLVM's dead store elimination not work
+[01:48:58] <strcat> it has special knowledge for symbols matching C stdlib function names (rust mangles by default, so you wouldn't hit it as a bug)
+[01:49:00] <devbug> strcat: it's the price you pay, I guess.
+[01:49:25] <devbug> strcat: can you hint?
+[01:49:33] <strcat> it doesn't seem very useful to bother offering a free working for aligned allocs too
+[01:50:09] <strcat> devbug: sadly their libcall stuff is all hardcoded against specific symbols, and we'd need to patch LLVM to make it smarter
+[01:50:15] <devbug> strcat: you underestimate the stupidity of people.
+[01:50:30] <devbug> strcat: or patch it support symbols dynamically?
+[01:50:42] <strcat> yeah, it could use attributes for malloc/free
+[01:50:42] <devbug> That'd be mighty useful for other things, I assume.
+[01:50:49] <strcat> clang handles them
+[01:51:12] <strcat> but all it does is mark a malloc function as having a noalias return - it doesn't actually get marked as malloc-like for dead-store elimination (and soon, escape analysis)
+[01:52:32] <devbug> strcat: sounds like some refactoring is in order
+[01:52:58] <strcat> and convincing upstream that adding dozens of attributes for these kinds of things is useful ;p
+[01:53:14] <devbug> ah, yes, politics :S
+[01:53:15] <strcat> they *really* love special casing C/C++ built-ins
+[01:53:35] <strcat> for example, they mark the 'operator new' return value as non-null
+[01:53:46] <strcat> because someone felt like optimizing std::vector
+[01:53:56] <devbug> ...
+[01:53:57] <strcat> but in general, there's no way to mark a ptr as non-null
+[01:54:19] <devbug> strcat: that's just stupid
+[01:54:26] <strcat> you can probably output a branch on the ptr going to unreachable if it's null and hope that the optimization pass will figure out what you mean
+[01:54:46] <strcat> but it's possible it will just kill the branch too early ;\, I haven't tried that
+[01:55:07] <devbug> strcat: that's dirty
+[01:55:34] <devbug> as opposed to what? __attribute__((non_null))?
+[01:56:17] <strcat> devbug: they have parameter/function attributes but elsewhere I think metadata is needed (at an IR level)
+[01:56:39] <devbug> strcat: Is there a good reason for this?
+[01:56:56] <strcat> the IR is supposed to be incredibly simple
+[01:57:02] * devbug doesn't know LLVM intimately enough
+[01:57:06] <strcat> luckily it's not a stable format, it can be fixed
+[01:57:14] <strcat> they change it all the time
+[01:57:22] <strcat> devbug: you lose a lot of information going from a high-level language like rust to IR
+[01:57:32] <strcat> and the optimization passes have to recover some of it
+[01:58:02] <strcat> it's primarily designed as a backend for clang
+[01:58:06] <devbug> strcat: yes, but why the two methods of specifying it?
+[01:58:24] <strcat> devbug: well, attributes are actually standard
+[01:58:37] <strcat> you can attach arbitrary metadata to things, but then you also need to write and dynamically load a pass
+[01:58:39] * strcat shrugs
+[01:59:37] <strcat> devbug: http://llvm.org/docs/LangRef.html#parameter-attributes and http://llvm.org/docs/LangRef.html#function-attributes
+[02:00:03] <strcat> parameter attributes are a PITA in the frontend
+[02:00:14] <strcat> some of them change the ABI, but LLVM still considers the function to have the same type
+[02:00:36] <strcat> so for example.... you have to make sure to also set them on call instructions, or function ptrs will go wrong
+[02:00:38] <devbug> Why?
+[02:00:47] <devbug> Why the hell would you want that?!
+[02:01:36] *** Joins: strcat1 (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[02:01:54] <strcat1> devbug: dunno why they do stuff that way
+[02:02:16] <devbug> strcat: it has to stem from some old decision, I think.
+[02:02:21] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[02:02:27] <devbug> The requirements change, and bam, cruft.
+[02:02:32] <strcat1> devbug: they change stuff all the time, first-class aggregates are pretty new
+[02:02:33] *** strcat1 is now known as strcat
+[02:02:40] <strcat> they used to have super ugly multiple return values
+[02:03:00] <devbug> strcat: how could that be ugly?
+[02:03:15] <strcat> devbug: because they didn't actually have 'structs' at an IR level
+[02:03:33] <strcat> they just added a hack for the frontend to generate a by-value return
+[02:03:58] <strcat> that's gone now.... but the frontend is still almost entirely responsible for the struct ABI
+[02:04:09] <devbug> *sigh*
+[02:04:21] <devbug> strcat: How many of the Clang devs are LLVM devs, and vice versa?
+[02:04:25] <strcat> for example, it's rustc's responsibility to know how to pass/return structs for extern "C"
+[02:04:45] <strcat> devbug: I would guess that 90% of the people paid to work on it (apple, google) care about clang
+[02:05:04] <devbug> strcat: I think that's the issue here.
+[02:05:22] <devbug> The projects are too tightly coupled. For better, and for worse.
+[02:05:37] <strcat> devbug: some problems are also from LLVM being a generic compiler, and clang being the C compiler
+[02:05:43] <devbug> strcat: So what happens if you want to add another ABI? You have to change the frontend too?
+[02:05:50] <strcat> devbug: yep
+[02:05:55] <strcat> devbug: rustc handles each ABI
+[02:06:03] <strcat> it's also not entirely correct
+[02:06:08] <strcat> maybe we could leverage libclang to do it somehow
+[02:06:14] <devbug> https://www.youtube.com/watch?v=umDr0mPuyQc
+[02:06:36] <strcat> devbug: with a gcc frontend, you don't have to worry about this stuff (but ofc, it's gcc, so it's faaaaar worse)
+[02:07:02] <strcat> devbug: for example, on x86_64, passing C complex numbers has ABI requirements
+[02:07:07] <devbug> strcat: are there relative issues on Clang's and/or LLVM's tracker?
+[02:07:11] <strcat> complex numbers don't exist in LLVM, they are a frontend feature
+[02:07:17] <strcat> devbug: probably ;p
+[02:07:42] <devbug> strcat: they need to add a bounty to them.
+[02:07:59] <devbug> I have a feeling there's a lot more work involved than just moving some code around :S
+[02:08:12] <strcat> devbug: just teaching it to lower by-value aggregate parameters/returns sanely on each important target would be *great*
+[02:08:30] <strcat> so at least we could just use aggregates for rust's native ABI...
+[02:09:13] <devbug> Shoot me if I'm dumb, but aggregate parameters?
+[02:09:26] <strcat> devbug: so, LLVM has an 'aggregate' type now, that's basically a C struct
+[02:09:36] <devbug> strcat: Ah, okay.
+[02:10:03] <strcat> but... clang lowers any struct return/pass for a value larger than 2 words to a pointer in the frontend (at least on x86, it's probably different on other targets) and deals with some ABI issues itself
+[02:10:25] <strcat> so the targets are basically protected from the need to ever *actually* handle large aggregates efficiently
+[02:10:37] <strcat> and rust ends up needing to do this crap too
+[02:10:37] <devbug> strcat: Which makes sense
+[02:10:44] <devbug> but clang shouldn't be handling that
+[02:11:21] <strcat> yeah, it leads to efficiency issues too
+[02:12:03] <strcat> just from all the information loss.
+[02:12:04] <devbug> Really, though, only two words?
+[02:12:26] <devbug> Ya'd think the cutoff would be four words.
+[02:12:47] <strcat> devbug: specified by the ABI afaik
+[02:13:13] <strcat> devbug: fwiw, clang also tags the by-ptr parameter with the 'byval' attribute >.<
+[02:13:15] <strcat> ugly as hell
+[02:13:21] <devbug> Wait, what?!
+[02:13:35] <strcat> devbug: so, clang seriously turns large by-value into a by-pointer marked byval.
+[02:13:42] <strcat> devbug: remember, LLVM didn't used to have aggregates
+[02:13:44] <strcat> :P
+[02:13:58] <strcat> anyway brb, my dog needs to go out
+[02:14:06] <devbug> strcat: jesus.
+[02:16:14] <devbug> strcat: LLVM should really be inferring this from the target ABI. Changing that though... it would touch 90% of the code base, most likely.
+[02:18:27] <devbug> Why do I need to specify movsx w/ zeroext? It makes no sense...
+[02:20:05] *** Quits: kimundi (kimundi@moz-F488EB60.dip0.t-ipconnect.de) (Ping timeout)
+[02:22:25] *** Quits: brson (brson@981AA104.E81F12CD.76F66111.IP) (Quit: leaving)
+[02:23:30] *** Joins: kimundi (kimundi@moz-4D74261A.dip0.t-ipconnect.de)
+[02:27:55] *** kimundi is now known as zz_kimundi
+[02:34:48] *** zz_kimundi is now known as kimundi
+[03:02:01] *** Joins: strcat1 (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[03:02:18] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[03:28:10] *** Joins: eddyb (eddy@3C6E2DBB.FFB4E060.A5830293.IP)
+[04:01:46] *** Quits: strcat1 (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[04:02:24] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[04:02:33] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[04:10:41] *** Quits: eddyb9 (eddy@3C6E2DBB.FFB4E060.A5830293.IP) (Ping timeout)
+[05:01:58] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[05:02:13] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[05:06:45] *** Joins: eddyb9 (eddy@C1AECB14.C75CDC83.4A6B528C.IP)
+[05:07:06] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[05:09:56] <eddyb9> acrichto: hmm, only weak (used) and dllimport are irreplaceble, from what I can tell. dllexport can be used instead of external when building a DLL (LLVM actually treats it as external outside a DLL or even windows)
+[05:11:00] <eddyb9> acrichto: and pcmattman's patch doesn't have that much of a downside as I've initially thought (because you want to keep the full body of functions you're exposing to C)
+[05:12:39] <eddyb9> and that external patch is only required to implement the mem* functions (used by LLVM intrinsics) in Rust
+[05:13:06] <eddyb9> (everything else can be moved inside Rust)
+[05:14:05] <eddyb9> err, forgot to expand on weak: it's used in one place in std, it shows up in my PR
+[05:14:40] *** Quits: canhtak (jeremy@moz-12EBB66A.wl.t.ulaval.ca) (Quit: canhtak)
+[05:14:41] <eddyb9> pcmattman: what do you think about a two pass compilation (rust to bytecode and bytecode to native)?
+[05:15:57] <eddyb9> relocation-model=static results in slightly more compact code, and you don't get the morestack prelude unless you ask for it
+[05:16:39] <pcmattman> it's doable
+[05:17:18] <eddyb9> the question is if you want it, it's just a tiny tweak in the Makefile :P
+[05:19:04] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[05:42:05] <acrichto> eddyb9: I'm not a big fan of our current "weak linkage" model, I feel that we can do much much better
+[05:42:13] <acrichto> eddyb9: but do you know what dllimport and dllexport do?
+[05:43:31] <eddyb9> acrichto: there's some indirection tables that are used when an import is a dllimport
+[05:44:00] <eddyb9> acrichto: dllexport is external + export in the indirection table, AFAik
+[05:44:09] <cmr> Usually, sometimes.
+[05:44:13] <pcmattman> isn't dllimport thunk-less symbol import?
+[05:44:24] <cmr> iirc there are cases where dllimport isn't used/doesn't matter
+[05:44:55] * strcat finds https://github.com/thestinger/rust-core/blob/master/core/mem.rs much prettier than what libstd does ;p
+[05:44:55] <strcat> not going to have an intrinsics module
+[05:45:11] <strcat> I still want #[safe] for extern things
+[05:45:16] <acrichto> but why do we need dllexport? Our libraries currently work, so what's the use case?
+[05:45:28] <cmr> but windows, and I have no idea of the details
+[05:45:45] <strcat> we really, really need static linking and LTO support for crates
+[05:46:21] <cmr> acrichto: I thought this whole thing stemmed from "our libraries don't actually work"
+[05:46:50] <acrichto> we seem to have been compiling and testing just fine on windows up to now so far
+[05:48:23] <cmr> https://github.com/mozilla/rust/issues/7196
+[05:48:58] <acrichto> cmr: that doesn't explain why though
+[05:49:05] <eddyb9> strcat: would Either<&'static T, ~mut T> work?
+[05:49:23] <strcat> eddyb9: well ~T
+[05:49:37] <eddyb9> riight
+[05:50:03] <cmr> acrichto: quite. I have no idea about that either.
+[05:50:44] <pcmattman> it seems like the original example in #7196 didn't have the module visible outside the crate anyway, hence the lack of exports
+[05:55:56] <pcmattman> (how much of that does ld/lld/$linker do when you tell it to link against libraries?)
+[06:01:41] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[06:01:52] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[06:03:21] <eddyb9> strcat: wait, exchange_malloc doesn't get alignment? does rust align after allocating?
+[06:04:43] <eddyb9> SlamAllocator generally has uint-sized alignment
+[06:05:41] <eddyb9> I actually don't think it can have any other alignment without overallocating
+[06:06:36] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[06:06:38] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[06:07:04] <eddyb9> i * PAGE_SIZE + j * pow2 * sizeof(uint)
+[06:07:48] <eddyb9> I should use wolframalpha to find out :P
+[06:10:11] <eddyb9> well, the minimal pow2 there is sizeof(uint)*2, those bits don't touch the lower sizeof(uint)
+[06:13:20] <eddyb9> without any owned allocation overhead, a ~f64 is 16 bytes on x86_32, and it can be aligned to a 8 bytes boundary, in that space
+[06:28:17] <eddyb9> oh, I've almost forgotten about my interest in genetic algorithms and some other optimization heuristic fancy-worded stuff
+[06:28:58] <eddyb9> nah I'm not going to evolve an allocator
+[06:29:07] <cmr> heh
+[07:02:07] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[07:02:19] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[07:06:50] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[07:14:15] <dbaupp> eddyb9: fwiw, https://github.com/eddyb/rustic/blob/slam/src/mem/slam.rs#L204-L211 could create a `match lg2 { 1 => .., 2 => .., ...., _ => .. }`, but I assume that LLVM optimises them the same anyway
+[07:15:30] <dbaupp> eddyb9: also, that macro will be broken when they are hygienic with respect to function arguments (that's easily fixed by passing lg2 in as an argument to the macro, or defining it in the body of cache_alloc)
+[07:17:18] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[07:21:30] <eddyb9> dbaupp: I mentioned in #rust yesterday, can't do that
+[07:21:49] <eddyb9> dbaupp: it tries to parse the match cases as expressions
+[07:22:02] <dbaupp> eddyb9: weird
+[07:22:05] * dbaupp tries
+[07:22:10] <eddyb9> (before the entire macro is expanded)
+[07:22:23] <Leo`> mhhh... this is quite annoying
+[07:22:32] <Leo`> i'm trying to fix this issue https://github.com/mozilla/rust/issues/9882
+[07:23:20] <Leo`> it fails to build at stage1 because libstd uses asm!
+[07:23:29] <Leo`> ... but... if I add a feature(asm) in libstd...
+[07:23:34] <cmr> Heh
+[07:23:44] <Leo`> it fails to build at stage0 because it's an unknown feature flag :|
+[07:23:48] <cmr> You'll need to make it allow feature(asm),snapshot, then implement the actual gating.
+[07:23:48] <eddyb9> Leo`: bootstraping
+[07:23:58] <dbaupp> eddyb9: oh, yes. you're using $i in a pattern and an expression context, so it can't work :(
+[07:24:00] *** kimundi is now known as zz_kimundi
+[07:24:16] <Leo`> cmr: yeah
+[07:24:17] <eddyb9> Leo`: use a cfg inside rustc to have the new behavior only for later stages
+[07:24:18] <dbaupp> Leo`: you can implement it but have it on Allow by default
+[07:24:31] <eddyb9> guys, I've seen this done right :P
+[07:24:33] <dbaupp> and then wait for a snap
+[07:24:41] <Leo`> okay
+[07:24:44] <Leo`> this is a good idea
+[07:24:51] <cmr> eddyb9: you can't have cfg's on the attribute.
+[07:24:52] <eddyb9> something like cfg(not(stage0)) inside libsyntax or librustc
+[07:25:04] <cmr> (the #[feature(asm)])
+[07:25:21] <eddyb9> cmr: wait, hmm
+[07:25:28] <cmr> Allow by default is a good idea.
+[07:25:30] <eddyb9> I meant cfg on the implementation
+[07:25:40] <cmr> eddyb9: that's not where the problem is though
+[07:25:53] <Leo`> yo dawg, I heard you liked attributes, so I put on attribute on attribute so you can add new attributes
+[07:26:00] <Leo`> an*
+[07:26:16] <dbaupp> don't need a cfg on the implementation
+[07:26:20] <eddyb9> cmr: sorry, I got confused
+[07:26:31] <cmr> np :)
+[07:28:28] <Leo`> If I put the featrue as "Accepted", is it sufficient ?
+[07:28:32] <dbaupp> rusti: macro_rules! foo ( (internal $lg2:expr, $( $i:pat => $j:expr ), * ) => { match $lg2 { $( $i => { $j } )* _ => fail!() } }; ($lg2:expr, $($t:tt),*) => { foo!(internal $lg2, $( $t => $t ),*) } ) foo!(10, 1, 2, 3)
+[07:28:33] -rusti- task '<unnamed>' failed at 'explicit failure', <anon>:9
+[07:28:33] -rusti- application terminated with error code 101
+[07:28:37] <dbaupp> rusti: macro_rules! foo ( (internal $lg2:expr, $( $i:pat => $j:expr ), * ) => { match $lg2 { $( $i => { $j } )* _ => fail!() } }; ($lg2:expr, $($t:tt),*) => { foo!(internal $lg2, $( $t => $t ),*) } ) foo!(1, 1, 2, 3)
+[07:28:38] -rusti- 1
+[07:28:45] <dbaupp> eddyb9: ^ generating a match
+[07:28:54] <dbaupp> (it's pretty hacky :P )
+[07:29:06] <dbaupp> Leo`: it should be
+[07:29:47] <dbaupp> Leo`: or, you may have to put an `if false { ... }` around the part that actually does the checking
+[07:30:39] <dbaupp> hmm... the asm!() checking will be actually doing a string match on 'asm', won't it.... since it runs before expansion so ExprInlineAsm doesn't exist yet. That's pretty ugly. :(
+[07:32:01] <Leo`> yep dbaupp 
+[07:32:18] <Leo`> and it needs code to do the checking at 2 places
+[07:32:22] <eddyb9> dbaupp: doesn't if/else chaining get optimized to a switch?
+[07:32:25] <Leo`> to catch it both in item position and in expr position
+[07:33:20] <eddyb9> funtimes
+[07:33:34] <dbaupp> eddyb9: I assume so
+[07:33:52] <dbaupp> rusti: mod foo { asm!() }
+[07:33:53] -rusti- pastebinned 6 lines of output: http://ix.io/8yZ
+[07:34:03] <dbaupp> rusti: mod foo { asm!("") }
+[07:34:05] -rusti- pastebinned 6 lines of output: http://ix.io/8Fc
+[07:34:21] <Leo`> mhhhh
+[07:34:24] <Leo`> ><
+[07:34:40] <Leo`> okay
+[07:35:20] <dbaupp> Leo`: it might be worth adding a visit_mac to the visitor and just using that
+[07:35:22] <eddyb9> can we make cfg kill "mod foo;" before it parses foo.rs (but maybe after it checks the file is there)?
+[07:35:59] <Leo`> well it looks like putting the feature as Accepted doesn't work
+[07:36:10] <Leo`> I'll have to comment to code that do the checking or something like that
+[07:36:54] <dbaupp> just stick an if false { ... } around place that generates an error, so that it still gets type checked
+[07:37:18] <dbaupp> and, while you're at it, change the .span_err of the "unknown feature" to .span_warn, so this is easier in futuer
+[07:37:21] <dbaupp> *future
+[07:39:34] <Leo`> I have no idea how ti add the visit_mac thing
+[07:40:09] <Leo`> in walk_expr and walk_item maybe ?
+[07:40:18] <dbaupp> there's walk_mac already
+[07:40:24] <dbaupp> it's just empty
+[07:41:02] <Leo`> yeah
+[07:41:15] <dbaupp> (you don't *need* to add walk_mac, it just makes it slightly more convenient if someone else needs to do something similar later.)
+[07:41:52] <Leo`> there's already a check like that for macro_rules!
+[07:42:21] <Leo`> so walk_expr should call visit_mac when the expr is a macro ?
+[07:42:37] <Leo`> or should it be walk_mac that calls visit_mac ?
+[07:43:22] <dbaupp> yeah
+[07:43:44] <Leo`> yeah for which one ?
+[07:43:46] <Leo`> :p
+[07:43:59] *** zz_kimundi is now known as kimundi
+[07:45:23] <Leo`> If I look at the behaviour for the other types of ast
+[07:45:29] <Leo`> I think it would be the first one 
+[07:45:49] <Leo`> walk_expr calls visit_mac, and the default implementation of visit_mac does nothing
+[07:45:52] <Leo`> euh
+[07:45:54] <Leo`> no
+[07:46:00] <Leo`> the default implementation of visit_mac calls walk_mac
+[07:46:38] <Leo`> but it hasn't much importance, visit_mac should be terminal at this stage
+[07:49:36] *** Quits: devbug (quassel@23AC5F12.9D950176.3655BBF5.IP) (Connection reset by peer)
+[07:51:54] <dbaupp> yeah, I guess walk_mac should be empty, visit_mac should call walk_mac, and all current uses of walk_mac be replaced by calls to visitor.walk_mac
+[07:51:58] <dbaupp> *.visit_mac
+[07:52:20] <dbaupp> (based on the structure of the other methods.)
+[07:53:53] <dbaupp> Leo`: ^
+[07:54:16] <Leo`> okay
+[08:01:23] <Leo`> can the let do deconstruction on pattern like in Caml ?
+[08:01:36] <Leo`> like let someEnum(a, b, c) = foo 
+[08:01:43] <Leo`> to bind a b c to what's inside foo
+[08:01:50] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[08:01:50] *** Joins: strcat1 (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[08:02:04] <dbaupp> yes
+[08:02:16] <dbaupp> although, if the enum has more than one variant you need to use match
+[08:02:20] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[08:02:25] <Leo`> yep, but in this case it has a single variant
+[08:02:30] <Leo`> the previous code used a match
+[08:02:34] <dbaupp> yup
+[08:02:34] <Leo`> this is quite ugly
+[08:02:40] <dbaupp> I believe let should work
+[08:02:54] <Leo`> also, the variables a b c should be declared before ?
+[08:03:03] <dbaupp> nope
+[08:03:13] <dbaupp> a pattern binding is sufficient to declare variables
+[08:03:41] <Leo`> cool
+[08:03:48] <Leo`> (Rust <3)
+[08:03:59] <dbaupp> (and, indeed, it can only declare variables: you can't reuse the names, so pre-declaring them would actually be making two sets of variables with different names, i.e. that pattern match is shadowing the first ones)
+[08:04:09] <dbaupp> "different" names
+[08:04:21] <Leo`> yep I see
+[08:04:31] <dbaupp> (the compiler treats them as different, even though they have the same textual representation.)
+[08:05:55] <Leo`> woah the code is way nicer with the let and visit_mac than the preious one with visit_expr and a couple of nested match :D
+[08:06:16] <dbaupp> <3
+[08:07:57] *** Quits: dbaupp (Thunderbir@moz-54ADD9F4.lns20.syd6.internode.on.net) (Ping timeout)
+[08:08:26] *** Joins: tgummerer_ (tgummerer@moz-FAADA9F9.kthopen.kth.se)
+[08:11:02] *** Joins: dbaupp (Thunderbir@moz-54ADD9F4.lns20.syd6.internode.on.net)
+[08:11:28] * dbaupp doesn't understand what his internet is doing :'(
+[08:15:02] <Leo`> :P
+[08:15:02] <pcmattman> :(
+[08:17:48] <Leo`> well I think my code is ready
+[08:17:48] <Leo`> I also put the old verification code for macro_rules! in visit_mac
+[08:17:48] <Leo`> it's better :)
+[08:17:51] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[08:18:52] *** Quits: dbaupp (Thunderbir@moz-54ADD9F4.lns20.syd6.internode.on.net) (Ping timeout)
+[08:31:25] *** Quits: strcat1 (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[08:31:29] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[08:31:34] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[08:32:20] <eddyb9> heh, bot rejoins faster
+[08:33:51] *** Joins: dbaupp (Thunderbir@moz-54ADD9F4.lns20.syd6.internode.on.net)
+[08:57:26] *** Quits: dbaupp (Thunderbir@moz-54ADD9F4.lns20.syd6.internode.on.net) (Ping timeout)
+[09:02:06] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[09:15:49] *** Joins: dbaupp (Thunderbir@moz-54ADD9F4.lns20.syd6.internode.on.net)
+[09:18:16] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[09:31:46] <Leo`> dbaupp: I sent my PR. can you review it plz ? :)
+[09:32:06] <Leo`> https://github.com/mozilla/rust/pull/9991
+[09:33:53] *** Quits: dbaupp (Thunderbir@moz-54ADD9F4.lns20.syd6.internode.on.net) (Ping timeout)
+[09:34:23] *** Joins: dbaupp (Thunderbir@moz-2B9A51FF.lns20.syd6.internode.on.net)
+[09:39:44] <dbaupp> Leo`: looks good; ping me when you update with that // NOTE bit :)
+[09:39:48] <eddyb9> my next project is to port a real mode emulator to rustic :P
+[09:45:53] <Leo`> dbaupp: done
+[09:46:37] <dbaupp> Leo`: ah, could I get you to mention the "snapshot" in the same line as the NOTE (just so it's clear that it's a snapshot related NOTE, since make tidy only shows one line)
+[09:47:16] <Leo`> ... ok ><
+[09:51:58] <Leo`> dbaupp: voilà.
+[09:53:02] *** Quits: tgummerer_ (tgummerer@moz-FAADA9F9.kthopen.kth.se) (Ping timeout)
+[09:55:24] <dbaupp> Leo`: oh, I forgot, a test too please (sorry)
+[09:57:13] *** kimundi is now known as zz_kimundi
+[09:57:33] <Leo`> a test ?
+[09:58:41] <Leo`> i can't test until the check code is actually activated
+[10:00:01] <dbaupp> ah, yes, add one with `// xfail-test` as a comment to ignore it
+[10:00:26] <Leo`> it won't be run at all ?
+[10:01:07] <Leo`> dbaupp: should I put a run-pass test also ?
+[10:01:16] <Leo`> or will a compile-fail be sufficient ?
+[10:02:00] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[10:02:03] <KokaKiwi> https://buildbot.kokakiwi.net \o/ Leo` if you want to run tests on my server :)
+[10:02:08] <dbaupp> yeah, it won't run at all; and compile-fail should be fine
+[10:04:13] <Leo`> dbaupp: there are many tests that use asm!(), one will need to modify them too
+[10:04:19] <Leo`> when the checing will be activated
+[10:04:51] <Leo`> checking*
+[10:05:02] <dbaupp> Leo`: yeah
+[10:06:19] <Leo`> I added the test dbaupp 
+[10:06:43] <Leo`> KokaKiwi: hey pas mal
+[10:11:29] *** zz_kimundi is now known as kimundi
+[10:16:55] <Leo`> thx dbaupp :)
+[10:18:52] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[10:23:56] *** Quits: eddyb9 (eddy@C1AECB14.C75CDC83.4A6B528C.IP) (Quit: Leaving)
+[11:00:59] *** Quits: dbaupp (Thunderbir@moz-2B9A51FF.lns20.syd6.internode.on.net) (Ping timeout)
+[11:01:25] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[11:04:39] *** Joins: dbaupp (Thunderbir@moz-1613C652.lns20.syd6.internode.on.net)
+[11:14:05] <Leo`> mhhhhhh
+[11:14:51] <Leo`> dbaupp: the PR fails to pass tests because it now reports errors at the wrong line
+[11:14:54] <Leo`> (for macro_rules)
+[11:15:09] <Leo`> I use macro.span to get the line position
+[11:15:22] <Leo`> but it reports the wrong line
+[11:16:22] <Leo`> previously it used item.span()
+[11:16:31] <Leo`> but now that  it has been move in visit_macro instead of visit_item
+[11:16:36] <Leo`> I can no longer use it
+[11:17:22] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[11:19:52] <dbaupp> Leo`: just pass the item.span like visit_fn/walk_fn does
+[11:23:58] <Seldaek> KokaKiwi: hey, you started the etherpad for default args right?
+[11:24:29] <Leo`> mhhh yeah I could do that dbaupp 
+[11:24:51] <Leo`> but I think it can work with path.span too
+[11:25:08] <Leo`> it's the way the macro expander reports errors about usign undefined macros
+[11:25:17] <Leo`> I think it should work
+[11:25:38] <dbaupp> ah, ok, cool
+[11:25:44] <KokaKiwi> Seldaek: Yep :) https://pad.riseup.net/p/hvbg6dQQnEe7
+[11:26:33] <Seldaek> KokaKiwi: aye, I just wanted to say (I haven't had time to read into it much yet so sorry if it's duplicate) that it should really address default values and kwargs in separate specs IMO
+[11:27:14] <Seldaek> because the two really are independent problems, and default args is much more important to get soon for proper API design I find, while kwargs is just nice to have for users of an API but it influences things a bit less
+[11:34:23] <Leo`> well dbaupp it doesn't work with path.span :|
+[11:34:29] <Leo`> I think I have to pass the span as you said
+[11:34:36] <Leo`> it's a bit weird
+[11:43:37] <KokaKiwi> Seldaek: Well, when you have time, put your comment in the pad and so others may respond (or I can do it if you really don't have time) ;)
+[11:57:37] <Leo`> well dbaupp I'm stupid... in fact the path.span thing works... 
+[11:57:50] <Leo`> but I recompiled only rustc-stage1 and did my test with stage2 
+[11:57:52] <Leo`> ...
+[12:01:53] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[12:05:21] *** Joins: canhtak (jeremy@moz-1684132F.wl.t.ulaval.ca)
+[12:09:21] <Seldaek> KokaKiwi: not sure where to write that in the pad
+[12:09:45] <Seldaek> in the chat?
+[12:13:29] <KokaKiwi> Nope, in the text at left ;)
+[12:14:07] <KokaKiwi> In "General comments" section, at the botton of the document
+[12:17:03] <dbaupp> Leo`: pushed the fix?
+[12:17:50] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[12:17:58] <Leo`> just now dbaupp
+[12:18:12] <dbaupp> Leo`: cool I just r+'d :)
+[12:18:23] <dbaupp> (I assume the path.span in the code meant you had)
+[12:18:29] <dbaupp> *assumed
+[12:20:31] <Leo`> yup
+[12:22:26] <Seldaek> KokaKiwi: ok done, btw since it appears you and Leo` are in france, will either of you be at FOSDEM in brussels?
+[12:22:41] <KokaKiwi> fu, I don't find it, what's the env var to set in order to debug rustc? :o
+[12:23:31] <dbaupp> KokaKiwi: RUST_LOG=...
+[12:23:58] <KokaKiwi> Yeah, I know the var RUST_LOG, but I don't remember what to put after ^^'
+[12:24:17] <KokaKiwi> Seldaek: I'm french yep, but I don't live at Brussels ^^
+[12:24:19] <dbaupp> what module do you wish to debug
+[12:24:21] <dbaupp> ?
+[12:24:25] <KokaKiwi> librustc
+[12:24:46] <dbaupp> anything more specific? because the general RUST_LOG=rustc gives very useless output
+[12:24:49] <Seldaek> KokaKiwi: yeah it's just not too far for you compared to most of the US/australian folks around ;)
+[12:24:51] <dbaupp> (a *lot* of useless output)
+[12:25:09] <dbaupp> although RUST_LOG=rustc=info might be ok
+[12:26:50] <KokaKiwi> dbaupp: I'll try rustc=info, maybe It will help me (I just want to find some lines of code when I compile ^^)
+[12:31:10] <Leo`> Seldaek: maybe I will. but don't know yet
+[12:46:35] <Leo`> Seldaek: and you ?
+[12:46:53] <Leo`> KokaKiwi | Seldaek: I'm french yep, but I don't live at Brussels ^^ <- Brussels is in Belgium, just in case :D
+[12:47:22] <KokaKiwi> Erf, bad at geography :(
+[12:47:33] <Leo`> btw KokaKiwi, you're in the north IIRC
+[12:47:36] <KokaKiwi> (But I live at Lille, so... :p)
+[12:51:10] <Leo`> so you can come to the FOSDEM :P
+[12:51:44] <Leo`> i've got family in Dunkerque that can host me for a couple of days so maybe I'll come too :)
+[12:51:47] <KokaKiwi> Oh wait, I didn't understand the question in fact xD
+[12:52:16] <Leo`> wut ? ><
+[12:52:51] <Leo`> what did you understood actually ? ><
+[12:53:10] <Leo`> understand*
+[12:53:34] <KokaKiwi> I understand "Do you live in Brussels" xD (Didn't what FOSDEM is, I mean, I didn't "tilted" xD)
+[12:53:42] <KokaKiwi> understood*
+[12:53:54] <KokaKiwi> #SlowPoke
+[12:54:03] <Leo`> FOSDEM is an open source "meeting" in Brussels in january
+[12:54:12] <KokaKiwi> february*
+[12:55:15] <KokaKiwi> "1 & 2 February 2014" Hmm, I'll see if I can come, it could be possible :)
+[12:56:54] <KokaKiwi> Meh, no Rust devroom at FOSDEM? D:
+[12:59:18] <Seldaek> no but the LLVM guys said they'd be interested in rust talks that relate to LLVM
+[13:00:27] <Seldaek> anyway, I'll try to make it, not sure yet but I'd be happy to meet other rust people
+[13:00:41] <Seldaek> and I'm from belgium so I do know that brussels is not in france :p
+[13:01:33] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[13:06:13] <Leo`> Seldaek: yeah, I was saying that for KokaKiwi 
+[13:08:44] <Leo`> bors takes a loooong time to run the tests :(
+[13:10:54] <KokaKiwi> My builbot hasn't finished the build too xD
+[13:18:17] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[13:22:49] <Leo`> fuck yeah all tests pass \o/
+[13:25:42] <KokaKiwi> :)
+[13:27:50] <Leo`> hop, it's in Rust
+[13:28:11] <Leo`> dbaupp: how long since it arrives in the snapshot ?
+[13:40:39] *** Joins: tgummerer_ (tgummerer@moz-1E343164.public.su.se)
+[13:42:27] *** Quits: tiffany (kawaii@moz-28A8742A.dhcp.embarqhsd.net) (Ping timeout)
+[13:52:36] *** Quits: tgummerer_ (tgummerer@moz-1E343164.public.su.se) (Ping timeout)
+[13:59:20] <cmr> Leo`: someone needs to trigger the snapshot manually
+[14:00:04] <cmr> Leo`: which I have now done :)
+[14:00:34] <cmr> Once the build is done, which takes roughly a decade, I'll make a commit that registers the snapshots, then you can send your next PR
+[14:01:57] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[14:05:30] <Leo`> cmr: okay, thx! :D
+[14:06:41] <KokaKiwi> Meh, Buildbot has killed Rust compilation :( "1200 seconds without output"
+[14:07:08] <KokaKiwi> (It was compiling libsyntax)
+[14:09:30] <KokaKiwi> Does Rust really need to do link itself? I mean, the advantage of object files (event LLVM bytecode object files) is that the compilation doesn't have to compile file already compiled, and Buildbot wouldn't have to kill compilation process :(
+[14:10:15] <cmr> KokaKiwi: yes, it's baked deep into the crate system.
+[14:10:59] <cmr> I think tjc is starting on incremental compilation soon, actually.
+[14:11:03] <cmr> Caching LLVM modules.
+[14:14:01] <KokaKiwi> It could be a great feature, because, well, 20min for a compilation (without progress indication) is too long (except for the first compilation) :/
+[14:14:20] <cmr> Wait, libsyntax is taking 20 minutes?
+[14:14:31] <KokaKiwi> (I say 20min, but I think the compilation on my server would take longer)
+[14:14:36] <cmr> That can't be right, it should be under 4.
+[14:14:48] <cmr> Like, in the ballback of 1-2
+[14:15:15] <KokaKiwi> My builbot killed compilation process: "command timed out: 1200 seconds without output"
+[14:15:48] <KokaKiwi> https://buildbot.kokakiwi.net/builders/kiwi-rust-default_args-builder/builds/2/steps/compile/logs/stdio
+[14:16:17] <KokaKiwi> what do the last line mean? "cp: x86_64-unknown-linux-gnu/stage1/lib/libsyntax.so" It just copy file? ._.
+[14:16:30] <KokaKiwi> Oh wait
+[14:16:33] <KokaKiwi> Oooh
+[14:16:39] <KokaKiwi> "compile_and_link: x86_64-unknown-linux-gnu/stage0/lib/rustc/x86_64-unknown-linux-gnu/lib/librustc.so"
+[14:16:53] <KokaKiwi> I think this is librustc that took too long at compilation
+[14:17:12] <cmr> librustc should still only take 5 min
+[14:17:37] <cmr> Unless you broke something real bad :p
+[14:18:27] <Leo`> cmr: 4 min is already way too long when you just do a single-word modificiation
+[14:18:32] <Leo`> -i
+[14:18:34] <KokaKiwi> Nope, the repo my builbot try to compile is an unmodified copy of the "master" branch of official repo :o
+[14:18:51] <cmr> Leo`: yes, it is.
+[14:18:51] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[14:19:05] <cmr> Relevant to OSDev: http://cmr.github.io/blog/2013/10/21/on-stack-safety/
+[14:24:12] <Leo`> cmr: ping me when the build of the snapshot is done
+[14:24:14] <Leo`> :)
+[14:25:04] <cmr> Leo`: sure!
+[14:30:46] <KokaKiwi> "timeout = None", well maybe this time, Buildbot will finish this compilation xD
+[14:45:39] <eddyb> cmr: s/compared/compares/
+[14:45:52] <eddyb> cmr: in the blog post
+[14:45:58] <cmr> Dammit
+[14:46:05] <cmr> I was hoping to slip by without a typo
+[14:48:47] <eddyb> cmr: I like the tainting mechanic :D
+[14:54:23] <cmr> The reason why cmoss made 0 progress is because I'm not going to work around inadequacies in Rust, I'm going to fix them, and that takes time.
+[14:55:03] * KokaKiwi trying to implements a default args system
+[14:55:19] <KokaKiwi> argh *-*
+[14:55:33] <KokaKiwi> Too many things in this compiler xD
+[14:57:17] <eddyb> KokaKiwi: I would assume it's just a matter of adding constant arguments to function calls that are leaving out the arguments with default values. but yeah, getting things done inside rust can be a PITA
+[14:57:59] <Leo`> cmr: same here :D
+[14:58:37] <Leo`> KokaKiwi: a default argh system then ? :D
+[15:00:38] <eddyb> the linkage thing I tried to fix doesn't look like it needs to be fixed (at least not that way). and that tiny inline assembly fix was pulled after almost a week, and it only removes the equivalent of three num::zero methods
+[15:00:55] <eddyb> (from one place in rustic)
+[15:01:14] <eddyb> rusti: [1, 2, 3]
+[15:01:15] <KokaKiwi> eddyb: In fact, I'm stuck with arguments checking, precisely, in the function which tell you "The function takes X parameters blablabla..."
+[15:01:26] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[15:01:32] <KokaKiwi> Leo`: Exactly :D
+[15:01:47] <eddyb> could that be a coincidence?
+[15:01:55] <KokaKiwi> :')
+[15:02:11] <Leo`> KokaKiwi: the guy next to me in class just said that after reading my screen
+[15:02:18] <KokaKiwi> xD
+[15:03:09] <eddyb> rusti, please come back, I don't have another way of easily testing :(
+[15:17:00] *** kimundi is now known as zz_kimundi
+[15:17:23] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[15:17:37] <eddyb> rusti: [1, 2, 3]
+[15:17:38] -rusti- [1, 2, 3]
+[15:18:00] <eddyb> rusti: print!("{}", [1, 2, 3])
+[15:18:03] -rusti- pastebinned 12 lines of output: http://ix.io/8Fv
+[15:18:21] <eddyb> rusti: &[1, 2, 3]
+[15:18:22] -rusti- &[1, 2, 3]
+[15:18:28] <eddyb> rusti: &'static [1, 2, 3]
+[15:18:28] -rusti- &[1, 2, 3]
+[15:18:33] <eddyb> rusti: &'static mut [1, 2, 3]
+[15:18:33] -rusti- &mut [1, 2, 3]
+[15:18:37] <eddyb> that's confusing
+[15:19:03] <eddyb> rusti: let v = &'static mut [1, 2, 3]; v
+[15:19:04] -rusti- &mut [1, 2, 3]
+[15:19:13] <eddyb> rusti: let v = &'static mut [1, 2, 3]; v[0] = 5
+[15:19:14] -rusti- ()
+[15:19:16] <eddyb> rusti: let v = &'static mut [1, 2, 3]; v[0] = 5; v
+[15:19:16] -rusti- &mut [5, 2, 3]
+[15:21:03] <eddyb> rusti: let v = &'static mut [1, 2, 3]; let c = v; v[0] = 5; (v, c)
+[15:21:05] -rusti- pastebinned 16 lines of output: http://ix.io/8Fx
+[15:21:36] <eddyb> oh, so it's a borrowed temporary? not really 'static?
+[15:35:05] *** zz_kimundi is now known as kimundi
+[15:43:25] *** kimundi is now known as zz_kimundi
+[15:54:12] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[15:59:00] <Leo`> cmr: is the snapshot ready yet ?
+[16:01:35] <cmr> Leo`: still running
+[16:01:50] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[16:01:54] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[16:02:27] <Leo`> ok :(
+[16:04:37] <cmr> you'll see a "Registering snapshots" PR go through #rust-internals when it's all done.
+[16:04:48] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[16:04:49] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[16:05:06] <eddyb> strcat: I know I wanted to tell you something, but I can't remember :(
+[16:05:11] <Leo`> cmr: ok
+[16:05:15] <Leo`> I wan't on this chan
+[16:05:17] <Leo`> :p
+[16:05:21] <Leo`> wasn't*
+[16:15:11] *** zz_kimundi is now known as kimundi
+[17:00:41] *** Quits: canhtak (jeremy@moz-1684132F.wl.t.ulaval.ca) (Quit: canhtak)
+[17:01:09] *** Joins: strcat1 (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[17:01:25] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[17:01:50] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (NickServ (GHOST command used by strcat1))
+[17:01:53] *** strcat1 is now known as strcat
+[17:04:53] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[17:06:56] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[17:43:58] *** Joins: geoffhill (geoffhill@moz-244CF33A.amazon.com)
+[18:01:26] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[18:01:55] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[18:02:39] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[18:04:11] *** Quits: geoffhill (geoffhill@moz-244CF33A.amazon.com) (Ping timeout)
+[18:07:15] *** Joins: tgummerer (tgummerer@51D3B54.FEF996EA.EA6FEF3D.IP)
+[18:07:58] *** Joins: geoffhill (geoffhill@moz-244CF33A.amazon.com)
+[18:17:28] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[18:34:31] *** Quits: tgummerer (tgummerer@51D3B54.FEF996EA.EA6FEF3D.IP) (Ping timeout)
+[18:34:43] *** Joins: tgummerer (tgummerer@51D3B54.FEF996EA.EA6FEF3D.IP)
+[19:01:08] *** Joins: rusti_ (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[19:02:03] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[19:02:10] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[19:02:25] *** Joins: strcat1 (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[19:06:07] *** strcat1 is now known as strcat
+[19:19:50] <eddyb> pcmattman: your PR isn't having much more luck than mine :( https://github.com/mozilla/rust/pull/9945#issuecomment-26733434
+[19:30:08] *** Quits: eddyb (eddy@3C6E2DBB.FFB4E060.A5830293.IP) (Connection reset by peer)
+[19:30:19] *** Joins: eddyb (eddy@3C6E2DBB.FFB4E060.A5830293.IP)
+[19:32:41] *** Quits: dbaupp (Thunderbir@moz-1613C652.lns20.syd6.internode.on.net) (Ping timeout)
+[19:33:01] *** Quits: eddyb (eddy@3C6E2DBB.FFB4E060.A5830293.IP) (Ping timeout)
+[19:36:43] *** Joins: dbaupp (Thunderbir@moz-1613C652.lns20.syd6.internode.on.net)
+[19:40:10] *** Joins: canhtak (jeremy@moz-A67811CE.wl.t.ulaval.ca)
+[19:46:39] *** Joins: eddyb9 (eddy@3C6E2DBB.FFB4E060.A5830293.IP)
+[19:46:39] *** Joins: devbug (quassel@2D4E172D.4C8B6099.9B57EA59.IP)
+[19:54:49] <KokaKiwi> wtf
+[19:55:05] <eddyb9> .rs
+[19:55:07] <KokaKiwi> On my buildbot, there is a test which fail
+[19:55:09] <KokaKiwi> :D
+[19:55:16] <KokaKiwi> That's weird
+[19:55:24] <eddyb9> name?
+[19:55:29] <KokaKiwi> os::tests::memory_map_file
+[19:56:02] <eddyb9> the name gives you two possible explanations
+[19:56:08] <KokaKiwi> "'assertion failed: lseek(fd, size as off_t, SEEK_SET) == size as off_t'"
+[19:56:50] <eddyb9> weird, I was expedting something more obvious
+[19:58:52] *** Quits: rusti_ (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[19:58:58] <Leo`> this is a weird error oO
+[19:59:07] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[19:59:10] <Leo`> maybe the file could not be opened or something like that ?
+[19:59:38] <Leo`> maybe the build process has wrong permissions ? something like that
+[20:00:06] <KokaKiwi> Nope, the build is done on buildbot user directory
+[20:00:11] <KokaKiwi> With the user buildbot
+[20:00:46] <eddyb9> which file does it try to map?
+[20:01:01] <eddyb9> (I could prolly go read it, but I'm on my phone)
+[20:01:21] *** Joins: strcat1 (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[20:01:25] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[20:01:31] *** strcat1 is now known as strcat
+[20:01:58] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[20:02:08] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[20:02:14] <eddyb9> fix your internet, guy
+[20:02:30] <Leo`> :]
+[20:02:57] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[20:04:08] <KokaKiwi> Hmmm
+[20:06:34] <Leo`> Seldaek: you should remove the "whoami" of the todolist on coreutils if it's implemented now :P
+[20:06:39] * Leo` is looking for something to do
+[20:07:11] <eddyb9> what's this coreutils thing?
+[20:07:20] <eddyb9> I haven't seen it directly linked
+[20:07:33] <cmr> Seldaek: ohh, are you still working on that? :D
+[20:09:49] <KokaKiwi> On my own computer: 'test os::tests::memory_map_file ... ok'
+[20:09:54] <KokaKiwi> waaaat
+[20:11:52] <KokaKiwi> "touch: cannot touch ‘/tmp/mmap_file.tmp’: Permission denied" oooh
+[20:12:13] <KokaKiwi> wtf, why did I have a permission denied on /tmp? ._.
+[20:12:53] <KokaKiwi> Aaaaah
+[20:12:55] <KokaKiwi> xD
+[20:13:44] <KokaKiwi> Leo`: The build of rust on my server, it created the same file, but with another user (ruster), so user buildbot can't delete it :p
+[20:14:09] <Leo`> KokaKiwi: xD
+[20:14:21] <Leo`> well that's stupid
+[20:14:28] <Leo`> the test should rm the file after use u_u
+[20:14:55] <KokaKiwi> The test done it already
+[20:15:06] <KokaKiwi> But as another, you can't delete a file another user has created
+[20:15:11] <KokaKiwi> as anoter user*
+[20:15:13] <KokaKiwi> fu
+[20:15:44] <KokaKiwi> Now I deleted the file myself, so it couldn't fail :)
+[20:17:06] <Leo`> the prevous build should have deleted to file _after_ the test
+[20:17:15] <Leo`> previous*
+[20:17:32] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[20:18:15] <KokaKiwi> Oh
+[20:18:48] <KokaKiwi> Yep that's right, the test delete the file before testing it :o
+[20:21:30] <Leo`> this is fine, in case the test failed and for some reason did not stop properly
+[20:21:40] <Leo`> it's good to check existence of the file before testing
+[20:21:48] <Leo`> but it should anyway be removed after
+[20:22:06] <Leo`> and I remember a UNIX function exists to create a random file in /tmp
+[20:22:21] <Leo`> this should limit this kind of problems, but don't know if it's portable
+[20:23:05] <Leo`> yep mktemp(
+[20:23:08] <Leo`> )
+[20:24:03] <Leo`> http://msdn.microsoft.com/en-us/library/34wc6k1f.aspx apparently it exists on Windows too
+[20:24:32] <KokaKiwi> There is no mktemp "equivalent" in Rust?
+[20:24:55] <KokaKiwi> Maybe it could be a good issue to post I think :)
+[20:25:06] <eddyb9> there is
+[20:25:22] <eddyb9> it even removes the file as a scope guard
+[20:25:42] <KokaKiwi> Oh?
+[20:26:25] <eddyb9> so it would never leave the scope it was created in without removing itself automatically
+[20:27:01] <eddyb9> either that or it's do-based, but same automatic removal. grep tmp and temp in std, I guess
+[20:31:13] <Leo`> well so either the test doesn't use this function
+[20:31:33] <Leo`> or it wasn't properly interrupted in the previous build
+[20:31:40] <Leo`> so it didn't removed the file
+[20:31:41] <KokaKiwi> Hmm, I found libc::tmpfile(), but it seem to be tmpfile from stdio
+[20:32:40] <eddyb9> history: http://pedigree-project.org/projects/pedigree/repository/revisions/ca698f7def0ca386e6a8ef0c4740945ccd277ffc
+[20:32:50] <eddyb9> KokaKiwi: not in libc
+[20:34:24] <KokaKiwi> "IT LIVES! OH GOD HELP US IT LIIIIIIVES!" xD
+[20:35:15] <KokaKiwi> eddyb9: I do "ack temp ../src/libstd" and same command for tmp, I just found tmpfile :/
+[20:35:20] <KokaKiwi> I did*
+[20:35:57] <eddyb9> hmpf
+[20:36:14] <eddyb9> sorry, no idea then
+[20:36:45] <eddyb9> anyone seen anything like x86emu in Rust?
+[20:37:22] <Leo`> what's that ?
+[20:37:50] <eddyb9> emulating real mode (like GPU ROM via BIOS)
+[20:37:58] *** Joins: tiffany (kawaii@moz-28A8742A.dhcp.embarqhsd.net)
+[20:38:23] <Leo`> mhhhh
+[20:38:32] <eddyb9> license or the header probably says more: http://pedigree-project.org/projects/pedigree/repository/revisions/master/show/src/system/kernel/machine/x86_common/x86emu
+[20:39:13] <eddyb9> oh wow that looks ugly. yuck
+[20:39:25] <Leo`> the std doc website needs a few fixes too ><
+[20:39:44] <Leo`> when I search something, click on a link on the results, and then go back to the previous page... I get redirected to the index
+[20:39:50] <Leo`> and I have to redo my search
+[20:39:55] <Leo`> it's quite annoying
+[20:40:11] <eddyb9> I might have better luck using my ES6 wiREd to generate Rust code instead of JS
+[20:40:37] <eddyb9> you know what? I already have a lot of instructions implemented....
+[20:40:57] <Leo`> what ?
+[20:41:54] <Leo`> I don't see the relation between your wiREd and JS
+[20:42:06] <eddyb9> I can output emulation code instead of IR-generating code
+[20:42:24] <Leo`> uh
+[20:43:02] <eddyb9> Leo`: ES6 is nextgen JS. the generated "disassembler" function is legacy JS (ES5) for performance reasons
+[20:43:20] <Leo`> oh
+[20:43:21] <Leo`> okay
+[20:43:31] <eddyb9> Leo`: but the way I wrote my thing, it's like a compiler codegen
+[20:43:33] <Leo`> wait...
+[20:43:35] <Leo`> you generate JS ?
+[20:43:50] <eddyb9> I could've generated C or C++ too
+[20:43:59] <Leo`> but I don't understand
+[20:44:05] <Leo`> why do you generate a disassembler ?
+[20:44:20] <eddyb9> but there's no way to represent my versatile runtime structures, not even in C++
+[20:44:34] <eddyb9> Rust, however, is more powerful :D
+[20:44:55] <eddyb9> Leo`: because opcode definitions are generated by compact code
+[20:44:56] <Leo`> so your thing is written in JS and generates a disassembler in JS ... ?
+[20:45:44] <eddyb9> Leo`: why not?
+[20:46:22] <eddyb9> the analyzer then uses the disassembler to get "IR" from bytes
+[20:46:25] <Leo`> yeah why not, just trying to understand
+[20:46:40] <eddyb9> ahh, heh, I know it's a lil weird
+[20:47:09] <eddyb9> keep in mind that everything, but the generated code, is written in ES6
+[20:47:14] <eddyb9> which is very nifty
+[20:48:02] <Leo`> I see
+[20:48:12] <Leo`> you present it as a web interface
+[20:48:18] <Leo`> everything runs as client code ?
+[20:48:21] <eddyb9> not yet, actually
+[20:48:24] <Leo`> is this server side JS ?
+[20:48:31] <eddyb9> node.js
+[20:48:35] <Leo`> ok
+[20:49:04] <eddyb9> the disasm codegen is intended to run rarely, when you modify the opcode deps
+[20:49:08] <eddyb9> *defs
+[20:49:13] <Leo`> https://github.com/LeoTestard/Quasar pfff the language stats are still not up to date :(
+[20:49:23] <Leo`> eddyb9: yep seems legit
+[20:49:30] <eddyb9> the analyzer outputs a large log file
+[20:49:56] <eddyb9> last thing I was working on before summer halt was buffering output instead of streaming it
+[20:50:16] <eddyb9> so you would *request* output from an analyzed function
+[20:50:50] <eddyb9> the next step would be to produce something like a C/C++ AST
+[20:51:21] <Leo`> well you definitively should consider using Rust instead :p
+[20:51:33] <Leo`> algebraic types are way more effective to represent ASTs
+[20:51:38] <eddyb9> for the decompilation output?
+[20:51:47] <eddyb9> or wiREd implementation language?
+[20:52:13] <Leo`> no for implementation
+[20:52:17] <Leo`> well, mh
+[20:52:26] <Leo`> for the disassembler I mean
+[20:52:40] <eddyb9> not sure how I feel about giving up something as scriptey as ES6, and which can run client-side, in a browser
+[20:53:05] <Leo`> well that's true
+[20:53:19] <Leo`> let's wrote a JS_of_Rust compiler
+[20:53:24] <eddyb9> Leo`: op defs -> codegen -> disassembler -> analyzer -> decompiler
+[20:53:34] <eddyb9> Leo`: emscripten, llvm to rust
+[20:53:46] <Leo`> to JS you mean ?
+[20:53:55] <eddyb9> err, yeah. tired :P
+[20:53:59] <Leo`> np
+[20:54:20] <Leo`> but still curious though
+[20:54:50] <Leo`> how do you use JS browser functions ... like accessing HTML and such ?
+[20:55:24] <eddyb9> from emscripten-compiled code?
+[20:55:44] <strcat> Leo`: FFI basically
+[20:55:53] <eddyb9> Leo`: I think there's a "ffi" for calling JS functions with C-like arguments
+[21:00:42] <Leo`> ok
+[21:00:46] *** Joins: strcat1 (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[21:01:29] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[21:01:36] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[21:02:00] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[21:02:45] *** strcat1 is now known as strcat
+[21:10:31] <eddyb9> Leo`: in JS, I have dynamic types (inheriting a base class, for example). in Rust, I have variants. but in C++, I don't really have anything neat
+[21:10:51] <eddyb9> maybe virtual base, but bleaah
+[21:11:03] <eddyb9> and it requires heap allocation
+[21:11:08] <strcat> boost::variant
+[21:11:14] <strcat> doesn't use a heap allocation
+[21:11:36] <eddyb9> strcat: boost is the home of magnificent hacks
+[21:11:47] <strcat> C++11 has alignas/alignof
+[21:12:06] <strcat> you can write std::aligned_storage in a library (in fact, it exists in the stdlib)
+[21:12:17] <strcat> and you don't really need anything else
+[21:12:28] <eddyb9> maybe I'm curious what it does. but I'd rather not use it
+[21:12:29] <strcat> there are also unrestricted unions, if you don't need to write a variadic template mess
+[21:12:47] <strcat> eddyb9: it's a variadic template allocating storage valid for all the type parameters
+[21:12:55] <strcat> if you don't need that you can just use a union now
+[21:13:10] <eddyb9> meh, unions
+[21:13:14] <strcat> union { std::vector<int> v; int x; } is valid
+[21:13:18] <strcat> not pre-C++11
+[21:13:43] <strcat> eddyb9: yeah, it's annoying, since then you have to write a move constructor, copy constructor, destructor, etc. dealing with the type tag
+[21:13:53] <strcat> and hack together stuff making up for the lack of pattern matching
+[21:14:01] <strcat> but you *can* do it without huge effort ;p
+[21:14:11] <eddyb9> my type system in ES6 (even without static typing in the language) is much more powerful
+[21:14:28] <eddyb9> even without pattern matching
+[21:15:08] <eddyb9> this would be really neat, though: Add(x, 0) => x
+[21:15:40] <eddyb9> if only it could match the result of applying operator traits :P
+[21:15:53] <eddyb9> x + 0 => x
+[21:17:36] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[21:17:40] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[21:37:25] <devbug> _mktemp?
+[21:37:34] <devbug> Yeah, uhm, that has some issues, iirc.
+[21:38:02] <devbug> I recall using it for resource compilation "transactions."
+[21:39:38] <devbug> That might have been tmpnam, though.  Whatever the case, the documentation lies.
+[21:42:17] *** kimundi is now known as zz_kimundi
+[21:46:56] *** Quits: tgummerer (tgummerer@51D3B54.FEF996EA.EA6FEF3D.IP) (Ping timeout)
+[22:00:59] *** Joins: strcat1 (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[22:01:21] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[22:01:21] *** Quits: devbug (quassel@2D4E172D.4C8B6099.9B57EA59.IP) (Ping timeout)
+[22:01:28] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[22:01:35] *** strcat1 is now known as strcat
+[22:15:01] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[22:55:43] *** Quits: basichash (basichash@moz-55569B25.opaltelecom.net) (Quit: Leaving)
+[23:01:35] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[23:01:38] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[23:03:30] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[23:03:31] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[23:23:31] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[23:23:50] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[23:24:38] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)

@@ -1,0 +1,1785 @@
+[00:04:01] <jack> mbrubeck: ping
+[00:04:25] <Savago> humm… vidyo is misbehaving today.
+[00:05:37] *** kimundi is now known as zz_kimundi
+[00:07:26] <mwu> pcwalton: do you know roughly how many dom objects it takes for 300k?
+[00:07:33] <pcwalton> mwu: not sure
+[00:08:24] <pcwalton> I guess if you assume every DOM object is 16 words, then you can fit 256 DOM objects *per core*
+[00:09:26] <pcwalton> I think the right approach with tiny L1 caches is going to be something like "tiled rendering"
+[00:09:29] <pcwalton> like mobile GPUs do
+[00:09:37] <pcwalton> where you work in batches of (your cache size) objects
+[00:11:09] <mwu> hmm
+[00:11:20] <pcwalton> although I admit I don't quite know how to do that :)
+[00:12:08] <Savago> yay! Just completed servo build @Raspberry Pi2.
+[00:12:36] <Savago> and it crashes.
+[00:12:43] <mwu> I have ideas on how to do that, but I don't know how you would decide what dom objects would go in which batches
+[00:13:25] <pcwalton> mwu: work-stealing
+[00:13:31] <pcwalton> figure it out dynamically!
+[00:13:33] <pcwalton> you know what's interesting
+[00:13:56] <pcwalton> time is much better correlated with i-cache misses (r^2 = 0.6) than d-cache misses (r^2 = 0.371)
+[00:13:58] <mwu> so you'd move the objects as necessary?
+[00:14:12] <mwu> hah
+[00:14:14] <pcwalton> mwu: oh, I'm not sure that would help
+[00:14:33] <pcwalton> if you're on cache line boundaries does it really matter whether your memory is physically adjacent?
+[00:14:42] <Tobba> pcwalton: modern ARM CPUs are out of order, so that adds up
+[00:14:53] <mwu> true
+[00:14:57] <pcwalton> what *does* help is if you can fit multiple DOM nodes into one cache line
+[00:15:00] <pcwalton> dunno if that's possible
+[00:15:04] <mwu> very very very hard
+[00:15:18] <mwu> nodes store pointers to their parents, children, etc.
+[00:15:21] *** chmanchester is now known as chmanchester|afk
+[00:15:22] <pcwalton> *but* selector matching only needs a few elements of each DOM node
+[00:15:29] <pcwalton> there may be some sort of trick we can do there
+[00:15:43] <pcwalton> struct-of-arrays (as opposed to array-of-structs) style
+[00:16:20] <mwu> hmmm
+[00:18:51] *** Joins: brendan (brendaneich@moz-2kq05h.static-ip.telepacific.net)
+[00:20:37] *** Quits: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com) (Quit: quit)
+[00:26:23] <mwu> pcwalton: probably doable!
+[00:26:41] *** Parts: wolfviking0 (wolfviking0@moz-8hd.3b6.246.162.IP) ()
+[00:27:08] <mwu> though I don't know enough about the data access patterns of css selectors..
+[00:32:55] *** Joins: KiChjang (KiChjang@moz-19h7ll.dynamic.uwaterloo.ca)
+[00:32:59] *** Quits: MrZeus (MrZeus@moz-jf4304.skybroadband.com) (Ping timeout: 121 seconds)
+[00:33:04] <Manishearth> pcwalton: jack larsberg https://github.com/maxsnew/cargo-dot
+[00:33:22] <Manishearth> parallel codegen works now iirc
+[00:33:40] <KiChjang> playboy: let Dog { property, id } = new_dog;
+[00:33:44] <KiChjang> oh crap
+[00:33:49] <KiChjang> playbot: let Dog { property, id } = new_dog;
+[00:33:49] -playbot- <anon>:9:36: 9:43 error: unresolved name `new_dog`
+[00:33:50] -playbot- <anon>:9         let Dog { property, id } = new_dog;
+[00:33:50] -playbot- output truncated; full output at: http://bit.ly/1BVajpM
+[00:33:54] <Manishearth> parallel codegen: https://github.com/rust-lang/rust/pull/26018
+[00:33:54] <crowbot1> PR #26018: Fix type and linkage errors with parallel codegen - https://github.com/rust-lang/rust/pull/26018
+[00:35:29] <Manishearth> tidy lint, not doable with a plugin. not easily at least
+[00:37:23] <jack> Manishearth: you mean the dep checker?
+[00:37:38] <jack> yeah, it's an easy tidy thing to do since lock files are easy to parse.
+[00:37:46] <jack> you can almost do it with grep
+[00:37:56] <Manishearth> jack: actually wait I figured out how to do it with a lint
+[00:38:02] <Manishearth> jack: not with grep
+[00:38:20] <Manishearth> jack: the "expected foo found foo" bugs come from transitive deps
+[00:38:46] <Manishearth> though with grep you can find out if there are two crates being included
+[00:39:00] <Manishearth> the real harm is when they get included into the same crate transitively
+[00:39:03] *** Quits: naudtov (naudtov@moz-9fcbja.ca.comcast.net) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[00:39:09] <Manishearth> (this doesn't always happen)
+[00:42:17] <Savago> pcwalton: servo run in headless mode in raspberry pi2. That being said, it would be nicer if it would run in ‘normal’ mode. It fails with https://gist.github.com/Adenilson/c0fff5f854735f41d8db
+[00:42:19] *** Quits: bugweiser (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[00:42:34] * Savago looking into rust-layers/surface.rs now…
+[00:42:35] <pcwalton> yeah, that's the same issue I get on my odroid
+[00:42:44] <Savago> pcwalton: interesting.
+[00:43:24] <Savago> Any idea why it would fail to find a valid config?
+[00:43:43] <pcwalton> no idea, would be very interesting to find out :)
+[00:43:48] <pcwalton> it's likely to fix my problem too
+[00:44:38] <Savago> coolio, will keep digging.
+[00:46:34] <gw> Savago: perhaps look into the color depth requested? some of those boards only support 565 buffers or specific 888 buffers
+[00:46:45] *** Joins: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at)
+[00:46:50] <Savago> jack: do you think servo should have raspberry pi2 as a supported platform?
+[00:47:03] <Savago> gw: nice tip. :-)
+[00:47:04] *** Joins: brson_ (brson@moz-cfhap5.mtv2.mozilla.com)
+[00:47:13] <pcwalton> I think we should support ARM desktop Linux, yes
+[00:47:18] <pcwalton> including the Pi
+[00:47:21] <pcwalton> Pi2, anyway
+[00:48:00] *** Quits: brson (brson@moz-esl.4cu.229.94.IP) (Ping timeout: 121 seconds)
+[00:48:14] <Savago> I had to add stuff like [target.arm-unknown-linux-gnuabihf] all over the place. :-|
+[00:48:19] <gw> Savago: also, they may not support BIND_TO_TEXTURE_RGBA_EXT
+[00:49:44] <Savago> pcwalton: one thing I don’t understand though… shouldn’t be still able to run in cpu mode (i.e. -c )even if those checks fail on rust-layers?
+[00:49:54] <pcwalton> -c just affects painting, not compositing
+[00:49:58] <pcwalton> compositing is always done with OpenGL
+[00:50:01] <Savago> douh!
+[00:50:17] <Savago> And compositing in CPU is overly expensive.
+[00:50:50] <pcwalton> you can try with LIBGL_ALWAYS_SOFTWARE=1 but that didn't work for me
+[00:50:52] *** Quits: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at) (Ping timeout: 121 seconds)
+[00:50:52] <pcwalton> (same error)
+[00:51:17] *** Quits: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[00:51:26] <Savago> raspberry pi 2 has OpenGL ES 2.0 support.
+[00:52:00] <Savago> glxinfo returns: direct rendering: Yes.  
+[00:52:06] <Savago> And it runs glxgears.
+[00:52:22] <Savago> So, I guess it should be capable of running servo composting code, right?
+[00:52:33] <Savago> composting/compositing
+[00:52:35] <mbrubeck> Yay, my unicode-bidi crate can now do basic reordering of mixed-direction text! https://github.com/mbrubeck/unicode-bidi/blob/master/src/lib.rs
+[00:53:18] <mbrubeck> teehee, GitHub messes up the display of my test data.
+[00:53:43] * mbrubeck -> dinner
+[00:54:04] *** Quits: brson_ (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[00:54:13] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[00:54:14] *** ChanServ sets mode: +o brson
+[00:55:02] <gw> Savago: it should be capable, yes. you probably want to tweak the content of fbconfig_attributes in surface.rs, that should let you find which value is preventing any configs being returned
+[00:57:33] <Savago> can I compile rust-glx standalone?
+[00:57:48] <Savago> let me try...
+[01:00:08] * njn wonders if people like #6289
+[01:00:08] <crowbot1> Issue #6289: Make LOCAL_CONTEXT_KEY safe and non-leaky. - https://github.com/servo/servo/pull/6289
+[01:01:20] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[01:01:39] *** Quits: tglman (tglman@moz-l8btep.as13285.net) (Ping timeout: 121 seconds)
+[01:01:48] <pcwalton> njn: I like it
+[01:01:53] <njn> yay
+[01:02:31] <pcwalton> njn: based on your Gecko measurements, how improbable will it be to get everything selector matching needs to look at into, say, 128KB
+[01:02:35] <pcwalton> I'm guessing it's not likely
+[01:02:46] <njn> pcwalton: sorry, no idea
+[01:02:57] <pcwalton> ok
+[01:03:10] <pcwalton> it feels like most DOMs are 300KB so it'll be tricky but we can at least do better than we're doing now
+[01:03:17] <pcwalton> I think we may need hardware help, ultimately
+[01:03:28] <njn> pcwalton: one thing I was wondering -- when you click a link in Servo, the old page data hangs around. Do they eventually disappear?
+[01:03:33] <pcwalton> no, they don't :)
+[01:03:39] <njn> O_o
+[01:03:42] <pcwalton> adding cache invalidation for the bfcache would be very nice
+[01:03:53] <KiChjang> can anyone please explain to me what a Pipeline object is?
+[01:03:59] *** Quits: Centril (mazdakf@moz-nd3gjf.edstud.chalmers.se) (Ping timeout: 121 seconds)
+[01:04:29] <njn> pcwalton: seems important, once you get past the "open one page per session" type of scenario
+[01:04:45] <pcwalton> definitely
+[01:06:27] <mwu> pcwalton: so css selectors care about a node's position in the tree, classes, id, and attributes, right? did I miss anything
+[01:06:58] <pcwalton> I think that's basically it -- look at rust-selectors/src/matching.rs, matches_simple_selector
+[01:07:08] <pcwalton> I'm busy reworking that function to be better on the i-cache
+[01:07:13] *** Joins: je_julie (uid29643@moz-2q4j9e.brockwell.irccloud.com)
+[01:07:14] <mwu> cool
+[01:08:21] *** Quits: bholley (bholley@moz-opfa2j.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[01:09:00] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[01:09:17] <gw> KiChjang: a pipeline is the grouping of a (optionally shared) script task, layout task and paint task. it's effectively what is needed to load a single page, and there is a new pipeline created for each page load
+[01:11:30] <KiChjang> gw: so can i safely assume that each page contains one and only one pipeline?
+[01:11:52] <pcwalton> whoa there
+[01:11:59] <pcwalton> I just fixed PartialEq to not blow out the icache
+[01:12:28] <pcwalton> now 1, 2, 4, 8 core speedups on ARM are 1, 1.56x, 1.84x, 2.35x respectively
+[01:12:46] <pcwalton> compared to 1x, 1.52x, 2.26x, 2.49x on Core i7
+[01:12:46] <gw> KiChjang: a pipeline can contain child frames (which contain child pipelines), for example if there are iframes present
+[01:12:55] <pcwalton> some nice progress!
+[01:13:11] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[01:13:11] -ghservo- [13servo] 15michaelwu pushed 1 new commit to 06smupgrade3: 02http://git.io/vIEh8
+[01:13:11] -ghservo- 13servo/06smupgrade3 1453045cb 15Michael Wu: Fix review comments and warnings
+[01:13:11] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[01:13:28] <pcwalton> before the fix to PartialEq it was 1.0x, 1.19x, 1.52x, 1.65x respectively
+[01:13:32] <pcwalton> so that's a big improvement
+[01:13:34] <gw> nice
+[01:13:41] <pcwalton> i-cache is king :)
+[01:13:50] <mwu> very nice
+[01:14:11] <pcwalton> that's just selector *matching* mind you
+[01:14:13] <pcwalton> not cascading
+[01:14:15] <KiChjang> gw: okay, so for every top-level page, there is only one single parent pipeline, correct?
+[01:14:20] <pcwalton> cascading will require some more work to not wreck the i-cache
+[01:14:25] <gw> correct
+[01:14:27] *** Quits: Savago (Savago@moz-8hd.3b6.246.162.IP) (Client exited)
+[01:14:43] <KiChjang> gw: good thanks
+[01:15:08] <pcwalton> there's more that can be done -- matching::matches_simple_selector has poor i-cache behavior at the moment and should be fixable
+[01:16:22] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[01:16:57] *** Quits: caitp (caitp@moz-lmogh4.cable.rogers.com) (Ping timeout: 121 seconds)
+[01:18:35] *** Quits: marcusklaas (marcus@moz-0ol9oe.chello.nl) (Client exited)
+[01:23:13] <njn> pcwalton: which threads have a LOCAL_CONTEXT_KEY? Is it LayoutTask and then the Layout workers?
+[01:27:47] <njn> if I have a `pub` top-level function in components/layout/context.rs, how do I call it from components/layout/layout_task.rs?
+[01:30:04] *** Joins: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com)
+[01:30:31] <njn> aha: `use context::foo`
+[01:31:44] *** Quits: erickt (erickt@moz-e9g.jg6.129.64.IP) (Ping timeout: 121 seconds)
+[01:32:23] *** Joins: nattokirai (nattokirai@moz-86b4bs.bitcat.net)
+[01:32:34] *** Joins: slyu (slyu@moz-aj9ejj.HINET-IP.hinet.net)
+[01:35:17] <mbrubeck> frewsxcv: https://github.com/servo/servo/wiki/Meeting-2015-06-08#friends-of-the-tree
+[01:36:38] *** Quits: slyu (slyu@moz-aj9ejj.HINET-IP.hinet.net) (Ping timeout: 121 seconds)
+[01:37:05] *** Joins: jviereck (Adium@moz-o5nloe.static.fusionbroadband.com)
+[01:39:20] *** Quits: brendan (brendaneich@moz-2kq05h.static-ip.telepacific.net) (Client exited)
+[01:40:40] *** Joins: slyu (slyu@moz-2hf62a.HINET-IP.hinet.net)
+[01:42:01] *** Quits: jviereck (Adium@moz-o5nloe.static.fusionbroadband.com) (Quit: Leaving.)
+[01:43:38] *** Joins: brendan (brendaneich@moz-2kq05h.static-ip.telepacific.net)
+[01:44:05] *** Joins: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net)
+[01:44:32] *** Joins: mib_fsp36g (Mibbit@moz-hu6.nja.252.72.IP)
+[01:45:49] *** Joins: jviereck (Adium@moz-o5nloe.static.fusionbroadband.com)
+[01:46:51] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[01:47:30] *** Joins: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at)
+[01:51:38] *** Quits: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at) (Ping timeout: 121 seconds)
+[01:55:03] *** Quits: dbaron (dbaron@moz-liedt1.2rkg.9kg1.0101.2620.IP) (Ping timeout: 121 seconds)
+[01:56:39] *** Joins: zxq9 (ceverett@moz-qsm369.mesh.ad.jp)
+[01:57:28] *** Quits: mib_fsp36g (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[02:04:26] *** Joins: mib_xui1fg (Mibbit@moz-hu6.nja.252.72.IP)
+[02:06:14] *** Quits: mib_xui1fg (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[02:08:17] <KiChjang> playbot: pub struct SubpageId(u32); let foo = SubpageId(0); foo
+[02:08:19] -playbot- output truncated; full output at: http://bit.ly/1eZd58z
+[02:08:24] *** Quits: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[02:14:24] *** Joins: bholley (bholley@moz-opfa2j.ca.comcast.net)
+[02:16:02] *** Quits: brendan (brendaneich@moz-2kq05h.static-ip.telepacific.net) (Client exited)
+[02:19:35] *** Quits: jviereck (Adium@moz-o5nloe.static.fusionbroadband.com) (Quit: Leaving.)
+[02:25:03] *** Quits: bholley (bholley@moz-opfa2j.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[02:25:24] *** Joins: dbaron (dbaron@moz-12jr9n.dynamic.fusionbroadband.com)
+[02:32:35] <huon> KiChjang: btw, you can private-message playbot
+[02:38:19] *** Quits: Daniellynet (Cupcake@moz-bci30q.customer.tdc.net) (Ping timeout: 121 seconds)
+[02:38:25] *** Joins: Daniellynet_ (Cupcake@moz-bci30q.customer.tdc.net)
+[02:39:50] *** Quits: Daniellynet_ (Cupcake@moz-bci30q.customer.tdc.net) (Quit: ✧*。ヾ( ´ /// `。 )ﾉﾞ✧*。)
+[02:40:10] *** Joins: Daniellynet (Cupcake@moz-bci30q.customer.tdc.net)
+[02:44:16] *** Quits: qrlpx (smuxi@moz-n7t.3nb.211.95.IP) (Connection closed)
+[02:48:15] *** Joins: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at)
+[02:52:23] *** Quits: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at) (Ping timeout: 121 seconds)
+[02:57:03] <KiChjang> huon: thanks, i'm using the web interface now
+[02:57:32] *** Quits: zz_kimundi (kimundi@moz-01l8sd.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[02:58:40] *** Joins: zz_kimundi (kimundi@moz-cak2a8.dip0.t-ipconnect.de)
+[02:58:41] *** zz_kimundi is now known as kimundi
+[03:00:40] <kmc> mbrubeck: since a matrix represents a linear transformation, it should have a "row unit" and a "column unit" I think
+[03:02:16] <kmc> though it's really more than a choice of units, it's a choice of basis too
+[03:06:02] <mbrubeck> Yeah, the "units" system in rust-geom is one-dimensional; it'd need some serious work to characterize arbitrary vector spaces.
+[03:06:09] *** Quits: mihnea_ (sid16310@moz-87gr0i.highgate.irccloud.com) (Connection closed)
+[03:06:09] *** Quits: RJ (sid1@moz-bfakr9.highgate.irccloud.com) (Connection closed)
+[03:06:10] *** Quits: flaki (sid26072@moz-kltomo.highgate.irccloud.com) (Connection closed)
+[03:06:10] *** Quits: jack (sid19593@moz-fhlsm9.highgate.irccloud.com) (Connection closed)
+[03:06:10] *** Quits: merl (sid17756@moz-n96e6m.highgate.irccloud.com) (Connection closed)
+[03:06:10] *** Quits: jandem (sid16255@moz-2gehe3.highgate.irccloud.com) (Connection closed)
+[03:06:10] *** Quits: jonalmeida (sid17545@moz-c167m6.highgate.irccloud.com) (Connection closed)
+[03:06:10] *** Quits: pkondzior (sid768@moz-nrgp4s.highgate.irccloud.com) (Connection closed)
+[03:06:10] *** Quits: steshaw (sid30841@moz-mij4a1.highgate.irccloud.com) (Connection closed)
+[03:07:48] *** Quits: wycats (sid79@moz-b4lrm3.brockwell.irccloud.com) (Connection closed)
+[03:07:48] *** Quits: reem (sid78397@moz-octfcu.brockwell.irccloud.com) (Connection closed)
+[03:07:48] *** Quits: mno2 (sid33176@moz-nd1l6h.brockwell.irccloud.com) (Connection closed)
+[03:07:48] *** Quits: jryans (sid12941@moz-u4l2d8.brockwell.irccloud.com) (Connection closed)
+[03:07:49] *** Quits: alphonse23 (sid34238@moz-rhoj7i.brockwell.irccloud.com) (Connection closed)
+[03:07:49] *** Quits: spastorino (sid27384@moz-i6sgse.brockwell.irccloud.com) (Connection closed)
+[03:07:50] *** Quits: frewsxcv (sid86219@moz-dneii9.brockwell.irccloud.com) (Connection closed)
+[03:07:50] *** Quits: je_julie (uid29643@moz-2q4j9e.brockwell.irccloud.com) (Connection closed)
+[03:07:52] *** Quits: burg (sid14893@moz-r6aeph.brockwell.irccloud.com) (Connection closed)
+[03:09:33] *** Quits: aturon (sid36348@moz-n3h4qj.brockwell.irccloud.com) (Quit: X_X)
+[03:21:59] *** Joins: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP)
+[03:22:36] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[03:27:42] *** Joins: brendan (brendaneich@moz-2kq05h.static-ip.telepacific.net)
+[03:29:50] *** Joins: erickt (erickt@moz-njt.vqi.14.76.IP)
+[03:31:52] *** Joins: ferdinandred (Mibbit@moz-hu6.nja.252.72.IP)
+[03:32:23] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[03:32:23] -ghservo- [13servo] 15pcwalton opened pull request #6308: script: Make `PartialEq` on element type IDs generate a lot less code. (06master...06debloat-partialeq) 02http://git.io/vIu8C
+[03:32:23] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[03:36:07] *** Quits: brendan (brendaneich@moz-2kq05h.static-ip.telepacific.net) (Client exited)
+[03:37:45] *** Quits: KiChjang (KiChjang@moz-19h7ll.dynamic.uwaterloo.ca) (Quit: WeeChat 1.2)
+[03:38:07] *** Joins: dstrbad (dstrbad@moz-porbld.xnet.hr)
+[03:38:41] *** Joins: jviereck (Adium@moz-o5nloe.static.fusionbroadband.com)
+[03:38:49] *** Quits: ferdinandred (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[03:42:26] *** Quits: Rym (uid91135@moz-n2i7qm.charlton.irccloud.com) (Quit: Connection closed for inactivity)
+[03:45:11] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[03:45:11] -ghservo- [13servo] 15nnethercote opened pull request #6309: Instrument FreeType allocations. (06master...06instrument-freetype) 02http://git.io/vIuBP
+[03:45:11] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[03:49:00] *** Joins: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at)
+[03:52:20] <njn> "These commits modify unsafe code. Please review it carefully!"
+[03:52:31] * njn is looking forward to writing a patch one day that doesn't trigger that warning
+[03:52:42] <njn> I suspect Critic will be turned off first, though :/
+[03:53:03] *** Quits: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at) (Ping timeout: 121 seconds)
+[03:56:03] <mbrubeck> I think that message is from highfive, which will still be around.
+[03:56:10] *** Joins: crowbot (nodebot@moz-ap2fu6.compute-1.amazonaws.com)
+[03:56:11] *** Quits: crowbot1 (nodebot@moz-s1stbv.compute-1.amazonaws.com) (A TLS packet with unexpected length was received.)
+[03:59:02] *** Joins: squiggy (Mibbit@moz-hu6.nja.252.72.IP)
+[04:00:07] *** Quits: squiggy (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[04:25:46] <mwu> I've had that message even without modifying unsafe code
+[04:25:48] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[04:25:48] -ghservo- [13servo] 15frewsxcv opened pull request #6310: Remove unused file: components/util/fnv.rs (06master...06rm-unused-file) 02http://git.io/vIugt
+[04:25:48] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[04:29:48] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[04:29:48] -ghservo- [13servo] 15bors-servo pushed 2 new commits to 06tmp: 02http://git.io/vIugo
+[04:29:48] -ghservo- 13servo/06tmp 14cf20c89 15Corey Farwell: Remove unused file: components/util/fnv.rs
+[04:29:48] -ghservo- 13servo/06tmp 141c636dd 15bors-servo: Auto merge of #6310 - frewsxcv:rm-unused-file, r=Manishearth...
+[04:29:48] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[04:29:49] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[04:29:49] -ghservo- [13servo] 15bors-servo 04force-pushed 06auto from 14b968cdf to 141c636dd: 02http://git.io/A9I6iA
+[04:29:49] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[04:35:37] *** Joins: playjax (chatzilla@moz-p9o0gd.optusnet.com.au)
+[04:41:12] *** Joins: frewsxcv-mibbit (Mibbit@moz-aop213.ca.comcast.net)
+[04:43:27] <frewsxcv-mibbit> gw: have you already started on the rust-geom changes?
+[04:43:50] <gw> frewsxcv-mibbit: yep, I have some local changes towards that
+[04:43:54] *** Quits: jviereck (Adium@moz-o5nloe.static.fusionbroadband.com) (Quit: Leaving.)
+[04:44:00] <frewsxcv-mibbit> mbrubeck: i gladly accept the FOTT title :)
+[04:44:44] * frewsxcv-mibbit was on a flight all day today and the saw the nomination as soon as he landed
+[04:44:55] * frewsxcv-mibbit also notes that irccloud is down :(
+[04:45:57] <Manishearth> frewsxcv-mibbit: I think you're the only Servo FOTT there is right now :P
+[04:46:25] <frewsxcv-mibbit> gw: https://github.com/servo/rust-geom/compare/master...frewsxcv:improvements feel free to cherry pick any of these commits if they end up being helpful
+[04:46:35] <Manishearth> If you're active on the rust reddit I can give you purple Servo flair (disclaimer: not purple at the moment)
+[04:46:45] *** Joins: bholley (bholley@moz-opfa2j.ca.comcast.net)
+[04:47:04] <frewsxcv-mibbit> Manishearth: :D  i'm 'corevette' on reddit
+[04:47:17] * frewsxcv-mibbit really wishes he could add an alias for himself on reddit
+[04:47:28] <mbrubeck> It's okay, Ms2ger's DOM-Range spec has enough purple for all of us https://html5.org/specs/dom-range.html
+[04:47:35] <Manishearth> haha
+[04:47:57] <frewsxcv-mibbit> gw: alternatively, i can just open that as a separate PR if you think that's appropriate
+[04:49:15] <frewsxcv-mibbit> there wasn't anything that really prompted me to make those changes; i was reading through the code for my first time and changed stuff along the way
+[04:49:22] <gw> frewsxcv-mibbit: feel free to open a pr for them if you like, as my changes probably won't be ready for a while. or I will cherry pick them if they aren't merged by then :)
+[04:49:46] *** Joins: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at)
+[04:50:11] <Manishearth> frewsxcv-mibbit: done
+[04:50:23] <frewsxcv-mibbit> Manishearth: :)
+[04:51:36] <Manishearth> mbrubeck: we should maintain a list of FOTT on the wiki somewhere
+[04:53:30] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[04:53:30] -ghservo- [13rust-geom] 15frewsxcv opened pull request #81: Various improvements, clean up warnings, restructure constructors (06master...06improvements) 02http://git.io/vIuw2
+[04:53:30] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[04:53:53] *** Quits: dinfuehr (dinfuehr@moz-92ob90.highway.telekom.at) (Ping timeout: 121 seconds)
+[04:57:43] *** Quits: frewsxcv-mibbit (Mibbit@moz-aop213.ca.comcast.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[04:58:17] *** Joins: psd (psd@moz-a5ti4r.mtnl.net.in)
+[05:05:23] *** Quits: erickt (erickt@moz-njt.vqi.14.76.IP) (Ping timeout: 121 seconds)
+[05:06:35] *** Quits: dstrbad (dstrbad@moz-porbld.xnet.hr) (A TLS packet with unexpected length was received.)
+[05:08:15] *** Joins: mib_259xz2 (Mibbit@moz-hu6.nja.252.72.IP)
+[05:08:24] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[05:11:38] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[05:11:38] -ghservo- [13servo] 15bors-servo merged 06auto into 06master: 02http://git.io/vIugo
+[05:11:38] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[05:11:42] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[05:11:42] -ghservo- [13servo] 15bors-servo closed pull request #6310: Remove unused file: components/util/fnv.rs (06master...06rm-unused-file) 02http://git.io/vIugt
+[05:11:42] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[05:12:01] *** Quits: mib_259xz2 (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[05:14:19] *** Joins: dstrbad (dstrbad@moz-bt0.f6o.217.31.IP)
+[05:17:02] *** Joins: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net)
+[05:20:12] *** Joins: bogdan_maris (Instantbird@moz-662.esi.231.62.IP)
+[05:21:45] *** Joins: BenWa (bgirard@moz-ugq1bb.cable.teksavvy.com)
+[05:22:27] *** Joins: jviereck (Adium@moz-o5nloe.static.fusionbroadband.com)
+[05:22:36] <BenWa> I’m trying a few benchmark (Octane , Dromaeo, BrowserMark etc…) but none seem to work in servo. Is that expected?
+[05:24:15] *** Quits: twi (twi@moz-dhvtp3.clients.your-server.de) (A TLS packet with unexpected length was received.)
+[05:24:20] *** Joins: twi (twi@moz-dhvtp3.clients.your-server.de)
+[05:24:46] <mbrubeck> BenWa: Not too surprising.  Please file issues though; we should check out what's failing and prioritize fixing it...
+[05:25:22] <BenWa> I mean I can’t get anything to run. I’m assuming it’s known?
+[05:25:56] <mbrubeck> BenWa: Can you get basic stuff like http://mozilla.org to load?
+[05:26:11] <BenWa> Just no benchmark pages
+[05:26:33] *** Quits: bholley (bholley@moz-opfa2j.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[05:26:35] <mbrubeck> BenWa: Benchmarks tend to touch a lot of surface area - we have lots of gaps in DOM APIs in particular, and are using a ~3-year-old snapshot of SpiderMonkey
+[05:26:40] *** Quits: twi (twi@moz-dhvtp3.clients.your-server.de) (A TLS packet with unexpected length was received.)
+[05:26:42] *** Joins: twi (twi@moz-dhvtp3.clients.your-server.de)
+[05:26:50] *** Quits: Asandari (Asandari@moz-emp96u.cable.teksavvy.com) (Ping timeout: 121 seconds)
+[05:27:05] <BenWa> That’s fair. I just wanted to check if they should work (I had a bad build) or not
+[05:27:31] <BenWa> Got a servo profile using GeckoProfiler of scrolling. We’re blocking the main thread on presenting. Nothing too interesting: http://people.mozilla.org/~bgirard/cleopatra/#report=f872ee3057ad89c1f26abb884345cb54de9c1c4d&selection=0,3,4,5,151,152,225
+[05:27:50] <mbrubeck> nice!
+[05:28:11] <mbrubeck> "Error in worker: Exception: TypeError: functionName.startsWith is not a function" from Cleopatra in Firefox Nightly...
+[05:28:38] <mwu> I haven't been able to get sunspider to work with the new SM so it's probably a dom issue
+[05:28:53] <mwu> ERROR:js::rust: Error at https://www.webkit.org/perf/sunspider-1.0.2/sunspider-1.0.2/driver.html:40: TypeError: testFrame.contentDocument is null
+[05:28:55] <mbrubeck> occasionally pcwalton goes on a rampage to get some benchmark or other to work
+[05:28:58] <BenWa> Ahh, the profile just doesn’t load
+[05:29:05] <BenWa> err reload that is, works fine here
+[05:29:07] <mbrubeck> but our regression testing is not always complete enough to keep them working long-term. :/
+[05:29:31] <BenWa> Profiling servo was easy enough: DYLD_INSERT_LIBRARIES=out/Default/libGeckoProfiler.dylib ~/ben/servo/components/servo/target/release/servo https://www.mozilla.org/en-US/firefox/os/2.0/
+[05:29:53] <mbrubeck> We're starting to add more external tests like the jQuery test suite to our CI testing
+[05:30:09] <BenWa> Neat
+[05:30:28] <gw> BenWa: the main thread is the compositor thread, so it typically blocks if nothing is going on
+[05:30:48] <gw> (or, nothing for the compositor to do, anyway)
+[05:31:13] <BenWa> Ohh, makes total sense
+[05:31:27] <BenWa> Need to get the non main threads profiled with the standalone profiler library
+[05:32:51] <BenWa> I’ll post something official when I’m further. thanks for the info
+[05:33:14] <BenWa> Follow https://github.com/bgirard/GeckoProfiler if you want to see the progress
+[05:34:12] <gw> BenWa: nice! what is the gui built with?
+[05:35:07] <BenWa> gw: What do you mean? It’s just people.mozilla.org/~bgirard/cleopatra, a webapp
+[05:35:40] *** Quits: Jesse (jruderman@moz-cfhap5.mtv2.mozilla.com) (Client exited)
+[05:36:29] *** Joins: naudtov (naudtov@moz-9fcbja.ca.comcast.net)
+[05:37:02] <gw> BenWa: ah, I see, nice
+[05:37:27] *** Quits: naudtov (naudtov@moz-9fcbja.ca.comcast.net) (Quit: Textual IRC Client: www.textualapp.com)
+[05:39:52] <BenWa> mbrubeck: it loads now if you want to see http://people.mozilla.org/~bgirard/cleopatra/#report=f872ee3057ad89c1f26abb884345cb54de9c1c4d&selection=0,3,4,5,151,152,225
+[05:39:58] <BenWa> make sure to force reload if it doesn;t
+[05:41:09] *** Joins: ldng (ldng@moz-l3gmiq.abo.bbox.fr)
+[05:42:19] *** Joins: brendan (brendaneich@moz-2kq05h.static-ip.telepacific.net)
+[05:42:27] *** Quits: jviereck (Adium@moz-o5nloe.static.fusionbroadband.com) (Quit: Leaving.)
+[05:44:34] *** Quits: ldng (ldng@moz-l3gmiq.abo.bbox.fr) (Quit: Leaving)
+[05:46:30] *** Quits: playjax (chatzilla@moz-p9o0gd.optusnet.com.au) (Ping timeout: 121 seconds)
+[05:48:08] <njn> gw: you know much about LayoutWorkers?
+[05:48:38] <njn> gw: I've finally determined that the FontContexts they have in their thread-local storage are the big ones (i.e. big FreeType instances)
+[05:48:39] <gw> njn: a reasonable amount, yep. what's up?
+[05:48:48] <njn> gw: so I want to do memory reporting for them
+[05:48:52] <gw> ok
+[05:49:02] <njn> gw: trying to work out how to handle the inter-thread communication between the memory profiler and the LayoutWorkers
+[05:49:12] <njn> they're using WorkQueue, which complicates things
+[05:49:19] <gw> njn: yea. let me just take a look
+[05:50:20] <gw> njn: see new_animations_sender in SharedLayoutContext ?
+[05:50:35] <gw> njn: perhaps you could do something similar
+[05:50:38] *** Quits: dbaron (dbaron@moz-12jr9n.dynamic.fusionbroadband.com) (Ping timeout: 121 seconds)
+[05:50:49] <gw> njn: where the layout threads use the sender there to report memory usage per worker?
+[05:52:16] <gw> njn: that's used by the layout workers to trigger new animations as they are encountered during css matching
+[05:52:23] <njn> gw: where are the messages that go throug new_animiations_sender() received?
+[05:53:23] <gw> njn: in process_new_animations, which is called by the layout task at the end of the reflow
+[05:53:47] <gw> njn: so it effectively queues up messages from the worker threads, which are then handled by the owner layout task
+[05:55:27] <njn> gw: so the LayoutWorker threads need to be able to receive a "CollectReports" message from the memory profiler
+[05:55:29] <njn> possibly via the LayoutTask
+[05:56:18] <gw> njn: trying to remember how that stuff works - does the layout task currently receive a similar message now?
+[05:56:31] <njn> gw: from the memory reporter? yes
+[05:57:18] <njn> LayoutChan implements `Reporter`
+[05:58:04] <njn> when LayoutChan receives a collect_reports request from the profiler, it injects a `CollectReports` message into LayoutTask's event loop
+[05:58:36] <njn> it's hard to do exactly that with the WorkerQueue because they have vanilla channels
+[05:58:48] <njn> so I can't make the worker's channels implement `Report`, AFAICT
+[05:59:02] <gw> njn: hmmm, looking
+[06:00:27] <njn> maybe I can create a wrapper of sorts for the work_chan
+[06:01:40] <njn> gw: yeah... I think that'll work
+[06:01:46] <njn> I can store it next to the WorkQueue
+[06:01:57] <gw> njn: I think, if you create a function in workqueue.rs, similar to run(), you could iterate each of the threads, and call a closure, which reports the stats?
+[06:02:31] <gw> njn: I don't quite follow what you said above?
+[06:02:35] <njn> gw: I see... generalize it so that we can measure any kind of WorkQueue?
+[06:02:54] *** Joins: RJ (sid1@moz-bfakr9.highgate.irccloud.com)
+[06:02:58] *** Quits: RJ (sid1@moz-bfakr9.highgate.irccloud.com) (Connection closed)
+[06:03:24] *** Joins: RJ (sid1@moz-bfakr9.highgate.irccloud.com)
+[06:03:59] <gw> njn: yea, although if you have a simpler way to implement it (still not quite sure what you meant by the above), go for it
+[06:04:31] <njn> gw: well, I have two possibilities, which is two more than I had before we started talking :) thank you
+[06:04:31] *** Joins: pkondzior (sid768@moz-nrgp4s.highgate.irccloud.com)
+[06:05:04] <gw> njn: no probs :)
+[06:05:23] <njn> gw: though I don't quite understand WorkQueue::run
+[06:05:31] <njn> esp. this:
+[06:05:34] <njn>         // Wait for the work to finish.
+[06:05:35] <njn>         drop(self.port.recv());
+[06:05:58] *** Joins: wycats (sid79@moz-b4lrm3.brockwell.irccloud.com)
+[06:06:36] <gw> njn: see line 165 of workqueue - only the last work unit (done via atomics) sends a message back to the supervisor to say the work is now complete
+[06:06:56] <njn> gw: ah, thank you
+[06:07:42] <gw> njn: but, what I was pondering would not require that at all - it would be a different message to ::Start, which is just used for running a function on each of the worker threads (which of course is not guaranteed if you run a normal work unit since it steals work :) )
+[06:07:53] *** Joins: akiss (akiss@moz-ci925s.inf.u-szeged.hu)
+[06:08:34] <njn> gw: ok
+[06:09:08] * gw heads out for a bit
+[06:09:59] *** Quits: dstrbad (dstrbad@moz-bt0.f6o.217.31.IP) (A TLS packet with unexpected length was received.)
+[06:11:40] *** Joins: jandem (sid16255@moz-2gehe3.highgate.irccloud.com)
+[06:11:45] *** Joins: mihnea_ (sid16310@moz-87gr0i.highgate.irccloud.com)
+[06:13:22] *** Quits: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP) (Quit: 堕入 /dev/null)
+[06:13:51] *** Joins: dinfuehr (dinfuehr@moz-c25.u8s.112.91.IP)
+[06:15:32] *** Joins: dstrbad (dstrbad@moz-bt0.f6o.217.31.IP)
+[06:16:50] *** Joins: jonalmeida (sid17545@moz-c167m6.highgate.irccloud.com)
+[06:17:48] *** Joins: merl (sid17756@moz-n96e6m.highgate.irccloud.com)
+[06:20:35] *** Joins: fkaa (tundmatu@moz-501od2.business.telia.com)
+[06:22:36] *** Joins: jack (sid19593@moz-fhlsm9.highgate.irccloud.com)
+[06:22:36] *** ChanServ sets mode: +o jack
+[06:25:27] *** Joins: jryans (sid12941@moz-u4l2d8.brockwell.irccloud.com)
+[06:27:53] *** Joins: dstrbad_ (dstrbad@moz-bt0.f6o.217.31.IP)
+[06:28:08] *** Quits: dstrbad (dstrbad@moz-bt0.f6o.217.31.IP) (Connection closed)
+[06:28:17] *** Joins: burg (sid14893@moz-r6aeph.brockwell.irccloud.com)
+[06:28:41] *** Joins: aravindavk (aravinda@moz-m6j.f0d.244.121.IP)
+[06:32:32] *** Quits: simme (sid33727@moz-07u411.ealing.irccloud.com) (Ping timeout: 121 seconds)
+[06:32:32] *** Quits: dmarcos (sid15240@moz-9ahsin.ealing.irccloud.com) (Ping timeout: 121 seconds)
+[06:32:33] *** Quits: bigbluehat (sid632@moz-e9hfd2.ealing.irccloud.com) (Ping timeout: 121 seconds)
+[06:32:35] *** Quits: zwarich (sid63988@moz-402giv.ealing.irccloud.com) (Ping timeout: 121 seconds)
+[06:33:02] *** Quits: bpierre (sid33117@moz-2g65u1.ealing.irccloud.com) (Ping timeout: 121 seconds)
+[06:33:02] *** Quits: nox (sid3872@moz-fvvn96.ealing.irccloud.com) (Ping timeout: 121 seconds)
+[06:33:06] *** Quits: dherman (sid7996@moz-u0jlif.ealing.irccloud.com) (Ping timeout: 121 seconds)
+[06:34:13] *** Joins: flaki (sid26072@moz-kltomo.highgate.irccloud.com)
+[06:35:28] *** Joins: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP)
+[06:35:42] <BenWa> Is there an easy way to toggle the layout/PaintWorker thread count?
+[06:36:44] *** Quits: aravindavk (aravinda@moz-m6j.f0d.244.121.IP) (Ping timeout: 121 seconds)
+[06:37:42] *** Joins: KiChjang (KiChjang@moz-19h7ll.dynamic.uwaterloo.ca)
+[06:37:54] *** Joins: aravindavk (aravinda@moz-so4.f0d.244.121.IP)
+[06:37:54] *** Quits: aravindavk (aravinda@moz-so4.f0d.244.121.IP) (Quit: Konversation terminated!)
+[06:38:02] *** Joins: aravindavk (aravinda@moz-so4.f0d.244.121.IP)
+[06:38:18] *** Quits: aravindavk (aravinda@moz-so4.f0d.244.121.IP) (Quit: Konversation terminated!)
+[06:38:27] *** Joins: Asandari (Asandari@moz-emp96u.cable.teksavvy.com)
+[06:38:28] *** Joins: aravindavk (aravinda@moz-so4.f0d.244.121.IP)
+[06:39:28] *** Joins: spastorino (sid27384@moz-i6sgse.brockwell.irccloud.com)
+[06:39:36] *** Joins: Ms2ger (Ms2ger@moz-vbh.07m.182.91.IP)
+[06:39:58] *** Joins: steshaw (sid30841@moz-mij4a1.highgate.irccloud.com)
+[06:42:03] *** Joins: je_julie (uid29643@moz-2q4j9e.brockwell.irccloud.com)
+[06:45:07] *** Joins: mno2 (sid33176@moz-nd1l6h.brockwell.irccloud.com)
+[06:46:23] *** Joins: alphonse23 (sid34238@moz-rhoj7i.brockwell.irccloud.com)
+[06:46:41] *** Joins: eibwen (eibwen@moz-slg8kg.dip0.t-ipconnect.de)
+[06:48:20] *** Joins: aturon (sid36348@moz-n3h4qj.brockwell.irccloud.com)
+[06:50:59] *** Quits: eibwen (eibwen@moz-slg8kg.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[06:53:24] *** Quits: evilpie (sid7877@moz-cergcq.charlton.irccloud.com) (Connection closed)
+[06:53:24] *** Quits: jaeju (sid11274@moz-fdm1ku.charlton.irccloud.com) (A TLS packet with unexpected length was received.)
+[06:53:24] *** Quits: ggherdov_ (sid11402@moz-u71qnt.charlton.irccloud.com) (Connection closed)
+[06:53:24] *** Quits: krit (sid15081@moz-itd50n.charlton.irccloud.com) (A TLS packet with unexpected length was received.)
+[06:53:24] *** Quits: jagtalon (sid24114@moz-mr5hqr.charlton.irccloud.com) (A TLS packet with unexpected length was received.)
+[06:53:24] *** Quits: dkua (sid29936@moz-74bhjj.charlton.irccloud.com) (A TLS packet with unexpected length was received.)
+[06:53:25] *** Quits: Gankro (sid71432@moz-sc2bd6.charlton.irccloud.com) (A TLS packet with unexpected length was received.)
+[06:53:25] *** Quits: mystor (sid79584@moz-761b3h.charlton.irccloud.com) (A TLS packet with unexpected length was received.)
+[06:55:46] *** Joins: Viewtiful (Viewtiful@moz-eub.afi.30.89.IP)
+[07:04:28] *** Quits: nattokirai (nattokirai@moz-86b4bs.bitcat.net) (Ping timeout: 121 seconds)
+[07:05:18] *** Joins: bigbluehat (sid632@moz-e9hfd2.ealing.irccloud.com)
+[07:09:12] *** Joins: nox (sid3872@moz-fvvn96.ealing.irccloud.com)
+[07:09:24] *** Quits: BenWa (bgirard@moz-ugq1bb.cable.teksavvy.com) (Client exited)
+[07:11:05] *** Joins: evilpie (sid7877@moz-cergcq.charlton.irccloud.com)
+[07:11:11] *** Quits: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net) (Connection closed)
+[07:11:16] *** Quits: aravindavk (aravinda@moz-so4.f0d.244.121.IP) (Ping timeout: 121 seconds)
+[07:12:29] *** Joins: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net)
+[07:13:23] *** Joins: jaeju (sid11274@moz-fdm1ku.charlton.irccloud.com)
+[07:13:45] *** Joins: ggherdov_ (sid11402@moz-u71qnt.charlton.irccloud.com)
+[07:15:31] *** Joins: dherman (sid7996@moz-u0jlif.ealing.irccloud.com)
+[07:16:25] *** Quits: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP) (Ping timeout: 121 seconds)
+[07:19:04] *** Joins: krit (sid15081@moz-itd50n.charlton.irccloud.com)
+[07:19:09] <Ms2ger> "35% of the time in the script crate is trait resolution"
+[07:19:10] <Ms2ger> Wat
+[07:20:38] *** Joins: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP)
+[07:22:46] <Manishearth> Ms2ger: bindings traits
+[07:22:59] <Ms2ger> Yuck
+[07:23:19] *** Joins: dmarcos (sid15240@moz-9ahsin.ealing.irccloud.com)
+[07:25:44] *** Joins: jagtalon (sid24114@moz-mr5hqr.charlton.irccloud.com)
+[07:27:06] *** Joins: jviereck (Adium@moz-3s5.tdl.56.172.IP)
+[07:28:57] <gw> BenWa: yes, there are command line options (-y and -t)
+[07:30:19] *** Quits: mwu (mwu@moz-fuct9d.oi2i.p882.0085.2601.IP) (Quit: Leaving)
+[07:30:27] *** Joins: dkua (sid29936@moz-74bhjj.charlton.irccloud.com)
+[07:32:50] *** Joins: reem (sid78397@moz-octfcu.brockwell.irccloud.com)
+[07:34:20] *** Joins: bpierre (sid33117@moz-2g65u1.ealing.irccloud.com)
+[07:34:52] *** Joins: simme (sid33727@moz-07u411.ealing.irccloud.com)
+[07:37:13] *** Joins: frewsxcv (sid86219@moz-dneii9.brockwell.irccloud.com)
+[07:43:03] *** Joins: mskrzypkows (m.skrzypkow@moz-u9sv8i.itsa.net.pl)
+[07:45:30] *** Quits: KiChjang (KiChjang@moz-19h7ll.dynamic.uwaterloo.ca) (Quit: WeeChat 1.2)
+[07:51:03] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[07:54:07] *** Joins: cakecatz (cakecatz@moz-u6p4rc.so-net.ne.jp)
+[07:56:26] *** Quits: njn (chatzilla@moz-c6c476.iinet.net.au) (Quit: ChatZilla 0.9.91.1 [Firefox 41.0a1/20150531163607])
+[07:58:07] *** Joins: zwarich (sid63988@moz-402giv.ealing.irccloud.com)
+[07:59:28] *** Joins: Gankro (sid71432@moz-sc2bd6.charlton.irccloud.com)
+[08:00:31] *** Quits: brendan (brendaneich@moz-2kq05h.static-ip.telepacific.net) (Client exited)
+[08:01:15] *** Joins: akiss_ (akiss@moz-c6colr.inf.u-szeged.hu)
+[08:01:43] *** Joins: erickt (erickt@moz-njt.vqi.14.76.IP)
+[08:03:13] *** Joins: mystor (sid79584@moz-761b3h.charlton.irccloud.com)
+[08:03:22] *** Quits: akiss (akiss@moz-ci925s.inf.u-szeged.hu) (Ping timeout: 121 seconds)
+[08:05:50] *** Quits: erickt (erickt@moz-njt.vqi.14.76.IP) (Ping timeout: 121 seconds)
+[08:12:42] *** Quits: dstrbad_ (dstrbad@moz-bt0.f6o.217.31.IP) (A TLS packet with unexpected length was received.)
+[08:15:48] *** Joins: aravindavk (aravinda@moz-m6j.f0d.244.121.IP)
+[08:19:29] *** Joins: kmicu (kmicu@moz-uga.edn.218.91.IP)
+[08:21:54] *** Quits: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com) (Ping timeout: 121 seconds)
+[08:22:36] *** Joins: laumann (thomas@moz-gqpfnm.science.ku.dk)
+[08:27:44] *** Joins: dstrbad (dstrbad@moz-porbld.xnet.hr)
+[08:29:48] *** Quits: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[08:31:51] *** Joins: Jesse (jruderman@moz-h28sem.sntcca.sbcglobal.net)
+[08:32:14] <nox> Damn I missed the meeting.
+[08:32:29] <nox> I wanted to know why in geom Matrix4 is reversed with regard to the specs.
+[08:33:19] *** Joins: bjz (bjz@moz-puppgq.tpgi.com.au)
+[08:34:02] *** Joins: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com)
+[08:47:09] *** Joins: bombless_ (bombless@moz-pk7.rup.13.122.IP)
+[08:51:20] *** Joins: tglman (tglman@moz-l8btep.as13285.net)
+[08:52:12] *** Quits: stl (stl@moz-6r1bf1.broadband.corbina.ru) (Ping timeout: 121 seconds)
+[08:52:48] *** Joins: Guest46 (textual@moz-ok2.c8p.157.183.IP)
+[09:02:04] *** Quits: Jesse (jruderman@moz-h28sem.sntcca.sbcglobal.net) (Client exited)
+[09:02:48] *** Joins: psd_ (psd@moz-q57m8t.mtnl.net.in)
+[09:05:42] *** Joins: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP)
+[09:06:11] *** Quits: psd (psd@moz-a5ti4r.mtnl.net.in) (Ping timeout: 121 seconds)
+[09:07:06] *** Joins: stl (stl@moz-o95.t8r.15.176.IP)
+[09:12:28] <SimonSapin> nox: maybe it matches skia/moz2d?
+[09:16:49] <nox> SimonSapin: Why are skia/moz2d reversed? :P
+[09:22:09] <SimonSapin> I don’t know, but last time I looked into something like that it all traced back to PostScript
+[09:26:36] *** Quits: bdero (bran@moz-lbs.91h.47.73.IP) (Connection closed)
+[09:27:06] <nox> SimonSapin: I see.
+[09:31:06] <jgraham> When in doubt go forth and blame postscript?
+[09:36:36] *** Quits: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com) (Ping timeout: 121 seconds)
+[09:38:29] *** Quits: tglman (tglman@moz-l8btep.as13285.net) (Ping timeout: 121 seconds)
+[09:43:17] <SimonSapin> jgraham: for gfx stuff, yes
+[09:44:05] <SimonSapin> for text stuff blame 80’s Unicode
+[09:44:09] <SimonSapin> or maybe just Unicode
+[09:48:33] <jgraham> SimonSapin: I was really only going for the Forth pun ;)
+[09:48:55] <jgraham> But I don't disagree :)
+[09:49:25] * SimonSapin looks at Wikipeda
+[09:49:26] <SimonSapin> oh
+[09:50:19] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[09:50:19] -ghservo- [13string-cache] 15SimonSapin pushed 1 new commit to 06no_static_assert: 02http://git.io/vIz1g
+[09:50:19] -ghservo- 13string-cache/06no_static_assert 14e66ba20 15Simon Sapin: Travis-CI now defaults to Rust stable. Use nightly.
+[09:50:19] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[09:50:56] *** Joins: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com)
+[09:51:05] <jgraham> Sorry :)
+[09:59:12] <Manishearth>  jgraham but not the Go pun?
+[10:00:29] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[10:00:29] -ghservo- [13string-cache] 15SimonSapin pushed 1 new commit to 06no_static_assert: 02http://git.io/vIzSa
+[10:00:29] -ghservo- 13string-cache/06no_static_assert 14d16898a 15Simon Sapin: Update examples/summarize-events
+[10:00:29] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[10:02:00] <jgraham> Manishearth: The go pun was at least unintentional :)
+[10:02:23] <SimonSapin> Manishearth: r? https://github.com/servo/string-cache/pull/85
+[10:02:23] <crowbot> PR #85: Remove usage of #[static_assert] - https://github.com/servo/string-cache/pull/85
+[10:06:14] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[10:06:14] -ghservo- [13string-cache] 15Manishearth pushed 1 new commit to 06master: 02http://git.io/vIzHO
+[10:06:14] -ghservo- 13string-cache/06master 1445f1906 15Manish Goregaokar: Merge pull request #85 from servo/no_static_assert...
+[10:06:14] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[10:06:17] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[10:06:17] -ghservo- [13string-cache] 15Manishearth 04deleted 06no_static_assert at 14d16898a: 02http://git.io/vIzH3
+[10:06:17] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[10:09:58] *** Joins: tglman (tglman@moz-hrm.ske.117.94.IP)
+[10:10:02] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[10:10:02] -ghservo- [13string-cache] 15SimonSapin tagged 06v0.1.2 at 06master: 02http://git.io/vIzQU
+[10:10:02] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[10:16:16] *** Quits: slyu (slyu@moz-2hf62a.HINET-IP.hinet.net) (A TLS packet with unexpected length was received.)
+[10:18:23] *** Quits: Viewtiful (Viewtiful@moz-eub.afi.30.89.IP) (Connection closed)
+[10:26:39] *** Quits: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP) (Connection closed)
+[10:27:55] *** Joins: robertknight_ic (sid15951@moz-cjv40p.highgate.irccloud.com)
+[10:30:50] *** Joins: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP)
+[10:32:25] *** Quits: aravindavk (aravinda@moz-m6j.f0d.244.121.IP) (Ping timeout: 121 seconds)
+[10:34:23] *** Quits: jviereck (Adium@moz-3s5.tdl.56.172.IP) (Quit: Leaving.)
+[10:37:33] *** Joins: Viewtiful (Viewtiful@moz-eub.afi.30.89.IP)
+[10:41:26] *** Quits: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP) (Connection closed)
+[10:41:46] *** Joins: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP)
+[10:42:01] *** Quits: Viewtiful (Viewtiful@moz-eub.afi.30.89.IP) (Quit: Leaving...)
+[10:42:01] *** Quits: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP) (Connection closed)
+[10:42:22] *** Joins: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP)
+[10:42:39] *** Quits: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP) (Connection closed)
+[10:43:00] *** Quits: tglman (tglman@moz-hrm.ske.117.94.IP) (Ping timeout: 121 seconds)
+[10:44:14] *** Joins: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP)
+[10:46:19] *** Quits: nmatsakis (nmatsakis@moz-no0.93r.245.63.IP) (Ping timeout: 121 seconds)
+[10:47:06] *** Joins: nmatsakis (nmatsakis@moz-no0.93r.245.63.IP)
+[10:48:07] *** Quits: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP) (Connection closed)
+[10:48:31] *** Quits: dstrbad (dstrbad@moz-porbld.xnet.hr) (A TLS packet with unexpected length was received.)
+[10:49:25] *** Joins: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP)
+[10:51:20] *** Quits: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP) (Connection closed)
+[10:52:11] *** Joins: tglman (tglman@moz-hrm.ske.117.94.IP)
+[10:55:31] *** Joins: duncan (paul@moz-9vabq7.sgnwmi.sbcglobal.net)
+[10:56:08] *** Joins: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP)
+[10:59:44] *** Joins: dstrbad (dstrbad@moz-porbld.xnet.hr)
+[10:59:47] *** Joins: aravindavk (aravinda@moz-m6j.f0d.244.121.IP)
+[11:00:40] *** Quits: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP) (Ping timeout: 121 seconds)
+[11:01:33] *** Joins: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP)
+[11:11:27] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[11:16:13] *** Quits: tglman (tglman@moz-hrm.ske.117.94.IP) (Ping timeout: 121 seconds)
+[11:16:19] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[11:16:19] -ghservo- [13servo] 15Ms2ger opened pull request #6311: Start precomputing presentational hints. (06master...06preshints-attr) 02http://git.io/vIgkl
+[11:16:19] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[11:17:21] *** Quits: aravindavk (aravinda@moz-m6j.f0d.244.121.IP) (Ping timeout: 121 seconds)
+[11:18:19] *** Quits: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com) (Ping timeout: 121 seconds)
+[11:19:20] *** Quits: cakecatz (cakecatz@moz-u6p4rc.so-net.ne.jp) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[11:19:38] *** Quits: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP) (Quit: Leaving)
+[11:20:35] *** Joins: aravindavk (aravinda@moz-m6j.f0d.244.121.IP)
+[11:25:40] *** Joins: Yoric (Yoric@moz-no0.93r.245.63.IP)
+[11:25:42] <Yoric> Hi
+[11:25:52] <Yoric> What's the status of putting Rust-based components on mozilla-central? Is that legal yet?
+[11:26:49] <Yoric> SimonSapin: ^
+[11:27:08] <SimonSapin> Yoric: https://bugzilla.mozilla.org/show_bug.cgi?id=oxidation is the metabug
+[11:27:52] <Yoric> Thanks.
+[11:28:04] <Yoric> Because the component I'm working on right now looks like a good candidate for oxidation.
+[11:28:26] <SimonSapin> Yoric: I think it’s find to land whatever you can make work if it’s off by default, but we need to solve things like OS X 10.6 support before it can be shipped
+[11:28:34] <SimonSapin> s/find/fine/
+[11:38:38] <Manishearth> Yoric: o/
+[11:38:44] <Manishearth> what's the component?
+[11:39:06] <Manishearth> SimonSapin: I thought we solved that?
+[11:39:39] <SimonSapin> Manishearth: Dunno, I just see gh 1166996 still open
+[11:39:52] <Manishearth> h,
+[11:40:01] <SimonSapin> eh not gh, https://bugzilla.mozilla.org/show_bug.cgi?id=1166996
+[11:40:05] <firebot> Bug 1166996 — NEW, nobody@mozilla.org — rustc doesn't support MacOS X 10.6
+[11:41:30] <Yoric> Manishearth: WebRTC has a LoadMonitor that monitors, well, the load of the operating system and the current process.
+[11:41:44] <Yoric> I am in the process of extracting it from WebRTC and into toolkit.
+[11:41:53] <Yoric> But, well, writing multi-threaded code in C++ is no fun.
+[11:41:54] <Manishearth> oh, nice
+[11:42:47] <Yoric> I'd be happy to make it my first Rust contribution to m-c.
+[11:42:52] <Manishearth> :)
+[11:43:15] <Manishearth> Yoric: so is this a fx dev tool, or something that needs to go in production?
+[11:43:29] <Yoric> This would eventually go in production.
+[11:43:38] <Yoric> But it may remain locked to nightly for some time.
+[11:43:42] <Manishearth> okay
+[11:43:47] <Manishearth> in that case Rust sounds okay
+[11:43:56] <Yoric> Anyway, I'm too wasted to write code right now.
+[11:44:00] <Yoric> I'll take a nap.
+[11:44:12] <Manishearth> Yoric: the current state of rust components is : There is build system support, but you should put all rust components behind a flag
+[11:44:15] <Manishearth> ;)
+[11:44:29] <Yoric> Being a daddy is hard :)
+[11:44:31] <Manishearth> and nothing past nightly
+[11:44:32] <Manishearth> hah
+[11:51:07] *** Quits: kmicu (kmicu@moz-uga.edn.218.91.IP) (Ping timeout: 121 seconds)
+[11:56:32] *** Joins: mib_ifq2rs (Mibbit@moz-hu6.nja.252.72.IP)
+[12:00:25] *** Joins: kmicu (kmicu@moz-uga.edn.218.91.IP)
+[12:03:38] *** Quits: mib_ifq2rs (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[12:04:23] *** Joins: tglman (tglman@moz-l8btep.as13285.net)
+[12:13:38] *** Joins: mukilan (mukilan@moz-5ke.d4s.164.122.IP)
+[12:15:14] <nox> larsberg: http://build.servo.org/builders/linux2/builds/1967/steps/shell_1/logs/stdio Same problem than yesterday, no?
+[12:19:29] <Ms2ger> assert_true: If this is failing: DANGER, are you sure you want to expose the new interface TestBindingProxy to all webpages as a property on the window? Do not make a change to this file without review from jdm or Ms2ger for that specific change! expected true got false
+[12:19:32] <Ms2ger> r=me
+[12:20:51] <nox> Ms2ger: I mean the XHR ones.
+[12:24:42] <Ms2ger> Can't find an issue for timeout-cors-async.htm
+[12:25:37] *** Quits: kmicu (kmicu@moz-uga.edn.218.91.IP) (Ping timeout: 121 seconds)
+[12:26:55] *** Joins: kmicu (kmicu@moz-uga.edn.218.91.IP)
+[12:27:01] <nox> Ms2ger: It happened yesterday on two other PRs, IIRC.
+[12:27:22] <nox> Ms2ger: http://build.servo.org/builders/linux2/builds/1966/steps/shell_1/logs/stdio
+[12:29:55] <Ms2ger> Can you file an issue, please
+[12:34:14] <larsberg> nox: yes, cc me on the big and I will try to look into it today. I suspect it's that one build machine
+[12:35:06] <larsberg> Yoric: I feel your pain! My kid just turned one, and only started sleeping through the night about a month ago...
+[12:36:43] <nox> On the big?
+[12:36:51] <Ms2ger> bug
+[12:36:58] <nox> Oh right, I'm so slow today.
+[12:37:17] <nox> Ms2ger: Is there an issue for the other XHR bug?
+[12:39:08] <jgraham> larsberg: Speaking of build machines, any plan to make the macs all run the same OSX?
+[12:39:09] *** Joins: tromey (tromey@moz-m3id6o.hlrn.qwest.net)
+[12:39:42] <larsberg> jgraham: yes, I'd like to upgrade them all this week :)
+[12:40:34] <jgraham> Excellent
+[12:40:59] <larsberg> nox: sorry, on phone typo
+[12:45:59] *** AutomatedTester|AFK is now known as AutomatedTester
+[12:46:44] *** Joins: bdero (bran@moz-e4f4ei.mit.edu)
+[12:48:16] *** Joins: ahal (ahal@moz-b8e0a0.cpe.pppoe.ca)
+[12:48:54] *** Quits: aravindavk (aravinda@moz-m6j.f0d.244.121.IP) (Ping timeout: 121 seconds)
+[12:49:40] *** Joins: bernartrex (Mibbit@moz-hu6.nja.252.72.IP)
+[12:51:25] *** Joins: nattokirai (nattokirai@moz-rq9a8e.asahi-net.or.jp)
+[12:58:47] *** Quits: bernartrex (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[13:08:50] *** Joins: mib_82h0gb (Mibbit@moz-hu6.nja.252.72.IP)
+[13:09:16] *** Quits: mib_82h0gb (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[13:10:08] *** Quits: bombless_ (bombless@moz-pk7.rup.13.122.IP) (Quit: Leaving)
+[13:11:11] *** Joins: ProgramFOX (ProgramFOX@moz-gfri5n.isp.belgacom.be)
+[13:30:04] *** Quits: Guest46 (textual@moz-ok2.c8p.157.183.IP) (Ping timeout: 121 seconds)
+[13:35:55] *** Quits: kmicu (kmicu@moz-uga.edn.218.91.IP) (Ping timeout: 121 seconds)
+[13:39:35] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[13:39:35] -ghservo- [13servo] 15zmike closed issue #5979: embedding: hw accel bikeshedding 02http://git.io/vUfkq
+[13:39:35] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[13:39:57] *** Joins: zenontrex (Mibbit@moz-hu6.nja.252.72.IP)
+[13:40:05] *** Joins: kmicu (kmicu@moz-uga.edn.218.91.IP)
+[13:40:39] *** Quits: zenontrex (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[13:46:29] <nox> So, let me create that issue.
+[13:46:34] <SimonSapin> bikeshedding has never been more efficient
+[13:46:53] <nox> SimonSapin: False.
+[13:46:56] <zmike_> I have a masters in bikeshedding
+[13:46:59] <nox> SimonSapin: We still don't have a ligature bikeshed.
+[13:47:19] <SimonSapin> nox: it’s hardware-accerelated now!
+[13:47:27] <nox> Ah ah.
+[13:47:47] <zmike_> it's EMBEDDED hardware-accelerated bikeshedding
+[13:48:07] <zmike_> so you can now have accelerated bikeshedding while you bikeshed
+[13:48:28] <SimonSapin> nox: it’s hardware-accerelated now!
+[13:48:33] <jgraham> Hmm, I'm not sure I like the sound of an accelerating bikeshed. How will I find it to park my bike?
+[13:48:53] <zmike_> it finds your bike for you
+[13:48:57] <zmike_> assuming the bike is the right color
+[13:49:16] <SimonSapin> oops, wrong window to ↑+enter
+[13:50:08] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[13:50:08] -ghservo- [13servo] 15nox opened issue #6312: Failure on many PRs for /XMLHttpRequest/timeout-cors-async.htm 02http://git.io/vIgAA
+[13:50:08] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[13:50:41] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[13:50:42] -ghservo- [13core-graphics-rs] 15frewsxcv opened pull request #38: Build and test on Travis CI (06master...06travis) 02http://git.io/vIgxI
+[13:50:42] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[13:52:47] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[13:52:47] -ghservo- [13servo] 15nox closed issue #6312: Failure on many PRs for /XMLHttpRequest/timeout-cors-async.htm 02http://git.io/vIgAA
+[13:52:47] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[13:53:03] <nox> Found another issue that references all the XHR intermittent failures.
+[13:57:29] <nox> https://github.com/servo/servo/pull/6308 Could we just use memcmp?
+[13:57:29] <crowbot> PR #6308: script: Make `PartialEq` on element type IDs generate a lot less code. - https://github.com/servo/servo/pull/6308
+[14:01:15] *** Joins: mib_7h9tnk (Mibbit@moz-hu6.nja.252.72.IP)
+[14:10:46] *** Quits: jgallagher (john@moz-6ge.dhn.131.24.IP) (Client exited)
+[14:10:50] *** Quits: valentin (icecold@moz-18sd7k.s0r2.3jub.2f0a.2a02.IP) (Quit: Leaving.)
+[14:18:15] *** Joins: dbaron (dbaron@moz-12jr9n.dynamic.fusionbroadband.com)
+[14:19:39] *** Quits: mib_7h9tnk (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[14:20:47] *** Quits: bogdan_maris (Instantbird@moz-662.esi.231.62.IP) (Client exited)
+[14:23:42] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[14:23:43] *** Joins: mwu (mwu@moz-6v1rva.oi2i.p882.0085.2601.IP)
+[14:25:53] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[14:29:49] <SimonSapin> nox: unused bytes in enum variants with smaller/less fields are undefined, aren’t they?
+[14:30:27] <SimonSapin> let _: Option<[u8; 100]> = None;
+[14:31:46] <Ms2ger> Yeah
+[14:33:44] *** Quits: dstrbad (dstrbad@moz-porbld.xnet.hr) (A TLS packet with unexpected length was received.)
+[14:34:57] <nox> Oh.
+[14:50:06] *** Quits: mskrzypkows (m.skrzypkow@moz-u9sv8i.itsa.net.pl) (Ping timeout: 121 seconds)
+[14:50:40] *** Joins: dstrbad (dstrbad@moz-bt0.f6o.217.31.IP)
+[14:51:16] *** Joins: brson (brson@moz-jd2.tdl.56.172.IP)
+[14:51:16] *** ChanServ sets mode: +o brson
+[14:55:25] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[14:55:36] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[14:56:53] *** Quits: dstrbad (dstrbad@moz-bt0.f6o.217.31.IP) (A TLS packet with unexpected length was received.)
+[14:59:23] *** Joins: BenWa (bgirard@moz-ugq1bb.cable.teksavvy.com)
+[15:03:28] *** Quits: acharles (acharles@moz-ulbdcn.ca.comcast.net) (Ping timeout: 121 seconds)
+[15:06:39] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[15:06:39] -ghservo- [13servo] 15bors-servo merged 06tmp into 06auto: 02http://git.io/vI2zj
+[15:06:39] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[15:09:34] *** Joins: mib_4ftmph (Mibbit@moz-hu6.nja.252.72.IP)
+[15:10:04] *** Joins: jgallagher (john@moz-d5e8oc.hfc.comcastbusiness.net)
+[15:12:07] *** Quits: mib_4ftmph (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:13:41] *** Joins: valentin (icecold@moz-ppt.54q.85.141.IP)
+[15:18:43] *** Joins: eibwen (eibwen@moz-slg8kg.dip0.t-ipconnect.de)
+[15:18:44] *** Quits: BenWa (bgirard@moz-ugq1bb.cable.teksavvy.com) (Client exited)
+[15:22:32] *** Joins: cakecatz (cakecatz@moz-rakufn.sannet.ne.jp)
+[15:30:14] *** Quits: dinfuehr (dinfuehr@moz-c25.u8s.112.91.IP) (Connection closed)
+[15:36:14] *** Joins: BenWa (bgirard@moz-i5m.05u.207.66.IP)
+[15:36:55] *** Joins: KiChjang (KiChjang@moz-19h7ll.dynamic.uwaterloo.ca)
+[15:37:24] <jack> SimonSapin: why in resource_dir_path() do you call pop four times?
+[15:37:31] <KiChjang> Manishearth: care to take a look at #6304?
+[15:37:31] <crowbot> Issue #6304: Preparing request for async - https://github.com/servo/servo/pull/6304
+[15:37:39] *** Joins: dstrbad (dstrbad@moz-scq0lu.dsl.iskon.hr)
+[15:37:41] <zmike_> jack: pretty sure I added some of those
+[15:37:48] <SimonSapin> jack: components/servo/target/debug has four components
+[15:37:57] <jack> ok
+[15:38:01] <SimonSapin> or something like that
+[15:38:37] <SimonSapin> I think we should have some convention on where to find the files instead
+[15:38:58] <jack> The last group makes no sense.
+[15:39:07] <SimonSapin> group?
+[15:39:08] <jack> I see going back one (removing the executable name)
+[15:39:10] <jack> and then going back two
+[15:39:17] <jack> after that, it makes no sense to me.
+[15:39:24] <jack> but the code does two more levels of shaving off two dirs.
+[15:40:15] <jack> https://www.irccloud.com/pastebin/wQL1hKgo/
+[15:40:58] <SimonSapin> pop() after push("resources") undoes that push, then then next pop goes one more level up
+[15:41:19] <SimonSapin> why we do that whole thing twice I don’t know
+[15:41:19] <jack> sure, but that has been outdated since target/debug existed.
+[15:41:25] <jack> and tehre's even one more after that!
+[15:42:18] <zmike_> so...I added the first part
+[15:42:30] <zmike_> because it wasn't checking for resources/ in the same directory
+[15:42:32] <SimonSapin> jack: how about starting from file!() instead of current_exe() ?
+[15:42:54] <zmike_> the rest of them I think are assuming that it's running stuff from inside the source tree
+[15:42:57] <jack> ok. because that makes no sense in a binary distribution :)
+[15:42:59] <zmike_> which imo is probably wrong
+[15:43:17] <jack> But this will have to change when we have those regardless.
+[15:43:42] <zmike_> a Pipeline only has one PaintTask, yes?
+[15:43:58] <jack> zmike: I think so, although that owns a threadpool.
+[15:44:04] <SimonSapin> jack: start with file!(), and if that doesn’t exist looks in /usr/share/servo or something for distributions?
+[15:44:18] <zmike_> ehh you can't just pass /usr/share
+[15:44:24] <zmike_> that's a configure thing and we don't have configure
+[15:45:14] <SimonSapin> use file!() and add a TODO for when we actually distribute binaries?
+[15:45:59] <zmike_> I think for "correctness" you just need to ensure that the path is passed into opts during init based on how the binary was compiled
+[15:46:25] <zmike_> eg. if you were compiling for a binary package where resources/ would be in /usr/share/servo then you would hardcode that value into that binary
+[15:46:46] <zmike_> for things like we're doing now where it's just source builds then it's just whatever
+[15:48:15] <jack> hmm. there's also the arch dir in here somewhere.
+[15:48:30] <jack> so there is one more level possible.
+[15:49:00] <jack> mach already doesn't handle that case.
+[15:49:52] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[15:49:52] -ghservo- [13servo] 15bors-servo merged 06auto into 06master: 02http://git.io/vI2zj
+[15:49:52] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[15:49:56] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[15:49:56] -ghservo- [13servo] 15bors-servo closed pull request #6293: Implement new WebGL interfaces and methods (06master...06webgl-objects) 02http://git.io/vItFg
+[15:49:56] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[15:50:36] <Manishearth> Btw, most of our feature flags are redundant. Eg feature(alloc) feature(collections) are just because we're lazy and haven't redirected to the facade
+[15:50:44] <Manishearth> I shall fix this today
+[15:50:47] *** Joins: umbridge (Mibbit@moz-hu6.nja.252.72.IP)
+[15:51:24] *** Quits: Nekit1234007 (nekit@moz-0a7.a78.189.91.IP) (A TLS packet with unexpected length was received.)
+[15:52:07] *** Joins: Nekit1234007 (nekit@moz-0a7.a78.189.91.IP)
+[15:53:25] *** Quits: umbridge (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:53:47] <zmike_> jack: are you familiar with paint task and compositor interactions, specifically with regard to resizes?
+[15:54:03] <jack> I used to be, but haven't touched that code in a while.
+[15:54:18] <zmike_> ok, I'll wait for pcwalton
+[15:54:32] <jack> Glenn is probably most knowledgeable currently. And Patrick.
+[15:54:59] <zmike_> glenn and I have exactly opposite sleep schedules now that I have severe jetlag
+[15:55:55] *** Quits: KiChjang (KiChjang@moz-19h7ll.dynamic.uwaterloo.ca) (Quit: WeeChat 1.2)
+[15:56:17] <jack> mbrubeck, SimonSapin: re-r? https://github.com/servo/servo/pull/6306
+[15:56:17] <crowbot> PR #6306: Use Cargo's target directory sharing. - https://github.com/servo/servo/pull/6306
+[15:58:21] <jack> edunham: do you know when cargo nightlies get built?
+[16:00:05] *** Joins: bholley (bholley@moz-opfa2j.ca.comcast.net)
+[16:00:36] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[16:00:36] -ghservo- [13servo] 15bors-servo pushed 0 new commits to 06tmp: 02http://git.io/vI2pb
+[16:00:36] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[16:00:39] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[16:00:39] -ghservo- [13servo] 15bors-servo merged 06tmp into 06auto: 02http://git.io/vI2pN
+[16:00:39] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[16:02:50] <SimonSapin> jack: I’m not sure what the timezone is in "Recent builds" in http://buildbot.rust-lang.org/builders/nightly-dist-rustc-trigger
+[16:03:33] <SimonSapin> that’s the start. http://buildbot.rust-lang.org/builders/nightly-dist-packaging-linux might be closer to the end
+[16:03:38] *** jandem is now known as jandem-away
+[16:03:56] <edunham> jack: i do not. servers are located in california but may be on utc.
+[16:04:23] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[16:04:24] <jack> well it says it's 1600 on that page
+[16:04:29] <jack> so either way it should be finished by now.
+[16:04:31] <mwu> oh wow, rustdoc supports javadoc style comments
+[16:04:34] <jack> yet there is no cargo nightly for today.
+[16:04:45] <Manishearth> jack: waterfall timings are utc
+[16:04:57] <jack> Download failed (403): Forbidden - https://static-rust-lang-org.s3.amazonaws.com/cargo-dist/2015-06-09/cargo-nightly-x86_64-unknown-linux-gnu.tar.gz
+[16:05:06] <SimonSapin> jack: interesting. http://buildbot.rust-lang.org/builders/nightly-dist-rustc-trigger says 03:00 for me. Maybe it’s using the timezone of the browser?
+[16:05:26] <jack> SimonSapin: it says 0300 for me too. But look at the bottom. It says page built 1608 or whatever.
+[16:05:46] <jack> So at least the build master thinks it is 13 hours past the start of the nightly build trigger :)
+[16:06:05] <SimonSapin> jack: that’s the time you loaded the page :)
+[16:06:30] <jack> Are you saying those times might not be in the same timezone? :)
+[16:06:55] <SimonSapin> "page built" changes every time I reload
+[16:07:04] <SimonSapin> and matches the current UTC time
+[16:08:08] <jack> http://buildbot.rust-lang.org/builders/nightly-dist-cargo-linux-64 is more specific, and builds earlier.
+[16:10:30] *** Joins: Rym (uid91135@moz-n2i7qm.charlton.irccloud.com)
+[16:10:38] <jack> nice. it failed but reported as success:
+[16:10:38] <jack> http://buildbot.rust-lang.org/builders/nightly-dist-cargo-linux-64/builds/170
+[16:10:56] <mwu> https://people.mozilla.org/~mwu/doc/proxy/struct.BaseProxyHandler.html from https://github.com/mozilla/gecko-dev/blob/master/js/public/Proxy.h#L142
+[16:11:01] <jack> actually, that seems to happen every day.
+[16:11:44] *** Joins: brendan (brendaneich@moz-2kq05h.static-ip.telepacific.net)
+[16:15:43] *** Joins: skippydippy (Mibbit@moz-hu6.nja.252.72.IP)
+[16:15:57] <jack> why is linux3 failing on needing gperf??
+[16:16:43] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[16:16:43] -ghservo- [13servo] 15bors-servo 04force-pushed 06auto from 14a78b685 to 14c2f55d2: 02http://git.io/A9I6iA
+[16:16:43] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[16:21:45] <larsberg> jack: the builder servo-linux3 has been having some "issues" - there's also #6312 and a bunch of timeouts
+[16:21:46] <crowbot> Issue #6312: Failure on many PRs for /XMLHttpRequest/timeout-cors-async.htm - https://github.com/servo/servo/issues/6312
+[16:22:56] <larsberg> Though the gperf thing is weird because it's also not on the other linux boxes
+[16:23:34] <jack> yeah, and this is not a failure i've ever seen before.
+[16:23:44] <jack> it's easy enough to install gperf i guess.
+[16:28:06] *** ahal is now known as ahal|afk
+[16:29:13] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[16:29:13] -ghservo- [13saltfs] 15metajack opened pull request #37: Add gperf, which is apparently needed by freetype-sys in some cases. (06master...06gperf) 02http://git.io/vIaOa
+[16:29:13] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[16:29:24] <jack> edunham: r? ^
+[16:29:32] <jack> edunham: also, here's your chance to run a deploy :)
+[16:30:00] *** Joins: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com)
+[16:30:16] *** Quits: bdero (bran@moz-e4f4ei.mit.edu) (Ping timeout: 121 seconds)
+[16:30:25] <jack> larsberg: linux1 also failed with the same error.
+[16:30:28] <jack> very strange.
+[16:30:38] <larsberg> jack: the machine was servo-linux3, though
+[16:30:55] <larsberg> that machine is cursed right now, it appears :-)
+[16:31:02] <jack> oh. differnet job mapped to same machine?
+[16:31:06] <jack> maybe we should rename the jobs.
+[16:31:36] <larsberg> yeah, Manishearth keeps telling me we should do it, but I figure we'll have a day of downtime when I do and mess up a bunch of the config, so I've been putting it off in favor of other ops fires
+[16:31:55] <Manishearth> larsberg: we could make it into a fire drill for edunham 
+[16:32:06] <larsberg> Manishearth: be nice :-)
+[16:32:13] <Manishearth> make the change, and then run off cackling evilly
+[16:32:15] <Manishearth> aw 
+[16:32:45] * Manishearth misses the old days of Servo Ops where we could just gate on gonk and then disappear
+[16:32:45] <edunham> Manishearth: would that be the highlight of your week?:)
+[16:32:46] <larsberg> gah, and the DNS entries still haven't been added for the new machines - https://bugzilla.mozilla.org/show_bug.cgi?id=1168923
+[16:32:51] <firebot> Bug 1168923 — NEW, infra@infra-ops.bugs — Please add some servo.org DNS entries
+[16:34:11] <Manishearth> edunham: The highlight of my week was a different set of fires that happened to my build at work :P
+[16:34:18] <edunham> larsberg: would it make sense for servo to end up managing its own dns eventually, like rust does? or do we depend on moz infrastructure due to how it's registered?
+[16:35:41] <jack> I don't know who owns the servo.org domain.
+[16:35:42] <Manishearth> edunham: does Rust own its own dns, or does Mozilla own it with Rust running the ns?
+[16:35:45] <larsberg> edunham: I wouldn't be against managing it directly, but up until this one the Moz IT folks have been super-quick with all of our dns entries
+[16:35:55] * jgraham imagines that the highlights of releng this week are provided by the total buildbot meltdown
+[16:36:05] <jack> yeah, owned by mozilla hostmaster.
+[16:36:11] <larsberg> jack: mozilla does - http://www.whois.com/whois/servo.org
+[16:36:29] <jack> rust-lang owned by graydon :)
+[16:36:57] <Manishearth> larsberg: we could have *.s.o redirect to the main server and host our own ns though. 
+[16:37:35] <Manishearth> but ... it soudns easier to let IT handle it
+[16:38:04] <Manishearth> jgraham: ooh, what kind of meltdown?
+[16:38:14] <larsberg> Manishearth: yeah, I have visions of an underpatched DNS server missing a zero day and turning into some sort of host for evil 
+[16:38:26] * larsberg is not great about keeping *.servo.org patched
+[16:38:58] <Manishearth> heh
+[16:38:59] * steveklabnik is irrationally terrified of DSN
+[16:39:01] <steveklabnik> DNS
+[16:39:06] <steveklabnik> something in my brain just turns off
+[16:39:14] <steveklabnik> DNS and parsers, hehe
+[16:39:19] <jgraham> Manishearth: Some hardware failed and took down the buildbot database with it
+[16:39:32] <jack> I just use dnsimple for my domains. it's been great.
+[16:39:35] <jgraham> Manishearth: bug 1172750
+[16:39:37] <firebot> https://bugzil.la/1172750 — NEW, scabral@mozilla.com — Trees closed for db corruption caused by bug 1172666
+[16:39:45] <jack> Hosting DNS is for suckers.
+[16:40:09] <Manishearth> jgraham: ah. I thought it was a software failure.
+[16:40:36] *** Quits: je_julie (uid29643@moz-2q4j9e.brockwell.irccloud.com) (Quit: Connection closed for inactivity)
+[16:41:00] *** Quits: laumann (thomas@moz-gqpfnm.science.ku.dk) (Ping timeout: 121 seconds)
+[16:41:14] *** Joins: Savago (Savago@moz-8hd.3b6.246.162.IP)
+[16:41:35] <Ms2ger> Half a year since the last servomeme :(
+[16:42:08] <Manishearth> Ms2ger: meta-meme: http://servomemes.tumblr.com/post/79357480162/eddyb-has-feelings-about-how-long-servo-goes
+[16:42:24] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[16:43:04] <Manishearth> steveklabnik: clearly your brain needs load balancing
+[16:43:09] <jack> Ms2ger: just use the last one to complain about the lack of servo memes
+[16:43:38] <steveklabnik> :)
+[16:45:18] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[16:45:18] -ghservo- [13servo] 15Ms2ger opened pull request #6313: Enable the url tests. (06master...06enable-url) 02http://git.io/vIaCO
+[16:45:18] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[16:45:29] <Ms2ger> rs?
+[16:46:13] *** Joins: bdero (bran@moz-nd2f6b.dyn.mit.edu)
+[16:46:34] <jgraham> rs+, not that it helps
+[16:46:51] <Manishearth> steveklabnik: larsberg Shadowmint's comments have spurred me to investigate Servo's feature flag usage and kill as much of it as possible
+[16:46:54] <Manishearth> excpet plugins
+[16:47:02] <Ms2ger> Hey, at least our buildbot isn't dead
+[16:47:03] * Manishearth will defend his right to write plugins!
+[16:47:18] <zmike_> hm
+[16:47:32] <zmike_> I think my embedding meme could be updated to "embedding api tests? you mean conference demos?"
+[16:47:35] <zmike_> larsberg ^
+[16:48:04] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[16:48:04] -ghservo- [13servo] 15bors-servo 04force-pushed 06auto from 14c2f55d2 to 14b6ccede: 02http://git.io/A9I6iA
+[16:48:04] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[16:48:15] *** Quits: Daniellynet (Cupcake@moz-bci30q.customer.tdc.net) (Connection closed)
+[16:49:33] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[16:49:42] *** Joins: MrZeus (MrZeus@moz-jf4304.skybroadband.com)
+[16:49:42] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[16:49:42] -ghservo- [13saltfs] 15metajack closed pull request #37: Add gperf, which is apparently needed by freetype-sys in some cases. (06master...06gperf) 02http://git.io/vIaOa
+[16:49:42] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[16:49:43] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[16:49:43] -ghservo- [13saltfs] 15metajack pushed 2 new commits to 06master: 02http://git.io/vIalX
+[16:49:43] -ghservo- 13saltfs/06master 149ffcded 15Jack Moffitt: Add gperf, which is apparently needed by freetype-sys in some cases.
+[16:49:43] -ghservo- 13saltfs/06master 149034da6 15Jack Moffitt: Merge pull request #37 from metajack/gperf...
+[16:49:43] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[16:49:50] *** Quits: brendan (brendaneich@moz-2kq05h.static-ip.telepacific.net) (Ping timeout: 121 seconds)
+[16:49:58] *** Joins: Daniellynet (Cupcake@moz-bci30q.customer.tdc.net)
+[16:50:04] <jack> edunham: do you want to do the deploy? or have you already done that before?
+[16:51:34] <edunham> jack: i haven't yet, and would like to
+[16:51:38] *** Quits: dbaron (dbaron@moz-12jr9n.dynamic.fusionbroadband.com) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[16:51:49] * edunham digs around for recent docs
+[16:52:24] <jack> you just ssh to servo-master and run salt '*' state.highstate
+[16:52:32] <jack> IIRC
+[16:52:42] *** Joins: brendan (brendaneich@moz-2kq05h.static-ip.telepacific.net)
+[16:52:58] <SimonSapin> larsberg: what’s the resolution of https://bugzilla.mozilla.org/show_bug.cgi?id=1155181 ?
+[16:53:00] <firebot> Bug 1155181 — FIXED, gerv@mozilla.org — Servo source code licensing policy
+[16:53:18] <larsberg> can also just do "salt 'servo-linux*' state.highstate -v" in this case to avoid pinging the macs and get verbose output (otherwise it prints nothing on success and barely anything on failure)
+[16:53:40] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[16:54:11] <larsberg> SimonSapin: MPL for servo. MIT/Apache/BSD for rust submodules statically linked into servo. LGPL *only* for things dynamically linked on all platforms.
+[16:54:32] <larsberg> So, about what we expected, but now with 100% more review by people who Know Things :-)
+[16:54:33] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[16:54:41] <SimonSapin> larsberg: should we document it somewhere?
+[16:54:56] <larsberg> Also, I did an audit of our submodules and they were all license-clean. I need to munge tidy, though.
+[16:55:03] <larsberg> And yes, it should definitely go on the wiki, too.
+[16:55:21] *** Quits: dstrbad (dstrbad@moz-scq0lu.dsl.iskon.hr) (A TLS packet with unexpected length was received.)
+[16:55:58] <larsberg> Manishearth: I'm all behind removing features / getting us on as much stable code as possible, as long as it doesn't mean doing something like turning off the box_syntax and horribly regressing memory usage.
+[16:56:03] <Ms2ger> larsberg, how about code split out of Servo into submodules?
+[16:56:09] *** Quits: psd_ (psd@moz-q57m8t.mtnl.net.in) (Quit: Leaving)
+[16:57:18] <edunham> jack: I have AWS perms on all the Rust stuff, but I don't think I have access to Servo things yet
+[16:57:34] <jack> didn't we add your ssh key when you started?
+[16:57:58] <jack> Indeed we did :) https://github.com/servo/saltfs/commit/b3545189e84f48074de15ae234e06c6394cff450
+[16:58:06] <edunham> oh, direct ssh, no bastion... duh
+[16:58:08] <larsberg> Ms2ger: we haven't talked about it in depth yet (Servo's submodule-all-the-things strategy is very different from gecko) but I don't see why we need to keep stuff like vector libraries MPL. As far as it's been explained to me, we mainly want MPL on the core engine for our work with partners shipping Servo in other products.
+[16:58:10] <jack> You probably need the ips though
+[16:58:55] <jack> edunham: https://gist.github.com/metajack/caa87b745776d22aef41
+[16:59:14] <jack> that's my .ssh/config
+[16:59:25] <jack> (i'm missing some of the slaves obviously)
+[16:59:27] <larsberg> all but servo-linux3 & servo-mac3 should be accessible via .servo.org DNS entries
+[16:59:43] <jack> larsberg: just servo-master.servo.org?
+[16:59:46] <edunham> servo-master.servo.org resolves into the IP you have
+[16:59:48] <larsberg> the IPs should also all be on the buildbot admin page - https://github.com/servo/servo/wiki/Buildbot-administration
+[16:59:49] <jack> nice
+[17:00:20] <Ms2ger> Doooooooooooooooooooocs
+[17:01:12] * edunham double checks that the docs match the most recent instructions before following them
+[17:01:37] *** Quits: cakecatz (cakecatz@moz-rakufn.sannet.ne.jp) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[17:02:39] * edunham learns what normal, things-are-working buildbot and twisted logs look like
+[17:03:00] *** Quits: Daniellynet (Cupcake@moz-bci30q.customer.tdc.net) (Connection closed)
+[17:03:05] *** chmanchester|afk is now known as chmanchester
+[17:03:23] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[17:03:41] * edunham runs a test.ping to see which hosts are being addressed by '*'
+[17:04:24] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[17:05:24] *** Joins: Daniellynet (Cupcake@moz-bci30q.customer.tdc.net)
+[17:06:09] <edunham> jack: servo noob question; are the servo-mac[1,3] builders OSX, and if so what do they use as a package manager to find gperf in?
+[17:07:19] <jack> they dont' get gperf because freetype-sys is not built there.
+[17:07:31] <jack> the patch you reviewed had gperf line in the != Darwin section.
+[17:07:33] *** jandem-away is now known as jandem
+[17:07:42] <jack> But I believe they use homebrew and pip.
+[17:07:48] <edunham> oh, it checks grains["kernel"] for all those. makse sense.
+[17:07:50] * edunham reads closer
+[17:08:23] * edunham satisfied with understanding the situation, kicks off the salt run
+[17:08:31] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[17:08:42] *** Joins: OilleYao (uid32548@moz-cf17m5.charlton.irccloud.com)
+[17:08:42] <edunham> success! at least, Salt reports that it was a success, and I figure you'd've mentioned if we didn't trust it :)
+[17:09:25] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[17:09:38] <jack> edunham: great. retrying my build :)
+[17:10:02] <edunham> thanks for walking me through that and humoring the barrage of newbie questions :)
+[17:10:25] *** AutomatedTester is now known as AutomatedTester|AFK
+[17:11:07] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[17:11:07] -ghservo- [13rust-selectors] 15SimonSapin pushed 2 new commits to 06master: 02http://git.io/vIagP
+[17:11:07] -ghservo- 13rust-selectors/06master 14bff44b7 15Simon Sapin: Move FNV hash to an external crate.
+[17:11:07] -ghservo- 13rust-selectors/06master 14d24bca7 15Simon Sapin: Travis-CI now defaults to Rust stable. Use nightly.
+[17:11:07] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[17:11:13] * jack is jealous that cargo has homu too
+[17:11:30] <jack> I'm guessing their buildbot config is pretty complex
+[17:11:42] <jack> I wonder if they run two homus or just one that looks at multiple repos.
+[17:11:42] <Ms2ger> How hard would it be to enable homu for all the deps?
+[17:12:01] <jack> Ms2ger: Since their doing it, it's probably not too bad.
+[17:12:02] <SimonSapin> jack: have a look at http://buildbot.rust-lang.org/builders/
+[17:12:29] <jack> Because the builder config woudl be identical for almost every dep.
+[17:12:37] <jack> (aside from repo name)
+[17:15:14] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[17:15:14] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/vIaaZ
+[17:15:14] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[17:15:14] <larsberg> I definitely want to have homu point at all of our deps; seeing all the open pulls is hard for anything wider than "just all of the servo gh organization"
+[17:16:03] <larsberg> edunham: yup, salt is obtuse with its error messages when it fails but generally does report them
+[17:16:49] <larsberg> edunham: the only exception is when I mess up a dependency and salt thinks that my changes are a no-op (e.g., I change a file on a server, but the preq doesn't fire), so I always pass -v to make sure that it says something changed
+[17:17:11] <larsberg> otherwise salt quietly does nothing, which is indistinguishable from quietly doing something
+[17:17:53] <edunham> ah, tricky.
+[17:18:33] <jack> In general it's a common problem with CM. You have to make sure the real dependencies are represented in the SLS files.
+[17:18:52] <jack> Like, only restart the service if its config changed.
+[17:18:54] <Savago> larsberg: ping?
+[17:19:02] <larsberg> Savago: pong
+[17:19:12] <jack> Or restart service X if service Y restarted.
+[17:19:18] *** ahal|afk is now known as ahal
+[17:19:24] <Savago> larsberg: hey hi there.
+[17:19:40] <Savago> So… yesterday I got servo compiling and ‘running’ on raspberry pi2.
+[17:19:44] <larsberg> jack: edunham: IIRC, our android rules are particularly wonky (my fault) with the download/unpack/install/run the "android" tool/etc.
+[17:19:48] <larsberg> Savago: Awesome!
+[17:20:11] <Savago> larsberg: it will only run on headless mode. I’m trying to figure it out what it takes to get it to run for real.
+[17:20:34] <Savago> larsberg: it requires few changes on servo and some of its dependencies.
+[17:21:16] <Savago> Do you think it would make sense to upstream those changes? They are minor… and would enable people to get servo running in rpi2 (which is a quite cheap and popular arm board).
+[17:21:46] <Manishearth> jack: homu can look at multiple repos. See the <ul> for servo. http://build.servo.org/homu/
+[17:22:09] <larsberg> Savago: definitely. These are changes required for any arm-linux config, right? If so, I assume pcwalton will need those changes for his work, too, once he updates to jack's changes to the deps
+[17:22:18] <jack> Manishearth, larsberg: I may try this today. What's the first repo to add?
+[17:22:39] <Manishearth> larsberg: yeah, I'm not killing syntax, mostly jsut imports that could be  taken from the facade
+[17:23:09] <Manishearth> jack: stuff that gets lots of contribs. h5e, url for a start. 
+[17:23:10] <Savago> larsberg: yeah, I’m using a checkout from yesterday. As a matter of fact, I’m just finishing a build from today’s servo to make sure that everything is fine.
+[17:23:14] <Manishearth> We could let hyper use our homu too
+[17:23:48] <jack> ok. i'l start with rust-url and move to h5e if I am successful.
+[17:23:50] <Savago> larsberg: I would say the toughest part is to get rustc built for raspberry pi2.
+[17:25:02] <SimonSapin> jack: Travis-CI + green merge button works fine for me on rust-url
+[17:25:26] <larsberg> Savago: I'm hoping to kick the tires on taskcluster a bit and create some sort of jobs that can build all of our various-targeting snapshot compilers
+[17:26:17] <Savago> larsberg: that would be quite useful for people hacking rust on arm.
+[17:26:44] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[17:26:44] <SimonSapin> jack: is the idea to have homu land PRs in rust-url like in servo?
+[17:26:46] <Savago> larsberg: so, about upstreaming the changes. What would be the workflow? Do the deps first and next servo?
+[17:27:19] *** Joins: dbaron (dbaron@moz-eh03n6.2rkg.9kg1.0101.2620.IP)
+[17:28:10] <Ms2ger> SimonSapin, yes
+[17:28:23] <SimonSapin> Ms2ger: sounds overkill
+[17:28:47] *** Quits: BenWa (bgirard@moz-i5m.05u.207.66.IP) (Connection closed)
+[17:28:52] *** Joins: BenWa (bgirard@moz-i5m.05u.207.66.IP)
+[17:30:04] <larsberg> Savago: yup!
+[17:31:08] <Savago> larsberg: coolio, will do it.
+[17:33:03] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[17:37:10] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[17:38:49] <jack> SimonSapin: Why overkill?
+[17:39:31] *** Joins: tetsuharu (testuharu@moz-fmjbd6.ucom.ne.jp)
+[17:40:04] *** Quits: BenWa (bgirard@moz-i5m.05u.207.66.IP) (Ping timeout: 121 seconds)
+[17:40:09] <jack> SimonSapin: Adding homu would get us mac support.
+[17:40:35] <jack> And unify the contribution process across our repos
+[17:41:15] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[17:42:03] <jack> edunham: is rust's buildbot config on github somewhere?
+[17:42:41] *** Quits: brson (brson@moz-jd2.tdl.56.172.IP) (Quit: leaving)
+[17:42:49] <SimonSapin> jack: I enjoy CI being done by the time I start review, and then not have a delay between r+ and landing
+[17:43:46] *** Joins: Rastus_Vernon (rvernon@moz-67r1nt.torservers.net)
+[17:44:15] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[17:44:56] <edunham> jack: https://github.com/rust-lang/rust-buildbot
+[17:46:56] *** Joins: Savago_ (Savago@moz-8hd.3b6.246.162.IP)
+[17:47:16] *** Quits: Savago (Savago@moz-8hd.3b6.246.162.IP) (Ping timeout: 121 seconds)
+[17:47:16] *** Savago_ is now known as Savago
+[17:47:38] <jack> SimonSapin: That's not even true for the other simple deps on travis though.
+[17:47:48] <jack> Usually I'm looking at something fast enough it hasn't been scheduled.
+[17:47:59] <jack> I don't no how to reconcile these desires though.
+[17:48:22] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[17:49:16] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[17:53:17] <SimonSapin> Most PRs come while I'm sleeping
+[17:53:29] <Manishearth> SimonSapin: you don't sleepreview yet? tsk
+[17:53:52] <SimonSapin> And the Travis queue isn't so bad with `sudo: false`
+[17:54:19] <edunham> what, you mean setting a bot to use one's github credentials and r+ all PRs from recognized people could possibly backfire? :P
+[17:54:56] <SimonSapin> edunham: I was thinking of the same thing :)
+[17:56:01] <edunham> actually if I was better at machine learning, I might try to do a bot that examines all of someone's reviews and predicts how they'll review a given changeset
+[17:56:04] <edunham> but that stuff is hard
+[17:56:17] <SimonSapin> jack: what problem would homu be solving, in rust-url?
+[17:56:34] <SimonSapin> There is no OS X-specific code
+[17:57:13] <SimonSapin> I've never was an OS X-specific issue reported
+[17:57:31] <SimonSapin> s/I've/There/
+[17:58:50] *** Quits: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP) (Connection closed)
+[17:59:28] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[18:00:17] <SimonSapin> jack: would this be in the same queue as / competing for resources with servo?
+[18:00:44] <jack> Why does homu use virtualenv?
+[18:00:53] <jack> It seems not to actually need anything installed
+[18:01:15] <cmr> jack: even if it doesn't need anything, it isolates it from system python package changes.
+[18:01:35] <jack> SimonSapin: It would be uses the same servo builders, though we could expand those, and I think they are idle much of the time anyway.
+[18:01:48] <jack> But problem to solve is to make all servo contributions uniform.
+[18:02:00] <jack> Not some repos are direct merge, and some are indirect merge.
+[18:02:06] <Savago> larsberg: ping? Do you know the maintainer of rust-clipboard?
+[18:02:21] <jack> In theory we'd also turn on reviewable for the deps too, so it's all the same.
+[18:02:31] <jack> and have highfive there.
+[18:02:54] <Manishearth> Gankro: how would Vec.push_all be optimized in Vec.extend?
+[18:03:18] <SimonSapin> Do the contributors need to worry about this? (As opposed to just reviewers.)
+[18:04:34] <jack> hmm. how to get salt to run pip install -e 
+[18:04:49] *** Quits: Nashenas88 (Nashenas88@moz-of81j9.miamfl.sbcglobal.net) (Client exited)
+[18:05:00] <jack> SimonSapin: We've had a few cases wehre people direct merged to servo because they though they were in a dependency.
+[18:05:11] <jack> Perhaps we can never fix that problem without github changing stuff.
+[18:05:23] *** Quits: valentin (icecold@moz-ppt.54q.85.141.IP) (Quit: Leaving.)
+[18:06:02] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[18:06:08] *** Quits: ProgramFOX (ProgramFOX@moz-gfri5n.isp.belgacom.be) (Quit: ChatZilla 0.9.91.1 [Firefox 38.0.5/20150525141253])
+[18:06:14] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[18:06:14] -ghservo- [13servo] 15bors-servo fast-forwarded 06master from 14e09c555 to 14da2ea38: 02http://git.io/vIaaZ
+[18:06:14] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[18:06:15] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[18:06:15] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/vIaAv
+[18:06:15] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[18:06:17] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[18:06:17] -ghservo- [13servo] 15bors-servo closed pull request #6146: New html page for testing DOM binding performance #5760 (06master...06dom_performance_tests) 02http://git.io/vTEqQ
+[18:06:17] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[18:08:26] *** Quits: tglman (tglman@moz-l8btep.as13285.net) (Ping timeout: 121 seconds)
+[18:08:34] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[18:08:42] <frewsxcv> i was planning on opening PRs on repo when i have free time enabling OSX support on some of the servo repos
+[18:08:45] *** Joins: BenWa (bgirard@moz-i5m.05u.207.66.IP)
+[18:08:58] <frewsxcv> if homu is planned on being used, let me know and i won't open the prs
+[18:09:12] * frewsxcv skimmed through the irc backlog and is not sure if a decisionw as made
+[18:09:25] <larsberg> Savago: I believe that aweinstock owns rust-clipboard
+[18:09:55] <larsberg> frewsxcv: even if we use homu, I assume we'd be using homu's travis support for autolanding, not hooking it into our buildbots
+[18:10:09] <frewsxcv> ah, true
+[18:10:15] <jack> frewsxcv: don't wait on me. who knows if this will be successful or how long it will take :)
+[18:10:53] <Gankro> Manishearth: specialization
+[18:11:06] <Gankro> Or better loop idiom support in LLVM
+[18:11:06] * frewsxcv is waiting on https://github.com/travis-ci/travis-ci/issues/4058
+[18:11:06] <crowbot> Issue #4058: OSX + Rust fails to build - https://github.com/travis-ci/travis-ci/issues/4058
+[18:11:07] <jack> I suppose that's a good pointm. homu supports travis now too.
+[18:11:07] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[18:11:07] *** ChanServ sets mode: +o pcwalton
+[18:11:10] <Manishearth> Gankro: oh, so it's blocked on trait specialization?
+[18:11:12] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[18:11:12] -ghservo- [13rust-layers] 15Adenilson opened pull request #175: Porting to raspberry pi2. (06master...06raspberry-pi2) 02http://git.io/vIapW
+[18:11:12] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[18:11:13] <Manishearth> bummer
+[18:11:34] <Manishearth> Gankro: but won't it work the same post-specialization?
+[18:11:42] <Gankro> Manishearth: So I tried out trusted_len, and that totally "solves" it
+[18:11:48] <Manishearth> Gankro: trusted_len?
+[18:11:55] <Gankro> Uh
+[18:12:33] <Gankro> So right now extend doesn't optimize well because you can't "trust" the size_hint of an iterator
+[18:12:40] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[18:12:43] <Manishearth> oh
+[18:13:03] <Gankro> e.g. you need to keep track of how many elements are yielded to check for under/overflow
+[18:13:53] <Gankro> trusted_len was an unsafe fn on iterator that defaults to None, but an exact size thing can set to Some(len) to signal "I am asserting it is UB if I don't yield this much (modulo panics)"
+[18:15:07] <Gankro> This was some of my preliminary results: https://gist.github.com/Gankro/fd2543302dade5992e0e
+[18:15:10] *** Quits: tetsuharu (testuharu@moz-fmjbd6.ucom.ne.jp) (Ping timeout: 121 seconds)
+[18:15:45] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[18:15:45] -ghservo- [13rust-layers] 15pcwalton pushed 2 new commits to 06master: 02http://git.io/vIVeU
+[18:15:45] -ghservo- 13rust-layers/06master 14b504593 15Adenilson Cavalcanti: Porting to raspberry pi2.
+[18:15:45] -ghservo- 13rust-layers/06master 14f004f0a 15Patrick Walton: Merge pull request #175 from Adenilson/raspberry-pi2...
+[18:15:45] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[18:15:46] <Gankro> But it just adds like *a lot* of pervasive unsafe to the standard library, and minor mistakes caused segfaults in stage1
+[18:15:51] <pcwalton> Savago: thanks!
+[18:16:18] <Gankro> And a lot of rust idioms still didn't optimize well
+[18:16:26] <Gankro> LLVM gets stuck in local optima
+[18:16:52] <Gankro> Which suggests to me better loop idiom support or specialization is a more robust longterm solution
+[18:17:12] <Savago> pcwalton: hum?
+[18:17:40] <Gankro> (Also because of weird adapter reasons TrustedLen was actually Uncertain | Certain(usize) | TooBig | Infinite
+[18:17:44] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[18:17:44] -ghservo- [13rust-azure] 15Adenilson opened pull request #168: Porting to raspberry pi2. (06master...06raspberry-pi2) 02http://git.io/vIVvT
+[18:17:44] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[18:17:55] <Manishearth> Gankro: I'd love compile time type switches
+[18:18:12] <pcwalton> Savago: for the arm-linux work
+[18:18:22] <Manishearth> $match(T) { T: Copy => Foo, T: !Copy => Bar
+[18:18:23] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[18:18:23] -ghservo- [13rust-azure] 15pcwalton closed pull request #168: Porting to raspberry pi2. (06master...06raspberry-pi2) 02http://git.io/vIVvT
+[18:18:23] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[18:18:24] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[18:18:24] -ghservo- [13rust-azure] 15pcwalton pushed 2 new commits to 06master: 02http://git.io/vIVvR
+[18:18:24] -ghservo- 13rust-azure/06master 141e7317e 15Adenilson Cavalcanti: Porting to raspberry pi2.
+[18:18:24] -ghservo- 13rust-azure/06master 14757a8ee 15Patrick Walton: Merge pull request #168 from Adenilson/raspberry-pi2...
+[18:18:24] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[18:18:28] <jack> gperf doesn't seem to be installed on linux2.
+[18:18:30] <jack> Sigh.
+[18:18:44] <Savago> pcwalton: np, man! :-)
+[18:18:56] <Savago> Your article about the subject was super-duper helpful.
+[18:19:04] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[18:19:14] <pcwalton> I'm going to try getting Servo to compile in Thumb mode, since it looks like we're hitting I-cache issues
+[18:21:37] <Savago> pcwalton: that would reduce the generated binary size considerably.
+[18:22:02] *** Joins: Diamond (dick@moz-s67uin.ok.cox.net)
+[18:22:06] *** Quits: doener (doener@moz-929cn9.unity-media.net) (Ping timeout: 121 seconds)
+[18:22:13] <pcwalton> also potentially improve performance a lot
+[18:22:21] <pcwalton> to avoid trashing the I-cache
+[18:22:41] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[18:22:41] -ghservo- [13saltfs] 15metajack opened pull request #38: Manage homu service with Salt. (06master...06homu) 02http://git.io/vIVJQ
+[18:22:41] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[18:22:47] *** Quits: Rastus_Vernon (rvernon@moz-67r1nt.torservers.net) (Ping timeout: 121 seconds)
+[18:22:51] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[18:22:52] *** ChanServ sets mode: +o brson
+[18:22:54] *** Joins: doener (doener@moz-929cn9.unity-media.net)
+[18:24:12] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[18:25:38] <SimonSapin> What does homu do with Travis?
+[18:25:42] <jack> edunham: we forgot to update the saltfs before running state.highstate ;)
+[18:25:54] <jack> edunham: so the step that was missing was cd /srv/salt && git pull
+[18:26:08] <Manishearth> Gankro: I think push_all is the only thing blocking us from removing #![feature(collections)] :)
+[18:26:28] *** Joins: Jayflux (Jason@moz-kbadmp.ppp.as43234.net)
+[18:26:30] <edunham> jack: haha derp... 
+[18:26:31] * edunham fixes
+[18:26:37] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[18:26:37] -ghservo- [13servo] 15bors-servo 04force-pushed 06tmp from 14af21124 to 14da2ea38: 02http://git.io/veWu4
+[18:26:37] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[18:26:39] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[18:26:39] -ghservo- [13servo] 15bors-servo 04force-pushed 06auto from 14af21124 to 140ee79f1: 02http://git.io/A9I6iA
+[18:26:39] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[18:26:46] <larsberg> SimonSapin: uses the travis status (tests pass) in place of the buildbot status to tell when an r+ can be autolanded
+[18:26:49] *** Joins: Rastus_Vernon (rvernon@moz-kvs6fc.torservers.net)
+[18:26:49] <jack> edunham: already fixed :)
+[18:27:23] <edunham> oh ok, duh, salt would not have reason to pull changes before running itself.
+[18:27:37] <Gankro> Manishearth: Is servo actively trying to get off nightly?
+[18:27:58] <jack> btw, salt reports how many states changed, so that can be used as a sanity check
+[18:28:02] <jack> I jsut noticed that when I ran it.
+[18:28:03] <Manishearth> Gankro: no, I'm just auditing it
+[18:28:10] <Manishearth> and fixing any low hanging fruit
+[18:28:11] <jack> Succeeded: 58 (changed=1
+[18:28:41] <SimonSapin> Homu+Travis on rust-url sounds nicer than homu+buildbot that I had in mind
+[18:29:02] <jack> SimonSapin: and a lot easier to enable :)
+[18:29:41] <nox> What happens on Reviewable if your GitHub username is reviews?
+[18:30:02] <jack> haha
+[18:30:10] <Manishearth> Gankro: But less "unstable because of naming" features the better, really. We want to use unstable features to help Rust  test things, I think. But if there are really useful APIs that are unstable because of minor things like naming (or not-so-minor things like optimizations), they should perhaps be prioritized for bikeshedding and stabilization
+[18:30:12] <nox> nox' musings on the toilets 1:1
+[18:30:44] *** Joins: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net)
+[18:31:29] <nox> Ms2ger: You working on URLs?
+[18:31:48] <Ms2ger> I was going to file an E-Easy for new URL()
+[18:32:12] <Manishearth> Ms2ger: oh, btw, did you respond about the no-more-critic-by-default stuff?
+[18:32:17] <jack> does @reply in a PR description ping people? or only in comments?
+[18:32:30] <nox> Ms2ger: I've some code for that that I forgot to submit.
+[18:32:34] <Ms2ger> I should try reviewable again now
+[18:32:35] <steveklabnik> jack: it does
+[18:32:41] <Manishearth> Ms2ger: you weren't there in the meeting, but last week we decided to turn off the Critic by default stuff and ask you
+[18:32:51] *** Quits: BenWa (bgirard@moz-i5m.05u.207.66.IP) (Ping timeout: 121 seconds)
+[18:32:53] <Manishearth> Ms2ger: I think you can still manually feed prs to critic
+[18:33:05] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[18:34:16] <jack> ms2ger: the question for you was whether doing that is too inconvenient if you still prefer to use critic.
+[18:34:37] <jack> I believe you are the only one with that preference currently.
+[18:34:40] <Manishearth> Gankro: I'll be sure to send the libs team a report of the features we use later
+[18:34:42] <Ms2ger> I'll try to use reviewable for something tomorrow and see if I can live with it now
+[18:38:11] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[18:39:07] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[18:39:07] -ghservo- [13skia] 15Adenilson opened pull request #49: Porting to raspberry pi2. (06master...06raspberry-pi2) 02http://git.io/vIVm3
+[18:39:07] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[18:39:39] *** Joins: jviereck (Adium@moz-gab88j.rgd2.9kg1.0101.2620.IP)
+[18:39:45] <Gankro> Manishearth: Sure!
+[18:41:23] *** Quits: jviereck (Adium@moz-gab88j.rgd2.9kg1.0101.2620.IP) (Quit: Leaving.)
+[18:41:41] <Savago> Anyone know who is the maintener of https://github.com/ecoal95/rust-offscreen-rendering-context
+[18:41:41] *** Joins: eddyb_ (eddyb@moz-7uq.hlc.26.188.IP)
+[18:41:51] <Savago> ?
+[18:41:58] <Savago> maintener/maintainer
+[18:42:28] *** Joins: jviereck (Adium@moz-l8ebtf.sfo1.mozilla.com)
+[18:42:30] <Savago> aweinstock: ping?
+[18:42:46] <Savago> when you got time, would you mind to check: https://github.com/aweinstock314/rust-clipboard/pull/6
+[18:42:47] <crowbot> PR #6: Porting to raspberry pi2. - https://github.com/aweinstock314/rust-clipboard/pull/6
+[18:43:08] *** chmanchester is now known as chmanchester|afk
+[18:43:55] *** Quits: jviereck (Adium@moz-l8ebtf.sfo1.mozilla.com) (Quit: Leaving.)
+[18:44:36] *** Quits: eddyb (eddyb@moz-2fd.hlc.26.188.IP) (Ping timeout: 121 seconds)
+[18:46:01] *** eddyb_ is now known as eddyb
+[18:46:54] <jack> Savago: the maintainer is ecoal95 and he's been pretty responsive. He's in Europe iirc
+[18:47:28] *** Quits: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[18:48:55] <Savago> jack: thanks. I guess tz isn’t helping today. Will try to ping him tomorrow.
+[18:49:20] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[18:49:21] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[18:53:28] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[18:54:34] *** Joins: BenWa (bgirard@moz-i5m.05u.207.66.IP)
+[18:55:00] <Savago> jack: when you got some spare time, would you mind to check
+[18:55:01] <Savago> https://github.com/servo/skia/pull/49
+[18:55:01] <crowbot> PR #49: Porting to raspberry pi2. - https://github.com/servo/skia/pull/49
+[18:56:25] <aweinstock> Savago: I've merged it
+[18:56:28] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[18:56:34] *** Quits: BenWa (bgirard@moz-i5m.05u.207.66.IP) (Connection closed)
+[18:56:36] <Savago> aweinstock: wow! Thanks man. :-)
+[18:57:24] *** Joins: BenWa (bgirard@moz-i5m.05u.207.66.IP)
+[19:00:35] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[19:05:01] *** Quits: BenWa (bgirard@moz-i5m.05u.207.66.IP) (Ping timeout: 121 seconds)
+[19:06:25] *** Joins: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP)
+[19:08:02] <larsberg> Gankro: we are trying to get as many of our dependencies off of nightly and onto stable as possible to maximize reuse / contributions. I'm a little skeptical about Servo itself (see the rust thread - we use all the new features as they're added and before they're stable, pretty much by definition), but there's no reason most of our eightybajillion
+[19:08:03] <larsberg> dependencies can't be on stable.
+[19:08:33] <Manishearth> larsberg: I'm *only* looking at servo btw
+[19:08:36] <Manishearth> deps, maybe later
+[19:09:33] <Manishearth> larsberg: the intention is to reduce unstable deps wherever possible, and to get a list of papercut-unstable features that are  just unstable due to naming or whatever
+[19:09:37] <Manishearth> that actually get used a lot
+[19:09:42] <Manishearth> eg push_all is used *everywhere*
+[19:09:57] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[19:11:59] <Manishearth> pcwalton: I am terrified by the pointer and `core::raw` usage in layout :o
+[19:13:41] <mwu> I feel like 1.2 is going to have everything I need
+[19:14:03] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[19:14:14] <mwu> associated consts and const fn fix a lot of issues
+[19:14:32] <Manishearth> mwu: until 1.3 gets a really shiny feature like higher kinded associated const linear higher order functions
+[19:14:40] <Manishearth> and then you want that
+[19:14:42] <Manishearth> badly
+[19:15:00] <larsberg> Manishearth: or, more realistically, virtual structs / DOM inheritance support :-)
+[19:15:02] <mwu> I have no idea what those are
+[19:15:19] <Manishearth> mwu: I just strung together some jargon :P
+[19:15:36] <mwu> also I don't really feel like virtual structs are that important..
+[19:15:39] <Manishearth> larsberg: psh. monads first.
+[19:15:50] <larsberg> Manishearth: markov chain rust feature proposals are not cool
+[19:16:02] <Manishearth> hah
+[19:16:07] <mwu> uh oh
+[19:16:09] <mwu> now someone has to do it
+[19:16:16] <Manishearth> but the question is, will people take them seriously?
+[19:16:21] *** Quits: akiss_ (akiss@moz-c6colr.inf.u-szeged.hu) (Ping timeout: 121 seconds)
+[19:16:21] * Manishearth files a markov chain rfc
+[19:16:37] <larsberg> mwu: it was the biggest request from the content/DOM team to make implementing DOM features easier; I have no personal opinions on it other than that I've been told to "make it happen" :-)
+[19:18:06] <larsberg> (jdm generally handles requests from them, since he also sits in that org)
+[19:18:58] <mwu> larsberg: do you know if it involves adding some way to safely upcast?
+[19:19:06] <Manishearth> mwu: that is a must
+[19:19:17] <Manishearth> and I think most proposals till now have it
+[19:19:22] <Manishearth> the current one seems to
+[19:19:53] <mwu> like a dynamic_cast, right
+[19:22:22] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[19:23:17] *** Quits: skippydippy (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[19:27:52] *** Joins: MrZeus_ (MrZeus@moz-qj2.orv.187.194.IP)
+[19:28:01] *** Quits: MrZeus (MrZeus@moz-jf4304.skybroadband.com) (Connection closed)
+[19:29:46] *** AutomatedTester|AFK is now known as AutomatedTester
+[19:30:01] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[19:30:33] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[19:30:33] -ghservo- [13saltfs] 15metajack pushed 2 new commits to 06master: 02http://git.io/vIVap
+[19:30:33] -ghservo- 13saltfs/06master 14a1a664a 15Jack Moffitt: Manage homu service with Salt.
+[19:30:33] -ghservo- 13saltfs/06master 14a88a22b 15Jack Moffitt: Merge pull request #38 from metajack/homu...
+[19:30:33] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[19:31:06] <jack> homu queue is quiet, so I'm going to attempt to switch us over to homu-as-a-real-service-and-not-just-a-screen-session
+[19:31:24] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[19:33:39] *** Joins: xorcon (Mibbit@moz-hu6.nja.252.72.IP)
+[19:33:48] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[19:33:48] -ghservo- [13saltfs] 15metajack opened pull request #39: Fix missing ':'. (06master...06fix-homu) 02http://git.io/vIVwT
+[19:33:48] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[19:36:48] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[19:37:32] *** Joins: MrZeus (MrZeus@moz-jf4304.skybroadband.com)
+[19:39:17] <jack> And with minor tweaks, homu is now a service.
+[19:39:25] <jack> Everything should be as it once was, but better.
+[19:40:23] *** Quits: MrZeus_ (MrZeus@moz-qj2.orv.187.194.IP) (Ping timeout: 121 seconds)
+[19:40:32] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[19:42:26] <edunham> jack: yay! thank you for rolling that out.
+[19:43:11] *** Joins: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP)
+[19:43:26] *** Joins: BenWa (bgirard@moz-i5m.05u.207.66.IP)
+[19:43:34] *** chmanchester|afk is now known as chmanchester
+[19:45:16] <Manishearth> SimonSapin: style::viewport::cascade seems to be doing something clever with discriminants and hashmaps, is there a better way of doing it?
+[19:45:37] <Manishearth> (I'm not sure what's going on really)
+[19:45:44] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[19:46:38] <jack> So whose travis token are we using for all the repos?
+[19:46:49] <jack> Or do we have one?
+[19:46:56] <Manishearth> jack: doesn't work that way
+[19:47:11] <Manishearth> jack: just run `travis encrypt` locally, it should work if you have push access to the repo
+[19:47:25] <jack> I need the token for homu
+[19:47:26] <Manishearth> but the tokens are per-repo
+[19:47:28] <Manishearth> oh
+[19:47:31] *** Quits: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP) (Connection closed)
+[19:47:39] <Manishearth> jack: travis API token you mean?
+[19:47:43] <jack> yes
+[19:47:45] <Manishearth> ah
+[19:47:46] *** Joins: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP)
+[19:47:52] <Manishearth> use your own I guess? :)
+[19:48:06] <jack> For this step: "Add your Travis token as repo.NAME.travis.token in cfg.toml."
+[19:48:15] <Manishearth> jack: yeah, use yours
+[19:48:21] <jack> Or bors-servo's?
+[19:48:30] <Manishearth> no, yours
+[19:48:36] <Manishearth> it will use it to trigger builds
+[19:48:49] <jack> bors-servo has push access.
+[19:48:54] <Manishearth> yep
+[19:48:58] <Manishearth> that will work too
+[19:49:02] <Manishearth> any one will work
+[19:49:02] <jack> Why would I want my personal API token in our infrastructure? :)
+[19:49:05] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[19:49:12] <Manishearth> oh right :p
+[19:49:29] <Manishearth> I forgot that the API token might not work the same way as travis encrypt. oops
+[19:49:33] *** Joins: jviereck (Adium@moz-hjptlv.rgd2.9kg1.0101.2620.IP)
+[19:53:12] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[19:54:13] *** Quits: xorcon (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[19:54:54] *** Quits: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP) (Connection closed)
+[19:55:00] *** Joins: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP)
+[19:55:47] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[19:55:53] *** Quits: mukilan (mukilan@moz-5ke.d4s.164.122.IP) (A TLS packet with unexpected length was received.)
+[19:57:24] <jack> Manishearth: do you know what branches.only.auto does in the .travel.yml?
+[19:57:30] <jack> travis.yml
+[19:57:46] <jack> I guess it tells travis only to attempt integration on auto
+[19:57:55] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[19:57:55] -ghservo- [13rust-mozjs] 15michaelwu pushed 1 new commit to 06smupgrade2: 02http://git.io/vIVyR
+[19:57:55] -ghservo- 13rust-mozjs/06smupgrade2 14367a928 15Michael Wu: Make JS_NewArrayObject1 work on 64 bit
+[19:57:55] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[19:57:59] <jack> I'm guessing that's not what we want in our case.
+[19:58:14] <Manishearth> we don't
+[19:58:19] *** Joins: laumann_ (thomas@moz-n9e72h.0.fullrate.dk)
+[19:58:42] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[19:58:42] -ghservo- [13html5ever] 15metajack opened pull request #139: Turn on homu notifications. (06master...06homu) 02http://git.io/vIVyx
+[19:58:42] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[19:58:49] <jack> Manishearth: ^ r?
+[19:59:30] *** Joins: Jesse (jruderman@moz-81h5db.ujol.1ibb.0101.2620.IP)
+[19:59:45] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[19:59:45] -ghservo- [13html5ever] 15Manishearth closed pull request #139: Turn on homu notifications. (06master...06homu) 02http://git.io/vIVyx
+[19:59:45] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[19:59:46] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[19:59:46] -ghservo- [13html5ever] 15Manishearth pushed 2 new commits to 06master: 02http://git.io/vIVS0
+[19:59:46] -ghservo- 13html5ever/06master 14c47630e 15Jack Moffitt: Turn on homu notifications.
+[19:59:46] -ghservo- 13html5ever/06master 14d10d53d 15Manish Goregaokar: Merge pull request #139 from metajack/homu...
+[19:59:46] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[20:00:08] <jack> Manishearth: it should work now. /me tests
+[20:01:05] *** Quits: bholley (bholley@moz-opfa2j.ca.comcast.net) (Quit: Textual IRC Client: www.textualapp.com)
+[20:01:43] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[20:01:43] -ghservo- [13html5ever] 15metajack opened pull request #140: Add license information to Cargo metadata. (06master...06test-homu) 02http://git.io/vIV9t
+[20:01:43] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[20:01:44] *** Quits: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP) (Connection closed)
+[20:01:47] *** Quits: bdero (bran@moz-nd2f6b.dyn.mit.edu) (Ping timeout: 121 seconds)
+[20:01:49] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[20:01:55] <jack> Manishearth: try a @bors-servo one ^
+[20:03:24] <Manishearth> jack: it should show up here
+[20:03:25] <Manishearth> http://build.servo.org/homu/
+[20:03:47] <jack> Ok. I forgot something I guess.
+[20:03:53] <jack> But how will it find otu about it?
+[20:04:02] <Manishearth> did you update the homu config?
+[20:04:20] <Manishearth> heads up, I'm sshing but will be read only
+[20:04:56] <jack> ah. i guess it needs the secret part.
+[20:05:17] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[20:05:17] -ghservo- [13rust-mozjs] 15michaelwu pushed 1 new commit to 06smupgrade2: 02http://git.io/vIVHn
+[20:05:17] -ghservo- 13rust-mozjs/06smupgrade2 14549549a 15Michael Wu: Use gcc 4.8 to build on travis
+[20:05:17] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[20:05:36] <Manishearth> jack: I don't see repo.html5ever
+[20:07:33] <jack> Do I really have to copy reviewers every time?
+[20:07:56] <Manishearth> jack: can the pillar stuff do templating of nonsecrets?
+[20:08:01] <Manishearth> We could use that
+[20:08:07] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[20:08:07] -ghservo- [13rust-mozjs] 15michaelwu 04force-pushed 06smupgrade2 from 14549549a to 14a1f6881: 02http://git.io/vIVQS
+[20:08:07] -ghservo- 13rust-mozjs/06smupgrade2 14a1f6881 15Michael Wu: Use gcc 4.8 to build on travis
+[20:08:07] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[20:08:07] <jack> It can.
+[20:08:10] <Manishearth> cool
+[20:08:28] <jack> I'll make that improvement later.
+[20:08:34] <Manishearth> so we just do a pillar key in a checked in pillar file (reviewers.conf) with the list, and pepper homu.cfg with it
+[20:08:37] <Manishearth> okay
+[20:09:10] <jack> ok, homu config updated.
+[20:09:45] <Manishearth> I see it
+[20:09:52] <Manishearth> did homu restart on its own?
+[20:10:29] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[20:10:35] <jack> Manishearth: it's managed by salt now, so yes.
+[20:10:38] <Manishearth> cool
+[20:10:45] <jack> when i pushed the new config it took care of restarting.
+[20:10:46] <Manishearth> it didn't trigger a test
+[20:10:46] <Manishearth> http://build.servo.org/homu/queue/html5ever
+[20:11:13] <jack> bors doesn't have admin. fixing.
+[20:11:19] <Manishearth> hah
+[20:11:51] <jack> Why did you r-?
+[20:12:40] <Manishearth> so that I can r+ again
+[20:13:05] <Manishearth> not sure what homu's internal state was after failing to merge
+[20:13:36] <jack> Fixed permissions.
+[20:14:04] *** Joins: dinfuehr (dinfuehr@moz-qat0e8.highway.telekom.at)
+[20:14:35] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[20:14:53] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[20:14:53] -ghservo- [13servo] 15Manishearth opened pull request #6314: Audit and reduce usage of unstable features (06master...06feature_audit) 02http://git.io/vIVdk
+[20:14:53] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[20:15:05] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[20:15:05] -ghservo- [13html5ever] 15bors-servo pushed 2 new commits to 06tmp: 02http://git.io/vIVdm
+[20:15:05] -ghservo- 13html5ever/06tmp 140267862 15Jack Moffitt: Add license information to Cargo metadata.
+[20:15:05] -ghservo- 13html5ever/06tmp 1456652d0 15bors-servo: Auto merge of #140 - metajack:test-homu, r=Manishearth
+[20:15:05] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[20:15:15] <Manishearth> wooo
+[20:15:27] <Manishearth> homu doesn't show that it's testing though
+[20:15:35] <jack> Yes, something failed.
+[20:15:48] <jack> RuntimeError: Invalid configuration'
+[20:16:08] <jack> main.py:303
+[20:16:39] <jack> travis key has to go per repo
+[20:16:42] <jack> damnit homu! :)
+[20:17:35] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[20:17:35] -ghservo- [13html5ever] 15bors-servo merged 06auto into 06tmp: 02http://git.io/vIVFY
+[20:17:35] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[20:19:44] <Manishearth> jack: it worked!
+[20:19:50] <Manishearth> and the build failed because of a warning :p
+[20:20:39] <jack> even though the main PR went through travis fine?
+[20:21:06] <Manishearth> jack: perhaps the same tests are not enabled *shrug*
+[20:25:26] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[20:27:06] <jack> homu claims it can't access travis :(
+[20:27:42] <jack> Where is the token stored in html5ever?
+[20:27:51] <Manishearth> *shrug*
+[20:28:10] <jack> Does it not need a token if there is no token in html5ever's .travis.yml?
+[20:31:22] *** Joins: mib_h1rt0h (Mibbit@moz-hu6.nja.252.72.IP)
+[20:31:43] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[20:31:43] -ghservo- [13servo] 15bors-servo 04force-pushed 06tmp from 140ee79f1 to 14da2ea38: 02http://git.io/veWu4
+[20:31:43] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[20:31:44] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[20:31:44] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/vIVpG
+[20:31:44] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[20:31:45] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[20:31:45] -ghservo- [13servo] 15bors-servo 04force-pushed 06auto from 140ee79f1 to 1488c1cdc: 02http://git.io/A9I6iA
+[20:31:45] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[20:31:48] *** Joins: dstrbad (dstrbad@moz-scq0lu.dsl.iskon.hr)
+[20:33:18] *** AutomatedTester is now known as AutomatedTester|AFK
+[20:35:34] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[20:38:24] *** Quits: mib_h1rt0h (Mibbit@moz-hu6.nja.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[20:41:55] *** Quits: tromey (tromey@moz-m3id6o.hlrn.qwest.net) (Quit: ERC (IRC client for Emacs 25.0.50.3))
+[20:42:19] *** Joins: valentin (icecold@moz-cvjh6k.s0r2.3jub.2f0a.2a02.IP)
+[20:43:51] *** Quits: lerc (quassel@moz-nitv9j.telstraclear.net) (Connection closed)
+[20:44:10] <frewsxcv> so does homu just automatically merge if it passes on travis?
+[20:44:31] <frewsxcv> (and do anything else?)
+[20:44:50] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[20:46:18] <zmike_> pcwalton: ping
+[20:49:16] *** jandem is now known as jandem-away
+[20:49:48] *** Quits: Jesse (jruderman@moz-81h5db.ujol.1ibb.0101.2620.IP) (Client exited)
+[20:50:13] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[20:50:20] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[20:55:30] *** Joins: _Y_ (chatzilla@moz-0dlhkb.isp.telekom.rs)
+[20:56:14] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[20:57:05] *** Quits: dstrbad (dstrbad@moz-scq0lu.dsl.iskon.hr) (A TLS packet with unexpected length was received.)
+[20:58:46] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[20:58:50] <jack> frewsxcv: yes, but the homu<->travis link is currently busted for some unknown reason.
+[20:58:53] <jack> trying to debug that now.
+[20:59:24] <Manishearth> Gankro: https://gist.github.com/Manishearth/967bc78db5c751c38d03
+[21:00:17] *** Joins: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP)
+[21:00:24] *** Quits: jgallagher (john@moz-d5e8oc.hfc.comcastbusiness.net) (Client exited)
+[21:02:53] *** Joins: chc4 (chc4@moz-pdo0at.ma.comcast.net)
+[21:03:37] <pcwalton> zmike_: pong
+[21:04:12] <zmike_> pcwalton: I don't suppose you have any ideas regarding #6190
+[21:04:13] <crowbot> Issue #6190: compositor renders at wrong size in some cases - https://github.com/servo/servo/issues/6190
+[21:04:39] <zmike_> somehow paint task isn't getting its size updated and randomly renders at a previous size
+[21:05:28] *** Quits: dinfuehr (dinfuehr@moz-qat0e8.highway.telekom.at) (Connection closed)
+[21:05:33] *** AutomatedTester|AFK is now known as AutomatedTester
+[21:05:45] *** Quits: chc4 (chc4@moz-pdo0at.ma.comcast.net) (Quit: AHHHHH BEES)
+[21:05:47] <pcwalton> well, it's always going to be possible for the paint task to be rendering buffers at size X when the compositor has resized to Y
+[21:05:49] *** Joins: dinfuehr (dinfuehr@moz-qat0e8.highway.telekom.at)
+[21:06:02] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[21:06:11] <pcwalton> we could just drop the new buffers that come in if they're at the wrong size, I guess
+[21:06:18] *** Quits: eibwen (eibwen@moz-slg8kg.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[21:06:32] <pcwalton> but it feels like we should just paint them and then make sure the paint thread always has at least a message in its queue for the right size
+[21:06:35] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[21:06:58] <zmike_> but, in the case I have, I'm getting these wrong buffer sizes looong after a resize has occurred
+[21:07:18] <zmike_> ie. start at size A, render A, resize to B, render B, render A, render B, ...
+[21:07:32] *** Quits: ahal (ahal@moz-b8e0a0.cpe.pppoe.ca) (A TLS packet with unexpected length was received.)
+[21:07:32] <pcwalton> well, probably the paint task had a long paint, or it had multiple paint events in its queue
+[21:07:38] <pcwalton> dump out the paint task's queue I guess?
+[21:08:08] <zmike_> should we both to continue with queue items for the wrong size?
+[21:08:12] <zmike_> bother*
+[21:08:35] <zmike_> or I guess, more accurately, should we bother to process buffers that get to the compositor if they're the wrong size
+[21:09:52] *** Quits: dinfuehr (dinfuehr@moz-qat0e8.highway.telekom.at) (Ping timeout: 121 seconds)
+[21:10:12] <Savago> pcwalton: made comments on https://github.com/servo/skia/pull/49
+[21:10:12] <crowbot> PR #49: Porting to raspberry pi2. - https://github.com/servo/skia/pull/49
+[21:10:42] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[21:11:13] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[21:11:13] -ghservo- [13skia] 15pcwalton closed pull request #49: Porting to raspberry pi2. (06master...06raspberry-pi2) 02http://git.io/vIVm3
+[21:11:13] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[21:11:16] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[21:11:16] -ghservo- [13skia] 15pcwalton reopened pull request #49: Porting to raspberry pi2. (06master...06raspberry-pi2) 02http://git.io/vIVm3
+[21:11:16] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[21:11:20] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[21:11:20] -ghservo- [13skia] 15pcwalton pushed 2 new commits to 06master: 02http://git.io/vIwOh
+[21:11:20] -ghservo- 13skia/06master 1496e54ab 15Adenilson Cavalcanti: Porting to raspberry pi2.
+[21:11:20] -ghservo- 13skia/06master 148454a58 15Patrick Walton: Merge pull request #49 from Adenilson/raspberry-pi2...
+[21:11:20] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[21:14:00] *** Joins: wilfredh (uid159@moz-md9so9.brockwell.irccloud.com)
+[21:14:06] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[21:14:06] -ghservo- [13servo] 15bors-servo merged 06auto into 06master: 02http://git.io/vIVpG
+[21:14:06] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[21:14:10] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[21:14:10] -ghservo- [13servo] 15bors-servo closed pull request #6314: Audit and reduce usage of unstable features (06master...06feature_audit) 02http://git.io/vIVdk
+[21:14:10] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[21:14:52] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[21:16:15] *** Joins: bdero (bran@moz-lbs.91h.47.73.IP)
+[21:20:43] <_Y_> hi, guys, I see html5ever is now running under bors, is that correct?
+[21:20:49] *** Joins: lerc (quassel@moz-nitv9j.telstraclear.net)
+[21:20:51] *** Joins: chc4 (chc4@moz-pdo0at.ma.comcast.net)
+[21:21:16] <_Y_> does that change way PRs are submitted to html5ever?
+[21:21:20] <Manishearth> nope
+[21:21:57] <_Y_> what are r+ then?
+[21:22:14] <jack> Manishearth: the travis token has to be the token of the user who set up the repo on travis intiially.
+[21:22:27] <jack> So I get to find everyone' suser tokens and include them in the build config!
+[21:22:41] <jack> It's not even clear how to find who set it up
+[21:23:01] <_Y_> did kmc set it up?
+[21:23:18] <Manishearth> jack: that sucks
+[21:23:26] <Manishearth> I think in most cases it was me
+[21:23:38] <Manishearth> I wonder if Travis has org tokens
+[21:24:26] <Savago> larsberg: all the rpi2 patches have landed on servo deps. The only thing missing is landing this on servo https://gist.github.com/Adenilson/233c5f771f331270f52a
+[21:24:31] <Savago> and update the hashes of the deps.
+[21:24:38] <jack> oh. it looks like i can change it on github perhaps.
+[21:24:51] <jack> (for html5ever it turns out to have been kmc)
+[21:24:55] <Manishearth> jack: you need to give bors admin access
+[21:25:29] <larsberg> Savago: excellent! did you have to add any arm-specific cfgs anywhere, or just the Cargo hackery?
+[21:25:38] <jack> Manishearth: that I already did.
+[21:25:47] <larsberg> (I ask because I probably won't get to adding a builder before the workweek, as there's a lot to plan and prepare)
+[21:25:52] <Savago> larsberg: some of the deps would fail to find freetype2 on raspbian.
+[21:26:03] <Savago> (then it was just a matter to edit the makefiles).
+[21:26:26] <larsberg> Savago: nice; that sounds like the kind of thing we are (hopefully) unlikely to bitrot if we do another rust upgrade, etc.
+[21:26:27] <Savago> larsberg: while we are at it, is servo using an old glutin version?
+[21:26:29] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[21:26:29] -ghservo- [13html5ever] 15bors-servo 04force-pushed 06auto from 14b440588 to 1419dc694: 02http://git.io/vIVFO
+[21:26:29] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[21:26:37] <Savago> older than say, glutin usptream/master.
+[21:26:37] <larsberg> Savago: we're forked from upstream glutin, IIRC
+[21:26:49] <Savago> Ah… I see.
+[21:27:00] <Savago> larsberg: where is the fork?
+[21:27:11] <larsberg> Savago: https://github.com/servo/glutin
+[21:27:20] <Savago> Coolio, there is one last change there too.
+[21:27:48] <Savago> I have to leave now, but should be back later.
+[21:28:02] *** Quits: dbaron (dbaron@moz-eh03n6.2rkg.9kg1.0101.2620.IP) (A TLS packet with unexpected length was received.)
+[21:28:28] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[21:28:28] -ghservo- [13saltfs] 15metajack closed pull request #39: Minor fixes for homu service. (06master...06fix-homu) 02http://git.io/vIVwT
+[21:28:28] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[21:28:32] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[21:28:32] -ghservo- [13saltfs] 15metajack pushed 3 new commits to 06master: 02http://git.io/vIwcb
+[21:28:32] -ghservo- 13saltfs/06master 14ffb35a0 15Jack Moffitt: Fix missing ':'.
+[21:28:32] -ghservo- 13saltfs/06master 14f25a9ab 15Jack Moffitt: Run homu from correct directory.
+[21:28:32] -ghservo- 13saltfs/06master 14714118b 15Jack Moffitt: Merge pull request #39 from metajack/fix-homu...
+[21:28:32] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[21:28:53] <jack> Manishearth: that seems to have fixe dit.
+[21:28:59] <jack> (updating github's travis config)
+[21:29:02] <Manishearth> cool
+[21:29:13] <jack> It's failing because string-cache isn't updated.
+[21:29:48] *** Joins: dbaron (dbaron@moz-13grj1.2rkg.9kg1.0101.2620.IP)
+[21:30:38] <_Y_> did something happen to kmc? I've seen him less and less on html5ever :(
+[21:35:15] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[21:38:38] *** Quits: kmicu (kmicu@moz-uga.edn.218.91.IP) (Client exited)
+[21:43:07] *** Parts: duncan (paul@moz-9vabq7.sgnwmi.sbcglobal.net) ()
+[21:43:35] *** Joins: ldng (ldng@moz-l3gmiq.abo.bbox.fr)
+[21:44:45] *** Quits: ldng (ldng@moz-l3gmiq.abo.bbox.fr) (Quit: Leaving)
+[21:45:33] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[21:45:59] *** Joins: zippity (Mibbit@moz-hu6.nja.252.72.IP)
+[21:46:23] <Ms2ger> _Y_, change in employment status from what I heard
+[21:47:01] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[21:47:01] -ghservo- [13core-graphics-rs] 15frewsxcv pushed 3 new commits to 06master: 02http://git.io/vIwRy
+[21:47:01] -ghservo- 13core-graphics-rs/06master 1479c34f6 15Corey Farwell: Build and test on Travis CI (OSX)
+[21:47:01] -ghservo- 13core-graphics-rs/06master 14e7b7fdb 15Corey Farwell: Init README
+[21:47:01] -ghservo- 13core-graphics-rs/06master 14375ad42 15Corey Farwell: Merge pull request #38 from frewsxcv/travis...
+[21:47:01] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[21:47:42] <cmr> frewsxcv: whoa, I thought travis wasn't accepting new osx projects?
+[21:48:54] <frewsxcv> cmr: from my email with someone from travis ci: "We have received additional capacity for OSX open source builds just recently, and accept limited numbers of new repositories for multi-os testing."
+[21:49:35] <cmr> frewsxcv: nice.
+[21:49:40] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[21:50:28] <frewsxcv> so far, i have it enabled on: tomaka/glutin, servo/core-text-rs, servo/core-graphics-rs, servo/core-foundation-rs
+[21:50:41] <frewsxcv> i requested more, but they only granted those for now
+[21:50:51] *** Quits: Ms2ger (Ms2ger@moz-vbh.07m.182.91.IP) (Ping timeout: 121 seconds)
+[21:51:04] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[21:51:50] <cmr> I'm very happy about getting it for glutin!
+[21:52:46] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[21:52:46] -ghservo- [13servo] 15bors-servo pushed 0 new commits to 06tmp: 02http://git.io/vIwEX
+[21:52:46] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[21:52:47] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[21:52:47] -ghservo- [13servo] 15bors-servo merged 06tmp into 06auto: 02http://git.io/vIwE1
+[21:52:47] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[21:56:34] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[22:01:08] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[22:05:33] *** Joins: gandalf (zbraniecki@moz-cp7c4m.ca.comcast.net)
+[22:08:20] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[22:09:17] *** Joins: marcusklaas (marcus@moz-0ol9oe.chello.nl)
+[22:09:22] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[22:10:50] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[22:10:50] -ghservo- [13saltfs] 15metajack opened pull request #40: Add html5ever repo support to homu. (06master...06more-homu-repos) 02http://git.io/vIwrG
+[22:10:50] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[22:11:08] *** Joins: A205B064 (A205B064@moz-rr4.khg.118.75.IP)
+[22:12:01] <jack> frewsxcv: cocoa-rs?
+[22:12:23] <jack> oh, i see you requested more than you listed. i'm sure that was one of them :)
+[22:12:38] <frewsxcv> https://github.com/servo/cocoa-rs, https://github.com/servo/cgl-rs, https://github.com/servo/io-surface-rs, https://github.com/servo/rust-layers
+[22:12:43] <frewsxcv> were the other ones i listed
+[22:12:58] <frewsxcv> i'll follow up later and request those eventually
+[22:13:30] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[22:16:37] <jack> mbrubeck: the linking error with #6306 looks to be a cargo regression. acrichto is investigating. https://github.com/rust-lang/cargo/issues/1695
+[22:16:38] <crowbot> Issue #6306: Use Cargo's target directory sharing. - https://github.com/servo/servo/pull/6306
+[22:16:38] <crowbot> Issue #1695: regression: `cargo` no longer passes `-L native=(..)/build/dep-of-dep/out` to `rustc` when cross compiling a binary with `cargo rustc -- (..)` - https://github.com/rust-lang/cargo/issues/1695
+[22:16:54] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[22:17:16] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[22:20:20] *** Quits: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP) (Connection closed)
+[22:23:03] *** kimundi is now known as zz_kimundi
+[22:25:56] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[22:26:10] <pcwalton> ok, I implemented chunking for layout on ARM
+[22:26:21] <pcwalton> bear in mind there are still segfaults I need to fix so take these numbers with a grain of salt
+[22:26:46] <pcwalton> but for me on x86, the speedup for layout is 1x, 1.43x, 2.41x for 1, 2, 4 cores respectively
+[22:27:01] <pcwalton> for ARM big.LITTLE, the speedup is 1x, 1.44x, 2.55x for 1, 2, 4 cores respectively
+[22:27:10] <pcwalton> so, slightly better scaling than x86 :)
+[22:27:21] <pcwalton> roughly equivalent
+[22:27:53] <pcwalton> style recalc is worse -- 1x, 1.82x, 2.34x on x86 vs. 1x, 1.58x, 1.98x ARM and I wouldn't be surprised if the problem is properties::cascade
+[22:27:57] <pcwalton> i-cache bloat again
+[22:28:21] <pcwalton> but the layout numbers are promising!
+[22:28:44] <frewsxcv> if component A requires components B and C, and both B and C require D, how many times is D compiled?
+[22:29:05] <frewsxcv> s/component/crate/
+[22:29:46] *** Quits: fkaa (tundmatu@moz-501od2.business.telia.com) (Ping timeout: 121 seconds)
+[22:32:19] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[22:32:25] *** Quits: jviereck (Adium@moz-hjptlv.rgd2.9kg1.0101.2620.IP) (Quit: Leaving.)
+[22:32:56] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[22:32:56] -ghservo- [13servo] 15bors-servo merged 06tmp into 06auto: 02http://git.io/vIw12
+[22:32:56] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[22:32:58] *** Joins: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP)
+[22:32:59] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[22:32:59] -ghservo- [13servo] 15bors-servo closed pull request #6289: Make LOCAL_CONTEXT_KEY safe and non-leaky. (06master...06unleak-LOCAL_CONTEXT_KEY) 02http://git.io/vIkoc
+[22:32:59] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[22:39:22] *** Joins: jviereck (Adium@moz-3ulguq.rgd2.9kg1.0101.2620.IP)
+[22:39:25] *** Quits: laumann_ (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[22:39:30] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[22:40:14] <larsberg> frewsxcv: once per version of D that cargo picks up
+[22:40:48] <larsberg> pcwalton: that's very exciting - nice work!
+[22:43:12] <frewsxcv> larsberg: so if that's the case, is there any reason to have components/utils do something like this? https://github.com/servo/servo/blob/master/components/util/lib.rs#L43-L44    it looks like compontents/utils doesn't actually utilize those reexports, but other components do. it seems like each component that utilize those reexports could just depend on
+[22:43:12] <frewsxcv> those individually
+[22:44:00] <mbrubeck> frewsxcv: Yup, I agree.
+[22:44:15] <mbrubeck> frewsxcv: I think it's because smallvec (and fnv? I'm not sure) started out as a module within the util crate.
+[22:44:29] <mbrubeck> So that was just to ease the transition.
+[22:44:30] <frewsxcv> right, that's what i figured
+[22:45:52] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[22:45:52] -ghservo- [13string-cache] 15metajack opened pull request #87: Minor changes for new Rust. (06master...06rustup-20150609) 02http://git.io/vIwy9
+[22:45:52] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[22:46:43] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[22:47:54] *** Quits: Zaggy1024 (Zaggy1024@moz-5unah9.mpls.qwest.net) (Ping timeout: 121 seconds)
+[22:48:20] *** Quits: bjz (bjz@moz-puppgq.tpgi.com.au) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[22:48:41] *** Joins: njn (chatzilla@moz-c6c476.iinet.net.au)
+[22:48:53] *** Joins: Zaggy1024 (Zaggy1024@moz-5unah9.mpls.qwest.net)
+[22:52:27] *** Quits: Savago (Savago@moz-8hd.3b6.246.162.IP) (Client exited)
+[22:53:27] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[22:54:10] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[22:54:10] -ghservo- [13servo] 15frewsxcv closed issue #6287: Package errors during mach cargo-update 02http://git.io/vIUH8
+[22:54:10] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[22:54:17] *** Quits: nattokirai (nattokirai@moz-rq9a8e.asahi-net.or.jp) (Client exited)
+[22:57:34] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[22:59:13] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[23:08:14] *** Quits: Jayflux (Jason@moz-kbadmp.ppp.as43234.net) (Quit: Leaving)
+[23:08:38] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[23:08:58] <njn> will jdm miss Whistler due to being on vacation?
+[23:09:11] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[23:11:17] <mwu> would've been an easy question to answer if our PTO app were still open
+[23:11:44] *** Quits: nicknikolov (nicknikolov@moz-u6h.qr2.219.90.IP) (Connection closed)
+[23:12:42] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[23:12:42] -ghservo- [13servo] 15bors-servo merged 06auto into 06master: 02http://git.io/vIw12
+[23:12:42] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[23:12:44] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[23:12:44] -ghservo- [13servo] 15bors-servo pushed 0 new commits to 06tmp: 02http://git.io/vIwdL
+[23:12:44] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[23:12:45] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[23:12:45] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02https://github.com/servo/servo/compare/8236221acf0f...44a4b7886d05
+[23:12:45] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[23:12:45] *** Quits: jviereck (Adium@moz-3ulguq.rgd2.9kg1.0101.2620.IP) (Quit: Leaving.)
+[23:12:47] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[23:12:47] -ghservo- [13servo] 15bors-servo closed pull request #6280: Partial implementation of transform animations spec. (06master...06transform-transitions) 02http://git.io/vkh79
+[23:12:47] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[23:16:32] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[23:16:32] -ghservo- [13saltfs] 15edunham opened pull request #41: Let's test configs (06master...06linting) 02http://git.io/vIwF4
+[23:16:32] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[23:20:01] *** Joins: playjax (chatzilla@moz-3humcv.optusnet.com.au)
+[23:20:05] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[23:22:37] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[23:25:28] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[23:28:19] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[23:31:20] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[23:32:21] <jgraham> njn: Yes, I believe so
+[23:32:28] <njn> jgraham: :(
+[23:32:47] <jgraham> At least he isn't at the MDN fellowship weekend the two days beforehand
+[23:35:11] *** Quits: playjax (chatzilla@moz-3humcv.optusnet.com.au) (Ping timeout: 121 seconds)
+[23:35:27] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[23:37:12] *** Joins: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca)
+[23:39:19] *** Quits: _Y_ (chatzilla@moz-0dlhkb.isp.telekom.rs) (Connection closed)
+[23:40:47] *** Joins: cakecatz (cakecatz@moz-rakufn.sannet.ne.jp)
+[23:43:07] *** Quits: rohinpatel (rohinpatel@moz-ed0fdd.resnet.ubc.ca) (Ping timeout: 121 seconds)
+[23:44:01] *** Quits: BenWa (bgirard@moz-i5m.05u.207.66.IP) (Client exited)
+[23:46:31] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[23:46:31] -ghservo- [13saltfs] 15metajack pushed 2 new commits to 06master: 02http://git.io/vIrvH
+[23:46:31] -ghservo- 13saltfs/06master 14876458f 15edunham: Let's test configs...
+[23:46:31] -ghservo- 13saltfs/06master 145e7499d 15Jack Moffitt: Merge pull request #41 from edunham/linting...
+[23:46:31] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[23:47:19] <jack> njn, jgraham: yes. jdm is out for almost a month.
+[23:47:32] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[23:47:32] -ghservo- [13string-cache] 15glennw pushed 2 new commits to 06master: 02http://git.io/vIrff
+[23:47:32] -ghservo- 13string-cache/06master 141fa8d03 15Jack Moffitt: Minor changes for new Rust.
+[23:47:32] -ghservo- 13string-cache/06master 140bf77b5 15Glenn Watson: Merge pull request #87 from metajack/rustup-20150609...
+[23:47:32] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[23:47:35] <jack> ms2ger also couldn't make it.
+[23:47:41] *** AutomatedTester is now known as AutomatedTester|AFK
+[23:47:46] <jack> so we will have very few JS/DOM people around :(
+[23:47:48] <mwu> huh
+[23:47:54] <mwu> how am I suppose to land the smup
+[23:48:13] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[23:48:13] -ghservo- [13saltfs] 15metajack pushed 2 new commits to 06master: 02http://git.io/vIrfY
+[23:48:13] -ghservo- 13saltfs/06master 14981afe9 15Jack Moffitt: Add html5ever repo support to homu.
+[23:48:13] -ghservo- 13saltfs/06master 1486102db 15Jack Moffitt: Merge pull request #40 from metajack/more-homu-repos...
+[23:48:13] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[23:48:14] <mwu> nox! review my smup
+[23:49:13] * jgraham assumes Ms2ger will be too busy listening to cricket
+[23:49:43] <nox> mwu: I would.
+[23:49:49] <mwu> :p
+[23:49:53] <nox> mwu: But Reviewable said otherwise.
+[23:49:57] <nox> It said 502 Bad Gateway.
+[23:50:03] *** Quits: OilleYao (uid32548@moz-cf17m5.charlton.irccloud.com) (Quit: Connection closed for inactivity)
+[23:50:09] <nox> Ah, it's back.
+[23:50:11] <mwu> that's better than freezing up your tab
+[23:50:26] <nox> Oh it does that afterwards.
+[23:50:33] <nox> The 502 error page was ultra fast though.
+[23:50:40] <mwu> fast fail
+[23:51:06] <nox> That table with 22 revisions is stupid.
+[23:51:20] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[23:51:21] -ghservo- [13html5ever] 15bors-servo merged 06auto into 06tmp: 02http://git.io/vIrfd
+[23:51:21] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[23:51:27] <nox> Do they only do 3-lines PRs for their product or what? :)
+[23:52:18] *** Quits: godlikesme (godlikesme@moz-2a2.dsd.174.79.IP) (Ping timeout: 121 seconds)
+[23:52:22] <njn> jdm is away now too? Boo. I wanted to hook up SM's memory reporting in Servo...
+[23:52:24] *** Joins: jbomo (dkd@moz-uol4mm.fios.verizon.net)
+[23:55:00] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[23:55:00] -ghservo- [13servo] 15bors-servo merged 06auto into 06master: 02http://git.io/vIwdq
+[23:55:00] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[23:55:03] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[23:55:03] -ghservo- [13servo] 15bors-servo closed pull request #6284: Fix #6242 testbinding add specialoperations (06master...066242-testbinding-add-specialoperations) 02http://git.io/vIJvi
+[23:55:03] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[23:56:26] <larsberg> mwu: Manishearth will also not be there. I'm a little terrified of giving the content/DOM architecture overview at the servo training with none of them around :-)
+[23:56:57] <mwu> man. bad timing all around
+[23:57:25] <nox> frewsxcv: Want to review the Python in smup?
+[23:59:30] *** Joins: nattokirai (nattokirai@moz-86b4bs.bitcat.net)
+[23:59:36] *** Joins: kamarkiewicz (kamarkiewic@moz-1514fg.dynamic.chello.pl)

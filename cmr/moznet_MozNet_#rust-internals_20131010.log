@@ -1,0 +1,1834 @@
+[00:02:04] <dbaupp> cmr: is the bencher off? (just checking it's not a problem at my end)
+[00:02:14] <cmr> dbaupp: yes
+[00:02:20] <cmr> privacy changes
+[00:02:30] <dbaupp> oh?
+[00:02:40] <dbaupp> what's required?
+[00:03:45] <cmr> Nothing, there's a patch in the queue and I have it built here
+[00:03:48] <cmr> semiafk atm
+[00:04:21] <dbaupp> cmr: (ReaderUtil etc are reexported by std::rt::io, btw)
+[00:04:35] <cmr> there's a bug with read_to_end
+[00:04:40] <cmr> or, something
+[00:05:46] <dbaupp> oh, I see
+[00:09:41] <sfackler> dbaupp: there's a bug with resolve in general, looks like. If you import ReaderUtil from the reexport, rustc can't find any of the methods
+[00:09:57] <dbaupp> sfackler: woah, weird.
+[00:11:17] <sfackler> dbaupp: https://github.com/mozilla/rust/issues/9779
+[00:11:21] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[00:11:21] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14682f135 to 142076959: 02http://git.io/N3iJvQ
+[00:11:21] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[00:11:23] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[00:11:23] <ghrust> 01[13rust01] 15bors pushed 11 new commits to 06auto: 02http://git.io/Uc1TfA
+[00:11:23] <ghrust> 13rust/06auto 14b509f79 15Alex Crichton: Implement io::native::file
+[00:11:23] <ghrust> 13rust/06auto 14edf4c16 15Alex Crichton: Implement io::native::stdio
+[00:11:24] <ghrust> 13rust/06auto 14a0d2f71 15Alex Crichton: Implement io::native::process
+[00:11:26] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[00:14:19] <cmr> sfackler: your patch doesn't actually fix the bug.
+[00:14:29] <cmr> Oh,I'm still usnig the reexported.
+[00:14:46] <cmr> alright yeah nvm
+[00:14:54] <cmr> Itdoesn't fix the bug, but works aroudn it for rt
+[00:15:54] <cmr> dbaupp: bencher back up
+[00:16:04] *** kimundi is now known as zz_kimundi
+[00:16:06] <cmr> it'll probably an hour or two while it catches up
+[00:17:26] <dbaupp> cmr: awesome
+[00:17:34] * dbaupp hugs cmr
+[00:18:39] <acrichto> haha the default min stack is less than the default fixed stack segment size
+[00:20:37] <sfackler> cmr: what's the update rate for the docs server?
+[00:23:25] <cmr> sfackler: hourly.
+[00:23:37] <cmr> Is something unexpected happening? I can check in on it.
+[00:24:09] <cmr> I can also kick it manually.
+[00:25:33] <sfackler> it looks like the rust-postgres docs aren't updating
+[00:25:51] <sfackler> the message module is still showing up even after this commit https://github.com/sfackler/rust-postgres/commit/942214b55eeb8a43299b54512124170725c659d6
+[00:25:51] <cmr> I'll look into it
+[00:26:28] <sfackler> thanks
+[00:29:37] <acrichto> it appears that if we want to turn on __morestack in the new runtime without segmented stacks, we're going to have to increase the default stack size
+[00:29:48] <acrichto> it something even larger than it currently is
+[00:30:14] <Luqman> what's the point of __morestack without segmented stacks?
+[00:30:22] <acrichto> checking for stack overflow
+[00:30:31] <acrichto> making sure you don't run off your stack basically
+[00:30:33] <Luqman> ah, and abort?
+[00:30:42] <acrichto> that's kinda tricky
+[00:30:49] <acrichto> it'd be awesome if the task unwound
+[00:30:59] <acrichto> I'm not certain that's possible though
+[00:32:17] <dbaupp> rusti: trait Foo {  fn bar(mut int); }
+[00:32:18] -rusti- pastebinned 7 lines of output: http://sprunge.us/XdPe
+[00:32:44] <dbaupp> that's weird ^
+[00:32:54] <acrichto> whoa
+[00:32:57] <strcat> acrichto: you probably aren't going to be able to unwind because you need stack for that ;p
+[00:33:09] <acrichto> strcat: we can give ourselves wiggle room
+[00:33:17] <acrichto> right now it's an extra 20k at the end 
+[00:33:19] <strcat> but you don't know how much the destructors are going to want
+[00:33:30] <strcat> what if they need to destroy a massive linked list or a tree via recursion?
+[00:33:39] <acrichto> I'd want to do something to invoke a different morestack handler
+[00:33:45] <cmr> u/me sets that VM to start on boot
+[00:33:47] <acrichto> if you overflow during an unwinding then you abort
+[00:33:48] <cmr> sfackler: sorry about that!
+[00:34:20] <strcat> in the long term __morestack isn't how you'd want to implement stack safety anyway
+[00:34:27] <strcat> just a nice ugly temporary workaround ;p
+[00:34:36] <strcat> assuming we aren't going to have segmented stacks on 64-bit
+[00:34:39] <acrichto> I don't think that llvm supports other methods currently
+[00:34:47] <strcat> yeah, that's the issue
+[00:35:03] <strcat> (anyway we've discussed this before so we're on the same page)
+[00:35:17] <acrichto> I was thinking we should avoid using signal handlers
+[00:35:19] <sfackler> cmr: np :)
+[00:35:21] <acrichto> to catch a segv
+[00:35:34] <strcat> acrichto: yeah we really don't want signal handlers
+[00:35:40] <strcat> signalfd, sure ;p
+[00:35:50] <strcat> there's likely an equivalent on freebsd
+[00:36:00] <acrichto> exception handling is just really hard though
+[00:36:01] *** Joins: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP)
+[00:36:15] <acrichto> I can see something working well if we had maybe 2 worls in TLS
+[00:36:15] <aatch> It frightens me that it's possible to catch a SEGV
+[00:36:25] <acrichto> 1 is the absolute stack limit and the other is the current allocated stack limit
+[00:36:30] <strcat> acrichto: you have to use sigaltstack once per thread
+[00:36:42] <acrichto> strcat: what if someone wants to handle segvs from libuv?
+[00:36:52] <strcat> acrichto: they can use proper modern signal handling
+[00:36:54] <acrichto> or installs a segv handler in some other way for the process?
+[00:36:56] <strcat> signal handlers are not good
+[00:37:11] <acrichto> they're really useful for some things though
+[00:37:16] <strcat> acrichto: they aren't
+[00:37:21] <dbaupp> does anyone happen to know if ast::DefBinding corresponds to (e.g.) a and b in let (a,b) = (1,2)?
+[00:37:23] <strcat> they're totally broken/unsafe in almost every case
+[00:37:29] <strcat> modern signal handling uses signalfd
+[00:37:54] <kmc> only on Linux
+[00:37:55] <strcat> I think it's undefined behaviour to listen for the same signal in multiple threads anyway
+[00:38:00] <strcat> kmc: there are alternatives elsewhere
+[00:38:03] <kmc> right
+[00:38:06] <strcat> I think kqueue has something
+[00:38:12] <kmc> there's also the self-pipe trick
+[00:38:17] <strcat> the pselect thing?
+[00:38:20] <strcat> I don't remember exactlyt
+[00:38:22] <kmc> no
+[00:38:44] <kmc> you call pipe(2) and then install signal handlers which just write the signal number into the write end of that pipe
+[00:38:49] <kmc> and then you can select etc. on the read end
+[00:39:03] <acrichto> that's what libuv does
+[00:39:05] <acrichto> essentially
+[00:39:07] <strcat> we only support freebsd, linux and OS X so if kqueue has something we're all set
+[00:39:09] <strcat> http://doc.geoffgarside.co.uk/kqueue/signal.html
+[00:39:13] <strcat> acrichto: doesn't it use signalfd?
+[00:39:24] <acrichto> not from what I can tell
+[00:39:30] <strcat> well, libuv sucks then ;p
+[00:39:32] <acrichto> as in 'git grep signalfd' shows up nothing
+[00:39:55] <strcat> acrichto: what about timerfd?
+[00:39:57] <kmc> I think signalfd is not significantly better that the self-pipe trick if you're maintaining the code for the latter anyway
+[00:40:04] <acrichto> strcat: no :(
+[00:40:16] <strcat> acrichto: well, that's really awful then
+[00:40:22] <strcat> how the hell are they doing timers? polling? :s
+[00:40:39] <acrichto> regardless though, I don't think we can use sigaction/signal to handle page faults to auto-grow the stack
+[00:41:06] <strcat> it doesn't seem like a good idea to use libuv if they're not even using timerfd ;\
+[00:41:25] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[00:41:25] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14403e7f6 to 142076959: 02http://git.io/N3iJvQ
+[00:41:25] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[00:41:26] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[00:41:26] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/yUuVDA
+[00:41:26] <ghrust> 13rust/06auto 148ac0d0a 15Sébastien Crozet: Fix float to float ToPrimitive implementation....
+[00:41:26] <ghrust> 13rust/06auto 148f4b872 15bors: auto merge of #9774 : sebcrozet/rust/master, r=huonw...
+[00:41:27] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[00:41:36] <acrichto> argh this patch will not land
+[00:42:09] <acrichto> of course
+[00:44:06] <acrichto> does longjmp run destructors?
+[00:44:14] <strcat> no
+[00:44:16] <sfackler> nope
+[00:44:24] <strcat> you really, really don't want longjmp/setjmp
+[00:44:26] <acrichto> I suppose I'd be surprised if it did
+[00:44:27] <strcat> or signal handlers
+[00:44:31] <sfackler> the results of jumping if you have destructors is undefined iirc
+[00:45:30] <strcat> acrichto: you aren't allowed to call longjmp from a signal handler
+[00:45:52] <acrichto> oh no for a second I was thinking we could remove c++ entirely  and switch to gcc
+[00:46:12] <strcat> acrichto: longjmp is really slow compared to exceptions anyway
+[00:46:20] <acrichto> it'd only be for unwinding
+[00:46:38] <strcat> acrichto: it's really slow to use it to implement exceptions though
+[00:46:45] <strcat> there is a cost on the normal path
+[00:47:12] <strcat> you don't need C++ to use exceptions
+[00:47:17] <strcat> (in gcc terms)
+[00:47:30] <strcat> they define exceptions in libgcc_s
+[00:47:40] <acrichto> huh, maybe we could use that...
+[00:47:50] <acrichto> I think the only real use-case of C++ right now is rust_try
+[00:48:01] <strcat> or use libc++abi, which is supposed to abstract it per-platform
+[00:48:18] <strcat> OS X doesn't use libgcc exceptions (although we do)
+[00:49:12] <acrichto> wheeee
+[00:49:21] <acrichto> I don't think a c++ dep is hurting us though
+[00:50:01] <strcat> using libuv might just be a bad way to do it
+[00:50:10] * strcat shrugs
+[00:50:13] <acrichto> for exceptions?
+[00:50:16] <strcat> no
+[00:50:20] <strcat> I mean using libuv at all
+[00:50:35] <acrichto> I don't think we're moving away from libuv any time soon
+[00:50:43] <strcat> it's terrible on linux and it forces you into using callbacks
+[00:50:44] <acrichto> but I think the idea was to have a pluggable event loop
+[00:50:56] <kmc> how is it terrible on linux
+[00:51:07] <strcat> kmc: it's polling
+[00:51:31] <strcat> for timers
+[00:51:43] <kmc> :(
+[00:52:03] <kmc> doesn't Node use libuv? and isn't Node usually deployed on Linux? do they just not use timers?
+[00:52:13] <kmc> can we just add timerfd support?
+[00:52:27] <strcat> https://github.com/joyent/libuv/pull/928 wat
+[00:55:40] <strcat> kmc: *shrug*, it seems there are a lot of problems with it - like I/O being locked to a specific thread
+[00:56:04] *** Quits: tjc (tjc@moz-7B0110AD.mv.mozilla.com) (Quit: Places to go, people to annoy)
+[00:56:07] <strcat> and it uses fork instead of posix_spawn which is no better than our naive std::run
+[00:56:28] <strcat> I realize it's hard to make a cross-platform abstraction, but it seems like we're going to be way behind Go
+[00:59:17] <strcat> node.js is single-threaded
+[00:59:35] <strcat> (from a language POV - it does use multiple threads, to avoid blocking on I/O)
+[00:59:44] <strcat> but 1 event loop
+[01:00:17] <kmc> true
+[01:00:21] <strcat> like lets say you have 4 schedulers, and you have I/O work on #1
+[01:00:27] <strcat> and now #1 is running a CPU task
+[01:00:41] <strcat> unless you can move that to another, it's going to all time out
+[01:00:49] <kmc> i wonder if any part of the GHC IO manager would be reusable
+[01:01:04] <kmc> I think much of it's in Haskell :/
+[01:01:14] <strcat> or translate go's scheduler to rust ;p
+[01:01:29] <kmc> how much code is it?
+[01:01:46] <strcat> dunno
+[01:02:05] <strcat> it's probably only solid on linux though
+[01:02:40] <kmc> and Linux is one of the easier platforms for this stuff, yeah
+[01:03:05] <strcat> yeah, because it has every event in fd form
+[01:03:24] <kmc> also a correct pselect(2), although we probably won't use it
+[01:03:58] <kmc> some BSDs implement pselect in userspace, which defeats the entire point of it existing
+[01:05:07] *** Quits: dbaupp (Thunderbir@moz-4301A13F.lns20.syd6.internode.on.net) (Ping timeout)
+[01:06:25] <acrichto> mmap is cool
+[01:08:18] <kmc> yes
+[01:08:29] <kmc> memory mapped files are another thing that doesn't play well with userspace threading, though :/
+[01:08:47] <strcat> kmc: why?
+[01:09:00] <strcat> I guess because the page faults block the thread?
+[01:09:01] <kmc> when your IO operations are just memory access, you can't route them through an event loop
+[01:09:03] <kmc> yep
+[01:09:30] * strcat shrugs
+[01:09:40] <kmc> I heard Go wants to move towards a real Linux thread for every Go thread, and introduce some new system calls to cut out the Linux scheduler overhead
+[01:09:45] <strcat> I feel like we're falling into the trap of taking on too much and doing nothing well, in many areas
+[01:10:02] <strcat> kmc: yep, it was at the linux plumber's conference (the kernel API they want to add)
+[01:10:02] <kmc> I forgot the link, though :/
+[01:10:16] <kmc> for the record I think it's fine to have userspace threading without a story for mmap
+[01:10:44] <strcat> sqlite moved to mmap
+[01:10:46] <kmc> not ideal but I don't know of any nice solution
+[01:19:32] <strcat> kmc: well, Go reinvents all of libc and uses a calling convention where they only need to save 3 registers to context switch
+[01:19:58] <strcat> and it's a *highly tuned* event loop
+[01:20:07] <strcat> it sacrifices a lot in performance elsewhere
+[01:22:12] <kmc> *nod*
+[01:22:22] <kmc> that's interesting
+[01:22:32] <kmc> they're optimizing for a different use case than us, for sure
+[01:23:28] <strcat> well, that's the problem I see, what is the use case for rust's stdlib?
+[01:24:50] <strcat> I really don't think we're going to succeed at doing both the task-based scalable I/O and performance in the C++ niche use cases with the same library
+[01:25:28] <aatch> strcat, I see the issue as the server-side camp vs the application camp
+[01:25:52] <strcat> depends on the kind of server, lots of them would do real work
+[01:26:00] <kmc> IO throughput vs. latency & raw compute power
+[01:26:13] <strcat> there are other tensions like managed pointers
+[01:26:17] <aatch> kmc, I guess that's what I meant
+[01:26:24] <kmc> right, Rust could be a runaway success for e.g. high frequency trading servers
+[01:27:11] <kmc> I wonder where things like memcached fall; seems like they would care a lot about both latency and concurrent throughput
+[01:27:38] *** Joins: brson_ (brson@63DCD950.E4213B29.318DADF5.IP)
+[01:27:50] <strcat> kmc: memcached probably never needs to scale to a huge number of clients
+[01:27:54] <aatch> kmc, given it's use case, probably leans towards throughput.
+[01:28:09] <strcat> kmc: even 20k threads is a totally reasonable number on linux
+[01:28:22] <kmc> true
+[01:28:26] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[01:28:34] <strcat> and if you *really* have 20k servers talking to the same memcached, something else is going to go wrong first
+[01:28:37] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[01:28:37] *** ChanServ sets mode: +qo brson brson
+[01:29:01] <aatch> strcat, but there are many systems that will open a new connection to memcache each request.
+[01:29:09] <aatch> PHP for example.
+[01:29:50] *** Quits: brson_ (brson@63DCD950.E4213B29.318DADF5.IP) (Ping timeout)
+[01:30:22] *** Joins: brson_ (brson@981AA104.E81F12CD.76F66111.IP)
+[01:31:04] <strcat> kmc: and people who want to use rust embedded in existing applications have different needs
+[01:31:17] <aatch> Anyway. What I tend to see in places like the mailing list is the contention between "What if I want to have 1000000 tasks!" and "I need every cycle I can get"
+[01:31:25] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[01:31:37] <strcat> well, the stdlib falls really short of doing anything well atm
+[01:31:54] <strcat> vectors are ridiculously slow for example
+[01:32:02] <strcat> and FFI overhead is high
+[01:32:09] <strcat> so trees are slow
+[01:32:29] <strcat> jemalloc can allocate faster than we can call a no-op function
+[01:34:14] <aatch> Yeah, which is why I'm still not a huge fan of the task stuff. I get the appeal, but it really hurts other places (the vector stuff is just poor design currently)
+[01:35:00] * strcat is really close to at least making an alternate container library
+[01:35:09] <strcat> I don't know how to fix vectors in libstd
+[01:35:15] <strcat> stupid managed ptrs :(
+[01:35:41] <strcat> managed vectors need a box header, but a saner vector representation wouldn't put the length there
+[01:35:51] <strcat> (managed as in ~[@int])
+[01:37:09] <aatch> strcat, ah. I still find the fact that ~[@T] is represented differently to ~[T] mad. 
+[01:37:38] <strcat> I'm not sure it's good that slices/vectors store byte sizes instead of element sizes
+[01:37:46] <strcat> we do a lot of multiplications at runtime
+[01:38:09] <strcat> anyway, that gets to the point where it's a language issue instead of a library one
+[01:39:54] <acrichto> rusti: let a = 3; (a as extern "Rust" fn())()
+[01:39:55] -rusti- application terminated abnormally with signal 11 (Segmentation fault)
+[01:41:13] <kmc> ouch
+[01:41:28] <cmr> Leftovers from the *u8 transition or just broken?
+[01:46:25] *** Quits: brson_ (brson@981AA104.E81F12CD.76F66111.IP) (Ping timeout)
+[01:46:28] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[01:46:28] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/yUuVDA
+[01:46:28] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[01:47:51] <acrichto> strcat: when did we start applying internal labels to private functions?
+[01:47:58] <strcat> acrichto: no
+[01:48:01] <strcat> need a call graph
+[01:48:18] <strcat> acrichto: I made it so that when you build a binary, it marks all functions/globals as internal though
+[01:48:22] <acrichto> b/c we're currently flagging them as internal...
+[01:48:29] <acrichto> on a library
+[01:48:44] <strcat> we aren't afaik
+[01:48:54] <strcat> generics are tagged as internal because they're duplicated per crate
+[01:49:01] <acrichto> 'pub use <private function>' has a linker error
+[01:49:11] <acrichto> hm this is not good
+[01:49:16] <acrichto> maybe this is old behavior
+[01:49:33] <strcat> acrichto: I'm looking at an example now and they're all external
+[01:49:48] <acrichto> pub use foo::bar; mod foo { pub fn bar() {} }
+[01:49:49] <acrichto> try that
+[01:50:32] <strcat> it marks the function in that module internal, yeah
+[01:50:34] <strcat> I don't know why
+[01:50:49] <strcat> not something I changed
+[01:51:00] <acrichto> weird, this is probably some real old behavior
+[01:51:01] *** Joins: brson (brson@63DCD950.E4213B29.318DADF5.IP)
+[01:51:01] *** ChanServ sets mode: +qo brson brson
+[01:51:20] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[01:51:20] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/GaCDzg
+[01:51:20] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[01:51:25] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[01:51:25] <ghrust> 01[13rust01] 15bors pushed 11 new commits to 06auto: 02http://git.io/jRmBhA
+[01:51:25] <ghrust> 13rust/06auto 14b509f79 15Alex Crichton: Implement io::native::file
+[01:51:25] <ghrust> 13rust/06auto 14edf4c16 15Alex Crichton: Implement io::native::stdio
+[01:51:25] <ghrust> 13rust/06auto 14a0d2f71 15Alex Crichton: Implement io::native::process
+[01:51:27] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[02:01:12] <strcat> acrichto: yeah looks like it makes all priv mod stuff internal
+[02:01:15] <strcat> ha
+[02:01:27] <strcat> so there's going to be a huge code size increase before adding the cg stuff
+[02:01:45] *** Joins: sanxiyn (tinuviel@B4104EBB.3CC170B1.1E14B209.IP)
+[02:03:50] <cmr> sfackler: is it updated?
+[02:05:03] <cmr> nope
+[02:05:08] <cmr> forgot to pull in my script, apparently.
+[02:15:12] <acrichto> strcat: I can't even figure out where it's getting marked as internal though
+[02:15:18] <strcat> acrichto: :(
+[02:15:35] <strcat> acrichto: maybe building_library is true when building those? :s
+[02:15:38] <strcat> er
+[02:15:40] <strcat> no
+[02:15:42] <strcat> that makes no sense, nvm
+[02:16:15] <acrichto> strcat: you were trying to unify adding attributes to functions, right?
+[02:16:53] <strcat> acrichto: yes, in base.rs there's a unified point where rust functions are declared
+[02:17:04] <strcat> but the attributes also have to be added to call instructions
+[02:17:06] <strcat> so it's not perfect
+[02:17:12] <strcat> (thanks to function ptrs)
+[02:17:25] <acrichto> looks liek fixed_stack_segment is handled elsewhere
+[02:17:33] <acrichto> but I'll just note to myself to move that at some point
+[02:17:58] <strcat> acrichto: it might matter to more than just Rust ABI functions
+[02:18:14] <acrichto> strcat: oh wait and the helper set_llvm_fn_attrs ...
+[02:18:49] <strcat> right that thing sets inlining, etc.
+[02:18:56] <strcat> because it applies to foreign ABI fns too
+[02:19:47] <acrichto> oh argh
+[02:19:54] <acrichto> if !exprt && !ccx.reachable.contains(&id) {
+[02:19:58] <acrichto>     lib::llvm::SetLinkage(val, lib::llvm::InternalLinkage)
+[02:20:05] <acrichto> it's probably not reachable for some reason
+[02:20:53] <strcat> yeah I think that was a major size optimization at some point
+[02:21:01] <strcat> and you're going to have to undo it until there's a call graph ;p
+[02:22:52] <acrichto> let mut exprt = false hsa been there since 2012
+[02:22:58] <acrichto> march 2012
+[02:23:14] <acrichto> fatal: no such path src/librustc/middle/trans/base.rs in d7be4abdae6165668059515e0113021be6dddeb9
+[02:23:22] <acrichto> that's as far back as git blame goes :(
+[02:23:35] *** Quits: jdm (jdm@moz-25D04F84.zone16.bethere.co.uk) (Quit: Lost terminal)
+[02:23:58] <aatch> it's been there forever!
+[02:27:34] * sanxiyn defines <2013 as time immemorial
+[02:27:42] <sanxiyn> Or pre-0.5
+[02:31:11] * acrichto learns about the middle::reachable pass
+[02:31:16] *** Joins: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se)
+[02:32:20] *** Quits: zz_kimundi (kimundi@moz-2C31D0BE.dip0.t-ipconnect.de) (Ping timeout)
+[02:33:19] <acrichto> strcat: it appears we do have a call-graph like thing
+[02:33:25] <acrichto> that's what the reachability pass is doing
+[02:33:38] <acrichto> not so much a call graph but rather just a work list of things
+[02:33:47] <acrichto> and then it iterates until the work list is empty
+[02:36:08] *** Joins: zz_kimundi (kimundi@moz-ED7978E9.dip0.t-ipconnect.de)
+[02:36:09] *** zz_kimundi is now known as kimundi
+[02:37:16] <strcat> well, it really doesn't work very well
+[02:37:18] <strcat> ;p
+[02:37:26] <sanxiyn> You mean reachable pass?
+[02:38:10] <acrichto> I think it needs to move to using some output of the privacy pass instead
+[02:55:28] <strcat> cmr: https://github.com/thestinger/rust-core you might be interested in whatever this is going to be
+[02:55:32] <strcat> not entirely sure yet ;p
+[02:55:59] <strcat> just going to start with the intrinsics, a vector and a reference counted box
+[02:56:09] <sanxiyn> Interesting name
+[02:56:19] <cmr> sfackler: cool!
+[02:56:21] <cmr> erm
+[02:56:23] <cmr> strcat: cool!
+[02:56:38] <sanxiyn> What was core is now std, so we must have core again!
+[02:56:41] * strcat ends up redoing it whenever he makes a benchmark anyway
+[02:56:43] <cmr> sfackler: Is rust-postgres updated to master? Because it doesn't build.
+[02:57:28] <sanxiyn> cmr: Travis CI passed though... maybe a bit of delay?
+[02:57:59] <cmr> sanxiyn: could be
+[02:58:32] <sanxiyn> Didn't Option change land on master recently?
+[02:58:46] <strcat> yes
+[02:59:59] <sanxiyn> It probably would break quite a lot of codes
+[03:02:32] *** Quits: sanxiyn (tinuviel@B4104EBB.3CC170B1.1E14B209.IP) (Quit: Leaving)
+[03:04:14] <strcat> what I think I'd eventually want to do is make libstd use this 'core' module internally, and re-export parts
+[03:04:23] <strcat> but for now I'm not going to worry about that.
+[03:04:40] *** Joins: dbaupp (Thunderbir@8D0E22F1.D5A1DCF.37681C44.IP)
+[03:29:28] *** Quits: brson (brson@63DCD950.E4213B29.318DADF5.IP) (Quit: leaving)
+[03:39:51] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.1)
+[03:42:36] *** Joins: steveklabnik (steveklabn@moz-E4698C6D.red.bezeqint.net)
+[03:46:22] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[03:46:22] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 149503de1 to 148f4b872: 02http://git.io/N3iJvQ
+[03:46:22] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[03:46:23] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[03:46:24] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/O--XEQ
+[03:46:24] <ghrust> 13rust/06auto 143c62ed6 15Steven Fackler: Make std::rt::io::extensions public...
+[03:46:24] <ghrust> 13rust/06auto 142b978af 15bors: auto merge of #9780 : sfackler/rust/extensions2, r=alexcrichton...
+[03:46:24] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[03:47:39] *** Joins: stevekla1nik (steveklabn@moz-E4698C6D.red.bezeqint.net)
+[03:55:43] *** Quits: steveklabnik (steveklabn@moz-E4698C6D.red.bezeqint.net) (Ping timeout)
+[03:55:56] *** Quits: stevekla1nik (steveklabn@moz-E4698C6D.red.bezeqint.net) (Ping timeout)
+[04:03:19] <cmr> The privacy changes busted every crate that my documentation builder runs.
+[04:04:06] *** Quits: dbaupp (Thunderbir@8D0E22F1.D5A1DCF.37681C44.IP) (Ping timeout)
+[04:04:30] <sfackler> is it all from io::extensions?
+[04:09:23] <cmr> Yep
+[04:09:56] <cmr> Actually no
+[04:10:00] <cmr> noise-rs died from feature gating
+[04:10:09] <cmr> bjz: fix your shit, before I have to fix it for you :P
+[04:11:35] <aatch> cmr, least effective threat ever
+[04:51:24] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[04:51:24] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/O--XEQ
+[04:51:24] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[04:54:28] <bjz> cmr: yeek
+[04:55:00] <bjz> cmr: rebuilding my rust...
+[04:56:21] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[04:56:21] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/R4fXCQ
+[04:56:21] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[04:56:22] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[04:56:22] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/QI5pWw
+[04:56:22] <ghrust> 13rust/06auto 144e0822e 15Huon Wilson: syntax: allow macros to expand to items with attributes....
+[04:56:22] <ghrust> 13rust/06auto 1434d123d 15bors: auto merge of #9783 : huonw/rust/macro-items, r=bstrie...
+[04:56:22] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[05:16:04] *** Joins: jeffb (jeff@moz-D13B6004.hsd1.ca.comcast.net)
+[05:28:35] *** Joins: StarLight (StarLight@moz-DE02A92A.dynamic.avangarddsl.ru)
+[05:41:22] *** Quits: jeffb (jeff@moz-D13B6004.hsd1.ca.comcast.net) (Quit: jeffb)
+[05:42:51] *** Joins: jeffb (jeff@moz-D13B6004.hsd1.ca.comcast.net)
+[05:54:41] *** Quits: tikue_ (tikue_star@95AFD936.21C37D63.689607DE.IP) (Ping timeout)
+[05:58:54] *** Joins: dbaupp (Thunderbir@moz-4301A13F.lns20.syd6.internode.on.net)
+[06:00:53] <cmr> bjz: do you want me to put up the rest of your libs, btw?
+[06:01:26] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[06:01:26] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/QI5pWw
+[06:01:26] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[06:06:24] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[06:06:24] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/19fhkQ
+[06:06:24] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[06:06:27] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[06:06:27] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/AvkXhw
+[06:06:27] <ghrust> 13rust/06auto 14bfe3387 15Tim Chevalier: rust / build: Remove the `rust` tool...
+[06:06:27] <ghrust> 13rust/06auto 1431f92fa 15bors: auto merge of #9785 : catamorphism/rust/remove-convenience-tool, r=pcwalton...
+[06:06:28] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[06:07:54] <engla> removing the `rust` tool? it's less than 500 lines of code and some use it every day
+[06:09:25] <engla> I hope it's resurrected in the future in some way
+[06:11:13] <dbaupp> I think it was discussed in the most recent meeting?
+[06:11:23] <cmr> It was.
+[06:11:25] <dbaupp> (something about being too incomplete to be worth the hassle of 1.0)
+[06:11:33] <dbaupp> possibly
+[06:11:50] <dbaupp> https://github.com/mozilla/rust/wiki/Meeting-weekly-2013-10-08#rust-tool
+[06:13:02] <engla> don't you use it to run tests? I guess that's the part that's working
+[06:13:09] <cmr> I don't
+[06:13:15] * dbaupp doesn't
+[06:13:30] <engla> why not?
+[06:13:45] <cmr> Last I tried to use it it was broken so I just use rustc
+[06:13:54] <cmr> This was pre-0.7 though
+[06:13:57] <engla> what was broken?
+[06:14:05] * dbaupp is normally working on something with a `make check` target
+[06:16:23] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[06:16:23] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1431f92fa to 1434d123d: 02http://git.io/N3iJvQ
+[06:16:23] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[06:16:23] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[06:16:24] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/Yvr4fQ
+[06:16:24] <ghrust> 13rust/06auto 14bfe3387 15Tim Chevalier: rust / build: Remove the `rust` tool...
+[06:16:24] <ghrust> 13rust/06auto 149c4c34d 15bors: auto merge of #9785 : catamorphism/rust/remove-convenience-tool, r=pcwalton...
+[06:16:24] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[06:16:51] <engla> cmr: so the `rust test` feature was broken? How? It doesn't seem to be now.
+[06:17:01] <cmr> engla: I don't remember details.
+[06:17:09] <cmr> I don't think it was rust test though, just `rust` in general.
+[06:17:12] <cmr> Like, segfault broken.
+[06:19:35] <engla> I'm going to suggest reviving the `test` feature of `rust` in some way, maybe rustc can do it.
+[06:20:02] <cmr> engla: are you volunteering to maintain `rust`? ;)
+[06:20:12] <engla> no
+[06:21:00] <engla> I just looked at how much code was needed to run `rust test`, rustc can ddo tha and do it better
+[06:22:51] <dbaupp> you can replace it with `function rust_test() { rustc --test $1 -o /tmp/rust_test.out && /tmp/rust_test.out; }` in your .bashrc (or equivalent)
+[06:23:20] <cmr> does -o actually work with --test? it doesn't follow it all the time iirc
+[06:23:42] <dbaupp> well, it seemed to work when I just tested it
+[06:23:47] * dbaupp shrugs
+[06:23:56] <dbaupp> it does strange things with --lib, I think?
+[06:24:13] <engla> dbaupp: I think the `rust test` feature is a great feature out of the box. It's the small advantages that can win people over to rust, easy access to the test tools
+[06:24:31] <dbaupp> engla: yeah
+[06:24:38] <dbaupp> rustpkg test does/will do something smiilar though
+[06:34:07] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[06:34:07] *** ChanServ sets mode: +o pnkfelix
+[06:45:34] *** Parts: isenmann (isenmann@moz-B656BA79.science-computing.de) ()
+[07:04:58] *** Joins: nrc (nrc@moz-3576D163.cable.virginmedia.com)
+[07:16:16] *** flaper87|afk is now known as flaper87
+[07:21:14] *** Quits: tikue (quassel@moz-FEADCD38.hsd1.pa.comcast.net) (Connection reset by peer)
+[07:39:58] *** Quits: StarLight (StarLight@moz-DE02A92A.dynamic.avangarddsl.ru) (Ping timeout)
+[07:47:02] *** Quits: jeffb (jeff@moz-D13B6004.hsd1.ca.comcast.net) (Quit: jeffb)
+[08:29:38] *** Quits: nrc (nrc@moz-3576D163.cable.virginmedia.com) (Ping timeout)
+[08:50:34] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Ping timeout)
+[08:51:46] *** Joins: nrc (nrc@88F51059.F3BBB17D.144F44FA.IP)
+[09:12:16] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[09:13:17] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[09:13:17] *** ChanServ sets mode: +o pnkfelix
+[10:10:04] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[10:36:31] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[10:36:31] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 149c4c34d to 1434d123d: 02http://git.io/N3iJvQ
+[10:36:31] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[10:36:31] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[10:36:31] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/EGZzUA
+[10:36:31] <ghrust> 13rust/06auto 14b0f6c29 15Alex Crichton: Use the result of privacy for reachability...
+[10:36:31] <ghrust> 13rust/06auto 14882d20f 15bors: auto merge of #9791 : alexcrichton/rust/reachable, r=catamorphism...
+[10:36:32] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[10:54:23] <dbaupp> acrichto: re https://github.com/mozilla/rust/pull/9791#issuecomment-26043400, https://github.com/mozilla/rust/issues/created_by/catamorphism?state=open (there doesn't appear to be anything there on first glance)
+[10:56:17] <acrichto> dbaupp: you can search by created_by ?!
+[10:56:48] <dbaupp> acrichto: only by URL-munging, AIUI
+[10:57:11] <acrichto> maybe I'm just hallucinating then
+[10:57:11] <dbaupp> i.e. modifying the "created by you" link on the side
+[10:58:00] <dbaupp> don't know if you can created_by + text search... probably not
+[10:58:13] <acrichto> interesting...
+[11:05:35] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[11:08:49] *** Quits: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se) (Ping timeout)
+[11:11:03] *** Joins: jdm (jdm@88F51059.F3BBB17D.144F44FA.IP)
+[11:23:51] <dbaupp> any comments https://github.com/mozilla/rust/issues/9792 ?
+[11:31:25] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[11:31:25] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14882d20f to 1434d123d: 02http://git.io/N3iJvQ
+[11:31:25] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[11:31:30] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[11:31:30] <ghrust> 01[13rust01] 15bors pushed 11 new commits to 06auto: 02http://git.io/fKG7rw
+[11:31:30] <ghrust> 13rust/06auto 14b509f79 15Alex Crichton: Implement io::native::file
+[11:31:30] <ghrust> 13rust/06auto 14edf4c16 15Alex Crichton: Implement io::native::stdio
+[11:31:30] <ghrust> 13rust/06auto 14a0d2f71 15Alex Crichton: Implement io::native::process
+[11:31:32] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[11:51:47] *** jdm is now known as jdm|f00d
+[12:20:10] *** Quits: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Connection reset by peer)
+[12:27:45] *** jdm|f00d is now known as jdm
+[12:34:02] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[12:36:24] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[12:36:24] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/fKG7rw
+[12:36:24] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[13:06:25] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[13:06:25] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/v2oQuA
+[13:06:25] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[13:06:26] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[13:06:26] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/9_1oog
+[13:06:27] <ghrust> 13rust/06auto 14b0f6c29 15Alex Crichton: Use the result of privacy for reachability...
+[13:06:27] <ghrust> 13rust/06auto 14caf7b67 15Alex Crichton: Add `pub` to all the codegen tests...
+[13:06:27] <ghrust> 13rust/06auto 148015f9c 15bors: auto merge of #9791 : alexcrichton/rust/reachable, r=catamorphism...
+[13:06:29] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[13:26:44] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[13:28:17] <benh> gee, this whole syntax expansion thing is a bit more complicated than i expected ;)
+[13:30:48] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Input/output error)
+[13:30:49] <acrichto> benh: did you see the html parser as a syntax extension?
+[13:30:52] <acrichto> it's crazy
+[13:32:04] <benh> It's great :D
+[13:35:27] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Client exited)
+[13:35:55] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:37:03] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:37:55] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:38:07] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:38:27] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Client exited)
+[13:38:52] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:39:16] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:39:53] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:40:43] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:41:08] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:41:41] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:41:47] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:42:48] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:42:56] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:43:52] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:43:59] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:44:53] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:45:01] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:45:20] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:45:40] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:46:18] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:46:42] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:47:18] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:47:38] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:48:23] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:48:30] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:49:23] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:49:31] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:50:27] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:50:33] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:51:28] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:51:48] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:52:28] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[13:52:31] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:52:40] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:53:33] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:53:42] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:54:36] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:54:47] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:55:36] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:55:56] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:56:40] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:56:50] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:57:02] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[13:57:13] *** Joins: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se)
+[13:57:40] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:57:50] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:58:01] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[13:58:03] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[13:58:09] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:58:51] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[13:59:06] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[13:59:22] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:00:08] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:00:30] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:01:12] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:01:25] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:02:13] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:02:28] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:03:00] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:03:15] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Input/output error)
+[14:03:16] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:03:42] *** Joins: jensnockert (jensnocker@moz-8BE55278.customer.t3.se)
+[14:04:17] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:04:25] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:05:20] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:05:31] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:05:31] *** Quits: jensnockert (jensnocker@moz-8BE55278.customer.t3.se) (Ping timeout)
+[14:06:21] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:06:32] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:07:24] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:07:31] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:08:26] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:08:44] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:09:29] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:09:34] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:10:29] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:10:44] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:11:13] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:11:28] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[14:11:28] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/9_1oog
+[14:11:28] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[14:11:34] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:12:33] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:12:48] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:13:20] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:13:37] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:13:59] <nmatsakis> the new format is nice
+[14:14:23] <nmatsakis> kudos to those who were instrumental in bringing it about
+[14:14:40] * nmatsakis still types `%s` by accident though
+[14:14:40] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:14:45] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:15:44] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:15:53] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:16:42] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:16:55] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:17:39] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:17:46] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:18:48] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:18:57] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:19:15] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:19:58] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:20:13] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:20:37] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:21:16] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:21:28] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:22:17] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:22:22] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:23:19] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:23:29] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:24:22] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:24:29] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:25:23] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:25:40] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:26:26] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:26:39] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:27:27] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:27:36] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:28:31] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:28:47] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:29:31] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:29:47] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:30:37] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:30:46] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:31:35] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:31:45] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:32:23] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:32:41] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:33:43] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:33:55] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:34:24] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:34:44] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:35:44] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:35:55] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:36:48] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:36:54] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:37:49] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:38:01] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:38:55] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:39:04] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:39:52] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:40:02] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:40:38] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:40:56] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:41:57] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:42:06] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:43:01] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:43:06] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:44:02] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:44:11] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:44:30] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:45:20] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:45:28] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:45:49] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:45:50] *** Joins: StarLight (StarLight@moz-9A720B6E.dynamic.avangarddsl.ru)
+[14:46:29] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:46:48] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:47:32] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:47:41] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:48:34] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:48:46] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:49:37] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:49:49] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:50:38] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:50:49] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:51:42] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:51:54] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:52:42] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:52:51] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:53:25] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:53:46] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:54:46] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:54:55] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:55:33] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:55:50] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:56:51] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:57:00] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:57:55] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:58:04] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:58:55] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[14:59:09] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[14:59:58] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:00:11] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:01:01] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:01:06] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:02:03] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:02:09] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:03:03] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:03:15] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:04:07] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:04:21] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:05:07] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:05:15] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:06:11] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:06:22] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:07:12] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:07:25] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:07:41] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:07:51] *** Joins: samnardoni (Mibbit@F889EF52.38924046.A86B7D63.IP)
+[15:08:34] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:08:38] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:08:57] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:09:40] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:09:59] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:10:43] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:10:52] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:11:45] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:11:57] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:12:48] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:12:55] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:13:49] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:13:57] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:14:52] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:15:02] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:15:53] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:16:02] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:16:21] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:17:04] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:17:19] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:17:38] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:18:20] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:18:40] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:19:23] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:19:32] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:20:26] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:20:39] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:21:28] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:21:45] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:22:28] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:22:41] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:23:32] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:23:42] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:24:33] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:24:42] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:25:36] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:25:49] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:26:37] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:26:49] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:27:41] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:27:50] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:28:41] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:28:50] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:29:24] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:29:47] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:30:45] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:30:53] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:31:12] *** Joins: jeffb (jeff@moz-D13B6004.hsd1.ca.comcast.net)
+[15:31:33] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:31:49] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:32:50] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:32:58] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:33:53] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:34:03] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:34:54] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:35:07] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:35:58] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:36:05] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:36:59] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:37:04] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:37:35] *** Quits: samnardoni (Mibbit@F889EF52.38924046.A86B7D63.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:38:02] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:38:18] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:39:03] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:39:14] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:40:07] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:40:13] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:41:07] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:41:22] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:42:11] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:42:24] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:43:12] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:43:23] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:43:40] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:44:25] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:44:38] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:44:56] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:45:39] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:45:54] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:46:43] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:46:54] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:47:44] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:47:57] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:48:47] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:48:56] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:49:47] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:49:56] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:50:51] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:51:00] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:51:52] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:52:01] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:52:55] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:53:11] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:53:56] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:54:03] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:55:00] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:55:13] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:56:00] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:56:12] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:57:04] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:57:15] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:58:05] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:58:15] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[15:58:32] <strcat> nmatsakis: ping
+[15:59:08] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[15:59:25] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:00:09] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:00:22] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:00:37] <nmatsakis> strcat: pong.
+[16:00:58] <strcat> nmatsakis: can you think of any issues with what https://github.com/mozilla/rust/pull/9786 is doing?
+[16:01:14] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:01:23] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:01:24] *** Quits: jeffb (jeff@moz-D13B6004.hsd1.ca.comcast.net) (Quit: jeffb)
+[16:01:29] <strcat> I can't think of a case where it would be unsafe in combination with stuff like data parallelism, but it doesn't seem like a great idea to be saying something is Freeze and then modifying it
+[16:01:55] <strcat> even at just a consistency in documentation/semantics level
+[16:02:14] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:02:28] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:02:43] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:02:43] <strcat> since it's only ever going to mutate it if it's the only owner.... so you won't ever have races
+[16:02:53] <strcat> but it's not 'Freeze' if it's doing that :s
+[16:03:17] <nmatsakis> strcat: yes, it is somewhat worrisome.
+[16:03:20] <strcat> it definitely breaks the invariants I expected to use for alias analysis
+[16:03:25] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:03:35] <nmatsakis> strcat: however, I think we hvae to do decide precisely what Freeze is *for*
+[16:03:40] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:03:47] <strcat> although alias analysis is shallow anyway so it wouldn't really matter
+[16:03:48] <nmatsakis> strcat: e.g., I think ARC should be considered "freeze", even though the ref count is mutated
+[16:03:54] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:04:02] <nmatsakis> or I can see logic in it
+[16:04:11] <strcat> nmatsakis: yeah
+[16:04:42] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:04:56] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:05:45] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:05:52] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:06:46] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:06:52] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:07:49] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:07:59] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:08:26] <nmatsakis> strcat: I am inclined to think that the purpose of Freeze is to enable safe shared between threads
+[16:08:50] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:09:00] <nmatsakis> strcat: more specifically, it would seem to mean "something that can be put in an ARC and then safely shared between threads"
+[16:09:02] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:09:19] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:09:20] <nmatsakis> strcat: I guess we rely on it for preventing cycles, so it's a bit more than that
+[16:09:45] <strcat> nmatsakis: well, atm it's also needed just to keep Rc memory-safe
+[16:10:02] <strcat> because of Freeze vs. non-Freeze not bubbling up through raw ptrs
+[16:10:02] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:10:08] <strcat> hrm
+[16:10:16] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:10:22] <strcat> unless Freeze doesn't matter on non-Send things
+[16:10:31] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:10:52] <strcat> nmatsakis: I'm kind of curious what would happen if you did actually make a cycle of Rc with some managed pointers
+[16:10:52] *** Quits: nrc (nrc@88F51059.F3BBB17D.144F44FA.IP) (Ping timeout)
+[16:10:56] <strcat> and the annihilator came along to kill them...
+[16:11:18] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:11:31] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:11:46] * strcat is not entirely sure that would actually be 'safe' (as in just leaking)
+[16:12:16] *** Joins: nrc (nrc@88F51059.F3BBB17D.144F44FA.IP)
+[16:12:22] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:12:27] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:12:38] <nmatsakis> strcat: I've thought that perhaps we should prohibit `Rc` from containing managed pointers
+[16:12:57] <strcat> it allocates with ~ so it's probably safe as long as there are no cycles
+[16:13:22] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:13:24] <nmatsakis> strcat: I'm not sure how best to solve the question of the kind bubbling through `*` -- it seems to demand another ptr type, which bothers me
+[16:13:32] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:14:26] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:14:27] <strcat> nmatsakis: it's not incredibly important, the only reason I care is because ~[T] is very slow
+[16:14:38] <strcat> if it was a good vector implementation, there would be no temptation to write another
+[16:14:40] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:15:11] <strcat> a reference-counted pointer could probably just use ~
+[16:15:27] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:15:37] <strcat> and zero it after doing the refcount -= 1
+[16:15:39] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:15:58] <strcat> since at that point it's only visible to the ~ destructor
+[16:16:12] * strcat might switch to doing that instead...
+[16:16:30] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:16:41] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:17:08] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:17:31] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:17:53] <strcat> that'd break the alias analysis invariants for sure though ;p
+[16:18:13] <nmatsakis> strcat: we were discussing the possibility of @T => GC<T> yesterday, and in particular not supporting GC<[T]>, which makes it easier to optimize repr of ~[T] per your suggestions
+[16:18:18] <nmatsakis> I'm leaning this way myself
+[16:18:32] <nmatsakis> basically in DST lingo it'd be "struct GC<T:Sized> { ... }"
+[16:18:34] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:18:48] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:18:53] <benh> No GC<BoxedTrait>?
+[16:19:11] <nmatsakis> well, I think that GC<Trait> would still work, though I know that seems surprising --
+[16:19:35] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:19:40] <strcat> a working Rc<Trait> would be nice
+[16:19:43] <nmatsakis> the reason is that a `Trait` type really an indication to the compiler of an *unknown* type
+[16:19:46] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:19:57] <nmatsakis> meaning, if you have a GC<Trait> -- at runtime, you *really* have a GC<X> for some X
+[16:20:06] <nmatsakis> but you don't know what X is, the only thing you know is that X : Trait
+[16:20:21] *** flaper87 is now known as flaper87|afk
+[16:20:23] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[16:20:23] <ghrust> 01[13rust01] 15alexcrichton merged 06auto into 06snap-stage3: 02http://git.io/cHNlPg
+[16:20:23] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[16:20:28] <strcat> Rc is beautifully lightweight in rust, since it doesn't have to do atomic refcounting like C++'s shared_ptr
+[16:20:39] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:20:47] <strcat> move semantics make it as light as ~, with an extra word for the count in the allocation
+[16:20:49] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:20:58] <nmatsakis> but I think that to support something like GC<Trait> and RC<Trait> we would have to overload the deref operator
+[16:21:09] <nmatsakis> so that the compiler can reason about it better as part of a method call
+[16:21:14] <strcat> nmatsakis: yeah, that seems pretty easy though
+[16:21:25] <strcat> we'd only overload it for immutable &* and *
+[16:21:28] <nmatsakis> yes, I think we want it anyhow, if we are serious about supporting user-defined smart ptr types,
+[16:21:39] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:21:44] <nmatsakis> my biggest concern at this point is trying to establish a reasonable timeline for doing this
+[16:21:49] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:21:53] <strcat>     pub fn borrow<'r>(&'r self) -> &'r T {
+[16:21:54] <strcat>         unsafe { &(*self.ptr).value }
+[16:21:56] <strcat>     }
+[16:21:58] <strcat> just need to throw that on a trait
+[16:22:01] <nmatsakis> yes, it would look something like that
+[16:22:06] <nmatsakis> there'd probably be two traits actually,
+[16:22:11] <nmatsakis> one for borrow and one for mut_borrow
+[16:22:11] <strcat> one for moving out?
+[16:22:28] <nmatsakis> I hadn't considered moving out
+[16:22:31] <strcat> nmatsakis: it seems like you'd only be able to use mut_borrow for ~-like ones though
+[16:22:43] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:22:48] <strcat> and I don't think there's really any reason to replace ~
+[16:22:52] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:23:00] <nmatsakis> that is true for moving out as well
+[16:23:06] <nmatsakis> yes, I guess we might not need a mut_borrow --
+[16:23:17] <nmatsakis> if we moved to Mut<T>
+[16:23:23] <nmatsakis> and we wanted to make all those borrows explicit
+[16:23:37] <nmatsakis> (since they imply dynamic checks)
+[16:23:44] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:23:52] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:24:04] <strcat> and Mut<T> would be more flexible since you could restrict it to one field, or use a more fine-grained dynamic check
+[16:24:30] <nmatsakis> ah, I remember what I was concerned about now
+[16:24:33] <strcat> you might want to only mutate a certain field, but not have checks to borrow the others
+[16:24:35] <nmatsakis> if you had Gc<Mut<Trait>>,
+[16:24:36] <kimundi> Mut<T> would also work in something like a Arc or RWArc, right?
+[16:24:49] <nmatsakis> presumably not
+[16:24:50] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:24:57] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:25:04] <nmatsakis> at least not in Arc,it would not be considered freezable
+[16:25:04] <kimundi> Hm, right
+[16:25:05] <strcat> kimundi: Arc requires Freeze
+[16:25:40] <kimundi> I was thinking the interface would just restrict it to be immutable... but the point of Mut is to allow mutating it then anyway.
+[16:25:47] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:25:54] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:26:17] <nmatsakis> anyway, my concern was that GC<Mut<Trait>> -- if you require an explicit borrow, would require us to handle the fact that the returned pointer is something like &X for a fresh, unknown type X. (Unpacking the existential type)
+[16:26:36] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:26:36] *** Quits: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se) (Ping timeout)
+[16:26:45] <nmatsakis> I'm actually not sure whow GC<Mut<Trait>> would work anyway, we have to figure out where the vtable goes
+[16:27:03] <nmatsakis> maybe we just only support &Trait and ~Trait, though that's disappointing
+[16:27:15] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:27:23] <nmatsakis> (same vtable challenge holds for GC<Trait> and RC<Trait> etc)
+[16:27:37] <nmatsakis> that bears some thought, I hadn't worked this all the way through
+[16:27:54] <strcat> Rc allocates with ~, so it might still work
+[16:28:03] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:28:09] <nmatsakis> well, the point is that when you create the RC<T>, you have a concrete T
+[16:28:13] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:28:19] <nmatsakis> but then later you "forget" the concrete T
+[16:28:28] <nmatsakis> at that point, you'd have to pair it up with a vtable
+[16:28:59] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:29:06] <strcat> nmatsakis: it seems like if it had a method taking ~T
+[16:29:08] <strcat> it'd work
+[16:29:11] <strcat> you could pass it ~Trait
+[16:29:18] <nmatsakis> this is probably achieveable, you can imagine something like A<B<...<Z<Trait>>...> is allowed, but it seems like it is getting quite complicated to reason about
+[16:29:19] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:29:21] <strcat> instead of 
+[16:29:22] <strcat>     pub fn new(value: T) -> Rc<T> {
+[16:29:24] <strcat> it could be
+[16:29:28] <strcat>     pub fn new(value: ~T) -> Rc<T> {
+[16:29:36] <strcat> (or another constructor)
+[16:29:45] <nmatsakis> one problem is that sizeof(~Trait) == 2*sizeof(T)
+[16:29:51] <nmatsakis> one problem is that sizeof(~Trait) == 2*sizeof(~T)
+[16:30:04] <nmatsakis> I don't think it's quite that simple.
+[16:30:06] <strcat> ah right since it transmutes to a raw pointer
+[16:30:13] <strcat> *Trait would need to be 2 words...
+[16:30:18] <nmatsakis> anyway, I was committing the type system folly of thinking only at the type level and ignoring pesky impl details
+[16:30:18] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:30:33] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:30:42] <nmatsakis> but I'd be ok with not supporting GC<Trait> and RC<Trait> for the time being, I think
+[16:31:03] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:31:22] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:31:36] <nmatsakis> also, I think it could be made to work
+[16:32:23] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:32:31] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:33:26] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:33:35] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:34:27] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:34:36] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:35:31] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:35:37] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:35:40] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[16:35:40] *** ChanServ sets mode: +qo brson brson
+[16:36:31] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:36:44] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:37:35] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:37:44] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:38:36] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:38:44] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:39:39] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:39:49] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:40:40] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:40:44] *** Quits: nrc (nrc@88F51059.F3BBB17D.144F44FA.IP) (Connection reset by peer)
+[16:40:53] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:41:25] *** Joins: nrc (nrc@88F51059.F3BBB17D.144F44FA.IP)
+[16:41:43] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:41:49] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:42:45] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:42:51] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:43:12] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:43:55] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:44:10] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:44:25] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:45:12] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:45:27] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:46:15] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:46:23] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:47:16] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:47:23] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:48:22] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:48:30] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:49:20] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:49:32] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:50:06] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:50:24] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:51:25] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:51:36] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:52:29] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:52:37] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:53:29] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:53:37] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:54:33] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:54:42] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:55:34] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:55:44] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:56:47] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:57:01] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:57:47] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:57:59] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[16:58:41] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[16:59:03] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:00:04] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:00:09] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:01:07] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:01:23] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:02:08] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:02:18] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:03:12] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:03:21] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:04:13] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:04:18] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:05:16] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:05:29] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:06:17] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:06:26] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:07:21] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:07:34] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:08:22] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:08:40] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:09:25] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:09:33] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:10:26] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:10:32] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:11:38] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:11:53] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:12:43] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:12:52] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:13:15] *** Quits: nrc (nrc@88F51059.F3BBB17D.144F44FA.IP) (Quit: ChatZilla 0.9.90.1 [Firefox 24.0/20130812173056])
+[17:13:35] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:13:56] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:14:17] *** Quits: jdm (jdm@88F51059.F3BBB17D.144F44FA.IP) (Quit: Lost terminal)
+[17:14:56] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:15:07] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:16:00] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:16:07] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:17:01] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:17:07] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:18:04] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:18:16] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:19:05] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:19:18] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:20:08] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:20:15] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:21:09] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:21:23] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:22:13] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:22:19] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:23:13] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:23:24] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:24:17] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:24:26] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:25:18] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:25:27] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:26:22] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:26:28] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:27:22] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:27:33] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:28:26] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:28:34] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:29:26] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:29:37] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:30:30] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:30:42] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:31:31] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:31:50] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:32:27] *** Joins: nrc (nrc@88F51059.F3BBB17D.144F44FA.IP)
+[17:32:34] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:32:42] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:33:51] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:33:59] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:34:55] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:34:57] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:35:53] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:36:12] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:36:55] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:37:14] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:37:58] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:38:06] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:38:18] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[17:38:55] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:39:06] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:39:52] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:40:08] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:40:44] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:41:07] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:41:17] *** Joins: ecr (Mibbit@E940BDD3.FBC7597F.11F8506F.IP)
+[17:41:34] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:41:47] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:42:48] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:42:56] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:43:51] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:44:00] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:44:51] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:45:01] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:45:20] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:46:02] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:46:17] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:46:33] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:47:14] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:47:37] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:48:11] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:48:29] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:49:13] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:49:36] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:50:16] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:50:26] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:51:17] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:51:28] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:52:21] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:52:29] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:53:21] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:53:40] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:54:25] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:54:40] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:55:25] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:55:35] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:55:54] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:56:36] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:56:52] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:57:07] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:57:53] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:58:08] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:58:57] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[17:59:02] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[17:59:58] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:00:09] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:01:01] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:01:07] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:02:03] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:02:11] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:02:46] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[18:02:55] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[18:03:06] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:03:13] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:03:20] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[18:04:06] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:04:15] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:05:10] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:05:17] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:06:11] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:06:17] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:07:14] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:07:20] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:08:15] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:08:23] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:09:19] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:09:24] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:10:19] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:10:28] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:10:47] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:10:51] *** Quits: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[18:11:32] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:11:45] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:12:07] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:12:46] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:12:57] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:13:40] *** Quits: ecr (Mibbit@E940BDD3.FBC7597F.11F8506F.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[18:13:50] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:13:55] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:14:53] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:14:56] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:15:27] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[18:15:54] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:16:02] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:16:55] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:17:04] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:17:58] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:18:07] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:18:59] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:19:06] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:19:26] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[18:20:02] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:20:13] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:21:03] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:21:12] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:22:09] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:22:15] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:22:15] <acrichto> Eridius: ping
+[18:23:10] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:23:17] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:24:15] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:24:21] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:25:15] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:25:22] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:26:19] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:26:28] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:27:19] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:27:27] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:27:59] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:28:23] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:29:25] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:29:34] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:30:27] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:30:33] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:31:30] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:31:36] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:32:32] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:32:47] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:33:32] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:33:42] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:34:36] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:34:42] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:35:36] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:35:48] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:36:40] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:36:47] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:37:40] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:37:45] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[18:37:47] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:38:44] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:38:51] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:39:45] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:39:51] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:40:48] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:40:55] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:41:49] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:41:56] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:42:18] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:42:43] <acrichto> Eridius: un-ping
+[18:42:58] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:43:15] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:43:36] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:44:03] *** Quits: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP) (Ping timeout)
+[18:44:17] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:44:28] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:45:20] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:45:31] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:46:20] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:46:29] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:47:24] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:47:31] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:48:25] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:48:30] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:49:28] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:49:35] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:50:29] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:50:36] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:51:33] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:51:40] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:52:33] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:52:45] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:53:36] *** Quits: nrc (nrc@88F51059.F3BBB17D.144F44FA.IP) (Ping timeout)
+[18:53:37] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:53:43] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:54:38] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:54:45] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:55:41] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:55:55] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:56:42] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:56:55] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:57:46] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:57:53] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:58:47] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:58:55] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[18:59:50] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[18:59:58] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:00:51] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:01:06] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:01:19] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:02:06] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:02:17] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:02:31] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:03:19] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:03:28] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:04:21] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:04:32] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:05:22] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:05:29] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:06:25] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:06:33] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:07:26] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:07:39] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:08:30] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:08:45] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:09:32] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:09:44] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:10:34] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:10:45] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:11:35] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:11:45] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:12:39] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:12:56] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:13:39] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:13:46] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:14:43] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:14:50] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:15:43] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:15:52] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:16:47] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:16:53] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:17:48] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:17:55] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:18:52] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:18:58] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:19:52] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:19:59] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:20:44] *** Joins: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se)
+[19:20:56] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:21:04] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:21:57] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:22:02] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:23:00] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:23:06] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:24:01] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:24:07] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:25:04] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:25:13] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:26:05] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:26:14] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:27:08] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:27:20] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:28:09] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:28:15] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:29:12] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:29:21] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:30:13] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:30:31] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:31:17] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:31:26] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:32:17] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:32:27] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:33:21] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:33:28] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:34:22] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:34:32] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:35:25] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:35:37] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:36:26] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:36:37] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:37:30] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:37:37] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:38:30] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:38:46] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:39:34] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:39:41] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:40:34] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:40:43] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:41:30] <bstrie> tetsuha__: your connection appears to be a bit... unstable
+[19:41:38] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:41:47] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:42:39] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:42:45] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:43:42] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:43:49] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:44:43] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:44:49] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:45:46] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:45:52] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:46:47] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:46:53] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:47:51] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:47:59] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:48:52] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:48:58] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:49:55] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:50:02] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:50:56] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:51:02] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:51:25] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:52:06] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:52:22] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:52:36] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:53:23] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:53:35] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:54:27] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:54:33] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:55:27] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:55:35] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:55:56] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:56:38] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:56:54] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:57:10] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:57:55] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:58:12] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:58:36] *** Joins: tjc (tjc@moz-7B0110AD.mv.mozilla.com)
+[19:58:36] *** ChanServ sets mode: +o tjc
+[19:58:58] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[19:59:11] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[19:59:59] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:00:05] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:01:02] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:01:08] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:02:03] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:02:10] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:03:07] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:03:12] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:04:07] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:04:13] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:05:11] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:05:18] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:06:12] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:06:21] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:07:15] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:07:24] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:08:16] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:08:30] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:09:19] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:09:29] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:10:21] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:10:29] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:11:25] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:11:35] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:12:26] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:12:31] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:13:08] <acrichto> brson: would there be a reason for me to not turn on __morestack right now? The fix would be that if it ever gets called it immediately calls abort()
+[20:13:29] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:13:35] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:14:29] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:14:40] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:15:01] *** Joins: tikue_ (tikue_star@8E84FE3F.F3E8A984.689607DE.IP)
+[20:15:17] *** Joins: ecr (Thunderbir@moz-8329D39F.dhcp4.washington.edu)
+[20:15:34] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:15:45] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:16:34] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:16:40] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:17:15] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:17:38] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:18:32] *** Quits: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[20:18:39] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:18:45] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:19:42] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:19:49] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:20:20] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[20:20:43] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:20:50] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:21:11] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:21:50] <brson> acrichto: the only complication is that the i386 morestack has this wierd hack in it where it calls rust_get_task and expects the correct value. I'm not *sure* that the hack is necessary, but it needs to be fixed somehow. There's a fixme attached that explains more
+[20:21:53] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:22:09] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:22:24] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:23:10] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:23:21] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:24:14] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:24:19] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:25:14] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:25:21] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:26:25] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:26:31] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[20:26:31] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/mttpzQ
+[20:26:31] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[20:26:35] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[20:26:35] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/qou9Tg
+[20:26:35] <ghrust> 13rust/06auto 1497f8710 15Alex Crichton: Register new snapshots
+[20:26:35] <ghrust> 13rust/06auto 148b8a41a 15bors: auto merge of #9797 : alexcrichton/rust/snapshots, r=thestinger...
+[20:26:35] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[20:26:41] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:27:24] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:27:40] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:28:23] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:28:44] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:29:44] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:29:50] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:30:03] <acrichto> brson: interesting... I think my method of testing is going to be to push to the bots and see if iit passes
+[20:30:19] <acrichto> also, it looked to me like __morestack is a no-op on 64-bit windows, is that correct?
+[20:30:48] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:30:55] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:31:48] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:31:56] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:32:04] *** Quits: dbaupp (Thunderbir@moz-4301A13F.lns20.syd6.internode.on.net) (Ping timeout)
+[20:32:52] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:32:59] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:33:53] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:33:58] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:34:56] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:35:03] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:35:57] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:36:03] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:36:39] <acrichto> hm, well I shall investigate further
+[20:37:01] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:37:02] <brson> acrichto: that's news to me! i don't see any ifdefs related to it though
+[20:37:07] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:37:11] <brson> it's not like we actually support 64-bit windows though
+[20:38:01] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:38:08] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:39:11] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:39:28] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:40:11] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:40:27] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:41:08] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:41:31] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:42:32] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:42:38] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:43:36] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:43:41] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:44:37] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:44:43] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:44:46] *** Quits: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[20:45:40] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:45:45] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:46:41] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:46:48] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:47:09] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:47:50] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:48:07] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:48:22] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:49:08] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:49:21] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:50:12] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:50:18] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:51:12] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:51:19] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:51:41] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:52:22] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:52:38] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:52:52] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:53:40] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:53:51] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:54:44] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:54:51] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:55:44] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:55:51] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:56:48] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:56:54] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:57:48] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:57:55] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:58:17] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:59:01] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[20:59:14] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[20:59:29] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:00:16] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:00:28] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:01:19] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:01:25] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:02:20] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:02:28] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:03:23] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:03:30] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:04:24] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:04:30] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:04:53] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:05:35] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:05:50] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:06:04] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:06:20] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.1)
+[21:06:52] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:07:03] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:07:55] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:08:01] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:08:56] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:09:03] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:09:59] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:10:06] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:11:01] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:11:09] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:12:04] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:12:12] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:13:05] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:13:12] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:14:08] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:14:16] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:15:09] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:15:16] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:16:13] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:16:19] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:17:13] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:17:19] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:18:22] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:18:40] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:19:23] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:19:39] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:20:21] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:20:43] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:21:44] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:21:50] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:22:48] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:22:54] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:23:48] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:23:54] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:24:52] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:24:59] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:25:52] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:25:58] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:26:56] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:27:03] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:27:13] *** Quits: ecr (Thunderbir@moz-8329D39F.dhcp4.washington.edu) (Ping timeout)
+[21:27:56] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:28:03] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:29:00] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:29:07] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:30:01] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:30:07] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:31:04] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:31:10] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:31:32] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[21:31:32] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/qou9Tg
+[21:31:32] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[21:32:05] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:32:12] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:33:15] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:33:31] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:34:15] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:34:31] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:34:36] <aatch> tetsuharu, can you fix your client?
+[21:35:12] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:35:35] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:36:35] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[21:36:35] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/WrEv2A
+[21:36:35] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[21:36:36] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:36:36] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[21:36:36] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/MEjBNw
+[21:36:36] <ghrust> 13rust/06auto 14bcf76ac 15Michael 'devbug' Williams: Fixed typo under 'Segmented stacks and the linter', and removed superfluous trailing whitespace.
+[21:36:36] <ghrust> 13rust/06auto 146aa5934 15bors: auto merge of #9798 : mtwilliams/rust/master, r=brson...
+[21:36:38] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[21:36:41] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:37:38] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:37:45] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:38:32] *** Joins: ecr (Thunderbir@moz-8329D39F.dhcp4.washington.edu)
+[21:38:39] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:38:47] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:39:43] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:39:51] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:40:44] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:40:51] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:41:47] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:41:54] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:42:48] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:42:54] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:43:52] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:43:57] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:44:44] *** Quits: ecr (Thunderbir@moz-8329D39F.dhcp4.washington.edu) (Quit: ecr)
+[21:44:52] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:44:58] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:45:20] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:46:04] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:46:16] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:46:33] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:47:06] <brson> can I ban tetsuhar_ temporarily?
+[21:47:10] <brson> and how?
+[21:47:18] *** Joins: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:47:32] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:47:37] <aatch> brson, not sure about the "temporarily" bit
+[21:48:22] *** Joins: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:48:29] *** Quits: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:48:46] <Luqman> just ban and unban later
+[21:48:48] <tjc> brson: temporarily means banning, then making a note to yourself to unban later :-)
+[21:48:49] <tjc> yeah
+[21:48:57] <Luqman> or find a bot which will automate it
+[21:49:23] *** Joins: tetsuhar_ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp)
+[21:49:28] *** Quits: tetsuharu (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:50:12] *** ChanServ sets mode: +b *!*tetsuharu@*.ap219.ftth.ucom.ne.jp
+[21:50:12] *** tetsuhar_ was kicked by ChanServ ('your client is freaking out. ping me to unban yourself' (brson))
+[21:50:32] *** Quits: tetsuha__ (tetsuharu@moz-A3FEAA56.ap219.ftth.ucom.ne.jp) (Ping timeout)
+[21:56:36] *** Joins: dbaupp (Thunderbir@B11E503F.D5A1DCF.37681C44.IP)
+[22:00:26] <brson> hey, github appears to detect check boxes in metabugs and reports their completion! is that new? https://github.com/mozilla/rust/issues/6169
+[22:00:47] <tjc> brson: I noticed that a few weeks ago
+[22:01:08] <tjc> it's pretty neat
+[22:01:17] <dbaupp> https://github.com/blog/1375-task-lists-in-gfm-issues-pulls-comments
+[22:04:38] *** Quits: dbaupp (Thunderbir@B11E503F.D5A1DCF.37681C44.IP) (Ping timeout)
+[22:13:37] <benh> haha, that's cute
+[22:14:41] *** Joins: nrc (nrc@moz-3576D163.cable.virginmedia.com)
+[22:16:45] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[22:16:45] <ghrust> 01[13rust01] 15catamorphism 04force-pushed 06try from 143c2e070 to 148854b78: 02http://git.io/k471pw
+[22:16:45] <ghrust> 13rust/06try 148854b78 15Tim Chevalier: rustpkg: Make checked-out source files read-only, and overhaul where temporary files are stored...
+[22:16:45] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[22:18:57] <brson> anybody object if I just delete the 'far future' milestone. it's all pretty speculative stuff. don't think the categorization is buying us anything
+[22:19:06] <tjc> brson: I vigorously don't object
+[22:19:35] <tjc> although it would be good to have *some* sort of label that sorta discourages working on it *right now*
+[22:19:38] <tjc> maybe wishlist is for that
+[22:19:47] <aatch> tjc, you are passionately apathetic?
+[22:19:54] <tjc> Maybe we don't want ti discourage anything, no matter how speculative. idk
+[22:19:57] <tjc> aatch: meh
+[22:20:24] <aatch> tjc, do you mean: "meh!"
+[22:20:29] <tjc> heh
+[22:20:31] <aatch> don't*
+[22:23:35] <benh> hm
+[22:24:18] <benh> i meddled with temp dir creation and now a test in rustpkg fails approximately every other time
+[22:24:48] <tjc> benh: which test, and what did you change exactly?
+[22:24:57] <tjc> the test may have been failing sporadically before and we just got lucky on the bots :-)
+[22:26:00] <benh> test_install_valid, also only if I'm running all rustpkg tests and not that one specifically, and what i changed is that i replaced mkdtemp with something that returns a struct that wraps a path and also the functions between mkdtemp and that test accordingly... hm
+[22:26:15] <tjc> benh: try it with RUST_THREADS=1 and let me know what happens
+[22:30:58] <benh> well, it fails more reliably now
+[22:31:11] <benh> with: task '<unnamed>' failed at 'called `Result::unwrap()` on `Err` value: error opening /tmp/r8WnkOky7Z0Nzu2gtemp_workspace/rustpkg_db.json: No such file or directory'
+[22:31:18] <tjc> benh: hmm
+[22:31:56] <tjc> benh: rustpkg_db.json is the workcache database. each test should have its own, basically...
+[22:32:04] <tjc> but there *could* be a bug where the same one gets re-used for different tests...
+[22:32:14] <tjc> benh: can you gist a diff of your changes to the code?
+[22:32:32] <benh> I suspect I am doing my RAII wrong and it's getting deleted early, let me see if making that more explicit fixes it
+[22:32:44] <benh> it's a big diff because you have a lot of tests there!
+[22:33:06] <tjc> benh: that's ok -- actually, mostly I want to see the diff for the test that fails, but it can't hurt to see the whole thing :-)
+[22:33:20] <tjc> it's also big because the test runner isn't that great right now and there's still boilerplate code :-)
+[22:33:40] <benh> http://ix.io/8pA
+[22:34:11] <benh> I might have gotten tangled up with the path components being popped, hm
+[22:36:06] <benh> http://ix.io/8pB here is some RUST_LOG=rustpkg output for that test
+[22:36:25] <benh> Maybe those paths look obviously wrong to you? :)
+[22:36:58] <tjc> benh: it looks right to me -- let me see if I understand...
+[22:36:59] *** Joins: jdm (jdm@moz-25D04F84.zone16.bethere.co.uk)
+[22:37:13] <tjc> you changed mk_temp_workspace to return a pair (a, b) where a is the workspace, and b is the package dir, which is a subdirectory of the workspace
+[22:37:19] <tjc> before, it just returned b, so the code called pop() twice on it
+[22:37:26] <tjc> now, it doesn't need to pop() because it has the actual workspace
+[22:37:33] <tjc> let me look at the debug output
+[22:37:48] <benh> yeah, that is what i figured. it's not very elegant with the tuple :(
+[22:38:04] <tjc> It is an improvement to not pop() things wantonly, though, I knew that was ugly :-)
+[22:40:52] <tjc> benh: Actually, can you run it again with RUST_LOG=rustpkg,extra::workcache and paste the results again?
+[22:40:53] <tjc> thanks
+[22:41:23] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[22:41:24] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/MEjBNw
+[22:41:24] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[22:41:39] <benh> http://ix.io/8pC
+[22:41:57] <benh> does that test do concurrency?
+[22:42:08] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Connection reset by peer)
+[22:42:15] <tjc> benh: the thing that's different about that test, and also test_install_invalid, is both of those call directly into the rustpkg library
+[22:42:16] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[22:42:27] <tjc> Later I realized that's unsafe b/c tests are interleaved and the tests might change directories
+[22:42:30] <tjc> so all the other tests shell out to rustpkg
+[22:42:54] <tjc> But, off the top of my head, I can't see that that's mattering here. Usually there's a debug statement at the beginning saying what the name of the workcache DB is, and I'm not seeing it here
+[22:42:55] <tjc> which is odd
+[22:43:10] <tjc> benh: in the meantime, you could #[ignore] test_install_valid and test_install_invalid just to see if everything works then
+[22:43:30] <benh> I'm running the test via "RUST_THREADS=1 RUST_LOG=rustpkg,extra::workcache x86_64-unknown-linux-gnu/stage2/test/rustpkgtest-x86_64-unknown-linux-gnu test_install_valid", is that correct?
+[22:44:01] <tjc> benh: yes
+[22:45:06] <benh> Just from looking at the fn test_install_valid, the second-to-last line is "debug2!("bench = {}", ...) and then it only asserts on that path's non-existence, and I see the bench = line in the output and _then_ it fails, so uh, does the test spawn another task that lives longer than the raii wrapper that deletes the temporary directory?
+[22:45:18] <tjc> benh: I just had an idea
+[22:45:31] <tjc> benh: the workcache context (that's defined in extra::workcache) has a destructor
+[22:45:39] <tjc> that serializes the rustpkg_db.json file to disk
+[22:45:39] <benh> ah!
+[22:45:45] <tjc> I wonder if that one is running second
+[22:45:49] <tjc> and your temp dir destructor is running first
+[22:46:21] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[22:46:22] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/3UV64w
+[22:46:22] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[22:46:23] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[22:46:23] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/9HzxdQ
+[22:46:23] <ghrust> 13rust/06auto 14a9dddba 15Tim Chevalier: rust / build: Remove the `rust` tool...
+[22:46:23] <ghrust> 13rust/06auto 1452d8ca6 15bors: auto merge of #9785 : catamorphism/rust/remove-convenience-tool, r=pcwalton...
+[22:46:24] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[22:46:31] <tjc> of course, this wouldn't happen in any of the other tests, because in all the tests but 2, rustpkg gets run in a whole separate process
+[22:46:58] <tjc> that's a cool bug. well, assuming my guess is right :-)
+[22:48:22] <aatch> Epic race condition
+[22:48:36] <tjc> it's actually not a race condition in this case! I think not, anyway
+[22:48:38] <tjc> it's deterministic
+[22:48:44] <tjc> it's just deterministically in the wrong order :-)
+[22:50:37] <tjc> brb
+[22:52:19] *** Quits: tjc (tjc@moz-7B0110AD.mv.mozilla.com) (Ping timeout)
+[22:54:17] *** Quits: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Quit: Leaving...)
+[22:56:18] *** Joins: tjc (tjc@moz-BBE3ABD.mv.mozilla.com)
+[22:56:18] *** ChanServ sets mode: +o tjc
+[23:01:39] *** Quits: nrc (nrc@moz-3576D163.cable.virginmedia.com) (Ping timeout)
+[23:02:24] <tjc> benh: I'm going to go eat a food, be back in a few. I'll be curious what you figure out!
+[23:02:43] <benh> tjc: I think the issue is that the workcache database lives in another task or something?
+[23:03:11] <benh> so its destructor runs whenever, not when the local variable that vaguely references it via a channel itself dies
+[23:03:16] <benh> enjoy your food :)
+[23:03:28] <tjc> benh: in the test that fails, they're in the same task
+[23:03:35] <tjc> in the tests that pass, they're in different tasks
+[23:03:38] <tjc> more after I come back :-)
+[23:15:10] *** Quits: tjc (tjc@moz-BBE3ABD.mv.mozilla.com) (Quit: zzzzzzzzzz)
+[23:26:22] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[23:26:22] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1452d8ca6 to 146aa5934: 02http://git.io/N3iJvQ
+[23:26:22] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[23:26:23] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[23:26:23] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/fkHlug
+[23:26:23] <ghrust> 13rust/06auto 1482f53d6 15Volker Mische: Fix usage of <float> in docs...
+[23:26:23] <ghrust> 13rust/06auto 146ad1d0f 15bors: auto merge of #9800 : vmx/rust/fix-random-doc, r=thestinger...
+[23:26:23] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[23:31:32] *** Quits: jdm (jdm@moz-25D04F84.zone16.bethere.co.uk) (Ping timeout)
+[23:34:55] *** Joins: tjc (tjc@moz-7B0110AD.mv.mozilla.com)
+[23:34:55] *** ChanServ sets mode: +o tjc
+[23:35:35] <benh> tjc: I added ctxt.workcache_context.db.write(|db| db.db_dirty = false); at the bottom of the test and now it doesn't fail anymore
+[23:36:39] *** Quits: tjc (tjc@moz-7B0110AD.mv.mozilla.com) (Ping timeout)
+[23:37:07] *** Joins: jdm (jdm@moz-25D04F84.zone16.bethere.co.uk)
+[23:41:15] *** Joins: tjc (tjc@moz-BBE3ABD.mv.mozilla.com)
+[23:41:16] *** ChanServ sets mode: +o tjc
+[23:45:52] <benh> tjc: I added ctxt.workcache_context.db.write(|db| db.db_dirty = false); at the bottom of the test and now it doesn't fail anymore
+[23:46:20] <tjc> benh: Oh, great!
+[23:46:26] <tjc> now let me try to convince myself that this could be true ;-)
+[23:46:43] <tjc> I know it wasn't correctly marking the db as clean
+[23:46:49] <tjc> because we didn't have &mut self in destructors before
+[23:46:59] <tjc> so fixing that was definitely the right thing anyway
+[23:47:12] *** Quits: jdm (jdm@moz-25D04F84.zone16.bethere.co.uk) (Ping timeout)
+[23:47:24] <benh> I didn't exactly fix it, setting it in the test is just a hack :v
+[23:47:40] <tjc> Oh, in the test
+[23:47:42] <benh> the issue is probably that somehow the database gets dropped after the test finishes and has deleted its temp directory
+[23:47:43] <tjc> well, that's okay for now
+[23:47:47] <tjc> I'll fix it for real later :-)
+[23:48:01] <tjc> Right, that's what I think the issue is too
+[23:48:08] <tjc> I would rather confirm that that's what's really happening, but...
+[23:48:15] <tjc> don't spend *too* much time if you don't want to :-)
+[23:48:23] <benh> there's a call to task::spawn in workcache.rs and that's good enough for me to say "non-determinism" and shrug ;)
+[23:49:35] <benh> I'm going to post a PR for my changes so far so someone has a chance to look at it and then I'm heading off for tonight, I guess
+[23:49:55] <benh> not too eager to figure out just how the work cache works and is used in rustpkg while half asleep :)
+[23:51:12] *** Joins: jdm (jdm@moz-E4B91594.zone16.bethere.co.uk)
+[23:55:52] *** Quits: jdm (jdm@moz-E4B91594.zone16.bethere.co.uk) (Input/output error)
+[23:56:01] *** Joins: jdm (jdm@moz-E4B91594.zone16.bethere.co.uk)
+[23:56:05] <benh> Thanks for your help <:)
+[23:57:27] <tjc> benh: great, tag me in the PR - @catamorphism - and I'll look at it
+[23:57:30] <tjc> thanks for working on this!
+[23:58:24] *** Joins: dbaupp (Thunderbir@B11E503F.D5A1DCF.37681C44.IP)
+[23:59:20] *** Quits: dbaupp (Thunderbir@B11E503F.D5A1DCF.37681C44.IP) (Quit: dbaupp)

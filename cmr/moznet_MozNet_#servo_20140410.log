@@ -1,0 +1,72 @@
+[00:01:21] <alphonse23> All the errors involve css issues: invalid value: white-space:nowrap, unsupported property, and so on
+[00:01:29] <alphonse23> something is wrong with the way it's rendering the css
+[00:01:42] <alphonse23> servo worked on google.com in a previous build
+[00:01:49] <mbrubeck> alphonse23: Those are just warnings for CSS that Servo doesn't implement yet; they should be harmless
+[00:02:18] <mbrubeck> The actual failure is this "Unscanned text boxes should have been scanned by now"
+[00:02:24] <alphonse23> yes
+[00:02:29] <alphonse23> that's what I was going to say
+[00:02:32] <alphonse23> that's where the error is.
+[00:02:35] <mbrubeck> Looks like the same problem as https://github.com/mozilla/servo/issues/2065
+[00:02:53] <SimonSapin> maybe we should just disable the CSS warnings entirely by default, they’re not super useful anyway
+[00:03:15] <mbrubeck> +1
+[00:04:58] *** Joins: ghservo (ghservo@511FAEBD.6A2AE50.F3114085.IP)
+[00:04:58] <ghservo> [13servo] 15SimonSapin opened issue #2083: Disable CSS warnings? 02http://git.io/MULWLw
+[00:04:58] *** Parts: ghservo (ghservo@511FAEBD.6A2AE50.F3114085.IP) ()
+[00:10:35] <mbrubeck> Newbie question: Why does servo::run spawn a task here, and then immediately block on the result? https://github.com/mozilla/servo/blob/master/src/components/main/servo.rs#L159
+[00:10:45] <mbrubeck> Why not just run that code in its current thread?
+[00:11:35] <brson> mbrubeck: that code is transitioning from the native scheduler into the green thread scheduler
+[00:12:02] <brson> the first thing servo does is change the task scheduling model
+[00:12:24] <brson> pool.spawn
+[00:12:27] <mbrubeck> brson: Okay... so any futher calls within the green thread created there will then create green threads instead of native?
+[00:12:32] <brson> yes
+[00:12:36] <mbrubeck> Got it, thanks.
+[00:13:03] <mbrubeck> s/further calls/further spawn calls/
+[00:13:09] *** Quits: brendan (brendaneic@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: brendan)
+[00:13:37] <brson> hm, there was a technical reason for immediatly dumping everything into a green thread 
+[00:13:43] <brson> larsberg may remember
+[00:13:49] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[00:13:52] <brson> some deadlock surely
+[00:14:30] *** Quits: nszceta (nszceta@moz-E458A7C0.pharm.pitt.edu) (Quit: Textual IRC Client: www.textualapp.com)
+[00:14:52] *** Quits: mccr8 (mccr8@moz-62518563.mtv2.mozilla.com) (Quit: computer sleep)
+[00:16:07] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[00:18:16] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[00:18:33] *** Quits: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Ping timeout)
+[00:20:17] <larsberg> mbrubeck, brson: in general, we prefer green threads by default and only use native threads where required by underlying APIs (i.e., main thread / compositor / gfx threads that access OGL contexts).
+[00:21:14] <larsberg> I remember we used to have some extra spawn code in there to work around a scheduler bug, but that's fortunately both been fixed and we even removed the scaffolding code (which we shamefully don't always do in Servo)
+[00:21:26] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[00:21:30] <jack> brson: we wanted green threading for layout+script so we could benefit from fast context switching
+[00:21:47] <jack> we removed all scheduler workarounds to my knowledge.
+[00:22:02] <larsberg> jack: Yeah, I just surveyed the code and it all appears to be gone
+[00:22:06] <mbrubeck> We still have something that asserts it can't run on a native thread
+[00:22:11] <mbrubeck> or did when I started last week :P
+[00:22:17] <larsberg> you mean that can't run on a green thread?
+[00:22:25] <mbrubeck> It was how I managed to break the world on >2-core machines
+[00:22:25] <larsberg> we have some code that uses TLS, which is tied to a pthread
+[00:22:30] <mbrubeck> Hmm, maybe that was it
+[00:23:35] <mbrubeck> Yeah, I accidentally switched layout from native tasks to green tasks: https://github.com/mozilla/servo/pull/1977
+[00:23:45] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[00:31:16] *** Quits: Sharp (Sharp@moz-3301C7AB.static-ip.telepacific.net) (Quit: Sharp)
+[00:33:31] *** Quits: tobytailor (tobytailor@moz-CBD810C7.hsd1.ca.comcast.net) (Quit: tobytailor)
+[00:34:03] <jack> the way it worked as of the jan 19 rust upgrade was that profiler and compositor were on native threads, and everything else on green. then during parallel layout we made native thread pools for that.
+[00:34:56] *** Quits: maxli1 (Adium@moz-B19F68ED.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[00:35:58] <Manishearth> jack: I watched the talk, really informative :)
+[00:36:13] <jack> Manishearth: thanks :)
+[00:36:44] <Manishearth> Though it mentioned that it repoerforms layout only when it needs to. Why does the servo titlebar change to "performing layout"/"rendering" every time I click? (when the click has no effect on the layout)
+[00:36:53] <Manishearth> it takes some time too.
+[00:37:15] <Manishearth> And why exactly does not having a proper shell lead to jank? I thought the jank was due to it being a debug build
+[00:39:16] *** Joins: maxli (Adium@moz-B19F68ED.student.cs.uwaterloo.ca)
+[00:40:03] <larsberg> Manishearth: mouse over elements causes the :hover style to change, and since we don't have incremental layout, that change to the style property causes a complete re-layout any time you change which element you're hovering over
+[00:43:01] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[00:45:11] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[00:49:18] <Manishearth> larsberg: but we're not applying anything on hover
+[00:49:52] <Manishearth> shouldn't there be something to prevent that? 
+[00:51:55] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[00:52:25] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[00:53:39] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Ping timeout)
+[00:55:18] *** Joins: Sharp (Sharp@moz-633F3606.hsd1.ca.comcast.net)
+[00:57:54] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[01:00:47] *** Joins: cmr (moznet@moz-EC676DFE.members.linode.com)
+[01:00:47] <jack> but that happen sbefore click no?
+[01:00:52] <jack> or we only set hover on clicks?
+[01:01:10] <larsberg> yes, it happens before click; just on any mouse move that changes what element it's over
+[01:03:51] *** Joins: cmr (moznet@moz-EC676DFE.members.linode.com)

@@ -1,0 +1,270 @@
+[00:03:42] *** Quits: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com) (Quit: quit)
+[00:10:29] *** Joins: brendan (brendaneich@moz-dl0.7vl.56.172.IP)
+[00:28:20] *** Quits: brendan (brendaneich@moz-dl0.7vl.56.172.IP) (Ping timeout: 121 seconds)
+[00:42:22] *** terrence is now known as terrence-afk
+[00:54:50] *** Quits: azakai (alon@moz-48l1pe.mh2d.1ibb.0101.2620.IP) (Ping timeout: 121 seconds)
+[00:56:15] *** Quits: jweathersby (Adium@moz-qghnq8.ip.windstream.net) (Quit: Leaving.)
+[01:13:29] *** Joins: azakai|2 (alon@moz-l3ofdg.sntcca.sbcglobal.net)
+[01:17:58] *** terrence-afk is now known as terrence
+[01:19:06] *** terrence is now known as terrence-afk
+[01:20:29] *** Quits: mchang (mchang@moz-q472sa.res.rr.com) (Client exited)
+[01:34:21] *** Joins: zentner-kyle (Thunderbird@moz-f004p4.ca.comcast.net)
+[01:38:30] *** Quits: zentner-kyle (Thunderbird@moz-f004p4.ca.comcast.net) (Ping timeout: 121 seconds)
+[01:49:09] *** Quits: derf (derf@moz-797sd4.fios.verizon.net) (Ping timeout: 121 seconds)
+[01:51:14] *** Joins: derf (derf@moz-797sd4.fios.verizon.net)
+[02:18:58] *** Quits: mbx (textual@moz-l8ebtf.sfo1.mozilla.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[02:38:22] *** Quits: laleh (Adium@moz-ufln3q.dedicated.allstream.net) (Connection closed)
+[02:46:35] <SimonSapin> cimes: This looks ok to me. The lifetime of CStr is fine here since you’re using Cow::into_owned
+[02:48:49] <SimonSapin> cimes: by the way, you can avoid allocating in Err() by changing the return type to Result<_, &'static str>, or (if you want a non-static string *sometimes*) Cow<'static, str>
+[02:53:44] <cimes> hey SimonSapin , thanks.  I haven't looked too much into how to be efficient with returning strings and definitely haven't played around with specifying lifetimes
+[02:53:59] <cimes> SimonSapin, I did try changing it to this, havent decided which is better though - http://pastebin.com/Zs82Mak9
+[02:54:48] <cimes> rust was being a pain with the type, I guess c_char is treated as i8 but in converting to a string it seemed to want u8.
+[02:55:07] <SimonSapin> isn’t that transmute a no-op?
+[02:55:53] <cimes> i dont know the specifics of what rust is doing, but i think buf was originally [i8, 100]
+[02:56:40] <SimonSapin> hum, the type of the first buf gets inferred based on the signature of fsource
+[02:57:20] <cimes> yeah that's what i think as well.  I could specify it as i8 or c_char and it works, but it didn't like when i specified u8
+[02:58:15] <cimes> kind of silly given both the return value and the buffer being passed in are actually pointing to the same thing.  the return value is really just for convenience in C
+[02:58:41] <cimes> in the first example i parsed the return value, but in the second i just used the original buffer
+[02:58:46] <SimonSapin> depending on how Sufficiently Advanced the compiler is, this transmute might copy the whole buffer. You could transmute &buf to avoid this
+[02:59:17] *** Joins: laleh (Adium@moz-ufln3q.dedicated.allstream.net)
+[03:00:31] <SimonSapin> also, I’d type-annotate the transmute: mem::transmute::<&i8, &u8>(&buf). Too much type inference with transmute makes me uncomfortable.
+[03:02:00] *** Joins: brson (brson@moz-lrp27o.hsia.telus.net)
+[03:02:00] *** ChanServ sets mode: +o brson
+[03:03:19] <cimes> that's a good point, i'm playing around with it now, getting some compile errors
+[03:06:59] <cimes> do i need to specify the array length in the type annotation?  It seems to want it, but i still got other errors
+[03:14:31] <cimes> SimonSapin, it looks like I needed mem::transmute::<&[i8], &[u8]>(&buf);
+[03:17:51] *** Joins: mbx (textual@moz-d9isok.ca.comcast.net)
+[03:21:00] <SimonSapin> ah, yes, sorry :)
+[03:21:44] <cimes> no problem, good learning exercise
+[03:22:02] <cimes> I'm still not sure why the char* passed to the function is a different type in rust than the char* that is returned
+[03:24:24] <huon> the char on the platform you're on is signed (i.e. i8), while Rust generally works with unsigned types (i.e. u8)
+[03:24:42] <huon> on some platforms, c_char will be u8
+[03:26:32] <cimes> thanks huon , but if this is a common use case, I think rust needs to be able to easily build strings from either without required different code
+[03:26:57] <cimes> presumably if i was on a system that treated c_char as u8, I wouldn't have noticed this and the code will fail to compile on other systems
+[03:26:57] *** Quits: wcosta (wander@moz-vv8.2lp.110.179.IP) (Connection closed)
+[03:28:14] <cimes> it seems that my current code will fail to compile on systems that treat c_char as u8 
+[03:29:05] *** Joins: wcosta (wander@moz-vv8.2lp.110.179.IP)
+[03:29:51] <SimonSapin> uh, I didn’t know it was platform-dependent
+[03:30:22] <SimonSapin> cimes: probably ignore my advice on 0_i8 and use &[c_char] instead of &[i8]
+[03:33:09] <cimes> SimonSapin, that seems to compile ok, hopefully it's more portable :)
+[03:34:48] <cimes> on the topic of String and &str (or &'static str) - is there a standard on which to return as error messages in Err?
+[03:35:20] <cimes> I suppose I could make an enumeration of error types, but that seems overkill for my case
+[03:36:02] <SimonSapin> There isn’t a well-established convention that I know of
+[03:36:19] <huon> using an enum is probably the standard
+[03:38:16] <cimes> huon, it's certainly a better way to handle errors!  Realistically though, these functions don't get called often, they are mostly setup and teardown
+[03:39:22] <cimes> the underlying C libraries aren't sophisticated enough to return good error codes
+[03:41:32] <cimes> thanks for the help SimonSapin and huon 
+[03:48:59] *** Quits: cimes (cimes@moz-sfmbhq.il.comcast.net) (Quit: Leaving)
+[03:52:22] *** khuey|away is now known as khuey
+[04:12:58] *** wcosta is now known as wcosta|zzz
+[04:38:08] *** Joins: ScottMichaud (ScottMichau@moz-i4mljt.cpe.pppoe.ca)
+[04:47:01] *** Quits: derf (derf@moz-797sd4.fios.verizon.net) (Ping timeout: 121 seconds)
+[04:48:35] *** Quits: laleh (Adium@moz-ufln3q.dedicated.allstream.net) (Quit: Leaving.)
+[04:49:05] *** Joins: derf (derf@moz-797sd4.fios.verizon.net)
+[04:54:55] *** Quits: brson (brson@moz-lrp27o.hsia.telus.net) (Quit: leaving)
+[04:56:06] *** Quits: derf (derf@moz-797sd4.fios.verizon.net) (Ping timeout: 121 seconds)
+[05:00:48] *** Joins: ddamjano (Instantbird@moz-ek6thi.ehig.7h68.8388.2a02.IP)
+[05:08:31] *** Joins: derf (derf@moz-797sd4.fios.verizon.net)
+[05:38:21] *** Quits: ddamjano (Instantbird@moz-ek6thi.ehig.7h68.8388.2a02.IP) (Ping timeout: 121 seconds)
+[05:49:33] *** khuey is now known as khuey|away
+[05:51:44] *** Quits: SimonSapin (simon@moz-lb0n4e.rev.poneytelecom.eu) (Quit: WeeChat 1.0.1)
+[05:52:02] *** Joins: SimonSapin (simon@moz-lb0n4e.rev.poneytelecom.eu)
+[05:54:39] *** Joins: jweathersby (Adium@moz-472m2p.qh63.o1nm.471d.2002.IP)
+[06:21:41] *** Joins: ddamjano (Instantbird@moz-bbjck1.ehig.7h68.8388.2a02.IP)
+[06:29:10] *** Quits: roc (chatzilla@moz-ktvdnu.5h0u.b0fh.0cb0.2001.IP) (Ping timeout: 121 seconds)
+[06:49:27] *** Quits: ddamjano (Instantbird@moz-bbjck1.ehig.7h68.8388.2a02.IP) (Ping timeout: 121 seconds)
+[07:15:43] *** Quits: mbx (textual@moz-d9isok.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[07:34:08] *** Joins: ddamjano (Instantbird@moz-mddkaj.static.inode.at)
+[07:41:24] *** Joins: Dexter (Alessio@moz-9dmmh0.retail.telecomitalia.it)
+[07:49:26] *** Joins: laleh (Adium@moz-ufln3q.dedicated.allstream.net)
+[07:53:29] *** Quits: laleh (Adium@moz-ufln3q.dedicated.allstream.net) (Ping timeout: 121 seconds)
+[08:04:47] *** Joins: roc (chatzilla@moz-7mb.gbj.98.121.IP)
+[08:08:55] *** Quits: jweathersby (Adium@moz-472m2p.qh63.o1nm.471d.2002.IP) (Quit: Leaving.)
+[08:13:28] *** Joins: till (till@moz-3gokm3.adsl.alicedsl.de)
+[08:28:53] *** Quits: till (till@moz-3gokm3.adsl.alicedsl.de) (Connection closed)
+[08:29:15] *** Joins: till (till@moz-3gokm3.adsl.alicedsl.de)
+[09:09:18] *** Joins: jweathersby (Adium@moz-qghnq8.ip.windstream.net)
+[09:13:20] *** Quits: jweathersby (Adium@moz-qghnq8.ip.windstream.net) (Ping timeout: 121 seconds)
+[10:56:53] *** Quits: ddamjano (Instantbird@moz-mddkaj.static.inode.at) (Ping timeout: 121 seconds)
+[10:59:26] *** Joins: ddamjano (Instantbird@moz-mddkaj.static.inode.at)
+[11:05:29] *** Quits: ddamjano (Instantbird@moz-mddkaj.static.inode.at) (Ping timeout: 121 seconds)
+[11:25:25] *** Quits: c74d (c74d3a4ebb6@moz-kn41j4.mggc.hibn.4404.2002.IP) (Connection closed)
+[11:25:47] *** Joins: c74d (c74d3a4ebb6@moz-kn41j4.mggc.hibn.4404.2002.IP)
+[11:35:55] *** Joins: ddamjano (Instantbird@moz-mddkaj.static.inode.at)
+[11:39:40] *** Quits: till (till@moz-3gokm3.adsl.alicedsl.de) (A TLS packet with unexpected length was received.)
+[11:45:24] *** Joins: till (till@moz-3gokm3.adsl.alicedsl.de)
+[12:47:07] *** Joins: jweathersby (Adium@moz-qghnq8.ip.windstream.net)
+[12:51:09] *** Quits: jweathersby (Adium@moz-qghnq8.ip.windstream.net) (Ping timeout: 121 seconds)
+[13:18:59] *** Quits: till (till@moz-3gokm3.adsl.alicedsl.de) (A TLS packet with unexpected length was received.)
+[13:32:54] *** Joins: till (till@moz-3gokm3.adsl.alicedsl.de)
+[13:37:16] *** Quits: till (till@moz-3gokm3.adsl.alicedsl.de) (Ping timeout: 121 seconds)
+[13:38:15] *** Joins: mukilan (mukilan@moz-fbh.vv8.164.122.IP)
+[13:47:47] *** Joins: laleh (Adium@moz-ufln3q.dedicated.allstream.net)
+[13:57:01] *** Joins: jdm (jdm@moz-mu9.06r.98.75.IP)
+[13:59:39] *** Joins: tadh (quassel@moz-pg51s5.CWRU.Edu)
+[14:02:21] *** Quits: laleh (Adium@moz-ufln3q.dedicated.allstream.net) (Quit: Leaving.)
+[14:03:56] *** Joins: jweathersby (Adium@moz-qghnq8.ip.windstream.net)
+[14:17:18] *** Joins: cimes (cimes@moz-lvg.16c.135.128.IP)
+[14:19:38] *** Joins: till (till@moz-3gokm3.adsl.alicedsl.de)
+[14:24:03] *** Quits: till (till@moz-3gokm3.adsl.alicedsl.de) (Ping timeout: 121 seconds)
+[14:48:03] *** terrence-afk is now known as terrence
+[14:57:02] *** wcosta|zzz is now known as wcosta
+[15:04:23] *** Quits: jdm (jdm@moz-mu9.06r.98.75.IP) (Quit: )
+[15:10:09] *** Joins: laleh (Adium@moz-ufln3q.dedicated.allstream.net)
+[15:20:32] *** Joins: till (till@moz-3gokm3.adsl.alicedsl.de)
+[15:24:53] *** Quits: till (till@moz-3gokm3.adsl.alicedsl.de) (Ping timeout: 121 seconds)
+[15:45:19] *** Joins: mbx (textual@moz-d9isok.ca.comcast.net)
+[15:48:27] *** Joins: dholbert (dholbert@moz-pnm275.static.fusionbroadband.com)
+[15:48:38] *** Parts: dholbert (dholbert@moz-pnm275.static.fusionbroadband.com) ("Ex-Chat")
+[15:59:55] *** Quits: ddamjano (Instantbird@moz-mddkaj.static.inode.at) (Ping timeout: 121 seconds)
+[16:21:35] *** Joins: till (till@moz-3gokm3.adsl.alicedsl.de)
+[16:25:55] *** Quits: till (till@moz-3gokm3.adsl.alicedsl.de) (Ping timeout: 121 seconds)
+[16:31:52] *** Joins: till (till@moz-3gokm3.adsl.alicedsl.de)
+[16:40:28] *** Joins: ddamjano (Instantbird@moz-fl0glu.dynamic.surfer.at)
+[16:41:46] *** terrence is now known as terrence-bbiab
+[16:58:29] *** Joins: zentner-kyle (Thunderbird@moz-8nufqe.ujol.1ibb.0101.2620.IP)
+[17:01:20] *** Joins: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com)
+[17:08:37] *** Quits: ddamjano (Instantbird@moz-fl0glu.dynamic.surfer.at) (Ping timeout: 121 seconds)
+[17:11:57] *** khuey|away is now known as khuey
+[17:31:54] *** wcosta is now known as wcosta|lunch
+[17:51:02] *** wcosta|lunch is now known as wcosta
+[18:01:27] <mccr8> lkuper: ping
+[18:11:39] *** Quits: Dexter (Alessio@moz-9dmmh0.retail.telecomitalia.it) (Quit: Leaving)
+[18:12:03] *** terrence-bbiab is now known as terrence
+[18:25:14] *** Joins: dholbert (dholbert@moz-pnm275.static.fusionbroadband.com)
+[18:46:34] <cimes> I need some help managing memory in Rust for an array allocated in C - who's up for helping?
+[18:49:22] *** terrence is now known as terrence-bbiab
+[18:49:46] <Manishearth> cimes: o/
+[18:49:47] <larsberg> cimes: #rust is a great place to get help with Rust language or interop questions :-)
+[18:50:05] <Manishearth> we need #rust-mordor for FFI
+[18:50:20] <cimes> yeah larsberg i know, I prefer this smaller room if people are around :)
+[18:50:39] <cimes> haha Manishearth , FFI seems to be all I'm doing in rust
+[18:51:18] <cimes> So I guess the first question is - if I create a Vec around this C-allocated memory, will rust take ownership of it and free it when the vec goes out of scope?
+[18:51:43] <Manishearth> cimes: yep
+[18:51:47] <Manishearth> cimes: also!
+[18:51:52] <Manishearth> remember that Rust uses jemalloc
+[18:52:03] <Manishearth> not sure if Rust's free() and your malloc() are compatible 
+[18:52:09] <Manishearth> (but I don't know how jemalloc works)
+[18:52:19] <cimes> Really? That's great.  I assumed it didn't and was trying to clone the vec, which was causing a strange segfault somewhere else
+[18:52:35] <Manishearth> ick
+[18:52:49] <Manishearth> cimes: are you using from_raw_parts?
+[18:52:57] <cimes> yeah i know, but i didnt want the user calling the function ot have to explicitly free the data themselves
+[18:53:02] <Manishearth> cool
+[18:53:06] <cimes> yeah i am
+[18:53:41] <cimes> still doesn't explain why i was segfaulting elsewhere when returning a cloned vec though
+[18:54:52] <cimes> it wasnt even the vec it's segfaulting on, I was passing Some(&str) and it seemed to segfault when turning that into a CStr...
+[18:55:40] <Manishearth> uh oh
+[18:55:43] <Manishearth> no no no
+[18:55:44] <Manishearth>  no no
+[18:55:46] <Manishearth> no no no no
+[18:55:47] <Manishearth> no
+[18:55:54] <Manishearth> CStr and Rust strs are very different
+[18:55:56] <Manishearth> be careful
+[18:56:11] <Manishearth> rust strs are utf8 strings with an associated length
+[18:56:28] <Manishearth> which is either part of a fat pointer in case of &str, or part of the object i ncase of String
+[18:56:49] *** Quits: mbx (textual@moz-d9isok.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[18:56:52] <Manishearth> Cstr is a null terminated  byte string with no associated length
+[18:57:48] <Manishearth> cimes: make sure you're following the guarantees listed in the docs
+[18:57:49] <Manishearth> http://doc.rust-lang.org/stable/std/ffi/struct.CStr.html
+[18:58:11] <cimes> I'm aware they are different ,but don't claim to fully understand how.  What I did was pass Some("poet.log"), then in the function receiving that had: something like: let log_filename = match log_filename {
+[18:58:11] <cimes>             Some(l) => CString::new(l).unwrap().as_ptr(),
+[18:58:51] <cimes> the type in the fn was "log_filename: Option<&str>"
+[18:59:24] <Manishearth> cimes: (dont worry, was just poking fun :) )
+[18:59:36] <Manishearth> hm
+[18:59:39] <Manishearth> that should work
+[18:59:59] <cimes> yes Manishearth and it does.  it only failed when another parameter was the cloned vec
+[19:00:12] <Manishearth> cimes: wait wait
+[19:00:20] <Manishearth> cimes: http://doc.rust-lang.org/stable/std/ffi/struct.CString.html#method.new
+[19:00:29] <Manishearth> This method will consume the provided data and use the underlying bytes to construct a new string, ensuring that there is a trailing 0 byte.
+[19:00:44] <cimes> Manishearth, http://pastebin.com/gyTT6QSc
+[19:00:53] <Manishearth> there is no trailing 0 byte here
+[19:01:04] *** dholbert is now known as dholbert|lunch
+[19:01:05] <cimes> not sure why it shows "log_filename=..."
+[19:01:31] <Manishearth> cimes: `p log_filename`?
+[19:01:51] <Manishearth> cimes: can I have a look at the full code?
+[19:01:58] <Manishearth> perhaps be able to run it locally
+[19:02:38] <cimes> you're not going to be able to run it locally without the libraries, you can fetch them if you want.  What's relaly confusing me is why it is only failing when another param is a cloned vec but not if i use the original
+[19:03:40] *** Quits: zentner-kyle (Thunderbird@moz-8nufqe.ujol.1ibb.0101.2620.IP) (Ping timeout: 121 seconds)
+[19:03:43] <Manishearth> cimes: code snippets?
+[19:03:48] <Manishearth> not sure how the flow is here
+[19:03:59] *** Quits: till (till@moz-3gokm3.adsl.alicedsl.de) (Ping timeout: 121 seconds)
+[19:04:05] <cimes> yeah i'll pastebin them
+[19:05:30] <cimes> this will be easier if i push my current changes to github then just show you my test app
+[19:06:16] <Manishearth> cool
+[19:09:25] <cimes> Manishearth, https://github.com/connorimes/poet-sys/blob/master/src/poet.rs
+[19:10:19] <cimes> http://pastebin.com/aZRPDZMu - this test fails if i add it
+[19:10:36] <cimes> ** if you add .clone() to the vec creation
+[19:11:23] <cimes> actually it fails either way i think
+[19:15:32] <Manishearth> hm
+[19:16:34] <Manishearth> cimes: what does poet_init do under the hood?
+[19:16:36] <cimes> looks like it fails during deallocation of memory if I pass None instead of Some("poet.log")
+[19:17:13] <cimes> if I use Some, it fails trying to build that CString
+[19:17:40] <Manishearth> well, you passed a nullptr to ffi as a string, it probably didn't like that
+[19:18:06] <Manishearth> cimes: of course, the string isn't null terminated
+[19:18:14] <Manishearth> cimes: Some("poet.log\0")
+[19:18:31] <Manishearth> but that will crash, not segfault
+[19:19:25] <cimes> Manishearth, if I add the null terminator it doesn't fail there anymore.  I can do some manipulation in the code to ensure that the string is null terminated
+[19:19:31] <Manishearth> pey
+[19:19:34] <Manishearth> .push(\0)
+[19:20:01] <cimes> we still have a problem with the memory block though - here's the bt - http://pastebin.com/nVnpecN4
+[19:22:19] *** Quits: laleh (Adium@moz-ufln3q.dedicated.allstream.net) (Quit: Leaving.)
+[19:24:08] <cimes> my original idea was to do so something like this then return csvec in Ok:      let csvec: Vec<POETControlState> = Vec::from_raw_parts(states, nstates as usize, nstates as usize).clone();
+[19:24:08] <cimes>             libc::free(states as *mut c_void);
+[19:24:32] <Manishearth> cimes: how would that work?
+[19:24:47] <Manishearth> oh I see
+[19:24:57] <Manishearth> ci	you then have to mem::forget the original vec
+[19:25:08] <cimes> the whole idea is that whoever is calling this function doesn't need to explictly free anything later and I didn't think Rust would take control of it.  It looks like it is (as you said) but it can't free it properly
+[19:25:17] <cimes> yeah, i was just thinking about that
+[19:25:28] <Manishearth> cimes: it might be a malloc-jemalloc issue
+[19:25:49] <cimes> that would seem to be what the bt is suggestion - it's failing in je cleanup functions
+[19:26:25] <Manishearth> cimes: let csvec = from_raw_parts(..); free(...); ret=Ok(csvec.clone()); forget(csvec)return ret
+[19:27:49] *** Joins: laleh (Adium@moz-ufln3q.dedicated.allstream.net)
+[19:29:42] <cimes> Manishearth, yes that seems to work! Test is failing for another reason, let me just try my complete test app
+[19:30:02] <cimes> it's not a test i want to add anyway since it depends on system files atm
+[19:32:29] <cimes> Manishearth, I think I'm in business now - thanks so much!
+[19:34:29] *** terrence-bbiab is now known as terrence
+[19:36:00] *** Joins: mbx (textual@moz-l8ebtf.sfo1.mozilla.com)
+[19:36:17] *** Quits: mukilan (mukilan@moz-fbh.vv8.164.122.IP) (A TLS packet with unexpected length was received.)
+[19:41:51] <Manishearth> cimes: :)
+[19:42:09] <Manishearth> cimes: what's poet anyway?
+[19:43:56] <cimes> Manishearth, it's a library we wrote that uses feedback control to provide soft timing guarantees while minimizing energy consumption
+[19:44:46] <cimes> i'm working on power/energy management in Servo, so i'm going to try and use some of it
+[19:46:36] *** dholbert|lunch is now known as dholbert
+[19:46:49] *** Joins: zentner-kyle (Thunderbird@moz-cfhap5.mtv2.mozilla.com)
+[19:47:24] <cimes> Manishearth, if you have access to IEEE: http://ieeexplore.ieee.org/xpl/articleDetails.jsp?arnumber=7108419
+[19:49:07] <Manishearth> cimes: oh nice
+[19:49:29] <Manishearth> (hooray for company wifi)
+[19:49:44] <cimes> \o/
+[19:53:00] <lkuper> mccr8: pong
+[19:53:21] <mccr8> lkuper: did you manage to get in touch with anybody about your wrapper woes?
+[19:53:46] <lkuper> mccr8: I haven't tried yet -- it's not exactly a top priority at the moment
+[19:53:53] <lkuper> but sooner or later I ought to
+[19:54:26] <mccr8> lkuper: okay, great. Just curious. :)
+[20:13:19] *** Joins: mchang (mchang@moz-q472sa.res.rr.com)
+[20:37:17] *** terrence is now known as terrence-brb
+[20:42:06] *** Quits: azakai|2 (alon@moz-l3ofdg.sntcca.sbcglobal.net) (Ping timeout: 121 seconds)
+[20:46:42] *** Joins: ddamjano (Instantbird@moz-351893.dynamic.surfer.at)
+[20:46:43] *** Quits: zentner-kyle (Thunderbird@moz-cfhap5.mtv2.mozilla.com) (Ping timeout: 121 seconds)
+[20:51:40] *** Joins: zentner-kyle (Thunderbird@moz-cfhap5.mtv2.mozilla.com)
+[20:57:46] *** terrence-brb is now known as terrence
+[21:05:28] *** Joins: zentner-kyle1 (Thunderbird@moz-7h0dcc.ujol.1ibb.0101.2620.IP)
+[21:05:37] *** Quits: zentner-kyle (Thunderbird@moz-cfhap5.mtv2.mozilla.com) (Connection closed)
+[21:24:35] *** Quits: jweathersby (Adium@moz-qghnq8.ip.windstream.net) (Quit: Leaving.)
+[21:31:51] *** Joins: jweathersby (Adium@moz-qghnq8.ip.windstream.net)
+[21:40:19] *** Quits: cimes (cimes@moz-lvg.16c.135.128.IP) (Ping timeout: 121 seconds)
+[22:03:20] *** Quits: ddamjano (Instantbird@moz-351893.dynamic.surfer.at) (Ping timeout: 121 seconds)
+[22:04:25] *** Joins: cimes (cimes@moz-sfmbhq.il.comcast.net)
+[22:10:09] *** Quits: zentner-kyle1 (Thunderbird@moz-7h0dcc.ujol.1ibb.0101.2620.IP) (Ping timeout: 121 seconds)
+[22:11:49] *** khuey is now known as khuey|away
+[22:26:11] *** Quits: c74d (c74d3a4ebb6@moz-kn41j4.mggc.hibn.4404.2002.IP) (Connection closed)
+[22:26:31] *** Joins: c74d (c74d3a4ebb6@moz-iclfcj.mggc.hibn.4404.2002.IP)
+[22:35:08] *** Quits: roc (chatzilla@moz-7mb.gbj.98.121.IP) (Ping timeout: 121 seconds)
+[22:42:33] *** Quits: tadh (quassel@moz-pg51s5.CWRU.Edu) (Connection closed)
+[22:44:12] *** Joins: zentner-kyle (Thunderbird@moz-cfhap5.mtv2.mozilla.com)
+[22:48:23] *** Quits: zentner-kyle (Thunderbird@moz-cfhap5.mtv2.mozilla.com) (Ping timeout: 121 seconds)
+[22:52:26] *** Joins: azakai|2 (alon@moz-l3ofdg.sntcca.sbcglobal.net)
+[22:54:09] *** Joins: brendan (brendaneich@moz-g2r980.sjc.megapath.net)
+[23:21:09] *** khuey|away is now known as khuey
+[23:34:02] *** wcosta is now known as wcosta|afk
+[23:34:33] *** Joins: roc (chatzilla@moz-ktvdnu.5h0u.b0fh.0cb0.2001.IP)
+[23:55:44] *** Quits: roc (chatzilla@moz-ktvdnu.5h0u.b0fh.0cb0.2001.IP) (Ping timeout: 121 seconds)

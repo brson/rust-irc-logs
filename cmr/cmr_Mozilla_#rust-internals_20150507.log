@@ -1,0 +1,1034 @@
+[00:03:30] *** Quits: aepsil0n (eduard@moz-g8ss54.mv2h.pepi.8071.2a02.IP) (Connection closed)
+[00:10:27] *** Quits: kmcguire_ (kmcguire@moz-pg1gb9.biz.rr.com) (Ping timeout: 121 seconds)
+[00:12:41] *** Joins: Diggsey (diggsey@moz-j9rl4k.dsl.pipex.com)
+[00:24:14] *** Joins: tamird (textual@moz-gg3hct.res.rr.com)
+[00:43:10] *** Joins: harrisonclarke (harrisoncla@moz-b21rr4.eastlink.ca)
+[00:47:44] *** Quits: harrisonclarke (harrisoncla@moz-b21rr4.eastlink.ca) (Connection closed)
+[00:47:50] <nmatsakis> pcwalton: out of curiosity, have you tried disabling zeroing just to measure impact on compliation time? (obviously resulting code would not execute)
+[00:48:02] <pcwalton> nmatsakis: I haven't, would be interesting
+[00:48:07] <pcwalton> nmatsakis: so I'm trying the full approach now
+[00:48:13] <pcwalton> just trying to make the change in trans
+[00:48:23] <pcwalton> (just always creating drop flags on the stack)
+[00:48:32] <pcwalton> I'm sure this will crash horribly but I'll see how far I get
+[00:48:58] <pcwalton> trans is… really not set up to do this. I'm trying to add the flag alloca into datum::Lvalue
+[00:49:41] <nmatsakis> yeah, that's probably how I would have started too (unconditionally adding flags); I haven't thought hard about best way to associate the value to the flag though
+[00:49:51] <nmatsakis> the tricky part of course is you need multiple flags per variable too
+[00:49:54] <nmatsakis> since sometimes we only move part of it
+[00:49:54] <pcwalton> yeah :(
+[00:49:58] <nmatsakis> that's what pnkfelix's analysis computed
+[00:50:01] <pcwalton> you need some way to split the flags
+[00:50:03] <nmatsakis> the set of flags you actually want
+[00:50:08] <nmatsakis> that is, if you move from x.f (for example)
+[00:50:14] <pcwalton> right now a Datum has no idea where it came from
+[00:50:16] <nmatsakis> it would compute that you need flags for x.f, x.g, x.h
+[00:50:18] <pcwalton> yeah
+[00:50:21] <nmatsakis> but if you never move from any fields
+[00:50:25] <nmatsakis> it would just say you need a flag for x
+[00:50:41] <nmatsakis> that was the idae anyway, as I said I don't remember the complete state we got checked in
+[00:50:43] <pcwalton> I'm going to just split flags every time you GEP into an lvalue datum
+[00:51:11] <pcwalton> the problem is that lvalue datums really have no notion of where they came from
+[00:51:44] <pcwalton> I wonder if it would be better to have the borrowck write some tables for trans to use...
+[00:51:52] <pcwalton> since borrowck knows about where a value came from
+[00:52:11] <nmatsakis> ok, though it does seem like it may be worth digging into the fragments business as well -- and yes, maybe part of this is making lvalue datums more aware of that, I've been wanting to add some notion of that to rvalue datums for quite some time as well (so they can compute the appropriate temp scope)
+[00:52:17] <nmatsakis> right now it's all tracked on the side
+[00:52:23] <nmatsakis> which is lame
+[00:52:33] <nmatsakis> or complicated, anyway
+[00:52:37] <pcwalton> then perhaps trans should just consult the table whenever it wants to drop an lvalue
+[00:53:07] <nmatsakis> seems like it would make sense; the interesting part that is not 100% clear to me is how to describe where an lvalue datum "comes from'"
+[00:53:12] <nmatsakis> something like a LoanPath maybe?
+[00:53:24] <nmatsakis> I guess you'd have to see the cases they are created from
+[00:53:28] <pcwalton> well, the neat thing about this approach is that we wouldn't need to modify datums at all
+[00:53:30] <nmatsakis> argh, daphne's up again, gotta go :)
+[00:53:35] <nmatsakis> (well, 
+[00:53:38] <nmatsakis> you have to know what to zero?)
+[00:53:44] <nmatsakis> i.e., when we move out of a datum,
+[00:53:49] <nmatsakis> we have to find the right tihng to zero
+[00:53:57] <nmatsakis> maybe you store that in some side table keyed by the expr, you're suggesting?
+[00:54:00] <nmatsakis> that might well work
+[00:54:01] <pcwalton> yeah, but borrowck can know about every move -- right
+[00:54:49] * nmatsakis wishes again for a lower-level IR
+[00:55:18] <pcwalton> it'd be easy to find all the places where we move and drop in trans
+[00:55:36] <pcwalton> just add an extra drop_flag parameter to schedule_drop_mem or whatever and fix all the errors
+[00:55:40] <pcwalton> ditto with move_mem
+[00:57:41] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[00:57:43] <nmatsakis> yes, I did something similar for moves
+[00:57:56] <nmatsakis> in general I would prefer to be driven more by the AST 
+[00:58:09] <nmatsakis> that is, I'm not entirely sure Datum pulls its weight as much as it once did
+[00:58:19] <nmatsakis> because now so much more is type-driven and so forth
+[01:06:48] *** Joins: anders (andars@moz-bsldst.sntcca.sbcglobal.net)
+[01:10:00] *** Joins: kmcguire (kmcguire@moz-bbqf14.res.bhn.net)
+[01:13:18] *** Quits: Rym_ (y@moz-a44.2as.55.31.IP) (Ping timeout: 121 seconds)
+[01:15:16] *** Joins: harrisonclarke (harrisoncla@moz-b21rr4.eastlink.ca)
+[01:15:41] *** Joins: joneshf-laptop (joneshf@moz-l4h.b5s.208.98.IP)
+[01:17:24] *** Quits: dcb (textual@moz-j72nfe.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[01:19:15] *** Joins: summerlight__ (summerlight@moz-99k.2mj.130.121.IP)
+[01:19:51] *** Quits: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu) (Quit: Leaving)
+[01:22:11] *** Quits: summerlight_ (summerlight@moz-99k.2mj.130.121.IP) (Ping timeout: 121 seconds)
+[01:22:24] *** Quits: madmalik (uid13697@moz-lfin5p.brockwell.irccloud.com) (Quit: Connection closed for inactivity)
+[01:29:19] *** Joins: swgillespie (swgillespie@moz-1i5.3un.220.167.IP)
+[01:32:36] *** Quits: marsel (user@moz-76c.4gi.180.94.IP) (Ping timeout: 121 seconds)
+[01:36:30] <Mutabah> Manishearth: That commit you linked, is that on a branch, or a detached head?
+[01:44:34] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[01:44:34] *** ChanServ sets mode: +o pcwalton
+[01:44:42] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (Client exited)
+[01:55:03] *** Quits: harrisonclarke (harrisoncla@moz-b21rr4.eastlink.ca) (Connection closed)
+[01:57:55] *** Quits: swgillespie (swgillespie@moz-1i5.3un.220.167.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[02:12:57] *** Joins: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu)
+[02:13:20] *** Quits: anders (andars@moz-bsldst.sntcca.sbcglobal.net) (Ping timeout: 121 seconds)
+[02:20:53] *** Quits: zz_kimundi (kimundi@moz-136e94.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[02:22:16] *** Joins: zz_kimundi (kimundi@moz-l2r.uqm.188.87.IP)
+[02:22:22] *** zz_kimundi is now known as kimundi
+[02:25:42] *** Quits: summerlight__ (summerlight@moz-99k.2mj.130.121.IP) (Ping timeout: 121 seconds)
+[02:26:26] *** chmanchester|afk is now known as chmanchester
+[02:27:44] *** Joins: Rym_ (y@moz-o80acm.range86-189.btcentralplus.com)
+[02:32:56] *** Joins: annodomini (lambda@moz-qgii5v.ma.comcast.net)
+[02:35:17] *** Joins: SiegeLord (sl@moz-9jtaei.ca.comcast.net)
+[02:35:50] *** Joins: Astrum|Lap (Astrum|Lap@moz-skcefh.co.comcast.net)
+[02:37:33] *** Joins: c74d3 (c74d3a4ebb6@moz-0ersgu.oc.cox.net)
+[02:37:58] *** Quits: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net) (Ping timeout: 121 seconds)
+[02:38:15] *** Joins: dcb (textual@moz-j72nfe.ca.comcast.net)
+[02:39:03] *** c74d3 is now known as c74d
+[02:42:23] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[02:52:18] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[02:53:22] *** Quits: naerbnic (naerbnic@moz-mol.4ra.239.216.IP) (Client exited)
+[03:01:41] *** Joins: c74d3 (c74d3a4ebb6@moz-tqsci9.mggc.hibn.4404.2002.IP)
+[03:02:58] *** Quits: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net) (Ping timeout: 121 seconds)
+[03:03:27] *** c74d3 is now known as c74d
+[03:04:21] *** Joins: mib_c3g9sc (Mibbit@moz-juv.9o3.252.72.IP)
+[03:07:23] *** Quits: chc4 (chc4@moz-pdo0at.ma.comcast.net) (Quit: AHHHHH BEES)
+[03:21:26] *** Quits: srh (User@moz-328gfs.q9f2.utp8.0306.2602.IP) (Quit: Leaving)
+[03:25:37] *** Joins: Diggsey2 (diggsey@moz-j9rl4k.dsl.pipex.com)
+[03:27:34] *** Joins: semarie (semarie@moz-4lmh4m.privacyfoundation.ch)
+[03:28:36] *** Quits: Diggsey (diggsey@moz-j9rl4k.dsl.pipex.com) (Ping timeout: 121 seconds)
+[03:29:59] *** Quits: mib_c3g9sc (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[03:32:52] *** Diggsey2 is now known as Diggsey
+[03:35:39] *** Quits: japaric (japaric@moz-i83.l2i.232.190.IP) (Quit: WeeChat 1.1.1)
+[03:41:51] *** Joins: swgillespie (swgillespie@moz-1i5.3un.220.167.IP)
+[03:43:22] *** Quits: dcb (textual@moz-j72nfe.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[03:43:34] *** Joins: p1start (p1start@moz-nftjhe.org)
+[03:47:14] *** Joins: Kingsquee (kingsley@moz-3fm07c.bchsia.telus.net)
+[03:47:34] *** Joins: dcb (textual@moz-j72nfe.ca.comcast.net)
+[03:49:42] *** chmanchester is now known as chmanchester|afk
+[03:54:36] *** Quits: swgillespie (swgillespie@moz-1i5.3un.220.167.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[04:13:37] <sfackler> acrichto: ping
+[04:15:25] *** Joins: gretcheews (Mibbit@moz-juv.9o3.252.72.IP)
+[04:20:53] *** Quits: gretcheews (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[04:23:41] <Manishearth> Mutabah: register_attr
+[04:23:49] <Manishearth> see the url
+[04:24:04] <Mutabah> oh, so it is
+[04:24:14] * Mutabah =derp
+[04:24:36] *** Quits: lu324 (lu324___@moz-3v8ljg.dhcp.embarqhsd.net) (Ping timeout: 121 seconds)
+[04:24:59] *** Quits: Rym_ (y@moz-o80acm.range86-189.btcentralplus.com) (Connection closed)
+[04:27:10] *** Joins: lu324 (lu324___@moz-3v8ljg.dhcp.embarqhsd.net)
+[04:28:06] *** Joins: Rym_ (y@moz-o80acm.range86-189.btcentralplus.com)
+[04:29:22] *** Quits: c74d (c74d3a4ebb6@moz-tqsci9.mggc.hibn.4404.2002.IP) (Ping timeout: 121 seconds)
+[04:30:02] *** Joins: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net)
+[04:38:19] *** Joins: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com)
+[04:43:13] *** Quits: annodomini (lambda@moz-qgii5v.ma.comcast.net) (Client exited)
+[04:46:47] <aatch> Hmm, I'm thinking that we're probably going to need to make `Clone` a language item :/
+[04:50:50] <Manishearth> aatch: why?
+[04:51:36] <aatch> Manishearth, to handle the fact that some things are currently Copy, but not Clone.
+[04:52:09] <Manishearth> ah
+[04:52:27] <bstrie> aatch: why not make them Clone?
+[04:52:37] <bstrie> aatch: wait, doesn't Copy require Clone now?
+[04:52:42] <aatch> bstrie, yes.
+[04:52:46] <klutzy> there's a hole that `let a = b;` is different to `let a = b.clone();` if Clone is differently implemented
+[04:52:48] <aatch> bstrie, that's the problem.
+[04:53:19] <bstrie> why does that matter? it's the same type either way
+[04:53:28] <aatch> klutzy, I wouldn't say it's a hole as much as it's a gotcha
+[04:53:32] <bstrie> nothing's calling Clone implicitly
+[04:53:34] *** Quits: bdero (bran@moz-lbs.91h.47.73.IP) (Ping timeout: 121 seconds)
+[04:53:42] <klutzy> aatch: yep, I don't think it's practical issue either
+[04:54:01] <aatch> At any rate, the issue is stuff like function pointers are copy, but not clone.
+[04:54:19] *** Quits: kmcguire (kmcguire@moz-bbqf14.res.bhn.net) (Ping timeout: 121 seconds)
+[04:54:20] <bstrie> I don't understand how that can be, if Copy: Clone
+[04:54:38] <bstrie> er, other way around
+[04:54:46] <bstrie> no, right way around
+[04:55:08] <aatch> bstrie, because we don't enforce it at that point. And right now, if we did nothing would compile.
+[04:55:22] <p1start> aatch: I tested earlier and it seemed to me that function pointers were Clone
+[04:55:52] <p1start> http://is.gd/foCxVS
+[04:56:43] <p1start> Works with lifetime parameters too: http://is.gd/CvcxKn
+[04:57:14] <aatch> p1start, http://is.gd/212ELz
+[04:57:57] <p1start> aatch: That typechecks alright, though
+[04:58:47] <bstrie> aatch: nothing would compile? I think I need a more thorough explanation of what the problem actually is here, is there a bug somewhere?
+[04:58:49] <p1start> That is pretty concerning though
+[04:59:05] <p1start> aatch: Has that ICE been filed?
+[04:59:24] <aatch> p1start, yep, pulled the ICE from issue
+[05:00:34] <bstrie> Copy is a lang item, right?
+[05:00:42] <aatch> bstrie, correct
+[05:01:01] *** Joins: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP)
+[05:01:21] <bstrie> given that Clone is pretty intertwined with it, I don't think it would be a problem to make it a lang item. whatever the underlying problem is, I just want to fix it while we can
+[05:01:41] <aatch> There's some other advantages, like being able to make closures Clone
+[05:02:02] *** Quits: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[05:02:05] <p1start> I’d personally prefer a more general solution like an attribute
+[05:02:13] <bstrie> lang items are attributes :P
+[05:02:19] <p1start> But making Clone a lang item is a good short-term solution
+[05:02:31] <p1start> bstrie: Yeah, but you can only have one of each lang item :P
+[05:07:37] <Manishearth> so now we have Send/Sync and Copy/Clone 
+[05:07:54] <Manishearth> two lang trait pairs that are very similar and will confuse the hell out of everyone :p
+[05:08:16] *** Quits: kmehall (quassel@moz-i98f9d.kevinmehall.com) (Connection closed)
+[05:08:17] *** Joins: kmehall (quassel@moz-i98f9d.kevinmehall.com)
+[05:16:56] *** Joins: guewen (guewen@moz-ftf7u4.cust.swisscom.ch)
+[05:24:51] <aatch> Ah, I now know why p1start's examples compiled. There's a set of Clone impls for for functions with 0-8 arguments
+[05:25:14] <p1start> aatch: I thought those were removed because they didn’t work with region parameters
+[05:26:24] <aatch> p1start, nope.
+[05:26:57] <aatch> Though they are for extern fns, so maybe they're seperate?
+[05:27:21] <p1start> aatch: So how does .clone() work on types like for<'a> fn(&'a ()) that don’t have manual Clone impls?
+[05:28:40] <bstrie> was rust the first non-s-expression language to have scheme-style macros?
+[05:29:35] *** Quits: dcb (textual@moz-j72nfe.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[05:29:41] <Yurume> bstrie: I strongly doubt that. http://opendylan.org/books/drm/Macros
+[05:30:02] <bstrie> graydon loved dylan, I can believe that he took the idea from there
+[05:30:11] *** Joins: dcb (textual@moz-j72nfe.ca.comcast.net)
+[05:30:36] <aatch> p1start, I think the ones in core::clone do work for those, somehow.
+[05:31:24] <aatch> p1start, since the symbol has the `ReturnType` that is used in the clone impl.
+[05:36:30] *** Quits: O01eg (o01eg@moz-hpr2gc.ci24.4n8f.2698.2a02.IP) (Client exited)
+[05:37:19] *** Quits: aatch (james@moz-ciignl.bmm3.j08e.e000.2406.IP) (Connection closed)
+[05:41:03] *** Joins: zmack (zmack@moz-a03.dk0.127.86.IP)
+[05:42:04] *** Joins: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP)
+[05:46:35] *** Quits: gsingh93 (gulshan@moz-qnbukr.mi.comcast.net) (Ping timeout: 121 seconds)
+[05:52:42] <acrichto> sfackler: pong
+[05:52:44] *** Joins: summerlight__ (summerlight@moz-99k.2mj.130.121.IP)
+[05:53:10] <sfackler> anything specific you want for the "stabilize Debug builders" internals post?
+[05:53:31] <sfackler> I was thinking a general, "hey, we want to stabilize this, speak now or forever hold your pace"
+[05:53:32] <sfackler> *peace
+[05:54:11] *** kimundi is now known as zz_kimundi
+[05:54:12] *** Quits: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu) (Quit: Leaving)
+[05:54:19] <acrichto> sfackler: yeah something like a "final comment period" for this is what we were thinking
+[05:54:28] <sfackler> cool
+[05:54:47] <Manishearth> acrichto: think this feauture is okay? https://github.com/rust-lang/rust/pull/25168
+[05:56:44] <acrichto> Manishearth: ah I don't have too many opinions about compiler plugins and such, I haven't given it an inordinate amount of thought
+[05:57:53] <Manishearth> kay
+[05:58:31] <huon> Manishearth: s/huon/huonw/ :)
+[05:59:08] <huon> Manishearth: could you add a test?
+[06:01:15] *** Joins: munksgaard (munksgaard@moz-478pev.u.parknet.dk)
+[06:02:14] <Manishearth> huon: yeah, was planning to, need to wait for it to go to stage2 
+[06:04:59] *** Quits: Diggsey (diggsey@moz-j9rl4k.dsl.pipex.com) (Ping timeout: 121 seconds)
+[06:08:50] *** Joins: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu)
+[06:18:42] *** Quits: genbattle (genbattle@moz-4v0.gkd.16.182.IP) (Ping timeout: 121 seconds)
+[06:25:48] *** Joins: theme (theme@moz-i3mhhb.asianet.co.th)
+[06:25:52] *** Quits: SiegeLord (sl@moz-9jtaei.ca.comcast.net) (Quit: It's a joke, it's all a joke.)
+[06:36:32] *** Joins: Hail_Spacecake (quesa@moz-djc.ktt.28.204.IP)
+[06:37:13] <Hail_Spacecake> I'm trying to understand how one would go about porting rust to a new platform
+[06:37:29] <Hail_Spacecake> I gather that there are some rust functions that do things like define how Box allocation and panicking work
+[06:37:41] <Hail_Spacecake> that, like, can't use the heap and can't do various other things because they implement those things
+[06:37:49] <Hail_Spacecake> and you have to define these in an implementation specific way
+[06:38:07] <Hail_Spacecake> maybe the rust core library is what I should be looking at?
+[06:39:04] <theme> Hail_Spacecake, yes
+[06:39:15] <theme> Hail_Spacecake, except that it doesn't handle allocation
+[06:39:42] <mcpherrin> Hail_Spacecake: core is the first place; It should be platform independent mostly
+[06:40:08] <Hail_Spacecake> allocation is exactly Box::new(), right?
+[06:40:12] <mcpherrin> What kind of platform do you want to port to?
+[06:40:27] <Hail_Spacecake> mcpherrin, well ultimatley I'd like to run rust code on a raspi
+[06:40:34] <Hail_Spacecake> which I'm sure people are working on already
+[06:40:39] <theme> Hail_Spacecake, Box::new() calls another function
+[06:40:43] <Hail_Spacecake> mostly I just want to understand what in principle is necessary to do it
+[06:40:43] <mcpherrin> bare metal or on linux?
+[06:40:49] <Hail_Spacecake> bare metal
+[06:40:55] <Hail_Spacecake> I want to implement a raspi os in rust
+[06:40:58] <theme> Hail_Spacecake, http://doc.rust-lang.org/nightly/alloc/index.html
+[06:41:02] <theme> Hail_Spacecake, probably that
+[06:41:05] <mcpherrin> that should mostly work today
+[06:41:18] *** Quits: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[06:41:28] <mcpherrin> rust-osdev can be useful
+[06:41:36] <Hail_Spacecake> sure, but I also want to know what is in principle necessary to get it to work
+[06:42:00] <Hail_Spacecake> also I don't have a firm grasp about what is, like, intrinsic to rust as a language
+[06:42:03] <Hail_Spacecake> and what is library-implemented
+[06:42:14] <Hail_Spacecake> like, i32, i16, etc. types seem to be provided by the core library
+[06:42:25] <Hail_Spacecake> but, could you have a rust where core is completely different and htere's no i32
+[06:42:29] <theme> Hail_Spacecake, ever heard of lang items?
+[06:42:30] <Hail_Spacecake> or is that a language invariant that that must exist
+[06:42:38] <Hail_Spacecake> theme, no
+[06:42:42] <mcpherrin> Hail_Spacecake: first you need llvm to gen code. works today for arm.
+[06:42:55] <theme> Hail_Spacecake, http://doc.rust-lang.org/nightly/book/lang-items.html
+[06:43:02] <mcpherrin> next you need lang items
+[06:43:09] <mcpherrin> then libcore should work
+[06:43:12] <Hail_Spacecake> ah, okay, lang items is probably the thing I'm curious about
+[06:43:34] <Hail_Spacecake> okay so libcore provides i32 and so forth, but it should be platform-agnostic
+[06:43:46] <Hail_Spacecake> so the lang items do things like make sure i32 is actually a 32 bit value on the target platform?
+[06:44:03] <mcpherrin> then the libraries need to be ported; you either need to edit libraries to work for you
+[06:45:01] <mcpherrin> Hail_Spacecake: lang items define how to panic, handle stack overflow, malloc, free, etc
+[06:45:13] <Hail_Spacecake> okay yeah, that's what I'm trying to understand
+[06:46:49] <bstrie> Hail_Spacecake: lang items exist somewhere between libs and the compiler. they're special bits of the stdlib that the compiler knows about
+[06:47:34] <mcpherrin> http://doc.rust-lang.org/0.11.0/guide-unsafe.html
+[06:47:42] <mcpherrin> this doc will help you
+[06:48:07] <Manishearth> Hail_Spacecake: lang items are overridable, but basically they're things that have a special meaning to the compiler
+[06:48:20] <bstrie> Hail_Spacecake: the #rust-osdev channel may be helpful
+[06:48:24] *** Quits: p1start (p1start@moz-nftjhe.org) (Ping timeout: 121 seconds)
+[06:48:29] <Manishearth> eg the `str` type is defined as `pub struct str([u8])` and is wrapped in a lang item
+[06:49:46] <Hail_Spacecake> is the #[feature(lang_items)] directive necessary for specifying a custom lang_item in the current crate?
+[06:49:51] <Hail_Spacecake> or is that just a beta thing?
+[06:50:20] *** Joins: c0170 (c0170@moz-bb29a4.cambridge.arm.com)
+[06:50:40] <Hail_Spacecake> and is the function defined as [lang="eh_personality"] what actually gets called in a panic?
+[06:51:22] <Hail_Spacecake> it seems like  alot of this stuff depends specifically on LLVM
+[06:51:36] <mcpherrin> Yeah, it does.
+[06:52:00] <Manishearth> Hail_Spacecake: Yeah, you need to use the feature gaitr
+[06:52:16] <Manishearth> also I think you need to #[no_std] before you  override lang items defined in std
+[06:52:51] <Hail_Spacecake> that makes sense
+[07:00:16] *** Quits: zmack (zmack@moz-a03.dk0.127.86.IP) (Connection closed)
+[07:01:08] <Hail_Spacecake> so, huh, if I wanted to
+[07:01:16] <Hail_Spacecake> I could redfine #[lang = "owned_box"]
+[07:01:23] <Hail_Spacecake> and, like, call it something different
+[07:01:23] <bstrie> everything
+[07:01:33] <Hail_Spacecake> like, if I wanted to just have "Box" be "Foo" everywhere
+[07:01:34] <bstrie> I don't know if you could call it something different
+[07:01:42] *** Joins: zmack_ (zmack@moz-a03.dk0.127.86.IP)
+[07:01:42] <bstrie> maybe
+[07:01:55] <bstrie> but not all lang items actually permit differing implementations
+[07:02:02] *** Quits: lu324 (lu324___@moz-3v8ljg.dhcp.embarqhsd.net) (Ping timeout: 121 seconds)
+[07:05:31] *** Joins: squiddy (squiddy@moz-md4.pm3.19.178.IP)
+[07:06:09] *** Joins: dinfuehr (dominik@moz-afofkn.highway.telekom.at)
+[07:06:25] <Manishearth> bstrie: you can
+[07:06:40] <bstrie> really? super hilarious
+[07:06:40] <Manishearth> Hail_Spacecake: yeah, a different mplementation *might* break things
+[07:07:33] <bstrie> Hail_Spacecake: you don't actually need to implement a lang item if you don't actually use its feature, so your best bet is probably to not implement any lang items unless the compiler yells at you :)
+[07:07:47] <Manishearth> I think owned_box gives you ty_uniq, destructuring via `box`, and the special ownership semantics of box
+[07:07:48] <theme> nmatsakis, ping
+[07:09:54] *** Joins: ptalbot (ptalbot@moz-j4gnuh.fbx.proxad.net)
+[07:12:39] *** Joins: p1start (p1start@moz-nftjhe.org)
+[07:14:06] *** Quits: ptalbot (ptalbot@moz-j4gnuh.fbx.proxad.net) (Ping timeout: 121 seconds)
+[07:14:32] *** Quits: scott (uid25790@moz-e5ok1n.brockwell.irccloud.com) (Quit: Connection closed for inactivity)
+[07:20:58] *** Joins: lu324 (lu324___@moz-3v8ljg.dhcp.embarqhsd.net)
+[07:22:49] *** Quits: Astrum|Lap (Astrum|Lap@moz-skcefh.co.comcast.net) (Client exited)
+[07:25:46] *** Quits: Rym_ (y@moz-o80acm.range86-189.btcentralplus.com) (Connection closed)
+[07:30:53] *** Quits: munksgaard (munksgaard@moz-478pev.u.parknet.dk) (Ping timeout: 121 seconds)
+[07:31:02] <theme> I've read the ScopedRc RFC, and I like it
+[07:31:29] <theme> But some people apparently don't
+[07:32:04] <Manishearth> theme: because you now have a bajillion Rcs :p
+[07:32:17] <Manishearth> I am now thoroughly confused by which Rc proposal I actually like
+[07:32:28] <Manishearth> I propose we burn the language down and start anew.
+[07:32:40] <theme> Manishearth, the thing is, I'd prefer ScopedRc to be renamed to Rc (replacing the old Rc)
+[07:32:45] <Manishearth> ah
+[07:32:55] <Manishearth> and then have a CyclcMagicRc?
+[07:32:58] <Manishearth> sounds good
+[07:33:04] <theme> Manishearth, what magic?
+[07:33:09] <theme> LeakyRc?
+[07:33:12] <Manishearth> yeah
+[07:33:31] <theme> Manishearth, read the recent revision yet?
+[07:33:32] <Manishearth> as in an Rc that allows cycles but only takes 'static
+[07:33:36] <Manishearth> nope
+[07:33:43] <Manishearth> ill have a look later
+[07:33:49] <theme> "Through an unsafe_unguarded constructor. This allows the creation of unguarded ScopedRcs of any lifetime, but is unsafe because it could be used to create uncollected, non-'static cycles, violating the guarantee provided by this RFC."
+[07:34:03] <theme> link: https://github.com/rkjnsn/rfcs/blob/guarantee-non-static-destructors/text/0000-guaranteed-non-static-destructors.md
+[07:34:07] *** Quits: njn (chatzilla@moz-6gdjm4.iinet.net.au) (Quit: ChatZilla 0.9.91.1 [Firefox 40.0a1/20150503160042])
+[07:34:25] * Manishearth is busy heating up the subcontinent by compiling to stage12
+[07:34:29] <Manishearth> uh, stage2
+[07:35:09] * Manishearth wonders what a stage12 build would look like
+[07:36:35] *** Joins: bjz (bjz@moz-9f0.5r7.26.203.IP)
+[07:36:43] <theme> Manishearth, FYI the only complaint I see is nmatsakis saying that it is unergonomic
+[07:38:26] <Manishearth> yeah
+[07:44:27] *** Joins: Rym (y@moz-o80acm.range86-189.btcentralplus.com)
+[07:45:55] *** Joins: genbattle (genbattle@moz-ikj3l8.xtra.co.nz)
+[07:46:09] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[07:49:32] *** Quits: bjz (bjz@moz-9f0.5r7.26.203.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[07:55:19] <bstrie> I'm convinced that the original scoped api was so wrong that it doesn't justify any amount of change to Rc to bring it back
+[07:58:42] <doener> Gankro: ping
+[07:59:06] *** Joins: bjz (bjz@moz-9f0.5r7.26.203.IP)
+[08:01:10] *** Quits: Kxepal (Miranda@moz-k3c9pl.pppoe.mtu-net.ru) (Ping timeout: 121 seconds)
+[08:03:15] *** Joins: Kxepal (Miranda@moz-0f6ae4.pppoe.mtu-net.ru)
+[08:03:41] *** Quits: bjz (bjz@moz-9f0.5r7.26.203.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[08:06:36] *** Quits: squiddy (squiddy@moz-md4.pm3.19.178.IP) (Ping timeout: 121 seconds)
+[08:11:28] *** Quits: dcb (textual@moz-j72nfe.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[08:12:31] *** Quits: zmack_ (zmack@moz-a03.dk0.127.86.IP) (Connection closed)
+[08:12:54] *** Joins: zmack (zmack@moz-a03.dk0.127.86.IP)
+[08:13:37] *** Joins: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de)
+[08:19:19] *** Quits: Leo` (leo@moz-2f71o3.placeholder.fr) (Ping timeout: 121 seconds)
+[08:26:24] *** zz_kimundi is now known as kimundi
+[08:31:30] *** Joins: erz (erz@moz-45hupr.broadband.corbina.ru)
+[08:34:40] *** Joins: ptalbot (ptalbot@moz-g2mokk.ircam.fr)
+[08:37:05] *** Joins: Guest63 (textual@moz-qfs.570.70.83.IP)
+[08:41:07] *** Quits: Guest63 (textual@moz-qfs.570.70.83.IP) (Ping timeout: 121 seconds)
+[08:47:38] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[08:49:31] *** Joins: madmalik (uid13697@moz-lfin5p.brockwell.irccloud.com)
+[08:50:15] *** Joins: pnkfelix (pnkfelix@moz-eljppb.fbx.proxad.net)
+[08:50:15] *** ChanServ sets mode: +o pnkfelix
+[08:54:59] *** Quits: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com) (Ping timeout: 121 seconds)
+[08:55:45] *** Quits: theme (theme@moz-i3mhhb.asianet.co.th) (Quit: Leaving)
+[09:13:38] *** Quits: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de) (Ping timeout: 121 seconds)
+[09:15:28] *** Joins: mjboa (mike@moz-gfdglf.hsi06.unitymediagroup.de)
+[09:18:09] *** Joins: imperio (Mibbit@moz-2jmcmb.abo.wanadoo.fr)
+[09:19:33] *** Quits: Rym (y@moz-o80acm.range86-189.btcentralplus.com) (Ping timeout: 121 seconds)
+[09:25:35] <huon> pnkfelix: sorry about the delay on gh25013
+[09:25:35] <[o__o]> Guard against overflow in `codemap::span_to_lines`.: https://github.com/rust-lang/rust/pull/25013
+[09:26:50] *** Joins: Rym (y@moz-o80acm.range86-189.btcentralplus.com)
+[09:28:36] <Manishearth> huon: added the test
+[09:29:25] *** Joins: aepsil0n (eduard@moz-6491ha.mv2h.pepi.8071.2a02.IP)
+[09:29:46] <Manishearth> steveklabnik: acrichto note: from next week I'll be in a different state without access to my uni machines (and I won't have my laptop with me during my intern) so I might not be able to rollup as often
+[09:30:00] <Manishearth> I'll still try though
+[09:30:08] <steveklabnik> Manishearth: okay, no worries!
+[09:30:17] <steveklabnik> i'll keep a close eye :)
+[09:30:23] <Manishearth> thanks :)
+[09:30:33] <steveklabnik> thank you for doing it so often normally :)
+[09:30:39] <Manishearth> no problem :)
+[09:30:40] * aatch imagines Manishearth cobbling together a rollup building machine in the middle of the desert.
+[09:30:47] <steveklabnik> haha
+[09:30:48] <Manishearth> haha
+[09:31:20] <Manishearth> I can still vpn to them so I should be able to get a workflow, though I'm not sure if I'll have fast internet at my accomodation
+[09:32:08] <steveklabnik> yeah that's my deal this week, at the conf? great wifi. at my hotel? barely works
+[09:34:10] <huon> Manishearth: do you have the PR number to hand?
+[09:34:17] <huon> oh, nvm
+[09:34:22] * huon sees #rust-bots
+[09:36:00] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[09:36:08] <Manishearth> steveklabnik: my experience with conf-y places is the opposite (same with Portland)
+[09:36:47] <steveklabnik> yeah, it often is
+[09:38:04] <aatch> Normally because you have 1000 people trying to use a handful of APs at a conference.
+[09:38:45] *** Joins: harrisonclarke (harrisoncla@moz-b21rr4.eastlink.ca)
+[09:39:01] *** Quits: mjboa (mike@moz-gfdglf.hsi06.unitymediagroup.de) (Ping timeout: 121 seconds)
+[09:39:59] <Manishearth> yep
+[09:40:39] *** Quits: eataix (eataix@moz-um7.336.116.50.IP) (Quit: ZNC - 1.6.0 - http://znc.in)
+[09:41:08] *** Joins: eataix (eataix@moz-2af0iq.fkdv.ulf6.3c01.2600.IP)
+[09:44:54] *** Quits: eataix (eataix@moz-2af0iq.fkdv.ulf6.3c01.2600.IP) (Quit: ZNC - 1.6.0 - http://znc.in)
+[09:44:55] *** Joins: jga (jga@moz-rag.t1q.244.77.IP)
+[09:46:35] *** Joins: eataix (uid37918@moz-79aeif.ealing.irccloud.com)
+[09:50:29] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Ping timeout: 121 seconds)
+[10:00:29] <Manishearth> huon: addressed comments
+[10:02:54] *** Joins: bjz (bjz@moz-4l6.mjm.52.113.IP)
+[10:09:03] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Quit: Lost terminal)
+[10:12:33] *** Joins: mgottschlag (quassel@moz-eujg01.qiv1.bbcb.1398.2a00.IP)
+[10:14:18] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[10:16:39] *** Quits: mgottschlag (quassel@moz-eujg01.qiv1.bbcb.1398.2a00.IP) (Ping timeout: 121 seconds)
+[10:20:33] *** Quits: jga (jga@moz-rag.t1q.244.77.IP) (Ping timeout: 121 seconds)
+[10:20:41] *** Quits: bjz (bjz@moz-4l6.mjm.52.113.IP) (Ping timeout: 121 seconds)
+[10:27:39] *** Quits: erz (erz@moz-45hupr.broadband.corbina.ru) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[10:29:02] *** Quits: harrisonclarke (harrisoncla@moz-b21rr4.eastlink.ca) (Connection closed)
+[10:35:38] *** Quits: zmack (zmack@moz-a03.dk0.127.86.IP) (Connection closed)
+[10:36:52] *** Joins: harrisonclarke (harrisoncla@moz-b21rr4.eastlink.ca)
+[10:42:48] *** Joins: zmack (zmack@moz-a03.dk0.127.86.IP)
+[10:44:13] *** Joins: bjz (bjz@moz-puppgq.tpgi.com.au)
+[10:49:30] *** Quits: p1start (p1start@moz-nftjhe.org) (Ping timeout: 121 seconds)
+[10:52:09] *** Joins: theme (theme@moz-i3mhhb.asianet.co.th)
+[10:53:04] *** Quits: theme (theme@moz-i3mhhb.asianet.co.th) (Quit: Leaving)
+[10:53:15] *** Joins: theme (theme@moz-i3mhhb.asianet.co.th)
+[10:53:22] *** Quits: harrisonclarke (harrisoncla@moz-b21rr4.eastlink.ca) (Connection closed)
+[10:54:05] *** Quits: theme (theme@moz-i3mhhb.asianet.co.th) (Connection closed)
+[10:54:19] *** Joins: kmcguire (kmcguire@moz-pg1gb9.biz.rr.com)
+[10:54:24] *** Joins: theme (theme@moz-i3mhhb.asianet.co.th)
+[10:54:26] *** Joins: erz (erz@moz-45hupr.broadband.corbina.ru)
+[11:00:44] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[11:01:04] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Connection closed)
+[11:07:13] *** Joins: larhat1 (Adium@moz-egv.ld6.128.213.IP)
+[11:08:42] *** Quits: larhat1 (Adium@moz-egv.ld6.128.213.IP) (Quit: Leaving.)
+[11:10:27] *** Joins: larhat1 (Adium@moz-egv.ld6.128.213.IP)
+[11:12:39] *** Quits: larhat1 (Adium@moz-egv.ld6.128.213.IP) (Quit: Leaving.)
+[11:20:01] *** Joins: harrisonclarke (harrisoncla@moz-th044a.ns.bellaliant.net)
+[11:21:06] *** Joins: Leo` (leo@moz-2f71o3.placeholder.fr)
+[11:27:12] *** Quits: genbattle (genbattle@moz-ikj3l8.xtra.co.nz) (Ping timeout: 121 seconds)
+[11:32:33] *** Quits: zmack (zmack@moz-a03.dk0.127.86.IP) (Connection closed)
+[11:32:54] *** Joins: zmack (zmack@moz-a03.dk0.127.86.IP)
+[11:35:11] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[11:36:26] *** Quits: zmack (zmack@moz-a03.dk0.127.86.IP) (Connection closed)
+[11:40:20] *** Joins: mgottschlag (quassel@moz-eujg01.qiv1.bbcb.1398.2a00.IP)
+[11:41:37] *** Quits: Hail_Spacecake (quesa@moz-djc.ktt.28.204.IP) (Quit: Leaving)
+[11:41:59] *** Joins: mjboa (mike@moz-gfdglf.hsi06.unitymediagroup.de)
+[11:43:42] *** Joins: squiddy (squiddy@moz-md4.pm3.19.178.IP)
+[11:47:20] *** Quits: theme (theme@moz-i3mhhb.asianet.co.th) (Quit: Leaving)
+[11:52:24] *** Quits: madmalik (uid13697@moz-lfin5p.brockwell.irccloud.com) (Quit: Connection closed for inactivity)
+[11:52:56] *** Joins: zmack (zmack@moz-a03.dk0.127.86.IP)
+[11:59:02] *** Quits: harrisonclarke (harrisoncla@moz-th044a.ns.bellaliant.net) (Connection closed)
+[11:59:46] *** Joins: ytain (ytain@moz-pr2.aip.175.108.IP)
+[12:01:16] *** Joins: kushal (kdas@moz-cbaein.202.sitibroadband.in)
+[12:03:42] *** Quits: kushal (kdas@moz-cbaein.202.sitibroadband.in) (Quit: Leaving)
+[12:07:57] *** kimundi is now known as zz_kimundi
+[12:14:26] *** Quits: semarie (semarie@moz-4lmh4m.privacyfoundation.ch) (Ping timeout: 121 seconds)
+[12:17:58] *** Quits: zmack (zmack@moz-a03.dk0.127.86.IP) (Connection closed)
+[12:22:05] *** Joins: annodomini (lambda@moz-qgii5v.ma.comcast.net)
+[12:25:58] *** Quits: untitaker (untitaker@moz-lcvhbq.highway.telekom.at) (Ping timeout: 121 seconds)
+[12:28:11] *** Joins: arielb1 (Mibbit@moz-ffvldb.tau.ac.il)
+[12:28:34] *** Joins: untitaker (untitaker@moz-tasggu.highway.telekom.at)
+[12:30:11] *** Joins: jdm (jdm@moz-ilbt2e.cable.teksavvy.com)
+[12:30:55] *** Joins: harrisonclarke (harrisoncla@moz-p78oth.eastlink.ca)
+[12:32:01] *** Quits: harrisonclarke (harrisoncla@moz-p78oth.eastlink.ca) (Connection closed)
+[12:33:57] *** Quits: lu324 (lu324___@moz-3v8ljg.dhcp.embarqhsd.net) (Quit: Leaving)
+[12:34:08] *** Joins: lu324 (lu324___@moz-3v8ljg.dhcp.embarqhsd.net)
+[12:34:38] *** Quits: annodomini (lambda@moz-qgii5v.ma.comcast.net) (Client exited)
+[12:35:54] *** Quits: Kingsquee (kingsley@moz-3fm07c.bchsia.telus.net) (Quit: Konversation terminated!)
+[12:43:57] <cmr> Does anyone know if/where functions such as llvm.x86.mmx.emms() are documented/defined?
+[12:44:28] *** Joins: zmack (zmack@moz-1oe.89t.76.82.IP)
+[12:45:55] <huon> cmr: I couldn't find any documentation, and the only centralised definition I could find was ...
+[12:46:01] <cmr> I feel like it's probably generated from X86Instr*.td but I can't really figure out how
+[12:46:21] <huon> include/llvm/IR...
+[12:46:22] <huon> yeah that
+[12:47:18] <cmr> Oh I think I see now.
+[12:47:19] <huon> what do you need it for?
+[12:47:36] <cmr> I looked at this file yesterday and it made no sense but now that I've dug through the code that uses it I see where it comes from
+[12:47:41] <cmr> adding SIMD intrinsics to rustc
+[12:47:44] <huon> you may be interested in https://github.com/huonw/llvmint , which includes a "parser" and "interpreter" for the .td's
+[12:48:07] <huon> and extern definitions for all/most such intrinsics
+[12:48:10] <cmr> ooh
+[12:48:24] *** Joins: marsel (user@moz-86r.010.180.94.IP)
+[12:48:27] *** Joins: bdero (bran@moz-mqs.7dh.189.18.IP)
+[12:48:29] <huon> ( https://crates.io/crates/llvmint )
+[12:48:30] <cmr> well hell, I don't need to do any work then.
+[12:49:26] <cmr> well, I might want to do work, since I want to use stable rust.
+[12:49:31] *** Quits: bdero (bran@moz-mqs.7dh.189.18.IP) (Connection closed)
+[12:49:37] <huon> it's neat how extern { #[link_name = "..."] fn ... } works fine
+[12:49:46] <cmr> I mostly think it's scary.
+[12:49:47] <huon> hm, how would adding the intrinsics to rust help?
+[12:49:55] <cmr> oh right, it wouldn't.
+[12:50:03] *** Joins: bdero (bran@moz-mqs.7dh.189.18.IP)
+[12:55:34] *** Quits: pnkfelix (pnkfelix@moz-eljppb.fbx.proxad.net) (Quit: rcirc on GNU Emacs 24.5.1)
+[12:58:03] <cmr> huon: well that's annoying, since I planned on this project taking me a few days of grunt work
+[12:58:17] <cmr> I'm on narcotic painkillers, so doing creative work is a little bit hard :P
+[12:58:36] <huon> sorry for making life hard
+[12:58:48] <huon> I'll consider this possibilities next time :P
+[12:58:55] <cmr> Guess I'll work on rustdoc maybe.
+[13:03:16] *** Joins: madmalik (uid13697@moz-lfin5p.brockwell.irccloud.com)
+[13:05:43] *** Quits: tamird (textual@moz-gg3hct.res.rr.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[13:07:20] *** Quits: c0170 (c0170@moz-bb29a4.cambridge.arm.com) (Ping timeout: 121 seconds)
+[13:08:34] *** Joins: zmack_ (zmack@moz-1oe.89t.76.82.IP)
+[13:08:38] *** Quits: zmack (zmack@moz-1oe.89t.76.82.IP) (Ping timeout: 121 seconds)
+[13:11:48] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[13:11:55] *** Quits: aepsil0n (eduard@moz-6491ha.mv2h.pepi.8071.2a02.IP) (Connection closed)
+[13:12:14] *** Joins: jga (jga@moz-rag.t1q.244.77.IP)
+[13:17:34] *** Joins: sagg (sigg@moz-55rvi2.dclient.hispeed.ch)
+[13:20:22] *** Quits: zmack_ (zmack@moz-1oe.89t.76.82.IP) (Connection closed)
+[13:20:29] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[13:20:35] *** Quits: arielb1 (Mibbit@moz-ffvldb.tau.ac.il) (Quit: http://www.mibbit.com ajax IRC Client)
+[13:22:20] *** Quits: mgottschlag (quassel@moz-eujg01.qiv1.bbcb.1398.2a00.IP) (Ping timeout: 121 seconds)
+[13:24:35] *** Joins: zmack (zmack@moz-1oe.89t.76.82.IP)
+[13:24:58] *** Joins: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP)
+[13:24:59] *** ChanServ sets mode: +o pnkfelix
+[13:26:21] <Manishearth> huon: why does NoCopy stil exist?
+[13:26:24] *** Joins: steshaw (uid30841@moz-eom82r.uxbridge.irccloud.com)
+[13:26:54] *** Quits: jga (jga@moz-rag.t1q.244.77.IP) (Connection closed)
+[13:29:15] *** Quits: jgallagher (john@moz-6ge.dhn.131.24.IP) (Client exited)
+[13:29:38] *** Quits: sagg (sigg@moz-55rvi2.dclient.hispeed.ch) (A TLS packet with unexpected length was received.)
+[13:30:53] *** Quits: erz (erz@moz-45hupr.broadband.corbina.ru) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[13:31:49] *** Quits: Rym (y@moz-o80acm.range86-189.btcentralplus.com) (Ping timeout: 121 seconds)
+[13:40:28] *** Joins: tamird (textual@moz-lje.m54.130.157.IP)
+[13:43:22] *** Joins: jga (jga@moz-rag.t1q.244.77.IP)
+[13:46:52] <WindowsBunny> Manishearth: To remind future people to not impl Copy
+[13:47:00] <Manishearth> hah
+[13:56:07] <cmr> Manishearth: impl !Copy is feature gated.
+[13:56:18] <cmr> And I guess NoCopy is unstable too...
+[13:56:27] <cmr> the error message recommends using markers, heh.
+[13:57:01] <Manishearth> ah I see
+[13:57:08] <Manishearth> should we fix that?
+[13:57:28] <Manishearth> cmr: well, there is no impl Copy for ..
+[13:57:31] <Manishearth> so we need neither
+[13:57:37] <Manishearth> Copy is the only opt in oibit :p
+[13:57:51] *** Joins: erickt (erickt@moz-njt.vqi.14.76.IP)
+[13:58:14] *** Joins: Rym (y@moz-o80acm.range86-189.btcentralplus.com)
+[13:59:19] *** Joins: scialex (scialex@moz-j5mi8i.cs.brown.edu)
+[13:59:28] <bluss> Well you don't need NoCopy if you use PhantomType instead
+[13:59:32] <bluss> PhantomData
+[14:00:19] <Manishearth> true
+[14:02:44] *** Quits: Rym (y@moz-o80acm.range86-189.btcentralplus.com) (Ping timeout: 121 seconds)
+[14:07:28] *** Joins: Rym (y@moz-o80acm.range86-189.btcentralplus.com)
+[14:08:01] *** Joins: jgallagher (john@moz-d5e8oc.hfc.comcastbusiness.net)
+[14:09:05] *** Joins: k1000 (k1000@moz-bodlln.ip-198-50-149.net)
+[14:09:20] *** Quits: erickt (erickt@moz-njt.vqi.14.76.IP) (Ping timeout: 121 seconds)
+[14:10:23] *** barosl_ is now known as barosl
+[14:14:56] *** Joins: mib_dr7fxj (Mibbit@moz-39h.pd9.149.49.IP)
+[14:16:22] *** Quits: zmack (zmack@moz-1oe.89t.76.82.IP) (Connection closed)
+[14:16:24] *** Joins: zmack (zmack@moz-1oe.89t.76.82.IP)
+[14:17:00] *** Quits: marsel (user@moz-86r.010.180.94.IP) (Ping timeout: 121 seconds)
+[14:17:26] *** Joins: japaric (japaric@moz-ja4.1g3.233.190.IP)
+[14:18:47] <Gankro> doener: pong?
+[14:19:56] <doener> Gankro: about that Option notnull thing, do you know of any specific cases where that causes problems? Because theoretically, llvm should be able to figure out that the contained pointer is notnull anyway, because null would be None
+[14:20:22] <doener> Gankro: and getting the pointer out of the Option using a match at least generates a load with notnull metadata
+[14:23:17] <Gankro> doener: https://github.com/rust-lang/rust/pull/21886
+[14:24:13] <Gankro> (sorry just waking up, not sure if that's exactly what you want)
+[14:27:00] <Gankro> doener: see also https://github.com/rust-lang/rust/issues/9546
+[14:27:35] <Gankro> (wait, you're not dotdash are you?)
+[14:29:05] <Manishearth> Gankro: doener=dotdash=bjoern
+[14:29:33] <Gankro> doener: Ok well then you seem to have all the information I have and more on the matter :)
+[14:30:17] <Gankro> It came up when I was trying to practice understanding rustc-generated asm and stumbled accross some weird codegen for a simple Vec loop
+[14:30:48] <bluss> I wanted to steal some of llvm-wizard dotdash's time. This codegen issue is interesting https://github.com/rust-lang/rust/issues/24963 (newtypes not optimizing as well as bare types)
+[14:34:54] *** chmanchester|afk is now known as chmanchester
+[14:36:31] *** Joins: dinfuehr_ (dinfuehr@moz-afofkn.highway.telekom.at)
+[14:37:28] *** Joins: gsingh93 (gulshan@moz-qnbukr.mi.comcast.net)
+[14:37:32] <Gankro> doener: interestingly Vec vs slice have totally different codegen; Slice gets vectorized and Vec doesn't. Vec's code also has some weird artifacts where llvm *kinda* optimized the code: http://is.gd/5lxQUE
+[14:37:48] *** Joins: xilec (Mibbit@moz-g6k.oht.161.46.IP)
+[14:38:01] *** Quits: dinfuehr_ (dinfuehr@moz-afofkn.highway.telekom.at) (Connection closed)
+[14:38:22] *** Joins: dinfuehr_ (dinfuehr@moz-afofkn.highway.telekom.at)
+[14:39:28] <bluss> Gankro: don't you think the into iterator is more difficult to optimize?
+[14:40:11] <Gankro> bluss: Should it be? The only difference is a dtor at the end
+[14:41:27] <bluss> oh I thought it had something like set_len or so. obviously not
+[14:41:28] *** Joins: Guest63 (textual@moz-qfs.570.70.83.IP)
+[14:41:57] *** Joins: semarie (semarie@moz-kvs6fc.torservers.net)
+[14:42:00] *** Quits: Guest63 (textual@moz-qfs.570.70.83.IP) (Connection closed)
+[14:42:17] *** Joins: Guest63 (textual@moz-qfs.570.70.83.IP)
+[14:42:24] *** Quits: dinfuehr_ (dinfuehr@moz-afofkn.highway.telekom.at) (Ping timeout: 121 seconds)
+[14:44:03] *** Quits: guewen (guewen@moz-ftf7u4.cust.swisscom.ch) (Quit: Leaving...)
+[14:44:13] <Gankro> bluss: couldn't be simpler: https://doc.rust-lang.org/src/collections/vec.rs.html#1758-1777
+[14:52:25] *** Quits: gsingh93 (gulshan@moz-qnbukr.mi.comcast.net) (Ping timeout: 121 seconds)
+[14:56:06] <doener> bluss: I have that on my list to have a look at, but probably won't have time for it before tomorrow evening 
+[14:56:43] <bluss> doener: very cool. it's not urgent
+[14:59:58] *** Joins: Guest63_ (textual@moz-qfs.570.70.83.IP)
+[15:01:00] *** Quits: Guest63 (textual@moz-qfs.570.70.83.IP) (Ping timeout: 121 seconds)
+[15:01:00] *** Quits: zmack (zmack@moz-1oe.89t.76.82.IP) (Connection closed)
+[15:01:22] *** Quits: squiddy (squiddy@moz-md4.pm3.19.178.IP) (A TLS packet with unexpected length was received.)
+[15:03:10] *** Quits: imperio (Mibbit@moz-2jmcmb.abo.wanadoo.fr) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:04:52] *** Joins: zmack (zmack@moz-1oe.89t.76.82.IP)
+[15:05:23] *** zz_kimundi is now known as kimundi
+[15:06:55] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[15:08:30] *** Joins: Astrum|Lap (Astrum|Lap@moz-skcefh.co.comcast.net)
+[15:09:58] *** Joins: Diggsey (diggsey@moz-j9rl4k.dsl.pipex.com)
+[15:13:14] <Gankro> doener: Was that helpful at all?
+[15:15:08] <doener> Gankro: I didn't get to look into it yet, probably won't before tomorrow evening. But at least the vectorization example is something to look into
+[15:15:41] *** Joins: SiegeLord (sl@moz-9jtaei.ca.comcast.net)
+[15:15:51] <Gankro> doener: sounds good. Thanks!
+[15:16:45] <bluss> I'd love to attack our compile time issues in tycheck
+[15:17:03] <bluss> I think the thing to do is to memoize projections like niko suggests
+[15:17:32] *** Quits: zmack (zmack@moz-1oe.89t.76.82.IP) (Connection closed)
+[15:19:29] *** Joins: zmack (zmack@moz-1oe.89t.76.82.IP)
+[15:20:03] *** Quits: jdm (jdm@moz-ilbt2e.cable.teksavvy.com) (Quit: )
+[15:24:44] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[15:25:16] *** Quits: mib_dr7fxj (Mibbit@moz-39h.pd9.149.49.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:25:59] <doener> I'm super excited that pcwaltion is tackling the dyndrop stuff, that should reduce compile times quite a bit
+[15:26:14] *** Joins: mgottschlag (quassel@moz-eujg01.qiv1.bbcb.1398.2a00.IP)
+[15:28:06] <bluss> yes
+[15:28:41] <cmr> bluss: I think arielb1 also has some ideas on improvements.
+[15:29:11] *** Joins: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP)
+[15:31:47] <bluss> I'm really not at home with rustc code so I'm not sure what I can accomplish
+[15:31:59] <bluss> anyway arielb1 discussed creating Substs and hashing them a lot
+[15:32:11] <bluss> which shows up in all the pathological testcases for typeck too
+[15:32:48] <bluss> I think niko's suggestion to cache projection would address it on a higher level of the algorithm
+[15:33:14] *** Quits: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[15:33:46] *** Quits: mgottschlag (quassel@moz-eujg01.qiv1.bbcb.1398.2a00.IP) (Ping timeout: 121 seconds)
+[15:35:49] *** Joins: gsingh93 (gulshan@moz-qnbukr.mi.comcast.net)
+[15:36:45] *** Quits: summerlight__ (summerlight@moz-99k.2mj.130.121.IP) (Ping timeout: 121 seconds)
+[15:36:52] *** Quits: SiegeLord (sl@moz-9jtaei.ca.comcast.net) (Quit: It's a joke, it's all a joke.)
+[15:38:02] *** Quits: Guest63_ (textual@moz-qfs.570.70.83.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[15:39:32] *** Quits: scialex (scialex@moz-j5mi8i.cs.brown.edu) (Connection closed)
+[15:40:59] *** Joins: geofft (geofft@moz-vfphq1.mit.edu)
+[15:41:24] *** Quits: Rym (y@moz-o80acm.range86-189.btcentralplus.com) (Ping timeout: 121 seconds)
+[15:41:55] *** Quits: Astrum|Lap (Astrum|Lap@moz-skcefh.co.comcast.net) (Client exited)
+[15:44:49] *** Joins: mgottschlag (quassel@moz-eujg01.qiv1.bbcb.1398.2a00.IP)
+[15:45:51] *** Joins: kushal (kdas@moz-cbaein.202.sitibroadband.in)
+[15:46:06] *** Quits: kushal (kdas@moz-cbaein.202.sitibroadband.in) (Connection closed)
+[15:47:20] *** Quits: ptalbot (ptalbot@moz-g2mokk.ircam.fr) (Ping timeout: 121 seconds)
+[15:50:21] *** Quits: dinfuehr (dominik@moz-afofkn.highway.telekom.at) (Client exited)
+[15:50:29] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[15:50:44] *** Joins: mib_bqllfx (Mibbit@moz-2c94fi.mi.comcast.net)
+[15:54:12] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[15:54:35] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[15:54:57] *** Joins: Rym (y@moz-o80acm.range86-189.btcentralplus.com)
+[15:56:51] *** Quits: mib_bqllfx (Mibbit@moz-2c94fi.mi.comcast.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:57:05] *** Joins: sagg (sigg@moz-55rvi2.dclient.hispeed.ch)
+[15:59:32] *** Joins: duesenfranz_ (jona@moz-711djm.tirol.surfer.at)
+[15:59:50] <bluss> aturon: did you get results from the crater run on vec addition?
+[16:03:20] *** Joins: erz (erz@moz-45hupr.broadband.corbina.ru)
+[16:04:16] <aturon> bluss: i never heard back from brson, but it seemed like basically everyone but me thought it was too late regardless, so i acquiesced :)
+[16:04:42] *** Joins: jdm (jdm@moz-i5m.05u.207.66.IP)
+[16:06:08] <bluss> but we said we were going to look at the results
+[16:08:14] <aturon> unfortunately brson isn't online :-/
+[16:09:55] <aturon> bluss: i will keep trying to get the results from brson and will let you know what i hear
+[16:13:08] <bluss> ok good, I'll put a in a comment
+[16:17:29] *** Quits: Rym (y@moz-o80acm.range86-189.btcentralplus.com) (Ping timeout: 121 seconds)
+[16:18:59] <cmr> aturon: do you think it's important to remove, or do you only want to remove it so it can go through an RFC?
+[16:19:58] <aturon> cmr: largely the latter -- I'm personally fine having the current syntax, but it was never really discussed community-wide
+[16:20:39] <aturon> (i think the use of + for matrix-style addition is probably best done through a distinct matrix (new)type anyway)
+[16:20:55] <bluss> aturon: absolutely, that was never the point
+[16:21:31] <bluss> aturon: I only said it's a conflict if some vector-like containers concat with + and *other* vector-like containers do addtion
+[16:21:39] <bluss> aturon: anyway, that's not important
+[16:21:56] <aturon> yeah, i get that, but I also don't think it's a huge deal
+[16:22:02] *** Quits: eternaleye (eternaleye@moz-7ps.ehi.245.50.IP) (Ping timeout: 121 seconds)
+[16:22:05] <bluss> aturon: But I'm unhappy if we decide in a group to "let's look at what the regressison test says" and the next day you say "lol no"
+[16:23:09] <aturon> bluss: i'm sorry, i must have come away with the wrong impression from the discussion before. i thought i was the only one pushing for removal at this point, and everyone else considered it too late regardless
+[16:23:20] *** Quits: jgallagher (john@moz-d5e8oc.hfc.comcastbusiness.net) (Ping timeout: 121 seconds)
+[16:23:44] *** Joins: eternaleye (eternaleye@moz-7ps.ehi.245.50.IP)
+[16:24:36] <cmr> If it's not terribly breaking I'd love for it to be removed!
+[16:25:07] *** Joins: Astrum|Lap (Astrum|Lap@moz-7enfbr.co.comcast.net)
+[16:26:35] <bluss> aturon: I don't know, is this completely up to your or not?
+[16:26:53] <bluss> The discussion yesterday felt great but it turns out we don't do what we said we would do
+[16:27:09] <bluss> so then it was pointless
+[16:27:14] <aturon> bluss: no, it's not completely up to me
+[16:27:54] *** Quits: eternaleye (eternaleye@moz-7ps.ehi.245.50.IP) (Connection closed)
+[16:28:18] *** Joins: dinfuehr (dinfuehr@moz-eu971l.highway.telekom.at)
+[16:28:27] *** chmanchester is now known as chmanchester|afk
+[16:28:34] <aturon> bluss: it seems to me that there was just a misunderstanding. i'm perfectly happy to re-open the PR till we've had a chance to look at the data
+[16:30:59] *** Quits: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP) (Ping timeout: 121 seconds)
+[16:30:59] *** Joins: eternaleye (eternaleye@moz-7ps.ehi.245.50.IP)
+[16:31:29] <bluss> that's good
+[16:32:23] *** Joins: arielb1 (Mibbit@moz-gdrjsj.tau.ac.il)
+[16:32:57] <aturon> bluss: thanks for keeping your eye on this issue, and sorry again for the mistake. i'll check in with brson as soon as he's around.
+[16:38:10] *** Quits: semarie (semarie@moz-kvs6fc.torservers.net) (Ping timeout: 121 seconds)
+[16:38:37] <WindowsBunny> I hope + can be removed from containers until a more solid consensus can be formed on concatenation
+[16:43:54] *** Joins: semarie (semarie@moz-th44la.torservers.net)
+[16:43:58] <aturon> WindowsBunny: so the backstory here is that these were unstable impls, but the lint doesn't actually catch those, so they have been de facto stable
+[16:44:18] <aturon> WindowsBunny: we've been going back and forth on what to do about this. ideally we could just remove them and go through an RFC discussion, but that's a very late breaking change
+[16:44:34] <aturon> WindowsBunny: right now, we're waiting to see results for removing + from Vec only, but keeping it for String
+[16:44:47] <aturon> (i think largely because it's clear that the String fallout would be massive)
+[16:45:01] <aturon> there was also a suggestion that if we did end up adding a dedicated concatenation operator,
+[16:45:06] <aturon> we could deprecate + on String in favor of it
+[16:45:15] <aturon> (and the same is true for + on Vec, if we end up keeping that)
+[16:45:17] *** Quits: jga (jga@moz-rag.t1q.244.77.IP) (Ping timeout: 121 seconds)
+[16:47:02] <WindowsBunny> aturon: It feels weird that Add is only impl'd for String and not &str
+[16:50:42] <aturon> WindowsBunny: i haven't thought deeply about it, but i'm pretty sure we could add such an impl without introducing perf hazards, assuming that + associates left: if you do &str + &str + &str + &str and that's interpreted as ((&str + &str) + &str) + &str, then after the first addition you'll be re-using a single String
+[16:50:53] *** Joins: Rym (y@moz-o80acm.range86-189.btcentralplus.com)
+[16:50:53] *** Joins: O01eg (o01eg@moz-pr9fvp.pbl2.4n8f.2698.2a02.IP)
+[16:51:02] *** Joins: annodomini (lambda@moz-hceqmj.hfc.comcastbusiness.net)
+[16:55:02] *** chmanchester|afk is now known as chmanchester
+[16:55:25] *** Quits: Rym (y@moz-o80acm.range86-189.btcentralplus.com) (Ping timeout: 121 seconds)
+[16:57:37] *** Joins: imperio (Mibbit@moz-8otf3a.fbx.proxad.net)
+[16:58:20] *** Joins: Rym (y@moz-o80acm.range86-189.btcentralplus.com)
+[16:59:01] *** Joins: annodomini_ (lambda@moz-hceqmj.hfc.comcastbusiness.net)
+[16:59:33] *** Quits: annodomini (lambda@moz-hceqmj.hfc.comcastbusiness.net) (Ping timeout: 121 seconds)
+[16:59:33] *** annodomini_ is now known as annodomini
+[17:02:52] *** Quits: Rym (y@moz-o80acm.range86-189.btcentralplus.com) (Ping timeout: 121 seconds)
+[17:03:13] *** Joins: brson (brson@moz-4cm.c9m.56.172.IP)
+[17:03:13] *** ChanServ sets mode: +o brson
+[17:03:51] <aturon> brson: hey! wondering if you've had a chance to put https://github.com/rust-lang/rust/pull/25157 through crater?
+[17:04:13] <brson> aturon: i've got the rustc builds finished and will run the crate builds now
+[17:04:21] <aturon> awesome, thanks!
+[17:04:29] <brson> it will be probably 2 - 3 hours still
+[17:05:06] <brson> today i will finish changes to authors.txt and releases.md and start trying to fit the stable channel into the website
+[17:05:35] <aturon> brson: you're running a regression test against the last beta, right? 
+[17:05:45] *** Quits: erz (erz@moz-45hupr.broadband.corbina.ru) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[17:06:00] <brson> aturon: for acrichto's, no, i will run it against the previous commit
+[17:06:10] <brson> if that will work
+[17:06:11] <aturon> ok, that works fine too
+[17:07:28] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[17:08:15] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[17:12:36] *** Joins: Rym (y@moz-o80acm.range86-189.btcentralplus.com)
+[17:15:26] *** Joins: James (quassel@moz-225vcm.range86-148.btcentralplus.com)
+[17:20:51] <brson> acrichto: i can't ssh into bastion atm
+[17:20:58] <brson> so not running tests yet
+[17:21:54] <acrichto> brson: I can?
+[17:21:55] <brson> urgh, what's going on?!
+[17:22:02] <brson> maybe mtv's ip changed?
+[17:22:05] <acrichto> brson: are you hopping through something that's down?
+[17:22:16] <acrichto> I'm hopping through mac4
+[17:22:19] <brson> no, just the mtv network
+[17:22:22] <acrichto> oh
+[17:22:32] <acrichto> weird that going through mac4 works then...
+[17:22:33] <brson> wait, you are going through *my* desk, and i can't access aws?
+[17:22:36] <acrichto> lol
+[17:22:52] <acrichto> looks like I'm going
+[17:23:00] <acrichto> my desk -> ssh.mozilla.com -> mac4 -> rust-bastion
+[17:23:03] <acrichto> (I think)
+[17:23:26] <brson> oh, dammit, somehow i'm tethered to my phone
+[17:23:31] <brson> that's messed up
+[17:24:07] *** Joins: brson_ (brson@moz-cfhap5.mtv2.mozilla.com)
+[17:27:33] *** Quits: brson (brson@moz-4cm.c9m.56.172.IP) (Ping timeout: 121 seconds)
+[17:27:35] *** Joins: bluss_ (bluss@moz-ec5o68.cust.bredbandsbolaget.se)
+[17:28:39] *** Joins: srh (User@moz-328gfs.q9f2.utp8.0306.2602.IP)
+[17:29:14] *** Joins: Guest63 (textual@moz-ttd.2as.255.109.IP)
+[17:30:41] *** Quits: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se) (Ping timeout: 121 seconds)
+[17:32:34] *** Quits: zmack (zmack@moz-1oe.89t.76.82.IP) (Connection closed)
+[17:32:55] *** Joins: zmack (zmack@moz-1oe.89t.76.82.IP)
+[17:33:01] *** Joins: dinfuehr_ (dinfuehr@moz-l60tc1.highway.telekom.at)
+[17:33:47] *** Quits: brson_ (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[17:33:56] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[17:33:56] *** ChanServ sets mode: +o brson
+[17:34:28] *** Quits: dinfuehr (dinfuehr@moz-eu971l.highway.telekom.at) (Ping timeout: 121 seconds)
+[17:34:50] *** Quits: mgottschlag (quassel@moz-eujg01.qiv1.bbcb.1398.2a00.IP) (Ping timeout: 121 seconds)
+[17:36:57] *** Quits: zmack (zmack@moz-1oe.89t.76.82.IP) (Ping timeout: 121 seconds)
+[17:38:33] <aturon> bluss_: https://github.com/rust-lang/rfcs/pull/1066#issuecomment-99953675
+[17:40:01] <aturon> bluss_: and to emphasize here as well: please continue to keep me and other members of leadership accountable :) with the volume of stuff we're doing, there are always going to be mistakes
+[17:40:24] <bluss_> I'm on a roll today
+[17:40:25] *** Joins: jdm_ (jdm@moz-c70dou.fnjk.s0pt.0450.2001.IP)
+[17:40:42] <bluss_> :) I wrote about it on the internals forum, it's a good place to discuss it
+[17:42:37] *** Quits: jdm (jdm@moz-i5m.05u.207.66.IP) (Ping timeout: 121 seconds)
+[17:50:06] *** Joins: dcb (textual@moz-eihiev.mycingular.net)
+[17:51:12] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[17:51:12] *** ChanServ sets mode: +o pcwalton
+[17:51:15] <brson> i'd like to start doing stealth stable builds monday
+[17:51:25] <brson> please land backports this weekend?
+[17:52:05] <brson> i just want to make sure everything is order before friday, which is going to be chaotic
+[17:53:49] *** Quits: dinfuehr_ (dinfuehr@moz-l60tc1.highway.telekom.at) (Connection closed)
+[17:54:11] *** Joins: dinfuehr (dinfuehr@moz-l60tc1.highway.telekom.at)
+[17:54:27] *** Joins: filsmick (filsmick@moz-tj8j41.abo.wanadoo.fr)
+[17:54:46] <aturon> brson: SGTM (cc acrichto)
+[17:54:52] <acrichto> r+
+[17:57:29] *** Joins: jgallagher (john@moz-d5e8oc.hfc.comcastbusiness.net)
+[17:58:00] *** Quits: Rym (y@moz-o80acm.range86-189.btcentralplus.com) (Connection closed)
+[17:58:13] *** Quits: dinfuehr (dinfuehr@moz-l60tc1.highway.telekom.at) (Ping timeout: 121 seconds)
+[17:59:04] *** Joins: Rym (y@moz-o80acm.range86-189.btcentralplus.com)
+[18:01:40] <brson> it only costs a few bucks to run these 4000 crate builds
+[18:01:57] <brson> pretty awesome
+[18:02:33] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Connection closed)
+[18:04:42] *** Joins: Rym_ (y@moz-o80acm.range86-189.btcentralplus.com)
+[18:07:02] *** Quits: Rym (y@moz-o80acm.range86-189.btcentralplus.com) (Ping timeout: 121 seconds)
+[18:08:23] <Eridius> what's on friday?
+[18:10:33] <brson> Eridius: Friday, 5/15, Rust 1.0 is unleashed upon the world
+[18:10:39] <brson> everything will change
+[18:10:52] *** Joins: dinfuehr (dinfuehr@moz-l60tc1.highway.telekom.at)
+[18:11:11] <brson> Eridius: i expect i'll be preoccupied with celebratory business
+[18:13:07] <Eridius> oh a week from friday
+[18:13:23] <Eridius> Everything Changed when the Rust Nation Attacked
+[18:13:50] *** Joins: chc4 (chc4@moz-pdo0at.ma.comcast.net)
+[18:13:58] *** Joins: canhtak (canhtak@moz-1a9fh1.luxdsl.pt.lu)
+[18:17:05] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[18:19:52] *** Joins: erz (erz@moz-45hupr.broadband.corbina.ru)
+[18:21:05] <brson> aturon acrichto: https://gist.github.com/brson/3455344f4a856d2d21ab
+[18:21:22] <brson> that's for https://github.com/rust-lang/rust/pull/25157
+[18:21:59] <seanmonstar> is it desired for Debug of io::Error show Error { repr: Os(111) }?
+[18:22:04] <aturon> bluss_: cmr: bstrie: sfackler: ^
+[18:22:09] <aturon> (the regression report)
+[18:22:22] <acrichto> brson: awesome, thanks!
+[18:22:30] <acrichto> looks like there's one false negative
+[18:22:33] <acrichto> otherwise everything is legit
+[18:22:53] <Eridius> I didn't realize we supported Add on vectors.
+[18:22:58] *** Quits: James (quassel@moz-225vcm.range86-148.btcentralplus.com) (Ping timeout: 121 seconds)
+[18:23:16] <seanmonstar> Eridius: you missed the whole fun convo yesterday in this channel
+[18:23:24] <Eridius> apparently so
+[18:25:27] *** Joins: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de)
+[18:28:00] <bluss_> brson: thanks for running this!
+[18:28:08] <brson> bluss_: np
+[18:29:45] <seanmonstar> put another way, would there be opposition to manually implementing Debug on io::Error to show its ErrorKind?
+[18:30:15] <bluss_> seanmonstar: if it's an Os error like that, it doesn't have an ErrorKind
+[18:30:26] <seanmonstar> bluss_: it does
+[18:30:39] <seanmonstar> bluss_: e.kind() will translate the number into an ErrorKind
+[18:30:58] <bluss_> oh right
+[18:31:41] <WindowsBunny> seanmonstar: I'd personally rather Debug on io::Error would print out the formatted error message on Windows
+[18:32:02] *** Quits: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de) (Quit: No Ping reply in 180 seconds.)
+[18:33:02] *** Joins: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de)
+[18:33:12] <WindowsBunny> oh wait, Display does that, nevermind me
+[18:35:55] <seanmonstar> WindowsBunny: i notice this in 2 places usually: calling .unwrap() and seeing repr: Os(XXX), and using {:?} on an error that happens to wrap an io::Error
+[18:36:24] <WindowsBunny> I really wish when I unwrapped an error, it would print out the formatted error string
+[18:36:41] <WindowsBunny> instead of just leaving me with an error number that I have to dig into msdn to figure out
+[18:37:05] <seanmonstar> yea, thats what i mean
+[18:37:30] <seanmonstar> i could accept an argument that seeing the actual repr is useful for debugging the libstd
+[18:37:45] *** Quits: filsmick (filsmick@moz-tj8j41.abo.wanadoo.fr) (Connection closed)
+[18:38:02] <brson> acrichto: are you still happy shipping cargo 2015-04-30 for rust 1.0?
+[18:38:14] *** Joins: filsmick (filsmick@moz-tj8j41.abo.wanadoo.fr)
+[18:38:42] <acrichto> brson: lemme check
+[18:39:17] <WindowsBunny> oh nice, cargo recently added rustc-cfg to build scripts, thats super useful
+[18:39:50] <acrichto> brson: yeah that sounds good
+[18:39:58] <brson> cool
+[18:42:42] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[18:42:59] *** Joins: marsel (user@moz-86r.010.180.94.IP)
+[18:43:56] <brson> flaper87: what's the relationship between openshift and cluster management software like mesos? do they complement each other?
+[18:45:53] *** Joins: hyunsik (hyunsik@moz-3qgjl9.ca.comcast.net)
+[18:52:14] *** Joins: swgillespie (swgillespie@moz-1i5.3un.220.167.IP)
+[18:53:44] *** Joins: IAmRasputin (rmg@moz-0ebt37.student.rit.edu)
+[18:53:57] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[18:58:33] *** Joins: harrisonclarke (harrisoncla@moz-6v8.jf9.227.142.IP)
+[19:00:53] *** Quits: filsmick (filsmick@moz-tj8j41.abo.wanadoo.fr) (Connection closed)
+[19:00:54] *** Joins: filsmick (filsmick@moz-tj8j41.abo.wanadoo.fr)
+[19:00:56] *** Quits: haxe (haxelion@moz-ap7alo.eu) (Quit: Lost terminal)
+[19:02:39] *** Joins: avikpal (avikpal@moz-al7.cvs.194.117.IP)
+[19:04:26] *** Joins: avikpal_ (avikpal@moz-6dp.6u9.79.112.IP)
+[19:06:41] *** Quits: avikpal (avikpal@moz-al7.cvs.194.117.IP) (Ping timeout: 121 seconds)
+[19:08:07] *** Quits: filsmick (filsmick@moz-tj8j41.abo.wanadoo.fr) (Connection closed)
+[19:08:33] *** Joins: filsmick (filsmick@moz-tj8j41.abo.wanadoo.fr)
+[19:09:20] *** Quits: filsmick (filsmick@moz-tj8j41.abo.wanadoo.fr) (Connection closed)
+[19:09:21] *** Joins: filsmick (filsmick@moz-tj8j41.abo.wanadoo.fr)
+[19:09:23] *** Quits: avikpal_ (avikpal@moz-6dp.6u9.79.112.IP) (Ping timeout: 121 seconds)
+[19:18:10] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[19:18:50] *** Joins: naerbnic (naerbnic@moz-mol.4ra.239.216.IP)
+[19:19:12] *** Quits: erz (erz@moz-45hupr.broadband.corbina.ru) (Ping timeout: 121 seconds)
+[19:21:41] *** Quits: Rym_ (y@moz-o80acm.range86-189.btcentralplus.com) (Ping timeout: 121 seconds)
+[19:23:11] *** Joins: Rym_ (y@moz-o80acm.range86-189.btcentralplus.com)
+[19:24:05] <arielb1> nmatsakis: ping
+[19:29:09] *** Quits: Rym_ (y@moz-o80acm.range86-189.btcentralplus.com) (Ping timeout: 121 seconds)
+[19:30:09] *** Joins: p1start (p1start@moz-nftjhe.org)
+[19:33:43] <cmr> brson: openshift is like heroku, as I understand it.
+[19:35:03] *** Quits: p1start (p1start@moz-nftjhe.org) (Ping timeout: 121 seconds)
+[19:35:56] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[19:41:29] *** Quits: bluss_ (bluss@moz-ec5o68.cust.bredbandsbolaget.se) (Ping timeout: 121 seconds)
+[19:44:03] <arielb1> I had an empty compiler panic
+[19:44:06] <arielb1> http://buildbot.rust-lang.org/builders/auto-linux-32-nopt-t/builds/4856/steps/test/logs/stdio
+[19:44:08] <arielb1> what's going on?
+[19:45:02] *** Quits: semarie (semarie@moz-th44la.torservers.net) (A TLS packet with unexpected length was received.)
+[19:47:25] *** Joins: erz (erz@moz-n26c5c.broadband.corbina.ru)
+[19:47:40] <arielb1> are spurious test failures on linux-32-nopt a known thing?
+[19:47:45] <arielb1> why is there no panic message?
+[19:48:17] *** Joins: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se)
+[19:48:30] *** Quits: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu) (Quit: Leaving)
+[19:49:24] <brson> arielb1: maybe '
+[19:49:31] <brson> er, 'status: signal: 4' has something to do with it
+[19:49:43] <brson> not a clean exit?
+[19:49:48] <arielb1> my commit didn't touch trans
+[19:50:55] <arielb1> brson: are spurious failures a thing?
+[19:51:07] <bluss> signal 4 is our abort(), maybe oom?
+[19:51:16] <arielb1> bluss: the test is *tiny*
+[19:51:30] <arielb1> and my patch shouldn't increase memory usage
+[19:52:03] *** Quits: IAmRasputin (rmg@moz-0ebt37.student.rit.edu) (Quit: leaving)
+[19:52:36] *** Quits: bdero (bran@moz-mqs.7dh.189.18.IP) (Ping timeout: 121 seconds)
+[19:53:12] *** Joins: Rym_ (y@moz-o80acm.range86-189.btcentralplus.com)
+[19:53:41] <arielb1> should we retry or something?
+[19:53:54] <bluss> arielb1: doesn't look suprious, just IMO
+[19:54:25] <arielb1> bluss: the test *runned* on opt-32
+[19:54:32] <arielb1> and on no-opt-64
+[19:55:14] <brson> arielb1: there are definitely spurious test failures, yes
+[19:55:54] <arielb1> brson: I can't see how my commit can cause this failure
+[19:55:57] <arielb1> could we retry?
+[19:56:28] *** Quits: swgillespie (swgillespie@moz-1i5.3un.220.167.IP) (Quit: Textual IRC Client: www.textualapp.com)
+[19:56:45] <brson> arielb1: yes, link the pr?
+[19:56:53] <arielb1> https://github.com/rust-lang/rust/pull/25123
+[19:57:35] *** Joins: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu)
+[19:57:36] <brson> done
+[19:57:37] *** Joins: larhat1 (Adium@moz-tb1ulb.cable.virginm.net)
+[19:57:45] <arielb1> thanks
+[19:58:13] *** Quits: arielb1 (Mibbit@moz-gdrjsj.tau.ac.il) (Quit: http://www.mibbit.com ajax IRC Client)
+[20:01:53] *** Quits: dcb (textual@moz-eihiev.mycingular.net) (Connection closed)
+[20:09:13] *** Quits: dinfuehr (dinfuehr@moz-l60tc1.highway.telekom.at) (Connection closed)
+[20:09:34] *** Joins: dinfuehr (dinfuehr@moz-l60tc1.highway.telekom.at)
+[20:09:51] *** Joins: genbattle (genbattle@moz-4v0.gkd.16.182.IP)
+[20:13:37] *** Quits: dinfuehr (dinfuehr@moz-l60tc1.highway.telekom.at) (Ping timeout: 121 seconds)
+[20:17:58] *** Joins: zmack (zmack@moz-htpein.home.aster.pl)
+[20:27:50] *** Quits: canhtak (canhtak@moz-1a9fh1.luxdsl.pt.lu) (Client exited)
+[20:29:34] *** Joins: japaric_ (japaric@moz-4nm.1in.121.200.IP)
+[20:29:47] *** Quits: naerbnic (naerbnic@moz-mol.4ra.239.216.IP) (Client exited)
+[20:30:30] *** Quits: japaric (japaric@moz-ja4.1g3.233.190.IP) (Ping timeout: 121 seconds)
+[20:32:57] <flaper87> brson: as cmr mentioned, openshift is a PaaS (platform as a service), whereas mesos is for cluster management. That'd be allocation of computational units. I don't know mesos in detail but I believe you can also have some sort of orchestration. Mesos should probably be compared to OpenStack rather than OpenShift.
+[20:33:37] <flaper87> there's some overlap since openshift does need to provision things but it does that in a very opinionated way using kubernetes (docker).
+[20:34:02] *** Quits: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu) (Quit: Leaving)
+[20:35:08] <brson> flaper87: are openstack and openshift related?
+[20:35:14] *** Quits: zmack (zmack@moz-htpein.home.aster.pl) (Connection closed)
+[20:36:59] *** Quits: sagg (sigg@moz-55rvi2.dclient.hispeed.ch) (Ping timeout: 121 seconds)
+[20:37:24] *** Joins: filsmick_ (filsmick@moz-tj8j41.abo.wanadoo.fr)
+[20:38:45] *** Joins: ptalbot (ptalbot@moz-j4gnuh.fbx.proxad.net)
+[20:39:34] *** Quits: filsmick (filsmick@moz-tj8j41.abo.wanadoo.fr) (Ping timeout: 121 seconds)
+[20:43:43] *** Joins: swgillespie (swgillespie@moz-1i5.3un.220.167.IP)
+[20:44:06] *** Joins: naerbnic (naerbnic@moz-mol.4ra.239.216.IP)
+[20:45:37] *** Quits: jgallagher (john@moz-d5e8oc.hfc.comcastbusiness.net) (Client exited)
+[20:45:49] <brson> how do i find out what % of std is stable?
+[20:47:56] <cmr> hm, good question... there used to be a "stability index" link from http://static.rust-lang.org/doc/master/std/index.html
+[20:49:35] *** Joins: bdero (bran@moz-lbs.91h.47.73.IP)
+[20:50:43] <acrichto> brson: cmr: the index was removed
+[20:50:47] <flaper87> brson: technically, openshift could run on top of openstack. Other than that, they are not.
+[20:51:27] *** Quits: Rym_ (y@moz-o80acm.range86-189.btcentralplus.com) (Ping timeout: 121 seconds)
+[20:52:33] <brson> flaper87: do you work on both? i thought you worked on openstack
+[20:53:37] <flaper87> brson: I worked on OpenStack, I just dedicated some time to create that cartridge to help with adoption
+[20:53:43] <flaper87> s/worked/work/
+[20:53:59] *** Quits: naerbnic (naerbnic@moz-mol.4ra.239.216.IP) (Client exited)
+[20:54:10] <flaper87> That way ppl can create web apps w/ rust and deploy them on openshift
+[20:54:20] *** Quits: filsmick_ (filsmick@moz-tj8j41.abo.wanadoo.fr) (Quit: )
+[20:54:35] <flaper87> more than just web apps can be done, TBH.
+[20:56:43] *** Joins: naerbnic (naerbnic@moz-mol.4ra.239.216.IP)
+[21:00:31] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Quit: leaving)
+[21:02:13] *** Quits: naerbnic (naerbnic@moz-mol.4ra.239.216.IP) (Client exited)
+[21:04:26] *** Quits: hyunsik (hyunsik@moz-3qgjl9.ca.comcast.net) (Ping timeout: 121 seconds)
+[21:05:43] <kimundi> Hm, (to-late?) idea: change strings slice_chars() method to take a range parameter. "föo".slice_chars(1..2) == "ö"
+[21:06:43] <bluss> kimundi: it's unstable, so it's not too late
+[21:08:35] *** Joins: willem (willem@moz-facs2s.dynamic.upc.nl)
+[21:09:24] <kimundi> hm, actually.... make the CHars iterator implement indexing operators and you get &"föo".chars()[1..2] == "ö"
+[21:17:06] *** Joins: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu)
+[21:17:48] *** Quits: amir (amir@moz-qbf4gg.fiber7.init7.net) (Ping timeout: 121 seconds)
+[21:17:53] *** Joins: arielb1 (Ariel@moz-78pi5m.red.bezeqint.net)
+[21:18:24] *** Joins: hyunsik (hyunsik@moz-3qgjl9.ca.comcast.net)
+[21:18:40] *** Joins: Kingsquee (kingsley@moz-3fm07c.bchsia.telus.net)
+[21:19:04] *** Quits: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de) (Ping timeout: 121 seconds)
+[21:25:48] *** Quits: gsingh93 (gulshan@moz-qnbukr.mi.comcast.net) (Quit: WeeChat 1.1.1)
+[21:27:35] *** Joins: Rym (y@moz-o80acm.range86-189.btcentralplus.com)
+[21:27:36] *** Quits: pjenvey_ (pjenvey@moz-ph7jic.org) (Ping timeout: 121 seconds)
+[21:31:17] *** Joins: amir (amir@moz-hvgilg.dclient.hispeed.ch)
+[21:31:19] *** Quits: kmcguire (kmcguire@moz-pg1gb9.biz.rr.com) (Connection closed)
+[21:32:06] *** Joins: kmcguire (kmcguire@moz-pg1gb9.biz.rr.com)
+[21:37:03] <simukis> skip(1).take(2-1)
+[21:37:47] <simukis> that's actually how Index for Iterator could be impled
+[21:40:08] <bluss> preferably only if the iterator allows random access
+[21:40:20] <bluss> stepping it when indexed would be confusing
+[21:41:00] <bluss> oh that's a slice.. hm
+[21:43:05] *** Quits: harrisonclarke (harrisoncla@moz-6v8.jf9.227.142.IP) (Connection closed)
+[21:43:22] *** Quits: Kxepal (Miranda@moz-0f6ae4.pppoe.mtu-net.ru) (Ping timeout: 121 seconds)
+[21:44:04] *** Quits: arielb1 (Ariel@moz-78pi5m.red.bezeqint.net) (Quit: Ex-Chat)
+[21:44:43] *** Joins: Kxepal (Miranda@moz-ncstea.pppoe.mtu-net.ru)
+[21:53:08] <brson> figuring out what to put into release notes after 1.0 is going to be really hard because of the nightly/stable split
+[21:53:21] <brson> presumably release notes should not mention things that are new but unstable
+[21:53:26] <brson> since you can't actually use them in the release
+[21:53:45] <cmr> I agree, yeah.
+[21:54:54] *** Quits: Guest63 (textual@moz-ttd.2as.255.109.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[21:59:59] *** Quits: willem (willem@moz-facs2s.dynamic.upc.nl) (Quit: leaving)
+[22:02:28] *** Quits: jdm_ (jdm@moz-c70dou.fnjk.s0pt.0450.2001.IP) (Quit: )
+[22:02:33] <kmc> wouldn't it be all the features un-gated since the last release?
+[22:02:40] <kmc> plus any changes not covered by stability
+[22:04:39] <bluss> a section to feature big things that are in development and coming soon is nice. everyone likes that
+[22:05:01] *** Joins: willem (willem@moz-facs2s.dynamic.upc.nl)
+[22:09:40] <brson> kmc: yeah, that might be the right way to go about it, and we do conveniently have that information
+[22:11:01] *** Quits: Rym (y@moz-o80acm.range86-189.btcentralplus.com) (Connection closed)
+[22:11:37] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Connection closed)
+[22:12:22] *** Joins: Rym (y@moz-o80acm.range86-189.btcentralplus.com)
+[22:12:40] <aturon> hm, i agree with bluss that it would be good to have some place to announce unstable work in progress, but yeah, it's not really tied up with the stable release cadence in any way
+[22:14:13] *** Joins: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com)
+[22:14:44] <bluss> since it goes out to a wide audience it might be nice to tell a bit of what's being worked on
+[22:14:56] <kmc> it should be described in TWiR at least
+[22:15:19] <bluss> TWiR is different, more internal
+[22:15:39] <bluss> for example, the PyPy 2.5.0 release blog post http://morepypy.blogspot.se/2015/02/pypy-250-released.html
+[22:15:51] <bluss> they have a small bit at the end where they tell what's coming next
+[22:16:25] <aturon> so for the past few releases, we've had blog posts that highlight the most major stuff, separate from release notes with complete detail
+[22:16:45] <aturon> maybe a scheme like that would be enough to draw attention to the headliners
+[22:19:26] *** Quits: larhat1 (Adium@moz-tb1ulb.cable.virginm.net) (Quit: Leaving.)
+[22:19:35] *** Joins: eibwen (eibwen@moz-odl.ora.231.217.IP)
+[22:20:00] *** Joins: canhtak (canhtak@moz-1a9fh1.luxdsl.pt.lu)
+[22:20:10] <brson> why is arc::get_mut a free function?
+[22:20:46] <kmc> so it doesn't shadow methods of the inner thing
+[22:21:12] *** Joins: larhat1 (Adium@moz-tb1ulb.cable.virginm.net)
+[22:22:31] <brson> hm, ok. it seems kind of arbitrary which are free functions. 'weak_count' is likely to shadow, but 'inner' isn't?
+[22:22:47] *** Joins: summerlight (summerlight@moz-99k.2mj.130.121.IP)
+[22:22:50] <brson> brson: 'inner' isn't public
+[22:23:16] <brson> 'downgrade' is the only instance method
+[22:23:42] <sfackler> I think the old stuff are instance methods
+[22:23:54] <sfackler> and newer things have been added as free functions
+[22:28:08] *** Quits: japaric_ (japaric@moz-4nm.1in.121.200.IP) (Ping timeout: 121 seconds)
+[22:31:36] *** Quits: ptalbot (ptalbot@moz-j4gnuh.fbx.proxad.net) (Connection closed)
+[22:36:28] *** Joins: jga (jga@moz-jbf.t1q.244.77.IP)
+[22:37:17] <brson> why is Pattern defined for `impl<'a, 'b> Pattern<'a> for &'b &'b str`?
+[22:37:28] <brson> it's not common to define traits for &&T
+[22:38:06] <brson> aturon: Pattern is unstable but methods that take it are stable, and that makes all the impls of Pattern de-facto stable
+[22:40:46] *** Quits: bjz (bjz@moz-puppgq.tpgi.com.au) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[22:40:49] <aturon> brson: i can't quite remember the specific cases that led to the need for the && implementation -- i know originally we had one for Deref, but that violated coherence
+[22:40:53] *** Quits: mjboa (mike@moz-gfdglf.hsi06.unitymediagroup.de) (Quit: leaving)
+[22:40:59] <aturon> i agree about de facto stabilization of impls, that's intended in this case
+[22:41:11] <aturon> basically, we want you to be able to *use* the pattern-based APIs in str in stable rust,
+[22:41:22] <aturon> but we want the freedom to change the Pattern trait itself 
+[22:45:46] *** Quits: summerlight (summerlight@moz-99k.2mj.130.121.IP) (Ping timeout: 121 seconds)
+[22:47:57] *** Quits: duesenfranz_ (jona@moz-711djm.tirol.surfer.at) (Client exited)
+[22:53:49] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[22:57:27] <brson> aturon: did you see the other day i was having problems with the differences between Box<Error> and Box<Error + Send>?
+[22:57:51] <brson> iron needs sendable errors, but std doesn't require it so other libs don't
+[22:57:55] <brson> i think
+[22:58:58] <brson> because of that i had to strip out all the original errors when bubbling errors to iron
+[22:59:10] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[22:59:22] <reem> brson: there’s just this really unfortunate interaction between trait objects and marker traits
+[22:59:29] <reem> especially OIBITs like Send and Sync
+[23:01:06] <reem> brson: note that io::Error has this same issue, since the internal trait object requires Box<Error + Send + Sync>
+[23:02:55] *** Quits: zxq9 (ceverett@moz-qsm369.mesh.ad.jp) (Quit: Konversation terminated!)
+[23:03:37] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[23:03:55] <brson> maybe some clever From implementations could work around it in my case by Arcing the Box<Errors>
+[23:04:29] <brson> what are the highlights of rust 1.0 compared to 1.0-beta? So far I only have 'most of the standard library is stable and will not change' which is pretty weak and nebulous
+[23:04:39] <brson> it's a pretty small release really
+[23:04:50] *** Joins: njn (chatzilla@moz-6gdjm4.iinet.net.au)
+[23:04:52] <brson> since there were only two weeks of development...
+[23:05:18] <reem> brson: the scoped/forget stuff
+[23:05:25] <aturon> brson: hm, so in general the release notes for 1.X final should be the same as for 1.X beta
+[23:05:41] <aturon> i guess this is another aspect of the discussion we had earlier
+[23:05:58] <aturon> that the release channels make the release notes a bit tougher
+[23:06:26] <brson> aturon: well, we *wrote* and published explicit release notes for the beta, which we normally would not do
+[23:06:33] <brson> there is a section in RELEASES.md called 1.0.0-beta
+[23:06:35] *** Joins: arielb1 (Ariel@moz-78pi5m.red.bezeqint.net)
+[23:06:40] <brson> i can merge them
+[23:06:55] *** Quits: canhtak (canhtak@moz-1a9fh1.luxdsl.pt.lu) (Client exited)
+[23:06:57] <brson> then what about the 1.0.0-alpha release notes, which also was not a release
+[23:07:00] <aturon> brson: yeah, that probably makes sense -- the notes only become "official" with the final release
+[23:07:08] <aturon> alpha feels like a special case
+[23:07:29] <aturon> sorry, g2g for now
+[23:08:00] *** Joins: japaric (japaric@moz-4nm.1in.121.200.IP)
+[23:08:25] *** Quits: eibwen (eibwen@moz-odl.ora.231.217.IP) (Ping timeout: 121 seconds)
+[23:10:06] *** Quits: larhat1 (Adium@moz-tb1ulb.cable.virginm.net) (Quit: Leaving.)
+[23:17:01] *** Joins: harrisonclarke (harrisoncla@moz-b21rr4.eastlink.ca)
+[23:17:32] <Diggsey> reem: what if all trait objects had the ability to dynamically query the set of marker traits implemented for the underlying type? (A limited form of Reflect on all trait objects)
+[23:18:14] <Diggsey> reem: it would at least provide an escape hatch for the situation brson was describing
+[23:18:57] <reem> Diggsey: Yes, that would help a lot towards alleviating the issue. I’ve actually proposed something like that before, but the problem is it requires rather significant changes to the way trait objects are implemented.
+[23:22:03] *** Quits: harrisonclarke (harrisoncla@moz-b21rr4.eastlink.ca) (Ping timeout: 121 seconds)
+[23:22:49] <Diggsey> reem: Ah, I assumed it would just be as simple as adding an implicit "MarkerReflect" supertrait on all declared traits
+[23:23:43] <reem> Diggsey: Well the simplest thing would be to add some methods to all vtables, but that doesn’t scale to when we finally get X + Y where X and Y are both user-defined traits, and you want to dynamically cast from X to X + Y
+[23:24:26] *** Quits: willem (willem@moz-facs2s.dynamic.upc.nl) (Quit: leaving)
+[23:28:32] <Diggsey> reem: Do you mean because of the combinatorial explosion of every kind of X + Y + Z needing its own vtable?
+[23:28:35] *** Joins: harrisonclarke (harrisoncla@moz-b21rr4.eastlink.ca)
+[23:28:59] <reem> Diggsey: You’d need a new vtable entry for every trait in the entire application
+[23:29:10] <reem> since you could ask to go from X to X + Y for any Y
+[23:29:22] <bstrie> double virtual dispatch can solve that :p
+[23:29:23] <reem> there are probably better ways to implement it
+[23:31:31] <Diggsey> but is there a problem with the more limited form of X to X + Y where Y is a marker trait? (given that marker traits have no methods)
+[23:34:15] *** kimundi is now known as zz_kimundi
+[23:43:33] *** Quits: imperio (Mibbit@moz-8otf3a.fbx.proxad.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[23:44:29] <bstrie> steveklabnik brson: rlo and the book pass slightly different flags to curl in the installation instructions, the book does "curl -sf -L" and rlo does "curl -s". do we want to make these the same?
+[23:44:33] *** Quits: Ericson2315 (user@moz-j5mi8i.cs.brown.edu) (Connection closed)
+[23:44:51] *** Joins: jgallagher (john@moz-6ge.dhn.131.24.IP)
+[23:45:30] <shep-home> bstrie: oh, that reminds me, you may want to prepend curl with a \
+[23:45:33] <brson> bstrie: yes, I think so, and I think neither is right
+[23:45:46] <brson> it should be `curl -sSL` probably
+[23:45:49] *** Joins: adu (ajr@moz-0foa9t.md.comcast.net)
+[23:46:01] <bstrie> ooh, that even looks secure
+[23:46:05] <brson> lol
+[23:46:58] <steveklabnik> bstrie: yeah they should probably be the same
+[23:49:32] *** Quits: Astrum|Lap (Astrum|Lap@moz-7enfbr.co.comcast.net) (Client exited)
+[23:50:26] <acrichto> brson: r? https://github.com/rust-lang/rust/pull/25192
+[23:52:25] *** Quits: arielb1 (Ariel@moz-78pi5m.red.bezeqint.net) (Connection closed)
+[23:52:35] *** Quits: marsel (user@moz-86r.010.180.94.IP) (Ping timeout: 121 seconds)
+[23:59:32] <brson> i signed up to promote rust 1.0 at the monday mtg...

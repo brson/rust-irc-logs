@@ -1,0 +1,471 @@
+[00:00:39] <sfackler> Gankro: seems like returning an Option would be nice exactly for the Chain/Zip/etc style use case
+[00:11:33] <Gankro> Oh fuck I forgot about unwinding
+[00:11:38] <Gankro> euuuugh
+[00:11:44] * Gankro ignores for now
+[00:12:06] <cmr> Gankro: where's the issue?
+[00:16:48] <Gankro> cmr: unsafe code still needs to guard on the iterator just panicing
+[00:16:52] *** Quits: blank_name (blank_name@moz-j00b3g.mi.frontiernet.net) (Ping timeout: 121 seconds)
+[00:17:01] <Gankro> or-else we need nounwind or some mess
+[00:17:32] <cmr> ah right, forgot about that '.next()'
+[00:18:17] <cmr> Why is TrustedIterator expected to actually help very much? Like, I know it's been touted a lot, but I don't expect it to make *that* much of a difference...
+[00:18:53] *** Joins: blank_name (blank_name@moz-j00b3g.mi.frontiernet.net)
+[00:26:32] <aatch> cmr, vectorisation mostly.
+[00:29:05] *** Joins: Moonlightning (blackl@moz-1rc.30c.23.184.IP)
+[00:29:39] <aatch> cmr, as far as I can tell, the issue is mostly around when the iterator is used to populate a collection, we can pre-allocate space based on the size hint, but there's no guarentee that the size hint is accurate.
+[00:30:09] <aatch> cmr, so we still have a potential re-allocation, which throws off optimisation.
+[00:30:18] <cmr> aatch: right, that's the general "problem", but I'm not super-convinced that trusted length will help in many cases.
+[00:31:49] <aatch> cmr, for most cases, probably not, no. But for some cases it will make a huge difference. It's pretty much why `push_all` was (it was removed right?) so much faster than `extend` when you had `Copy` data.
+[00:32:58] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[00:38:28] *** Joins: brson (brson@moz-u4t.ku8.145.82.IP)
+[00:38:29] *** ChanServ sets mode: +qo brson brson
+[00:40:45] <Gankro> Oh wait
+[00:40:48] <Gankro> We can leak now!
+[00:40:54] <Gankro> I can just not update len until the very end
+[00:41:02] <Gankro> If it panics we just leak everything we added
+[00:41:06] <Gankro> hooooraaaay
+[00:41:49] <cmr> PPYP FTW!
+[00:47:34] <Gankro> 100% legit https://gist.github.com/Gankro/076231432684c4fd2a37
+[00:49:21] <Gankro> that set_len probably needs a check for ZSTs
+[00:51:24] <Tobba> hooray for leakage
+[00:51:26] <Tobba> wait a minute
+[00:51:54] <Tobba> I wonder how leaking interacts with lock poisoning
+[00:56:27] *** Joins: blank_na1e (blank_name@moz-p4egrb.mi.frontiernet.net)
+[00:57:34] <cmr> Tobba: shit, that's a good question.
+[00:57:43] <cmr> Actually it might be fine.
+[00:57:52] <cmr> If you forget the guard you can't access the value anymore.
+[00:58:12] <cmr> And you can't move (eg forget) if you have borrowed the thing it's guarding.
+[00:58:41] <Tobba> yeah I'm trying to think of ways to leak something you currently have borrowed, but I can't come up with anything
+[00:58:50] <Tobba> but in theory, we *do* classify that as safe
+[00:59:20] *** Quits: blank_name (blank_name@moz-j00b3g.mi.frontiernet.net) (Ping timeout: 121 seconds)
+[00:59:32] <Gankro> Yeah I think the general understanding is that leakage is only problematic when the thing you leak *isn't* being used as an accessor for the thing it's supposed to guard
+[00:59:45] <Gankro> modulo Rc style overflow
+[01:00:11] <Tobba> Gankro: specification-wise, I'm pretty sure we do specify any leakage as safe
+[01:00:22] <Tobba> and you can "leak" something you have borrowed using i.e statics
+[01:00:50] <Tobba> actually wait, that doesn't make sense
+[01:02:11] <Gankro> Tobba: I meant wrt "do I need to consider this in the design of my unsafe code"
+[01:05:20] <Tobba> Gankro: well yeah, but we might want to change what is considered safe to be "leaking non-mutably-borrowed values"
+[01:06:37] <cmr> What would be nice is some evil overloading feature that allows extend on I: Deref<[T]> or some other evil trait that gives a pointer to contiguous memory and just blat it.
+[01:06:44] <Gankro> Tobba: I don't understand the qualification
+[01:07:35] <Tobba> Gankro: I'm pretty sure the docs currently say that it's perfectly safe to leak something that's mutably borrowed (as long as the reference continues to exist)
+[01:07:37] <Tobba> but this breaks lock poisoning
+[01:07:51] <Gankro> Tobba: You can't move a mutably borrowed thing
+[01:07:56] <Gankro> Making it impossible to leak?
+[01:08:04] <Tobba> not necessarily
+[01:08:46] <Tobba> for example, if you passed a mutable reference to something into a closure, and if that closure panics, the value leaks, that would be unsafe
+[01:16:23] <Gankro> Tobba: I don't follow
+[01:17:37] <Tobba> Gankro: leaking a value which is mutably borrowed is unsafe, because it breaks locks poisoning
+[01:17:54] <Gankro> I still don't see how you can
+[01:17:57] <Tobba> except the documentation says that *all* leaking is safe
+[01:18:25] <Tobba> by having data somewhere where unwinding won't find it
+[01:18:27] <Gankro> Tobba: That's not actually leaking; there's still a reference to the object
+[01:18:41] <Gankro> Because it is mutably borrowed
+[01:18:43] <Tobba> it leaks once the code panics
+[01:19:28] <Tobba> cmr: actually, it is obviously perfectly safe
+[01:19:37] <Tobba> if you leak the guard the lock will just permanently be locked
+[01:21:36] <Gankro> Hrm... trusted_len has problems with "infinite-thing".take(finite)
+[01:21:58] <cmr> Doesn't it just return None then?
+[01:22:01] <cmr> (ie, "overflows")
+[01:22:13] <cmr> Oh I see.
+[01:22:15] <Gankro> Right but we want SOme
+[01:22:22] <cmr> Right.
+[01:22:55] <cmr> Wouldn't the Take override trusted_len to return min(take_param, underlying_trusted_len)?
+[01:23:08] *** Quits: brson (brson@moz-u4t.ku8.145.82.IP) (Quit: leaving)
+[01:23:29] <Gankro> Yeah, but it doesn't know if the iter will yield like 0 elems
+[01:23:48] <cmr> that's what the min is for?
+[01:24:05] <Gankro> infinite things yield None for trusted_len
+[01:24:09] <cmr> Oh right.
+[01:24:32] <cmr> Well, time to introduce a new enum! { Finite(uint), Infinite, None }
+[01:24:41] <Gankro> Yeah that was basically where I was at
+[01:25:03] <cmr> We even used to use a compatible encoding of that for size_hint
+[01:26:03] <Gankro> eugh no map is buts
+[01:28:18] <Gankro> also acrichto all of your tests for your Vec::extend optimizations appear to have completely regressed
+[01:28:53] <acrichto> hoo boy!
+[01:29:41] <Gankro> unless there's something stronger I should pass in than cargo bench?
+[01:31:46] <acrichto> Gankro: what benchmarks are these?
+[01:31:50] <acrichto> was this a gist?
+[01:31:56] <Gankro> https://gist.github.com/alexcrichton/03d666159a28a80e7c70
+[01:32:21] <Gankro> Also dang your benches are like *optimized* for dodging trusted_len
+[01:32:32] <Gankro> Range is too generic to be trusted without specialization
+[01:32:45] <Gankro> And take can't work with Infinite in my encoding
+[01:33:10] <Gankro> (tested with 5/17 nightly)
+[01:33:25] <acrichto> good lord those benchmark results are terrible
+[01:34:01] <Gankro> Seems to be exactly where they were before your optimizations
+[01:41:11] <Gankro> Well I got extend(vec.iter().cloned()) down to push_all quality
+[01:41:16] <Gankro> So that's a good proof of concept
+[01:41:38] <cmr> Isn't push_all the crappy one?
+[01:41:44] <Gankro> push_all is the amazing one
+[01:41:53] <cmr> Ah, my bad then!
+[01:42:06] <Gankro> Pretty much insta-optimizes to a memcopy
+[01:42:11] <Gankro> But it only works with slices
+[01:42:39] <cmr> Right.
+[01:45:07] <Gankro> I dunno how to make Range trusted, though
+[01:47:25] *** Joins: annodomini (lambda@moz-qgii5v.ma.comcast.net)
+[01:47:27] * Gankro ponders trusted_steps_between
+[02:35:02] *** kimundi is now known as zz_kimundi
+[02:40:15] <Gankro> ugh
+[02:40:50] <Gankro> If I want like maximal expression I need Uncertain | Infinite | TooBig | Len(usize)
+[02:41:50] <Gankro> Take can do special stuff with Infinite or TooBig, but skip has Infinite => Infinite, TooBig => Uncertain
+[02:43:15] <Gankro> I think I'm willing to just live with take().skip() is more effecient than skip().take(), even though the latter is more sensical, usually
+[02:44:03] <cmr> That's unfortunate.
+[02:44:37] <cmr> That's the sort of performance gotcha that will end up on a "WTF Rust" blog post I'm sure.
+[02:44:56] <cmr> "One strange trick to make your Rust inner loops 5x faster!"
+[02:45:46] <cmr> "10x Programmers Share Their 10x Tip!"
+[02:46:13] <Gankro> cmr: Do you want to live with Infinite | TooBig instead?
+[02:46:27] <cmr> Gankro: that doesn't seem that bad, really.
+[02:46:54] <Gankro> the combinatorics on the adaptors is getting nasty even without it
+[02:47:10] <huon> cmr: just add a compiler lint :P
+[02:49:39] *** Quits: zz_kimundi (kimundi@moz-pvqpe9.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[02:51:34] *** Joins: zz_kimundi (kimundi@moz-bt8log.dip0.t-ipconnect.de)
+[02:51:35] *** zz_kimundi is now known as kimundi
+[02:59:27] *** Quits: annodomini (lambda@moz-qgii5v.ma.comcast.net) (Client exited)
+[03:03:18] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[03:36:37] *** Quits: Rym (y@moz-mhu.sd4.38.217.IP) (Quit: WeeChat 1.0)
+[03:49:01] *** Joins: Rym (uid91135@moz-n2i7qm.charlton.irccloud.com)
+[03:49:39] <Gankro> Zip continues to be The Worst Iterator https://gist.github.com/Gankro/33da99a6cb185992d345
+[04:18:34] <Gankro> Hmm... promising results so far: https://gist.github.com/Gankro/fd2543302dade5992e0e
+[04:19:02] <Gankro> repeat* isn't optimizing, though
+[04:20:35] <huon> how does this differ to size_hint?
+[04:21:16] <cmr> huon: trusted_length?
+[04:21:28] <huon> oh, it's just trusted
+[04:21:39] <huon> (I though this was a replacement for size_hint with a differnt signature)
+[04:22:57] <Gankro> huon: Yeah, just trusted
+[04:23:13] <Gankro> Anything else is horribly brittle as acrichto learned today ;)
+[05:11:30] <acrichto> Gankro: ok so I have definitely confirmed today that the from_iter fixes previously don't quite cut it
+[05:11:39] <acrichto> Gankro: they may have optimized at some point but perhaps LLVM changed?
+[05:15:23] <Gankro> Yeah it was always kinda dubious imo. I was surprised that it *did* optimize
+[05:20:43] <Gankro> hrm, I can't seem to convince rustc to emit IR for benches. Is that not a thing?
+[05:21:01] <acrichto> it should be?
+[05:23:41] <Gankro> ok it worked that time
+[05:23:46] <Gankro> I dunno what happened before
+[05:28:59] <Gankro> Oh weird, `collect` isn't being inlined for `repeat(x).take(y)`
+[05:30:05] <Gankro> I... don't know how to really deal with that. I guess I could force inline(always) but that's pretty rough
+[05:33:05] <Gankro> Which in turn isn't inlining trusted_len ;_;
+[05:48:36] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[05:53:35] <sfackler> acrichto: thoughts on Duration stabilization? seems like everything other than span is pretty straightforward unless we're planning on messing with the internal makeup again
+[05:56:57] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[05:59:58] *** Quits: aatch (james@moz-5r41gb.6pd7.20lj.e000.2406.IP) (Connection closed)
+[06:15:42] <Gankro> Yeah I can't force repeat/range_from to optimize properly. The inliner just does not want to deal. extending arrays with arrays is being turned into memcopies, though. So that's the main win.
+[06:16:49] <huon> have you dug around in the asm yet? :P
+[06:16:57] <Gankro> Yep
+[06:16:59] <huon> (oh, and the LLVM IR)
+[06:17:07] <huon> that's the fun part :D
+[06:17:12] <Gankro> I didn't look at the IR, honestly
+[06:17:21] <Gankro> (haven't taken the time to learn IR yet)
+[06:17:22] <huon> pssh, you're missing out
+[06:17:23] <huon> :P
+[06:17:36] <Gankro> Every time I look at it I mostly just vomit and cry
+[06:17:51] <huon> you should learn it
+[06:18:02] <huon> (the worst part is the names of variables post-optimisation :( )
+[06:18:23] <Gankro> Is LLVM IR actually more useful for anything?
+[06:18:23] <huon> http://llvm.lyngvig.org/Articles/Mapping-High-Level-Constructs-to-LLVM-IR and http://llvm.org/docs/LangRef.html are nice
+[06:18:51] <Gankro> From the asm it's pretty clear that stuff just isn't being inlined enough for good optimization to kick in
+[06:19:48] <huon> oh :(
+[06:20:21] <huon> hm, what's the implementation of trusted_len?
+[06:21:07] <Gankro> huon: You need to be more specific
+[06:21:17] <Gankro> How Vec uses it, how adaptors use it...?
+[06:21:50] <huon> repeat(x).take(y).collect() is presumably calling Take's trusted_len
+[06:21:51] <huon> right/
+[06:22:04] <Gankro> Yeah, but not inlined :S
+[06:22:10] <Gankro> https://gist.github.com/Gankro/9502651dc7854e0dc5ef
+[06:22:45] <huon> what's the implementation of Take's trusted_len?
+[06:22:50] <Gankro> one sec
+[06:23:15] <acrichto> Gankro: callq__ZN4iter10TrustedLen3len20h72888a8d39c7cee9BPEE is pretty worrisome
+[06:23:22] <acrichto> I'd expect that to be folded/inlined as much as possible
+[06:23:26] <Gankro> I agree
+[06:23:26] <acrichto> you're sure it's #[inline] ?
+[06:23:36] <Gankro> Actually it might not have been for that run
+[06:23:43] <acrichto> sfackler: I'm somewhat uneasy about stabilizing Duration, it seems somewhat premature still and I think there's still a number of open questions
+[06:23:46] <Gankro> But adding it didn't seem to change perf
+[06:23:51] <huon> Gankro: hm, that's calling the len() (method?) on the TrustedLen type
+[06:23:58] <Gankro> https://www.irccloud.com/pastebin/r8Wrmum4/
+[06:24:00] <huon> not a trusted_len method
+[06:24:18] <Gankro> huon: Oh whoops you're right
+[06:24:24] <Gankro> That should also really be inline'd
+[06:24:36] <Gankro> it's just converting a TrustedLen to an Option for convenience
+[06:24:47] <huon> there's your problem :P
+[06:24:54] <huon> (i assume)
+[06:25:23] <huon> ah, yep, https://gist.github.com/Gankro/9502651dc7854e0dc5ef#file-gistfile1-asm-L104-L141 looks like the case it's Some
+[06:25:23] <sfackler> acrichto: what are some those questions? representation?
+[06:25:25] <Gankro> Oh derp, that one is definitely not marked inline
+[06:26:05] <Gankro> I'm so used to writing generic code that having a non generic function is mind blowing
+[06:26:07] <acrichto> sfackler: method naming in particular, placement in std::time (e.g. how big is that gonna get), the Display/Debug impls -- ones that I know of
+[06:26:08] <huon> that's a pretty big inner loop :(
+[06:26:34] <acrichto> huon: yeah once you hit actually calling reserve() it gets pretty big I think
+[06:26:43] <acrichto> Gankro: btw the best part of LLVM IR is "infinite registers"
+[06:26:52] <acrichto> Gankro: e.g. no need to limit yourself to stack/registers (and better naming)
+[06:27:03] <acrichto> there are also some semantically higher level constructs
+[06:27:06] <acrichto> like landing pads
+[06:27:07] <huon> acrichto: this loop doesn't even appear to be calling reserve (inside it)
+[06:27:30] <Gankro> (note that Vec::collect/extend has two branches)
+[06:27:44] <Gankro> One for trusted_len, one for not
+[06:27:52] <acrichto> huon: https://gist.github.com/Gankro/9502651dc7854e0dc5ef#file-gistfile1-asm-L108 ?
+[06:28:12] <huon> acrichto: that's not in the loop itself
+[06:28:19] <huon> https://gist.github.com/Gankro/9502651dc7854e0dc5ef#file-gistfile1-asm-L120-L138
+[06:28:21] <acrichto> ah
+[06:28:41] <acrichto> cmoveq -- scary
+[06:28:48] <acrichto> cmovew -- eew
+[06:28:58] <huon> heh
+[06:29:14] <Gankro> Hrm
+[06:29:25] <acrichto> huon: offhand do you know if #[derive(Clone)] adds #[inline] ?
+[06:29:32] <huon> acrichto: I... think it does
+[06:29:35] * huon double checks
+[06:29:36] <Gankro> Actually, I bet the two big branches that we *want* to be const-folded into one are penalizing this from being inlined
+[06:29:37] <acrichto> so it does
+[06:29:43] <acrichto> gah
+[06:30:16] <Gankro> Maybe if I hoist them to seperate fns it will inline more aggressively
+[06:31:01] <huon> Gankro: it's not obvious to be that trusted_len is helping much here
+[06:31:16] <Gankro> huon: It's absolutely not
+[06:31:19] <huon> the inner loop is ridiculously horrible
+[06:31:29] <Gankro> Although it's not hurting
+[06:31:45] <Gankro> and it's helping a lot for array->array
+[06:32:47] <huon> that inner loop looks a lot like https://github.com/rust-lang/rust/issues/24660
+[06:32:55] * huon checks the implementation of Take::next
+[06:33:14] <huon> ah, yep, same sort of "shape"
+[06:34:03] <huon> Gankro: I think this is a fundamental problem with take, unfortunately
+[06:34:28] <Gankro> Fixable?
+[06:35:21] <huon> if you move the self.n -= 1 out of the loop, yeah
+[06:36:03] <huon> unfortunately it'll mean that a sequence of .next() calls goes ...; Some(..); None; Some(..); ...
+[06:36:39] <huon> (preferably it'd be fixed properly in our codegen or in LLVM, not sure which is mainly to blame)
+[06:37:42] <Gankro> Hmm... my laptop is probably going to die before this last compiler build finishes. Will need to poke at this tomorrow.
+[06:38:08] <huon> (oh, whoops: *move the self.n -= 1 out of the `if`)
+[06:38:45] <Gankro> huon: presumably a saturating sub would be too harsh a penalty?
+[06:39:32] <huon> likely to be slower, yeah, but worth a try for sure
+[06:40:13] <huon> I guess another approach (essentially isomorphic) would be adding a `finished: bool` to Take
+[06:40:39] <huon> (the latter may optimise better than saturation, at the expense of some memory)
+[06:41:15] <Gankro> Do any common arch's actually provide a decent saturating arith?
+[06:41:52] <huon> I believe x86 simd does
+[06:42:04] <huon> and arm has some too
+[06:42:42] <Gankro> .. are you saying it might be worth it to simd a single add?
+[06:43:34] <huon> no
+[06:43:51] <huon> the overhead is probably larger than doing it "plain"
+[07:23:27] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[08:53:49] <bluss> ZipTrusted (using a TrustedIterator) seems to still beat libstd's regular .zip(). With enough inlining it can probably do the same thing with trusted_len
+[11:21:39] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[12:06:41] <bluss> huon: acrichto: Is it a good idea to try to work on splitting num? https://github.com/rust-lang/num/issues/63
+[12:07:15] <bluss> in theory with cross crate reexports it should be non breaking, right?
+[12:08:42] <bluss> also we should update the package description because one of the most common reasons to use num is the trait for being generic over regular primitive types
+[12:08:51] <bluss> *are the traits
+[12:13:37] <bluss> it could also be split by just cargo features, all opt-out
+[12:15:34] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[12:27:24] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[12:31:27] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[12:32:52] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[12:54:24] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[13:27:00] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[13:57:56] *** Quits: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua) (A TLS packet with unexpected length was received.)
+[13:58:24] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[14:01:12] *** Quits: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua) (A TLS packet with unexpected length was received.)
+[14:02:30] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[14:21:52] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Ping timeout: 121 seconds)
+[15:48:25] *** Quits: eternaleye (eternaleye@moz-7ps.ehi.245.50.IP) (Ping timeout: 121 seconds)
+[15:50:10] *** Joins: eternaleye (eternaleye@moz-7ps.ehi.245.50.IP)
+[15:54:22] *** Quits: eternaleye (eternaleye@moz-7ps.ehi.245.50.IP) (Ping timeout: 121 seconds)
+[16:00:31] *** Joins: eternaleye (eternaleye@moz-7ps.ehi.245.50.IP)
+[16:03:35] *** Quits: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua) (A TLS packet with unexpected length was received.)
+[16:04:29] <Gankro> ;_; I got repeat(0).take(1000).collect() to optimize but not repeat(2).take(1001).collect()
+[16:05:13] <Gankro> computers plz
+[16:08:04] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[16:19:35] <acrichto> bluss: yeah unfortunately we haven't had much chance to discuss the future of the num crate, but I agree for now that using features may be the best way to go (at least allows opting in to faster compiles)
+[16:19:42] <acrichto> bluss: I'll take a closer look at your PR soon!
+[16:41:14] <bluss> ok great -- yes I haven't thought too much about the long run or the detailed impact of feature flags
+[17:08:51] <Gankro> Awesome. I've upgraded to "causing a segfault in stage0"
+[17:09:14] <Gankro> Oh no wait it's as soon as stage1 starts
+[17:14:58] <Gankro> Ah yeah, huon having non-fusing iterators interacts really bad with TrustedLen. If they don't yield Uncertain at that point they can cause major chaos.
+[17:22:05] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[17:22:06] *** ChanServ sets mode: +qo brson brson
+[18:00:20] *** Joins: sigma (sigma@moz-im7cik.range86-135.btcentralplus.com)
+[18:22:37] *** Joins: Tuba (Tobba@moz-o13d22.bredband.telia.com)
+[18:25:35] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[19:00:55] *** Quits: sigma (sigma@moz-im7cik.range86-135.btcentralplus.com) (Connection closed)
+[19:05:36] *** Joins: killercup (killercup@moz-723bo4.dip0.t-ipconnect.de)
+[19:20:16] *** Joins: arielb1 (Ariel@moz-9he9ta.red.bezeqint.net)
+[19:20:26] <arielb1> Could there be a Vec iterator that can swap_remove the current element, and have references to previous ones?
+[19:20:30] <arielb1> Gankro: cc
+[19:22:26] <arielb1> that would require a peek method to be useful
+[19:22:28] <arielb1> or a closure wrapper
+[19:22:35] <arielb1> I imagine
+[19:50:32] <bluss> arielb1: any iterator that has a "current" transient state can't be an iterator and is a "one-at-a-time" or streaming iterator I think
+[19:50:59] <arielb1> bluss: things that you retain won't change place
+[19:51:03] <arielb1> I mean, things you already retained
+[19:51:35] <arielb1> actually, thinking of it, naively this will face the "conditionally-canceled borrow" problem
+[19:51:50] <arielb1> unless you intentionally revoke ownership with an assert
+[19:51:58] <arielb1> which the compiler should hopefully optimize
+[19:53:17] <arielb1> I mean `fn swap_remove(&mut self, elem: &'a mut T) { assert!(elem as _ == cur.offset(-1)); self.do_swap_remove(cur.offset(-1)) }
+[19:53:21] <arielb1> `
+[19:54:36] <arielb1> actually, this can be just { mem::swap(elem, self.pop()); }
+[19:54:43] <arielb1> you don't really need the assert
+[19:54:47] <arielb1> for safety, I mean
+[19:55:09] <arielb1> for borrow safety
+[19:55:30] <arielb1> for iterator correctness, you also need to move the cursor one place backwards
+[19:55:49] <arielb1> so we will actually visit all elements
+[19:57:31] <arielb1> if the mut iterator provides a `pop` method (which of course fails if we are the last element)
+[19:57:45] <arielb1> ^fails^returns None^
+[19:57:49] <arielb1> that would be enough too
+[19:58:48] <arielb1> hey
+[19:58:51] <bluss> arielb1: ah now I understand
+[19:58:56] <arielb1> next_back would kind-of do it
+[19:59:14] <arielb1> except I can't *conditionally* consume an element
+[19:59:37] <arielb1> I mean "let cur = iter.next_back(); goto loop_start;"
+[20:01:48] <arielb1> so I just need a way to tell Drain "no, I want *these* elements to stay alive"
+[20:03:24] <arielb1> or a `pop` method on Vec::IterMut
+[20:03:53] <arielb1> Gankro: cc
+[20:05:35] <arielb1> so `if let Some(value) = iter.pop() { *cur = value; goto loop_start } else { break }
+[20:05:38] <arielb1> `
+[20:06:05] <arielb1> no RVO :-(
+[20:06:23] <arielb1> I mean, no automatic RVO
+[20:28:05] <Gankro> arielb1: LinkedList allows this
+[20:28:13] <arielb1> Gankro: I want Vec
+[20:28:25] <Gankro> arielb1: You can't have the iteratore be DoubleEnded
+[20:28:36] <arielb1> Gankro: I guess
+[20:28:41] <arielb1> unless you place assertions
+[20:28:50] <arielb1> but for pop you can't have it
+[20:29:04] <Gankro> arielb1: :( That's just Java's ConcurrentModificationException
+[20:29:14] <arielb1> Gankro: not really
+[20:29:24] <arielb1> because it is not aliasing
+[20:29:26] <arielb1> just misuse
+[20:29:36] <arielb1> I mean, next_back -> pop
+[20:30:18] <Gankro> arielb1: You don't need aliasing to get a CME
+[20:30:31] <Gankro> it's just iterator invalidation
+[20:31:04] <arielb1> pop won't be a trait method
+[20:31:12] <Gankro> ?
+[20:31:19] <arielb1> and people mostly don't pass DoubleEndedIterators
+[20:31:29] <arielb1> so you won't get it from some random code
+[20:31:48] <arielb1> but no assertions would be nice too
+[20:31:54] <arielb1> I mean, a separate iterator
+[20:32:04] <Gankro> StreamingIterators just seem like the solution
+[20:32:11] <Gankro> Have the element borrow the iterator
+[20:32:12] <arielb1> Gankro: I don't want a StreamingIterator
+[20:32:24] <Gankro> Why?
+[20:32:24] <arielb1> I want iterator-lifetime access to previous elements
+[20:32:32] <arielb1> I want to pop elements
+[20:32:40] <arielb1> actually, to swap_remove elements
+[20:32:45] <arielb1> but this is equivalent to pop
+[20:32:57] <arielb1> mostly
+[20:33:10] <Gankro> A RandomAccess streaming iterator seems sufficient...?
+[20:33:23] <arielb1> Gankro: but then I won't get access to past elements
+[20:33:24] <Gankro> Which I guess at the limit is "why even use an iterator"
+[20:33:29] <arielb1> I *don't* want a streaming iterator
+[20:33:42] <Gankro> Just use a C-style for loop?
+[20:33:50] <arielb1> but then I won't get iterator-lifetime access
+[20:34:02] <arielb1> I want long access to *some* element
+[20:34:09] <arielb1> and to swap-remove others
+[20:34:16] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Quit: Leaving.)
+[20:34:27] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[20:34:34] <Gankro> Just cast to a *?
+[20:34:43] <arielb1> unsafe
+[20:34:48] <Gankro> yes
+[20:35:06] <arielb1> but
+[20:35:09] <Gankro> Complex access patterns require unsafe
+[20:35:21] <arielb1> this isn't a complex access pattern
+[20:35:31] <arielb1> just one that is not supported
+[20:35:52] <arielb1> I want to deduplicate
+[20:35:54] <arielb1> actually
+[20:36:00] <arielb1> with an HashSet
+[20:36:10] <arielb1> and *not* clone any element
+[20:36:45] <arielb1> because of conditionally-canceled borrows I already have to lookup and update separately
+[20:36:52] <Gankro> There is https://doc.rust-lang.org/std/vec/struct.Vec.html#method.dedup
+[20:37:14] <arielb1> Gankro: that's O(n^2) dedup
+[20:37:18] <arielb1> and I want an equality key
+[20:37:21] <Gankro> It's O(n)
+[20:37:32] <Gankro> It just doesn't dedup fully unless you sort
+[20:37:44] <arielb1> I don't have Ord
+[20:38:10] <arielb1> maybe I should just derive Ord everywhere?
+[20:38:31] <Gankro> That would certainly make this work
+[20:38:43] *** Tuba is now known as Tobba
+[20:38:48] <arielb1> but I want a non-standard Eq
+[20:39:48] <arielb1> is sort fast?
+[20:39:54] <arielb1> I guess I should measure
+[20:39:55] <Gankro> It's mergesort
+[20:40:32] <Gankro> arielb1: Is this something the compiler wants, or an external thing?
+[20:40:32] <bluss> I'm sure you can find faster if you want inplace non-stable
+[20:40:45] <arielb1> rustc
+[20:40:54] <arielb1> optimizing projection code
+[20:40:59] <Gankro> I could definitely hack in an unstable thing for rustc
+[20:41:14] <Gankro> But sorting might actually be faster than the hashset
+[20:41:17] <arielb1> I guess I could just use O(n^2) dedup and hope n never gets big enough
+[20:41:30] <arielb1> it shouldn't be in most cases
+[20:43:35] <arielb1> why don't we have a fast sort?
+[20:46:07] <sfackler> define fast
+[20:46:25] <arielb1> I have large elements
+[20:46:32] <arielb1> fast = doesn't allocate lots of memory
+[20:46:35] <arielb1> in that case
+[20:47:15] <arielb1> but I guess I need to measure
+[20:47:36] <sfackler> yes
+[20:48:24] <arielb1> Rust's HashMap is more optimized than sort
+[20:49:20] <Gankro> arielb1: I agree
+[20:49:22] <arielb1> languages traditionally have some very complicated exotic sort function
+[20:49:30] <Gankro> For whatever reason stability was chosen over speed
+[20:50:26] <arielb1> Gankro: I think nobody uses sort, so nobody cares about sort being slow
+[20:50:43] <arielb1> I mean, nobody uses sort on critical-path
+[20:51:17] <arielb1> do you know of anyone who does?
+[20:51:24] <Gankro> Nope
+[20:51:40] <Gankro> Never seen anyone log an issue against sort sucking
+[20:52:12] <arielb1> I mean, not only in Rust
+[20:53:11] <arielb1> I associate sorting with 100-pass mainframe batch jobs
+[20:56:52] <Gankro> Yeah it's fairly rare, sure
+[20:57:04] <Gankro> Or it's on small inputs and the insertionsort fallback kicks in
+[20:57:44] <arielb1> on another note, anyone here knows how to get consistent percentages out of kcachegrind?
+[20:58:44] <arielb1> SIGABRT sampling sucks
+[21:03:05] <arielb1> I mean, I have one method taking 13%
+[21:03:15] <arielb1> in kcachegrind
+[21:03:28] <arielb1> self=0.02
+[21:03:47] <arielb1> all submethods 1% in total
+[21:07:04] <arielb1> I *could* get a decent SNR with a 1000 samples
+[21:07:04] <arielb1> i.e. overnight
+[21:08:14] <arielb1> but I would prefer to do it with callgrind
+[21:13:21] *** Quits: Yurume (Yurume@moz-0t8.piq.68.115.IP) (Ping timeout: 121 seconds)
+[21:14:32] *** Joins: Yurume (Yurume@moz-0t8.piq.68.115.IP)
+[21:18:15] *** Quits: killercup (killercup@moz-723bo4.dip0.t-ipconnect.de) (Quit: Bye)
+[21:51:59] <Gankro> Oh, are we making decisions on FCP RFCs today?
+[21:52:37] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[21:53:10] <Gankro> aturon: ^
+[21:57:09] <aturon> Gankro: yes, those are going out
+[21:57:21] <aturon> the size_hint one is staying around for another cycle
+[21:57:48] <Gankro> Uh... is there like... discusssion... somewhere...?
+[21:59:42] <aturon> Gankro: on the RFCs :)
+[21:59:58] <aturon> sorry, a bit distracted, one sec
+[22:00:35] <aturon> Gankro: in a different meeting right now, let me get back to you about this shortly
+[22:02:13] <Gankro> ok so we're not doing any of the yea/nea/abstain stuff this time 'round?
+[22:03:57] *** Quits: kimundi (kimundi@moz-bt8log.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[22:06:10] *** Quits: spastorino (sid27384@moz-i6sgse.brockwell.irccloud.com) (Ping timeout: 121 seconds)
+[22:09:11] *** Quits: reem (sid78397@moz-octfcu.brockwell.irccloud.com) (Ping timeout: 121 seconds)
+[22:10:26] *** Joins: zz_kimundi (kimundi@moz-6vnj1q.dip0.t-ipconnect.de)
+[22:10:45] *** Quits: carllerche (sid50851@moz-8i75uq.brockwell.irccloud.com) (Ping timeout: 121 seconds)
+[22:10:49] *** zz_kimundi is now known as kimundi
+[22:12:42] <bluss> Gankro: I think stable sort was chosen for most utility and least surprise
+[22:12:51] <bluss> in a way, you must have a stable sort
+[22:13:06] <Gankro> bluss: I don't really agree...?
+[22:13:13] <bluss> so it's the first thing you add. faster sorts are essential
+[22:13:20] <bluss> not
+[22:13:22] <Gankro> The only thing stable sort is good for is incremental resort
+[22:13:23] <bluss> not essensial
+[22:13:49] <Gankro> Which is pretty niche imho
+[22:13:52] <bluss> IMO sorting by a sort key is often like an incremental resort
+[22:13:59] *** Quits: aturon (sid36348@moz-n3h4qj.brockwell.irccloud.com) (Ping timeout: 121 seconds)
+[22:14:07] <Gankro> What do you mean?
+[22:14:29] <bluss> just that often when you use sort_by, the key does not represent the data completely
+[22:14:46] <bluss> it's just the parameter you sort by, and thus the sort is a bit like an incremental resort
+[22:17:12] <Gankro> I don't follow. Still, I think most people don't care about sort stability. They just want sorted. Or even those that *do* care don't have sufficiently complex data for stability to be a "thing". e.g. if you sort a Vec<u32> stability is a non-concept.
+[22:17:37] <bluss> might be they care so little that they will benefit from the least surprise
+[22:18:19] *** Quits: frewsxcv (uid86219@moz-dneii9.brockwell.irccloud.com) (Ping timeout: 121 seconds)
+[22:30:53] *** Joins: SilverKey (SilverKey@moz-b7q751.biz.rr.com)
+[22:31:12] *** Quits: SilverKey (SilverKey@moz-b7q751.biz.rr.com) (Quit: Cheerio!)
+[22:33:22] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[22:38:40] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Quit: Leaving)
+[22:45:41] *** Quits: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua) (Ping timeout: 121 seconds)
+[22:47:26] *** Joins: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au)
+[22:49:03] *** Joins: reem (sid78397@moz-octfcu.brockwell.irccloud.com)
+[23:00:34] *** Joins: frewsxcv (sid86219@moz-dneii9.brockwell.irccloud.com)
+[23:05:13] *** Quits: reem (sid78397@moz-octfcu.brockwell.irccloud.com) (Quit: )
+[23:12:37] *** Joins: spastorino (sid27384@moz-i6sgse.brockwell.irccloud.com)
+[23:12:56] *** Joins: carllerche (sid50851@moz-8i75uq.brockwell.irccloud.com)
+[23:13:37] *** Joins: aturon (sid36348@moz-n3h4qj.brockwell.irccloud.com)
+[23:13:37] *** ChanServ sets mode: +o aturon
+[23:15:21] *** Joins: reem (sid78397@moz-octfcu.brockwell.irccloud.com)
+[23:20:38] *** Joins: aatch (james@moz-5r41gb.6pd7.20lj.e000.2406.IP)
+[23:43:10] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[23:43:22] <acrichto> Gankro: brson: sfackler: burntsushi: kimundi: huon: aturon: as a heads up, I just transitioned a good number of T-libs RFCs between various states (FCP, closing, merging, etc). They all look like they basically reflected the current consensus, but please feel free to comment otherwise!
+[23:43:36] <acrichto> I think we're still ironing out the exact process for when, where, and how RFC transition states
+[23:43:45] <acrichto> (suggestions of course welcome!)
+[23:49:36] *** kimundi is now known as zz_kimundi
+[23:57:30] *** Quits: arielb1 (Ariel@moz-9he9ta.red.bezeqint.net) (Connection closed)

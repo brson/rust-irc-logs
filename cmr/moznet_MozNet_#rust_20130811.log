@@ -1,0 +1,2084 @@
+[00:02:28] *** Joins: dherman (dherman@moz-FEEC7E9.hsd1.ut.comcast.net)
+[00:02:28] *** ChanServ sets mode: +o dherman
+[00:02:45] *** Quits: lmandel-pto (lmandel@moz-57D3C086.dsl.bell.ca) (Ping timeout)
+[00:03:31] <acrichto> kimundi: is there discussion on an issue of consume vs move_iter?
+[00:05:33] <kimundi> ... lol, once again erick is doing the same changes as I am :P
+[00:06:00] * kimundi should look more deeply into the current open pr beforehand
+[00:06:19] <acrichto> kimundi: initially I would not prefer move_iter to consume, but I also haven't been participating in the discussion on this issue so I'd want to read what's been going on there first
+[00:06:29] <cmr> acrichto: how could move_iter not consume?
+[00:06:49] *** Joins: mihneadb (mihneadb@moz-BE33DA21.fw1.sfo1.mozilla.net)
+[00:07:13] <acrichto> cmr: I mean naming-wise I prefer `consume` to `move_iter`
+[00:07:27] <cmr> oh
+[00:07:31] <cmr> I do too
+[00:07:47] <acrichto> I'm also not a big fan of _iter suffixes
+[00:07:50] <strcat> it doesn't necessarily move or consume - it won't on Option, if the type is implicitly copyable
+[00:08:04] <cmr> value_iter?
+[00:08:33] <strcat> not going to sound right on a map
+[00:08:57] <cmr> naming things is so hard
+[00:09:03] <engla> consume is good when it makes clear that a hashmap is exhausted that way
+[00:09:21] <kimundi> acrichto: Well, in a recent discussion on Option function names, map_consume got changed to map_move. seeing how move is no longer a keyword and all that, move_iter seems shorter than consume_iter(). consume() is even shorter, granted, but it doesn'T really convey being an iterator, and especially on types like str or vec you need the distinction, so for uniformity I'd say move_iter would be better
+[00:10:43] <engla> it doesn't necessarily need to be named _iter() since it's both a conversion and an iterator
+[00:10:50] <engla> .into_iter()
+[00:11:06] <sp3d> I've always liked "into"
+[00:11:22] <acrichto> kimundi: I definitely agree that naming should be uniform, although I'm still not a big fan of the _iter() suffix becuase you know it's an iterator after the first time you've used it and before the first time you use it you'll read the docs which will have "iterator" plastered everywhere (in theory)
+[00:11:29] <engla> I think I'm converted to consume or consume_iter
+[00:11:53] <acrichto> kimundi: also `for (k, v) in map.consume() { ... }` reads really nicely
+[00:12:14] *** Joins: steven_is_false (user@C5B76363.1FF1EBF8.1ECA502.IP)
+[00:12:19] <acrichto> kimundi: or `map.consume().transform(|(k, v)| (k, f(v))).collect()`
+[00:12:22] <steven_is_false> I've run into a problem with SDL.
+[00:12:23] <acrichto> to map a hash map
+[00:12:30] <kimundi> yeah
+[00:12:35] <steven_is_false> wait_event doesn't work because it blocks all my threads.
+[00:12:43] <kimundi> how does it look with, eg a string though?
+[00:12:53] <acrichto> kimundi: you don't really consume a string?
+[00:13:01] <acrichto> the iterator yields either u8 or char, not &
+[00:13:09] <engla> the string iterators are already by value
+[00:13:30] <kimundi> err, right, not string
+[00:13:49] <acrichto> kimundi: vectors are also nice: `for v in vec.consume() { ... }`, or `vec.consume().zip(...)`
+[00:14:14] <acrichto> I'm mainly worried about if I start chaining iterators I'm plastering `_iter` all over the place when it's painfully obvious I'm dealing with iterators already
+[00:14:18] *** Quits: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP) (Quit: Konversation terminated!)
+[00:14:21] <kimundi> yeah.... okay I'm starting to convert to consume() xD
+[00:14:55] <strcat> rusti: std::iterator::count(0, 1)
+[00:14:56] -rusti- {state: 0, step: 1}
+[00:15:04] <acrichto> kimundi: again though, I haven't been participating in these discussions, so I don't want to jump to conclusions
+[00:15:05] <kimundi> consume_iter is worse than move_iter but consume() is better than both
+[00:15:36] <engla> kimundi: soon you'll need to make a PR to rename *from* move_iter to consume
+[00:15:38] <engla> :)
+[00:15:42] <cmr> https://github.com/mozilla/rust/blob/master/src/libstd/task/local_data_priv.rs#L178
+[00:15:49] <cmr> What does `T: 'static` mean?
+[00:15:57] <kimundi> acrichto: Meh, I also haven't :P I'm a bit plannless at the moment, changing random things around for more uniformity, and asking afterwards if it's a good idea
+[00:16:05] <acrichto> cmr: it's alive for the static lifetime (no borrowed pointers basically)
+[00:16:38] <cmr> acrichto: What types fulfill it?
+[00:17:08] <cmr> acrichto: And how is it represented in the AST?
+[00:17:29] <acrichto> cmr: pretty much everything except structures which contain `&` pointers, and I think it's based on type-analysis instead of in the AST
+[00:17:44] <acrichto> cmr: if you have something like ~int it implicitly ascribes to the static lifetime instead of explicitly saying so
+[00:20:12] <kimundi> So, longterm: str::iter() -> chars(), str::byte_iter() -> bytes(), str::word_iter() -> words(), vec::consume_iter() -> vec::consume() ... ?
+[00:20:42] <cmr> acrichto: right, but it needs to be represented in the AST somehow, otherwise it wouldn't parse or pretty print.
+[00:21:22] <acrichto> kimundi: I like the sound of all of those
+[00:21:49] <cmr> kimundi: as do I
+[00:21:52] <engla> what would .iter() for a vector be?
+[00:21:56] <strcat> kimundi: uh, what does word_iter do?
+[00:21:59] <acrichto> cmr: oh the lifetime itself is somewhere in the bounds -- TyParamBound I think
+[00:22:00] *** Joins: eatkinson (eatkinson@5AA7EAAB.1CF4A467.6C91C3A5.IP)
+[00:22:01] <strcat> that's probably wrong
+[00:22:17] <engla> word iter splits on whitespace
+[00:22:23] <acrichto> strcat: "a b".words would yield "a" and "b" i woudl presume
+[00:22:31] <strcat> ok that's wrong, we can remove it
+[00:22:31] <kimundi> right
+[00:22:32] <cmr> acrichto: TyParamBound has two variants, RegionBound (is that what this is?) and TraitBound(TraitRef)
+[00:22:37] <acrichto> engla: I think just `iter()` is fine, you need some way of saying "I'd like to iterate over this"
+[00:22:38] <engla> strcat: why is it wrong?
+[00:22:46] <strcat> because that's not how unicode defines words
+[00:22:47] <acrichto> cmr: I believe so yeah
+[00:22:55] <strcat> http://www.unicode.org/reports/tr29/#Word_Boundaries
+[00:22:57] <cmr> ok
+[00:22:57] <kimundi> engla: items() maybe?
+[00:23:11] <kimundi> for e in vec.items()
+[00:23:15] <strcat> if str implements a method, it needs to be correct for the unicode semantics of str
+[00:23:21] <acrichto> cmr: search for RegionTyParamBound in pprust.rs, it's pretty-printed to "'static"
+[00:23:25] * strcat shrugs
+[00:23:29] <strcat> str is very bad :s
+[00:23:31] <acrichto> kimundi: I'd prefer `iter`
+[00:23:32] <kimundi> vec.items().map(|e| e.add_one())
+[00:23:42] <engla> strcat: ok!
+[00:23:42] <acrichto> well that should just be vec.map
+[00:23:51] <acrichto> strcat: oh good point
+[00:24:07] <strcat> it could be called split_whitespace
+[00:24:10] <engla> strcat: there are split iterators already so users can do simple whitespace splitting themselves
+[00:24:26] <strcat> I'm fine with having it, just not with 'word' in the name
+[00:24:28] <strcat> cause it's not ;p
+[00:24:45] <engla> well if split_whitespace is mostly wrong, why not just keep it general
+[00:24:57] <engla> and just have the split iterators
+[00:25:10] <strcat> true
+[00:25:22] <kimundi> strcat: I think word_iter is just a case of one word two meanings: 'words' - unicode text word sense; 'words' - what the haskell words does
+[00:25:29] <strcat> kimundi: yeah but str is unicode
+[00:25:33] <kimundi> sure
+[00:25:41] *** Quits: reyre (reyre@moz-9002CDDA.cpe.net.cable.rogers.com) (Client exited)
+[00:25:50] <kimundi> should be changed for clarity
+[00:26:01] <engla> but these simple ascii text transformations, are they useful beyond programming book examples?
+[00:26:08] <strcat> haskell's strings are linked lists of code points without any actual unicode support - not a great place to base anything on
+[00:26:09] <engla> like words/unwords?
+[00:26:22] <strcat> engla: no, they're not useful in a real program with unicode support
+[00:26:26] <strcat> they're always incorrect
+[00:26:36] <kimundi> engla: convert command line to vector of arguments for example
+[00:26:40] <strcat> if you have your own data format defined within a subset of unicode, they can be correct
+[00:26:46] <strcat> kimundi: command line input is [u8], not str
+[00:26:51] <strcat> it's not guaranteed to be unicode
+[00:27:03] <strcat> our existing getenv/setenv and args are 100% wrong
+[00:27:08] <kimundi> strcat: hypothetical unicode command line
+[00:27:11] <engla> kimundi: but shell escapes and quoting
+[00:27:46] <strcat> kimundi: unicode and monospace don't really mix, neither does unicode and string splitting
+[00:28:03] <kimundi> "I get one string and want to split on whitespace"
+[00:28:14] <strcat> you get one byte array*
+[00:28:32] <strcat> there's no way to receive utf-8 as input from the outside world
+[00:28:36] <kimundi> not debating the name here, just that what word_iter does to day is something you need sometimes
+[00:28:49] <strcat> ok, when do you need it?
+[00:28:53] <strcat> command-line - no, it has quoting
+[00:28:56] <strcat> it needs a parser
+[00:29:08] <engla> the implementation of word_iter is    self.split_iter(char::is_whitespace).filter(|s| !s.is_empty())
+[00:29:34] <engla> so it's easy to do even if the method doesn't exist
+[00:29:36] <strcat> there are languages without whitespace
+[00:29:45] <strcat> it is very wrong to assume words breaks are whitespace
+[00:30:01] <kimundi> look, I'm perfectly fine with "foo bar".split(is_whitespace)
+[00:30:12] <engla> right
+[00:30:57] *** Quits: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP) (Quit: Leaving.)
+[00:31:01] *** Joins: james4k (james@moz-E7990244.consolidated.net)
+[00:31:15] <strcat> we don't currently have support for measuring the length of a string, splitting strings on glyph/word boundaries, sorting strings, etc.
+[00:31:22] <engla> I have different thing. For a typical iterator method:  fn word_iter(&self) -> WordIterator<'self>;   This doesn't tell you what the element type of the iterator is. That's probably mostly a documentation issue. either the tool or the text.
+[00:31:30] <kimundi> we need a grapheme cluster iter
+[00:32:06] <cmr> Unicode string handling is a task best reserved for experts
+[00:32:09] <strcat> engla: in rustdoc_ng WordIterator is a link, and tells you the type
+[00:32:11] <kimundi> btw, do you knwo a goof short name for grapheme cluster? something that fits to u8 and char. Best I got so far Is 'grcl'
+[00:32:16] <cmr> I just want ascii ;p
+[00:32:17] <strcat> cmr: you don't need to be an expert
+[00:32:21] <kimundi> know* good*
+[00:32:30] <strcat> they are trivial algorithms to implement
+[00:33:08] <strcat> they're gigantic spec sheets and you can generate code/tables from them
+[00:33:11] <cmr> ascii with a limited subset of english
+[00:33:44] <strcat> kimundi: how about 'char' ;p
+[00:33:51] <strcat> can rename the existing char to ucs4
+[00:33:54] <strcat> it's not a character
+[00:33:55] <kimundi> strcat: but.. we already have char :P
+[00:33:59] <strcat> yeah but it's not one
+[00:34:00] <kimundi> or taht
+[00:34:00] *** Joins: int3_ (int3_@moz-6F0859B8.dsl.pltn13.sbcglobal.net)
+[00:34:03] <engla> rename the existing char to u32
+[00:34:04] <kimundi> even better
+[00:34:12] <cmr> go uses rune
+[00:34:13] <kimundi> engla: no
+[00:34:21] <kimundi> engla: differnece
+[00:34:25] <strcat> cmr: rune is kind of outdated terminology
+[00:34:33] <strcat> it implies a glyph, but they use it for code points
+[00:34:36] <cmr> oh
+[00:34:45] <strcat> 'graph' and 'ucs4' would be the most correct names
+[00:34:59] <kimundi> strcat_ but isnt an official unicode character a codepoint?
+[00:35:02] <cmr> I didn't know rune == codepoint in go
+[00:35:04] <strcat> kimundi: no
+[00:35:12] <strcat> kimundi: code points are a variable length encoding of semantic characters
+[00:35:15] * kimundi though he read it like that recently
+[00:35:20] <strcat> they aren't characters
+[00:35:54] <strcat> unicode aims to encode all semantic characters in natural language - lots are encoded via variable-length chains of code points composed together
+[00:35:56] <kimundi> strcat: a codepoint is just a number, variable lenght is only part of an encoding.
+[00:35:59] <strcat> no
+[00:36:05] <kimundi> no?
+[00:36:07] <strcat> code points are not characters
+[00:36:08] <kimundi> gnar
+[00:36:14] <cmr> kimundi: no, utf-8 is a variable length encoding of a codepoint
+[00:36:20] <cmr> (for example)
+[00:36:20] <kimundi> gimme a link to a unicode text I can strg-f :P
+[00:36:20] <strcat> thinking of UTF-32 as a fixed-length encoding is wrong
+[00:36:36] <kimundi> all this terminology is confusing
+[00:36:44] <kimundi> strcat: I never clamed that
+[00:36:50] <kimundi> I know that that is wrong
+[00:37:14] <strcat> http://www.unicode.org/reports/tr29/
+[00:37:22] <strcat> It is important to recognize that what the user thinks of as a "character"—a basic unit of a writing system for a language—may not be just a single Unicode code point. Instead, that basic unit may be made up of multiple Unicode code points. To avoid ambiguity with the computer use of the term character, this is called a user-perceived character. For example, “G” + acute-accent is a
+[00:37:24] <strcat> user-perceived character: users think of it as a single character, yet is actually represented by two Unicode code points. These user-perceived characters are approximated by what is called a grapheme cluster, which can be determined programmatically.
+[00:37:26] <strcat> Grapheme cluster boundaries are important for collation, regular expressions, UI interactions (such as mouse selection, arrow key movement, backspacing), segmentation for vertical text, identification of boundaries for first-letter styling, and counting “character” positions within text. Word boundaries, line boundaries, and sentence boundaries should not occur within a grapheme cluster: in
+[00:37:28] <strcat> other words, a grapheme cluster should be an atomic unit with respect to the process of determining these other boundaries.
+[00:37:32] <strcat> anyway - that's the unit users and application devs care about
+[00:38:02] <strcat> code points don't correspond to a real-world thing
+[00:38:50] <strcat> they're just an arbitrary abstract way of splitting up real-word semantic characters
+[00:39:01] <kimundi> right
+[00:39:16] <strcat> correct string handling generally leaves the strings as they were
+[00:39:33] <kimundi> codepoints are a halfway step between 'bytestream' and 'user-perciived character'
+[00:39:53] <strcat> splitting, iterating, reversing, etc. is fundamentally a bad idea - but if you must do it, you want grapheme clusters as your unit
+[00:40:50] *** Joins: tikue (tkuehn@moz-CF8BEBEF.dia.static.qwest.net)
+[00:41:11] *** Parts: steven_is_false (user@C5B76363.1FF1EBF8.1ECA502.IP) (ERC Version 5.3 (IRC client for Emacs))
+[00:41:49] <kimundi> so, new worldorder: 1. convince devs to include enough unicode support to have reliable grapehem clusters. 2. change 'char' to 'ucs4' 3. make 'char' the grapheme cluster type ?
+[00:42:20] <strcat> grapheme clusters only requires a big match expression
+[00:42:28] <kimundi> sure
+[00:42:29] <strcat> auto-generated from a single file
+[00:42:38] <strcat> I have a python script doing it for C :s
+[00:42:50] <kimundi> char would have to be an unsized type like str then
+[00:43:04] <kimundi> couse it's basically a newtyped str then
+[00:43:26] <kimundi> we really need custom DSTs :P
+[00:43:44] <goffrie> kimundi: it would be nice to have DSTs at all first :P
+[00:44:00] <kimundi> char = 128 bit, ucs4 = 32 bit
+[00:45:06] <kimundi> aaanyway. did strcat or anyone else open a issue about word_iter() ?
+[00:45:07] <strcat> char isn't 128 bit
+[00:45:26] <strcat> graphemes are N code points
+[00:45:33] <goffrie> strcat: if char is &str then yes :P
+[00:45:38] <kimundi> wich would equal a string splice
+[00:46:02] <strcat> I think str is a pretty hopeless module
+[00:46:07] <strcat> needs to just be redone
+[00:46:11] <kimundi> &char = 128/64 bit, ~char = 64/32 bit etc
+[00:46:26] *** Quits: dherman (dherman@moz-FEEC7E9.hsd1.ut.comcast.net) (Quit: dherman)
+[00:46:44] <kimundi> strcat: well, you keep pokeing holes in it xD
+[00:46:56] <kimundi> well, mor like discovering new ones
+[00:47:04] <strcat> not really discovering
+[00:47:07] <strcat> I know it's 90% wrong
+[00:47:14] <cmr> It's 10% right!
+[00:47:17] <cmr> \o/
+[00:47:25] *** Quits: vosen (vosen@moz-266BA656.icpnet.pl) (Quit: Leaving)
+[00:47:27] <cmr> that's infinity more right than C
+[00:48:54] <kimundi> strcat: you said you did it before in python, could you write a grapehem cluster iterator? I'd do it if I could verify that I don't do anything wrong :P
+[00:50:02] <kimundi> (even just something that spits out correct sized &str's would be fine, I can build the rest)
+[00:50:58] <engla> I think that's the hard part kimundi :)
+[00:51:49] <kimundi> engla: well, yeah :P
+[00:53:32] <engla> the hard part is convincing strcat to do the work :)
+[00:54:08] *** Quits: int3_ (int3_@moz-6F0859B8.dsl.pltn13.sbcglobal.net) (Client exited)
+[00:55:09] <kimundi> well, he's the one who demands it for correctness, so... ;)
+[00:55:29] <cmr> you just have to trick him into it
+[00:55:41] *** Quits: eatkinson (eatkinson@5AA7EAAB.1CF4A467.6C91C3A5.IP) (Quit: eatkinson)
+[00:56:52] *** Joins: int3_ (int3_@moz-6F0859B8.dsl.pltn13.sbcglobal.net)
+[00:57:38] <kimundi> "hey strcat, I heard llvm auto vectorizes any loop if there is a working grapheme cluster implementation somewhere in your compilation unit"
+[00:58:01] <kimundi> (;P)
+[00:59:34] * strcat is going to have to make his own path/file handling lib
+[00:59:53] *** Quits: int3_ (int3_@moz-6F0859B8.dsl.pltn13.sbcglobal.net) (Client exited)
+[01:00:24] *** Joins: int3_ (int3_@moz-6F0859B8.dsl.pltn13.sbcglobal.net)
+[01:01:15] *** Joins: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP)
+[01:01:57] *** Joins: z0w0 (zack@moz-E12708D5.lns6.woo.bigpond.net.au)
+[01:03:33] <kimundi> could we rename the iterators to _ter-less names today, or are there still method conflicts?
+[01:03:51] <kimundi> or bugs
+[01:04:01] <kimundi> I see that that transfomr got renamed to map now?
+[01:04:37] <strcat> because it's no longer on a generic impl
+[01:04:39] <strcat> the bugs are unfixed
+[01:06:09] <kimundi> hm... I guess I could just global search replace and look what breaks
+[01:06:46] <kimundi> anyway, would that generally be desirable, or should I open a RFC for that?
+[01:07:07] *** Quits: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP) (Ping timeout)
+[01:13:24] *** Quits: int3_ (int3_@moz-6F0859B8.dsl.pltn13.sbcglobal.net) (Client exited)
+[01:17:41] <engla> kimundi: it goes against the Iterable concept
+[01:17:47] <engla> (or maybe it doesn't)
+[01:18:24] <engla> .iter() is a nice consistency today
+[01:18:49] *** Quits: q66 (q66@6EE9DE40.46454B5D.33AABD5F.IP) (Quit: Leaving)
+[01:18:50] <tikue> i don't understand
+[01:18:58] <tikue> what is _ter ?
+[01:19:18] <kimundi> tikue: typo: _iter suffix on iteration methods
+[01:19:26] <tikue> i haven't noticed that
+[01:19:36] <tikue> what methods for instance?
+[01:20:17] <tikue> rusti: let xs = [1, 2, 3]; for i in xs.iter().transform(|&x| x) { printfln!(i); } // no iter suffix?
+[01:20:21] -rusti- 1
+[01:20:21] -rusti- 2
+[01:20:21] -rusti- 3
+[01:20:21] -rusti- ()
+[01:20:37] <engla> .iter() has an iter
+[01:20:40] <engla> suffix
+[01:20:58] <tikue> well that's because it's creating an iter. .iter() isn't a method of iterator
+[01:21:13] <tikue> i think i'm confused?
+[01:21:18] <kimundi> engla: well, iter() itself can remain, or get renamed to something more implementation-agnostic like 'items()' or 'chars()'. In anyway an Iterable impl would still work, just maybe result in a duplicate function name
+[01:22:06] <engla> as long as containers have a sensible consistency
+[01:22:11] <kimundi> str.iter(), str.bytes(), str.consume()
+[01:22:40] <cmr> tikue: for example str.byte_iter() or v.consume_iter
+[01:23:00] <tikue> ah
+[01:23:10] <tikue> i understand
+[01:23:34] * tikue cares not what color this bikeshed turns out to be
+[01:24:41] <engla> I don't participate in anything labelled as bikeshed, because if the outcome is meaningless, why should I discuss it?
+[01:26:03] *** Quits: Heo__ (Heo@13864F63.2DD6919B.56C9C5CA.IP) (Quit: Leaving)
+[01:26:17] *** Joins: eatkinson (eatkinson@5AA7EAAB.1CF4A467.6C91C3A5.IP)
+[01:26:45] <kimundi> it's not really bikeshedding if you try to find a uniform color sheme for all N vehicle-sheds you've already build
+[01:27:09] <engla> right, if you think the outcome is of importance you don't call it a bikeshed
+[01:27:33] *** Quits: tikue (tkuehn@moz-CF8BEBEF.dia.static.qwest.net) (Connection reset by peer)
+[01:27:35] *** Joins: steven_is_false (user@C5B76363.1FF1EBF8.1ECA502.IP)
+[01:27:45] <kimundi> well... using that definition all lot of bikeshedding is not bikeshedding xD
+[01:28:05] *** Joins: tikue (tkuehn@moz-CF8BEBEF.dia.static.qwest.net)
+[01:28:10] *** Quits: eatkinson (eatkinson@5AA7EAAB.1CF4A467.6C91C3A5.IP) (Quit: eatkinson)
+[01:28:18] <steven_is_false> So I have a bunch of commits for Rust's OpenGL ES binding here https://github.com/sstewartgallus/rust-opengles/compare . Should I split them up?
+[01:28:27] <tikue> engla: the outcome doesn't have to be meaningless to be a bikeshed
+[01:28:35] *** Quits: bytewise (bytewise@moz-4A801D04.unitymediagroup.de) (Quit: Leaving)
+[01:28:35] <cmr> steven_is_false: eh, send a PR and find out? :)
+[01:28:50] <steven_is_false> cmr: Fair enough.
+[01:29:06] <kimundi> strcat: A, right I wanted to ask you something
+[01:29:30] <engla> I'm actually basically attacking the people on the ML who start discussions with "let's bikeshed X".. I think that's sending the wrong signal
+[01:30:04] <engla> but I'm not a subscriber there (that was a brief period) so it's not my thing
+[01:31:12] <kimundi> engla: Well, the devs are using that terminology too :P Basically, we don't try to draw a line between real-bikeshedding, kinda-bikeshedding and not-really-bikeshedding. :P
+[01:31:52] <cmr> at least according to the wiki, bikesheds are pre-proposals
+[01:31:59] <cmr> (the rust wiki)
+[01:32:06] <engla> ok. It's not for me.
+[01:33:04] <tikue> bikeshedders: the people that brought you ```for pat in iter```
+[01:33:17] <kimundi> and &'a str
+[01:34:30] <kimundi> And don'T forget our new all-time champion: https://github.com/mozilla/rust/issues/4819 - 105 comments and counting!
+[01:35:37] *** Quits: bjz_ (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Quit: Leaving...)
+[01:35:39] <tikue> related to number traits: i think they're borderline unusable without implicitly copyable
+[01:35:41] <tikue> :(
+[01:36:34] <kimundi> tikue: Well, I'd rather have to use clone() for numbers than make numbers special compared to all other types
+[01:36:39] <strcat> they can't require implicitly copyable - we want to encourage using big integers or arbitrary precision decimals/floats or rationals when appropriate
+[01:36:48] <strcat> we already encourage fixed-size integers *too much*
+[01:37:23] <kimundi> strcat: What do I have to do to get your rust arch nightly builds? arch and linux newbe here ;)
+[01:37:30] *** Parts: steven_is_false (user@C5B76363.1FF1EBF8.1ECA502.IP) (ERC Version 5.3 (IRC client for Emacs))
+[01:37:35] <strcat> [thestinger]
+[01:37:37] <strcat> SigLevel = Optional
+[01:37:39] <strcat> Server = http://pkgbuild.com/~thestinger/repo/$arch
+[01:37:41] <strcat> in pacman.conf
+[01:38:07] <kimundi> just paste there, and then pacman -S ...something ?
+[01:38:12] *** Quits: cdidd (cdidd@moz-D182CDB6.broadband.corbina.ru) (Input/output error)
+[01:38:15] <strcat> pacman -Syu rust-git
+[01:38:19] <kimundi> kay
+[01:38:42] <strcat> the version is just from git describe, so it will increment for all eternity
+[01:38:52] <strcat> Version        : 0.7.1449.g2ba36ec-1
+[01:38:59] <strcat> (1449 commits since 0.7)
+[01:39:55] <tikue> strcat: i tried to type parameterize my prime number iterator over Integers, and the code is just awful looking because of having to clone numbers so much…it's also a lot slower than the non-generic version, but i don't know if that's specifically due to the cloning
+[01:40:26] <strcat> if it's slower than the non-generic version it's not doing the same thing :s
+[01:40:28] <cmr> Issue churn: -12
+[01:40:36] <kimundi> tikue: clones() should optimizve to the same thing like an implicit copy
+[01:40:41] <strcat> it does
+[01:40:54] <tikue> ok let me show you the code -- perhaps you can help me identify the problem?
+[01:41:36] <engla> I think cmr is twirling
+[01:42:01] <cmr> he is!
+[01:42:09] *** Joins: dherman (dherman@moz-FEEC7E9.hsd1.ut.comcast.net)
+[01:42:09] *** ChanServ sets mode: +o dherman
+[01:42:47] <cmr> http://seld.be/rustdoc/master/std/iterator/struct.Scan.html
+[01:43:31] *** Joins: cdidd (cdidd@moz-3BF36E18.broadband.corbina.ru)
+[01:43:40] <cmr> rustdoc_ng approaches readiness asymptotically
+[01:43:43] <acrichto> cmr: nice!
+[01:43:49] <acrichto> cmr: that's awesome!
+[01:43:57] <cmr> (99% of the work is being done by Seldaek at this point)
+[01:44:07] <acrichto> Seldaek: nice! :)
+[01:44:27] <acrichto> is all this code in the rustdoc_ng repo?
+[01:44:29] <Seldaek> cmr: if you're bored you can fix the /*! on http://seld.be/rustdoc/master/std/iterator/index.html :p
+[01:44:39] <cmr> Seldaek: doing TWiR and then going to bed, will fix tomorrow
+[01:44:50] <cmr> acrichto: cmr/rustdoc_ng and Seldaek/rustdoc_web
+[01:44:58] <acrichto> cool, cool
+[01:45:08] <engla> Seldaek: it looks good
+[01:45:45] <acrichto> Seldaek: just noticed that the `[src]` links go back to github (which is awesome), but would it be possible to replace "master" with the git sha1 so the highlighting is right?
+[01:46:06] <tikue> ugh
+[01:46:07] <Seldaek> acrichto: once the build process is in place and the hash gets generated automatically yes :)
+[01:46:07] <cmr> acrichto: not with the information rustpkg exposes, no
+[01:46:14] <tikue> what causes the multiple matching crates for `std` problem?
+[01:46:23] <acrichto> Seldaek: ok cool! again though, nice job
+[01:46:32] <cmr> tikue: multiple libstd-*, or a duplicate entry in hte library search path
+[01:46:33] <engla> source links! that's awesome. it's awesome for the haskell docs
+[01:46:55] <tikue> cmr: all I did was git pull origin master && ./configure && make -- is that wrong?
+[01:47:02] <Seldaek> acrichto: basically it works like that now https://github.com/Seldaek/rustdoc_web/blob/master/config.json#L13
+[01:47:02] <cmr> tikue: nope, shouldn't be
+[01:47:12] <tikue> cmr: is this known to happen then?
+[01:47:26] <cmr> tikue: it shouldn't, pnkfelix should have fixed all the issues with it :(
+[01:47:30] *** Quits: MrFahrenheit (RageOfThou@3FEF494C.29C984D5.783DEDCA.IP) (Ping timeout)
+[01:47:34] <cmr> tikue: make clean, perhaps?
+[01:47:39] <acrichto> Seldaek: oh sweet, that's exactly what I would expect
+[01:47:43] *** Quits: RMF (RMF@moz-2758EDDD.dsl.telepac.pt) (Ping timeout)
+[01:47:53] <tikue> :(
+[01:48:23] <Seldaek> acrichto: and the knownCrates will allow cross-linking the main rust docs from third party package docs too which should be nice
+[01:48:38] <cmr> (https://github.com/mozilla/rust/issues/1642)
+[01:48:51] <acrichto> Seldaek: that'll definitely generate some real nice docs
+[01:49:24] <cmr> Trimming some of the fat from paths (like std::option::Option can be Option) would be nice but is not trivial
+[01:49:51] <Seldaek> well if we just sync up a hardcoded list of the prelude items every now and then it should be alright
+[01:50:06] <Seldaek> it's not very elegant but it should do the trick, and I guess the prelude will stabilize at some point
+[01:50:06] <cmr> that's practically cheating :P
+[01:50:53] <kimundi> tikue: what does it print as two conflicting pats?
+[01:51:00] <kimundi> paths* for std
+[01:51:06] *** Quits: dherman (dherman@moz-FEEC7E9.hsd1.ut.comcast.net) (Quit: dherman)
+[01:51:18] <tikue> kimundi: 
+[01:51:21] <tikue> note: path: /Users/tkuehn/rust/x86_64-apple-darwin/stage2/lib/rustc/x86_64-apple-darwin/lib/libstd-6c65cf4b443341b1-0.8-pre.dylib
+[01:51:25] <tikue> note: path: /Users/tkuehn/rust/x86_64-apple-darwin/stage2/lib/libstd-6c65cf4b443341b1-0.8-pre.dylib
+[01:51:50] *** Joins: RMF (RMF@moz-E2EE1403.dsl.telepac.pt)
+[01:51:56] <kimundi> that looks strange
+[01:52:10] <kimundi> delete the x86_... folder :p
+[01:52:35] <kimundi> if you just pulled it has to rebuild everything in it anyway
+[01:52:46] <tikue> i had already rebuilt
+[01:52:56] <tikue> and that happened when i did bin/rustc xxx.rs
+[01:53:19] <kimundi> wait, so make had no problem?
+[01:53:25] <tikue> yes
+[01:53:40] <kimundi> then it could just be the way you called it with bin/rustc... hm
+[01:54:20] <doomlord_> should i bother sending this pull request: i added default args to the AST, but with a compiler warning if they are supplied, since they're not implemented. i hope putting them in the AST would be a step forward to them going in, in any form.. (i'd like to experiment myself here)
+[01:54:28] *** Quits: Earnestly (earnest@moz-55672F6A.range86-164.btcentralplus.com) (Ping timeout)
+[01:54:40] <cmr> doomlord_: I don't think so, not until the whole feature is complete
+[01:54:57] <kimundi> doomlord_: I think stuff like that is normally hidden from use with a -Z flag
+[01:55:26] *** Joins: noam_ (noam@F6B530A7.720527A7.416762B.IP)
+[01:55:28] *** Quits: noam (noam@F6B530A7.720527A7.416762B.IP) (Ping timeout)
+[01:56:36] <doomlord_> ok fair enough . my reasoning was sync . i'm not entirely sure i will be able to implement this myself, i fear having a branch that diverges too much as time goes on
+[01:57:15] <doomlord_> how does a "-Z flag" work ? ... something for experimental features ?
+[01:57:16] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[01:58:06] <kimundi> seems that way, i don't know more than that though
+[02:01:38] <doomlord_> could anyone comment if what i've done would be the right way to do it .. https://github.com/dobkeratops/rust/compare/default_args
+[02:01:59] *** Joins: milinda (milinda@moz-C79ADF95.dhcp-bl.indiana.edu)
+[02:02:28] <cmr> doomlord_: looks mostly good for me
+[02:03:03] <cmr> it's cool that it was such a small change to the parser.
+[02:03:51] <cmr> doomlord_: was there a discussion on the ML/open issue about including this in the language?
+[02:04:09] <tikue> wow
+[02:04:12] <tikue> after a make clean this still happens
+[02:04:26] <doomlord_> there's an open issue , "keyword/default arguments" .. i'll throw a link to this there
+[02:06:33] *** Joins: eatkinson (eatkinson@5AA7EAAB.1CF4A467.6C91C3A5.IP)
+[02:06:39] *** Quits: milinda (milinda@moz-C79ADF95.dhcp-bl.indiana.edu) (Input/output error)
+[02:08:13] <tikue> strcat: https://gist.github.com/tikue/66c35a110cc2c2c4a460
+[02:08:21] <tikue> any idea what about the generic version is causing that slowdown?
+[02:09:19] <acrichto> man the *-nopt builders are taking 3+ hrs to finish their tests
+[02:09:27] <cmr> acrichto: yeah :
+[02:09:29] <cmr> \
+[02:09:41] <acrichto> dbaupp: you have data for the *-nopt builders for isrustfastyet?
+[02:10:05] <acrichto> they should be slow but not this slow
+[02:10:09] <strcat> tikue: well you don't need all those clones
+[02:10:21] <tikue> strcat: i believe i do
+[02:10:26] <tikue> strcat: but you said they should be noops didn't you
+[02:10:30] <strcat> yes
+[02:10:33] <strcat> but you don't need them
+[02:10:38] <cmr> tikue: also you're compiling with -O right?
+[02:10:38] <tikue> strcat: it won't compile without them
+[02:10:45] <strcat> rusti: let x = &5; let y = &5; x.add(y)
+[02:10:46] <tikue> cmr: no, should I be?
+[02:10:50] <cmr> YES
+[02:10:50] -rusti- pastebinned 35 lines of output: http://ix.io/7c5
+[02:10:53] <tikue> :P
+[02:10:54] <cmr> Most certainly!
+[02:10:57] <strcat> rusti: let x = &5i; let y = &5i; x.add(y)
+[02:10:59] -rusti- 10
+[02:11:04] <tikue> strcat: ah ok thanks
+[02:11:08] <tikue> i'll do that :)
+[02:11:20] *** Quits: Nisstyre (wes@moz-FD86289.netflash.net) (Quit: Leaving)
+[02:11:39] *** Quits: eatkinson (eatkinson@5AA7EAAB.1CF4A467.6C91C3A5.IP) (Ping timeout)
+[02:11:58] <cmr> acrichto: And yet the amount of PRs merged each week increases, due to rollups.
+[02:12:08] <cmr> Got 70 this week, as opposed to 63 the past two.
+[02:12:15] <acrichto> cmr: really? that's awesome
+[02:12:16] <cmr> We would have had 54 were it not for my rollup
+[02:12:22] <acrichto> where are you getting these numbers from?
+[02:12:27] <tikue> how do I import the Algebraic trait for uint?
+[02:12:30] <cmr> git log --author=bors
+[02:12:35] <cmr> (basically)
+[02:12:40] <acrichto> ah, that's a much better source of truth than github
+[02:12:45] <cmr> yes, it definitely is
+[02:12:51] <acrichto> https://github.com/mozilla/rust/pulse says only 6 were merged
+[02:12:55] <acrichto> and I'm not sure why...
+[02:13:03] <cmr> I use pulse for issue churn, and I have no idea if it's right or not
+[02:13:17] <acrichto> it's probably not too wrong
+[02:13:35] *** Joins: rusty (Mibbit@moz-5949C51B.dllstx.fios.verizon.net)
+[02:13:42] <Seldaek> I think issues are ok, problem is with PRs when they get closed due to a rollup or whatever they aren't marked as merged
+[02:13:46] *** Quits: rusty (Mibbit@moz-5949C51B.dllstx.fios.verizon.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[02:13:56] <engla> they aren't marked merged when bors does it either
+[02:13:59] *** Joins: rustyPipe (Mibbit@moz-5949C51B.dllstx.fios.verizon.net)
+[02:14:11] <doomlord_> heh. simple change to the parser, but how to handle the constraints on what a valid default expressiion is...
+[02:14:12] <Seldaek> yeah that could be, depends how the merge is done really
+[02:14:29] <tikue>                                                                            ^~~~~~~~~~~
+[02:14:30] <Seldaek> if the commit ids change then github can't know a merge happened
+[02:14:40] <tikue> rust/primes.rs:21:33: 21:44 error: type `uint` does not implement any method in scope named `pow`
+[02:14:41] <tikue> rust/primes.rs:21                 .take_while(|&p| p.pow(2) <= i)
+[02:14:42] <tikue>                                                                            ^~~~~~~~~~~
+[02:14:42] <Seldaek> I don't know if bors rebases anything..
+[02:14:50] <cmr> bors merges the PR into the auto branch, then if tests pass, merges auto into master
+[02:14:53] <cmr> no rebasing
+[02:14:55] <tikue> is use num::Algebraic not enough to get pow?
+[02:14:56] <rustyPipe> When using the trait to_hex from the module hex, can we just provide a string, or do we have to provide ASCII codes?
+[02:15:11] <Seldaek> cmr: but then it closes the issue before merging to master perhaps?
+[02:15:12] <tikue> rusti: use std::num::Algebraic; 2.pow(2)
+[02:15:13] -rusti- <anon>:5:34: 6:5 error: type `<VI0>` does not implement any method in scope named `pow`
+[02:15:13] -rusti- <anon>:5          use std::num::Algebraic; 2.pow(2)
+[02:15:13] -rusti- <anon>:6     };
+[02:15:13] -rusti- error: aborting due to previous error
+[02:15:13] -rusti- application terminated with error code 101
+[02:15:26] <engla> rustyPipe: I think you can just use the .as_bytes() of a string
+[02:15:37] <cmr> Seldaek: he doesn't close the issue at all afaik, it's closed by "Closes #XXXX" in the merge commit from auto into master
+[02:15:48] <tikue> rusti: use std::num::Algebraic::pow; 2.pow(2)
+[02:15:51] -rusti- pastebinned 8 lines of output: http://ix.io/7c6
+[02:16:10] <bjz> tikue: we need to immplement pow for ints
+[02:16:15] <engla> rustyPipe: .as_bytes() for a string is its utf-8 encoding
+[02:16:17] <tikue> oh
+[02:16:21] <tikue> thx bjz
+[02:16:22] <Seldaek> cmr: ok, eh well then I don't know what's up. but certainly the bors merge model isn't the way github is generally used so it probably trips something up
+[02:16:25] <bjz> tikue: sorry :(
+[02:16:29] <tikue> np :P
+[02:16:46] <bjz> rusti: 2f.pow(2f)
+[02:16:47] -rusti- <anon>:5:16: 5:18 error: mismatched types: expected `&float` but found `float` (expected &-ptr but found float)
+[02:16:47] -rusti- <anon>:5          2f.pow(2f)
+[02:16:47] -rusti-                          ^~
+[02:16:47] -rusti- error: aborting due to previous error
+[02:16:47] -rusti- application terminated with error code 101
+[02:17:05] <tikue> lol
+[02:17:05] <bjz> rusti: std::num::pow(2f, 2f)
+[02:17:06] -rusti- 4
+[02:17:08] <kimundi> rusti: ::std::num::pow_with_uints::<uint>(2, 2)
+[02:17:09] -rusti- <anon>:5:9: 5:43 error: unresolved name `std::num::pow_with_uints`.
+[02:17:09] -rusti- <anon>:5          ::std::num::pow_with_uints::<uint>(2, 2)
+[02:17:09] -rusti-                   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[02:17:09] -rusti- error: aborting due to previous error
+[02:17:09] -rusti- application terminated with error code 101
+[02:17:15] <bjz> rusti: 2f.pow(&2f)
+[02:17:15] -rusti- 4
+[02:17:22] <rustyPipe> How do I convert it to hex though?
+[02:17:39] <bjz> tikue: we need it in the traits
+[02:17:55] <engla> rustyPipe: like this
+[02:18:09] <engla> rusti: use extra::hex::ToHex; "rustyPipe".as_bytes().to_hex()
+[02:18:09] -rusti- ~"727573747950697065"
+[02:18:34] <rustyPipe> So we can't provide a plain string to be converted to hex?
+[02:18:50] <cmr> rustyPipe: no
+[02:19:00] <cmr> it's not implemented for strings yet.
+[02:19:13] <sp3d> rusti: bytes!("rustyPipe").to_hex()
+[02:19:14] -rusti- <anon>:5:28: 5:29 error: unexpected token: `.`
+[02:19:14] -rusti- <anon>:5          bytes!("rustyPipe").to_hex()
+[02:19:14] -rusti-                                      ^
+[02:19:14] -rusti- application terminated with error code 101
+[02:19:22] <engla> I think it was conciously not implemented for strings
+[02:19:23] <sp3d> oh, right, "use..."
+[02:19:43] <engla> anyway, maybe to_hex should be iterator- or writer-based or both
+[02:20:37] <tikue> what is the multiplication method on numbers
+[02:20:48] <tikue> rusti: 2f.times(&2f)
+[02:20:48] -rusti- <anon>:5:9: 6:5 error: type `float` does not implement any method in scope named `times`
+[02:20:49] -rusti- <anon>:5          2f.times(&2f)
+[02:20:49] -rusti- <anon>:6     };
+[02:20:49] -rusti- error: aborting due to previous error
+[02:20:49] -rusti- application terminated with error code 101
+[02:20:51] <cmr> rusti: 2u.mul(&16u)
+[02:20:51] -rusti- 32
+[02:20:53] <tikue> thx
+[02:21:05] <cmr> from the Mul trait
+[02:21:36] <engla> wait, you don't need to call the methods explicitly?
+[02:21:43] <engla> tikue: you should be fine with the operators
+[02:21:59] <tikue> engla: to avoid cloning
+[02:22:06] <engla> shouldn't be needed
+[02:22:25] <tikue> engla: https://gist.github.com/tikue/66c35a110cc2c2c4a460
+[02:22:37] <tikue> look at the generic version, i'm trying to remove the clones
+[02:23:34] <cmr> Only 6 breaking changes this week \o/
+[02:23:57] <engla> rusti: use std::num::*; fn adder<T: Add<T, T> + One>() -> T { let x = One::one::<T>();  x + x }   adder::<int>()
+[02:23:57] -rusti- 2
+[02:24:10] <engla> tikue: no clone needed for +
+[02:24:45] <tikue> tikue: you need clone to avoid moving
+[02:24:47] <rustyPipe> So if a string is converted to hex, what will it's type be?
+[02:24:57] <cmr> rustyPipe: to_hex returns ~str
+[02:25:05] <tikue> rusti: 2.mod_floor(3)
+[02:25:08] -rusti- pastebinned 38 lines of output: http://ix.io/7c8
+[02:25:19] <tikue> rusti: 2u.mod_floor(3)
+[02:25:20] -rusti- <anon>:5:22: 5:23 error: mismatched types: expected `&uint` but found `<VI0>` (expected &-ptr but found integral variable)
+[02:25:20] -rusti- <anon>:5          2u.mod_floor(3)
+[02:25:20] -rusti-                                ^
+[02:25:20] -rusti- error: aborting due to previous error
+[02:25:20] -rusti- application terminated with error code 101
+[02:25:26] <engla> tikue: moving what?
+[02:25:29] <tikue> rusti: 2u.mod_floor(&3)
+[02:25:30] -rusti- 0
+[02:25:35] <tikue> what does mod floor do
+[02:26:29] <tikue> what is the method for 2 % 3
+[02:26:39] <tikue> engla: moving the number
+[02:26:54] <engla> rusti: use std::num::*; fn adder<T: Add<T, T> + Zero>() -> T { let x = Zero::zero::<T>();  x + x }   adder::<~[int]>()
+[02:26:55] -rusti- ~[]
+[02:27:01] <strcat> tikue: you don't need clone
+[02:27:04] <engla> no clone needed to add lists generically either
+[02:27:06] <strcat> + takes references
+[02:27:26] <strcat> it does &T &U -> V
+[02:27:29] <strcat> well
+[02:27:40] <strcat> (&self, &T) -> U
+[02:28:02] <tikue> we might be talking past each other. sorry what code are you referring to engla ?
+[02:28:21] <engla> tikue: you don't need clone in  p.clone() * p.clone()  and so on
+[02:28:45] <tikue> engla: i think it's needed in the transform
+[02:28:59] <tikue> and in primes()
+[02:29:39] <tikue> rust/generic_primes.rs:23:34: 23:35 error: mismatched types: expected `I` but found `&I` (expected type parameter but found &-ptr)
+[02:29:39] <tikue> rust/generic_primes.rs:23                 .take_while(|p| p*p <= i)
+[02:29:44] <tikue> any idea what's wrong there?
+[02:29:46] <engla> yes
+[02:30:36] *** Quits: z0w0 (zack@moz-E12708D5.lns6.woo.bigpond.net.au) (Client exited)
+[02:30:37] *** Joins: jesse99 (jesse99@moz-F226420.hsd1.wa.comcast.net)
+[02:30:56] <kimundi> tikue: the operators in rust are implemented as taking references
+[02:31:13] <kimundi> tikue, 'a + b' translates to 'add(&a, &b)'
+[02:31:31] <tikue> kimundi: so what's wrong with the above line?
+[02:31:32] *** Joins: z0w0 (zack@moz-E12708D5.lns6.woo.bigpond.net.au)
+[02:31:40] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[02:31:46] <kimundi> tikue: there you did get a refernce
+[02:31:54] <tikue> ?
+[02:32:00] <tikue> what do you mean i got a reference?
+[02:32:50] <rustyPipe> How do we convert a hex string back to a normal UTF8 string?
+[02:32:52] <tikue> it works if i do p*(*p)
+[02:32:53] <tikue> lol
+[02:32:56] <tikue> -___-
+[02:33:09] <tikue> that's really distasteful
+[02:33:31] *** Quits: paulproteus (quassel@rose.makesad.us) (Ping timeout)
+[02:33:34] <rustyPipe> I tried str.from_hex().from_bytes(), but that raised an error.
+[02:33:55] *** Joins: paulproteus (quassel@moz-E86A3B42.makesad.us)
+[02:34:10] <strcat> tikue: take_while hands you &T
+[02:34:12] <strcat> not T
+[02:34:13] <tikue> cmr: with optimizations it's super fast
+[02:34:29] <strcat> a vector iterator yields &T, so take_while will hand you & &T
+[02:34:38] <cmr> tikue: obviously. why even bother measuring performance if you're not using -O? (no offense doener)
+[02:34:43] <tikue> :P
+[02:34:46] <strcat> just pattern-match out of the & in the parameter
+[02:34:55] <tikue> cmr: no one ever told me about -O, that's why heh
+[02:34:56] *** Quits: kimundi (kimundi@moz-E3F95B53.dip0.t-ipconnect.de) (Ping timeout)
+[02:35:00] <tikue> strcat: it won't let me :(
+[02:35:12] <strcat> it will if it's & &T
+[02:35:59] <Luqman> tikue: you might as well kick it up to --opt-level 3 :P
+[02:37:09] <tikue> strcat: i'm having difficulties with getting this right. 
+[02:37:20] <tikue> rust/generic_primes.rs:24:26: 24:28 error: cannot move out of dereference of & pointer
+[02:37:21] <tikue> rust/generic_primes.rs:24                 .find_(|& &p| i % p == Zero::zero())
+[02:37:25] <rustyPipe> If I hex encode a string, do I have to convert it into a vector of bytes before converting it into a utf8 string?
+[02:38:06] <strcat> tikue: if you have &T, you can't move out of it
+[02:38:15] *** Joins: kimundi (kimundi@moz-8EEA2413.dip0.t-ipconnect.de)
+[02:38:19] <strcat> if you have & &T, you can remove one layer with a deref
+[02:38:19] <tikue> strcat: so what did you mean about pattern matching ?
+[02:38:30] <strcat> you can have &p
+[02:38:33] <strcat> just not & &p
+[02:38:45] <tikue> p * p doesn't work with &p for some reason
+[02:38:48] <tikue> only p * (*p) 
+[02:39:17] <Luqman> i don't think operators auto-deref
+[02:39:42] <tikue> but if p is already &T shouldn't it work
+[02:40:07] * tikue is really confused
+[02:41:12] <rustyPipe> Does anyone know how to use from_bytes() properly?
+[02:42:21] *** Quits: strcat (strcat@moz-61B073BC.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.1)
+[02:42:39] <goffrie> rustyPipe: what do you mean by "properly"?
+[02:42:46] *** kimundi is now known as zz_kimundi
+[02:43:49] <Luqman> rusti: let x = ~[65u8, 65u8, 65u8, 65u8, 65u8, 65u8, 65u8]; std::str::from_bytes(x)
+[02:43:56] <tikue> with optimizations, the generic code is basically the same speed
+[02:44:00] *** Joins: onix (Mibbit@9941F8F2.7FB9B206.1422828A.IP)
+[02:44:04] <tikue> but the p*(*p) really annoys me >_<
+[02:44:22] *** Quits: onix (Mibbit@9941F8F2.7FB9B206.1422828A.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[02:44:44] *** Quits: snerd (motk@moz-E535583C.nonstopcrunchy.net) (Client exited)
+[02:44:56] <rustyPipe> I'm trying to convert a hex string back into a vector of bytes. I was thinking that if you use the method from_hex on that string first, then used the method from_bytes, it would return a vector of bytes. Is this incorrect, or do I have to first use the .unwrap() method before I use from_bytes()?
+[02:44:58] *** Quits: rusti (rusti@moz-61B073BC.cpe.net.cable.rogers.com) (Ping timeout)
+[02:44:59] <bjz> tikue: we used to have auto deref for operators but it was removed
+[02:45:15] <bjz> tikue: it gets rather confusing at times
+[02:45:38] <tikue> p*(*p) is just as confusing imo
+[02:45:40] *** Quits: erick (erick@E1304535.2A7189BF.BE19388.IP) (Ping timeout)
+[02:45:45] <tikue> it makes it look like two things of different types are being operated on
+[02:46:24] <engla> then (*p)*(*p) should be fine
+[02:46:27] <bjz> Oh I see
+[02:46:28] *** Joins: erick (erick@E1304535.2A7189BF.BE19388.IP)
+[02:46:30] <engla> or just using |&p| p * p
+[02:46:36] <tikue> engla: you can't do that
+[02:46:47] <engla> ok
+[02:46:58] <bjz> tikue: yes, that is weird
+[02:47:00] <tikue> because it won't implicitly clone
+[02:47:13] <engla> yeah that's not the goal
+[02:47:20] <tikue> engla: so you get the ```cannot move out of dereference of & pointer``` error
+[02:47:24] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[02:47:24] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/o4BhmQ
+[02:47:24] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[02:47:34] <engla> ok
+[02:48:09] <tikue> engla: what isn't the goal?
+[02:48:14] <engla> cloning
+[02:48:37] *** Quits: Azdle (patrick@moz-8C723B60.hsd1.mn.comcast.net) (Ping timeout)
+[02:48:49] <tikue> engla: does |&p| not either move or clone?
+[02:49:03] <engla> I thought it was a &T iterator
+[02:49:19] <tikue> engla: Iterator<I>
+[02:49:25] <engla> ok
+[02:49:37] <tikue> maybe it *should* be &T, to avoid these problems
+[02:49:43] <tikue> idk
+[02:49:51] <tikue> imo a prime number iterator should return prime numbers
+[02:49:59] <tikue> not a borrowed pointer
+[02:50:01] <tikue> to a prime number
+[02:50:09] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[02:50:09] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/949F4A
+[02:50:09] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[02:50:15] <tikue> not that this is anything more than toy code anyway
+[02:50:16] *** zz_kimundi is now known as kimundi
+[02:50:41] <engla> of course tikue I'm just confused
+[02:50:48] <tikue> engla: what's confusing you?
+[02:52:13] *** Joins: snerd (motk@moz-E535583C.nonstopcrunchy.net)
+[02:52:22] *** Quits: nattofriends (tsutsumi@moz-4CEEC7AA.warosu.org) (Ping timeout)
+[02:53:04] *** Joins: nattofriends (tsutsumi@moz-4CEEC7AA.warosu.org)
+[02:53:08] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[02:53:08] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/949F4A
+[02:53:08] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[02:53:09] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[02:53:09] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/s6eGZQ
+[02:53:09] <ghrust> 13rust/06auto 14b9945f8 15Stepan Koltsov: Add #[inline] to impl Zero for ()...
+[02:53:09] <ghrust> 13rust/06auto 14eebcff1 15bors: auto merge of #8404 : stepancheg/rust/zero-unit-inline, r=alexcrichton...
+[02:53:10] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[02:59:19] <engla> I'm a natural tikue 
+[02:59:28] <tikue> engla: ?
+[02:59:37] <engla> naturally confused
+[02:59:43] <tikue> lol
+[03:00:33] <engla> acrichto: push_char is already horrible and slow acrichto, but is it not slower with your encode_utf8 change?
+[03:01:15] *** Quits: snerd (motk@moz-E535583C.nonstopcrunchy.net) (Client exited)
+[03:01:47] <engla> also, encode_utf8 doesn't need a region parameter if it doesn't pass a borrowed pointer forward (to callback or return value)
+[03:03:12] *** Joins: dherman (dherman@moz-FEEC7E9.hsd1.ut.comcast.net)
+[03:03:12] *** ChanServ sets mode: +o dherman
+[03:05:43] <acrichto> engla: oh you're right about the region parameter, I wasn't focusing on speeding it up, but rather just providing a way to emit it to a &mut io::Writer without allocating
+[03:06:03] <engla> yes of course
+[03:06:14] <engla> that's nice
+[03:06:26] <acrichto> engla: although I just kinda waved my hands to create that interface, do you have a better idea to make sure it's possible to make fast in the future?
+[03:06:52] <engla> no I don't know, maybe I can think about it
+[03:07:24] <engla> with this change there will be array bounds checks
+[03:07:27] <acrichto> yeah I originally had it returning the proper slice for the utf-8 encoded character
+[03:07:39] <engla> oh ok
+[03:07:43] <engla> that explains it
+[03:07:49] <acrichto> yeah to work with push_char I didn't wnant to take &[u8, ..4]
+[03:08:19] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[03:08:19] *** ChanServ sets mode: +o brson
+[03:08:49] <Seldaek> sneak preview of impls :) http://seld.be/rustdoc/master/extra/sha2/struct.Sha512.html
+[03:09:28] *** Joins: dwhyte (dwhyte@1922756A.EDC594B0.7BF4A4B0.IP)
+[03:10:40] *** Joins: snerd (motk@moz-E535583C.nonstopcrunchy.net)
+[03:20:21] *** Quits: miloshadzic (miloshadzi@5E9C7FE4.FA4D0618.449B8A48.IP) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[03:20:34] <doomlord> does/will rustdoc_ng show implementations from throughout the crate ... or does the existing code always tend to implement everythig in one file
+[03:21:48] <doomlord> (^implementations for one type,  that is,)
+[03:22:27] <Seldaek> doomlord: throughout the crate should work yes
+[03:23:00] <Seldaek> the docs are built per-crate (+ cross-crate hyperlinks capability, but not impl discovery, but I think this is disallowed anyway)
+[03:23:28] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: leaving)
+[03:23:33] *** Joins: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP)
+[03:23:39] *** Quits: doomlord (doomlod@moz-13E69BC8.range86-180.btcentralplus.com) (Ping timeout)
+[03:23:40] <engla> nice Seldaek 
+[03:24:18] <Seldaek> well it's not so nice yet but proof of concept nice :)
+[03:24:42] <engla> yeah
+[03:25:10] <engla> will you hide private items later?
+[03:25:33] <Seldaek> not sure if we want that or not
+[03:26:43] <Seldaek> I guess it might have some value still just so you know what kind of data structure is used and how it might affect memory use and whatever
+[03:27:03] <engla> it can have value in some contexts
+[03:27:22] <engla> but I guess the user-facing documentation for rust itself should be clean and only show public items
+[03:27:26] <engla> you could just have a toggle
+[03:27:53] <Seldaek> hehe, every time we discuss it here someone suggests adding a toggle for something
+[03:28:42] <engla> sure. a toggle can be the weak middleground to make everyone happy
+[03:28:44] <Seldaek> IMO the toggle would be more cognitive overhead than showing a few priv fields that are clearly labeled as such
+[03:28:49] <engla> but it can be the right thing sometimes
+[03:29:16] <engla> I guess if they are labelled it's ok
+[03:29:37] <engla> it's better
+[03:31:18] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[03:31:26] <rustyPipe> How do we check if a string is hex encoded or just a plain utf8 string?
+[03:32:13] <engla> you can of course check if it's just hex digits
+[03:32:14] <kimundi> rustyPipe: hu?
+[03:32:49] <rustyPipe> I mean, is there a method (i.e. is_hex) that checks whether or not if a string is hex encoded or not?
+[03:32:56] <engla> Seldaek: say std::hashmap has three headings for enums, statics, functions that are just priv items.
+[03:33:09] <goffrie> rustyPipe: that seems awfully specific, don't think that belongs in the standard library
+[03:33:27] <rustyPipe> I mean, does it exist within extra?
+[03:33:29] <engla> Seldaek: talking about cognitive overhead, the docs for hashmap will be simpler if the things you can't use are hidden
+[03:33:56] <Seldaek> engla: oh sorry, we don't show any private types (or if we do it's a bug), I was only talking of priv fields on structs those are shown 
+[03:34:19] <kimundi> rustyPipe: probably not
+[03:34:28] <kimundi> that is, doesn't exist
+[03:34:29] <engla> oh it's not about that Seldaek 
+[03:34:35] <rustyPipe> Is there any way to do so?
+[03:34:45] <engla> yeah I was talking about `type`, `static`, `fn` `struct` items
+[03:35:00] <kimundi> rustyPipe: well, sure, but first define what the correct behavior should be :P
+[03:35:02] <Seldaek> engla: yeah those if you see a priv one displayed let me know :)
+[03:35:25] <engla> Seldaek: ok, for example the ones in hashmap
+[03:35:26] <kimundi> rustyPipe: I mean something like a hex encoded str doesn't exist
+[03:35:35] <Seldaek> rustyPipe: maybe trying to convert the string to an int you can check if you get a result or not..
+[03:35:47] <kimundi> "str containing only hex digits" - that works
+[03:36:00] <rustyPipe> Yeah, that's what I meant
+[03:36:50] <rustyPipe> I'm trying to take a string, and check whether or not it only contains hex digits or if it is just a plain string
+[03:36:56] <kimundi> rusti: "ff".iter().all(|c| char::is_digit(c, 16))
+[03:36:58] -rusti- pastebinned 11 lines of output: http://ix.io/7ce
+[03:37:08] <Seldaek> engla: huh you're right, thanks, never really checked for that yet I was focusing on rendering things first
+[03:37:13] <kimundi> rusti: "ff".iter().all(|c| std::char::is_digit(c, 16))
+[03:37:14] -rusti- <anon>:5:29: 5:56 error: this function takes 1 parameter but 2 parameters were supplied
+[03:37:14] -rusti- <anon>:5          "ff".iter().all(|c| std::char::is_digit(c, 16))
+[03:37:14] -rusti-                                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+[03:37:14] -rusti- error: aborting due to previous error
+[03:37:15] -rusti- application terminated with error code 101
+[03:37:23] <kimundi> rusti: "ff".iter().all(|c| std::char::is_digit_radix(c, 16))
+[03:37:24] -rusti- true
+[03:37:38] <kimundi> rusti: "123456789abCDef".iter().all(|c| std::char::is_digit_radix(c, 16))
+[03:37:39] -rusti- true
+[03:37:45] <kimundi> rusti: "123456789abCDefZ".iter().all(|c| std::char::is_digit_radix(c, 16))
+[03:37:46] -rusti- false
+[03:37:55] <kimundi> rustyPipe: there :P
+[03:38:41] <rustyPipe> What exactly are you doing? I see that you are iterating over a string, but that is as far I understand what your code is doing
+[03:40:04] <kimundi> iterate over all characters of a string - check if for all those characters a function returns true - give a function that checks for a character if it si a valid digit in base 16
+[03:41:23] <rustyPipe> Oh, okay. Thanks for the explanation
+[03:41:45] <jack> what are the semantics of >> on u64?
+[03:42:02] <kimundi> jack: same as for other intgers I guess
+[03:42:14] <jack> !0 >> 4 != 0x0fffffffffffffff
+[03:42:20] <jack> so uh, wtf? :)
+[03:42:48] <kimundi> uh, could you place brckets there? Can't parse that :P
+[03:43:01] <jack> !0 is all ones. 
+[03:43:11] <jack> >> 4 should get me top bits as 0
+[03:43:15] <jack> OH
+[03:43:19] <jack> this is a little endian thing isn't it.
+[03:43:30] <rustyPipe> kimundi: Why does your second example return a value of false?
+[03:43:46] <kimundi> rustyPipe: 'Z' at the end
+[03:43:47] <jack> rust: !0 >> 4
+[03:43:52] <jack> rusti !0 >> 4
+[03:43:53] <panzi> rusti: fmt!("%x", !0u64 >> 4)
+[03:43:57] -rusti- pastebinned 7 lines of output: http://ix.io/7cf
+[03:44:09] <rustyPipe> What does that signify though?
+[03:44:10] <panzi> rusti fmt!("%x", !0u64 >> 4)
+[03:44:18] <jack> rusti !0u64 >> 4
+[03:44:32] <engla> right, need to be unsigned
+[03:44:36] <jack> rusti: !0u64 >> 4
+[03:44:37] <kimundi> rusti: !0u64
+[03:44:38] -rusti- 1152921504606846975
+[03:44:38] -rusti- 18446744073709551615
+[03:44:49] <kimundi> rusti: (!0u64) >> 4
+[03:44:49] -rusti- 1152921504606846975
+[03:44:56] <engla> tricksy
+[03:45:43] <rustyPipe> kimundi: Why does appending a Z at the end of the string cause is_digit_radix to return a value of false?
+[03:45:49] <kimundi> rusti: ((!0u64) >> 4) == 0x0fffffff
+[03:45:50] -rusti- false
+[03:46:19] <jack> you need more fs
+[03:46:19] <kimundi> rustyPipe: because Z is not a valid hexadecimal digit? 0 1 2 3 4 5 6 7 8 9 a b c d e f
+[03:46:41] <jack> rusti: ((!0u64) >> 4) == 0x0fffffffffffffffffffffff
+[03:46:41] -rusti- <anon>:5:24: 5:26 error: int literal is too large
+[03:46:41] -rusti- <anon>:5          ((!0u64) >> 4) == 0x0fffffffffffffffffffffff
+[03:46:41] -rusti-                                  ^~
+[03:46:41] -rusti- application terminated with error code 101
+[03:46:50] <jack> rusti: ((!0u64) >> 4) == 0x0fffffffffffffffffff
+[03:46:50] -rusti- <anon>:5:24: 5:26 error: int literal is too large
+[03:46:50] -rusti- <anon>:5          ((!0u64) >> 4) == 0x0fffffffffffffffffff
+[03:46:50] -rusti-                                  ^~
+[03:46:50] -rusti- application terminated with error code 101
+[03:46:54] <jack> rusti: ((!0u64) >> 4) == 0x0fffffffffffffff
+[03:46:55] -rusti- true
+[03:46:57] <kimundi> rusti: ((!0u64) >> 4) == 0x0f_ff_ff_ff_ff_ff_ff_ff
+[03:46:58] -rusti- true
+[03:47:06] <jack> so there is some bad implicit conversion going on somewhere.
+[03:47:13] <kimundi> no?
+[03:47:25] <kimundi> where does it convert?
+[03:47:26] <rustyPipe> Sorry, I misread the documentation and thought the function was checking for a valid character
+[03:48:02] <kimundi> rustyPipe: Don't worry, I wrote those docs, blame it on me ;)
+[03:48:23] <kimundi> rusti: ((!0u64) >> 4) == 0x0f_ff_ff_ff_ff_ff_ff_ff_u64
+[03:48:23] -rusti- true
+[03:48:36] <kimundi> rusti: ((!0) >> 4) == 0x0f_ff_ff_ff_ff_ff_ff_ff_u64
+[03:48:36] -rusti- true
+[03:48:41] <kimundi> rusti: ((!0) >> 4) == 0x0f_ff_ff_ff_ff_ff_ff_ff
+[03:48:42] -rusti- false
+[03:48:53] <kimundi> there, now its using int
+[03:49:11] <rustyPipe> Are the documents going to be updated with examples sometime in the future?
+[03:49:43] <bjz> rusti: ((!0u64) >> 16) == 0x0fffffffffffffff
+[03:49:44] -rusti- false
+[03:49:52] <bjz> rusti: ((!0u64) >> 16) == 0x00fffffffffffffff
+[03:49:53] -rusti- false
+[03:49:54] <bjz> rusti: ((!0u64) >> 16) == 0x00ffffffffffffff
+[03:49:55] -rusti- false
+[03:50:04] <bjz> rusti: ((!0u64) >> 16)
+[03:50:05] -rusti- 281474976710655
+[03:50:32] *** Joins: chotu (chotu@F5EB400F.6A92A938.A3D1B221.IP)
+[03:50:43] <kimundi> rustyPipe: if you write some ;) - In all seriousness, everything si under construction still. We'd like to have tons of examples for everything, but no one has the time to actually write them right now, especially if the actual set of functions isn't stable yet
+[03:51:05] <engla> There are examples in some places
+[03:51:25] <kimundi> yeah, but those have a horrible, horrible problem
+[03:51:38] <kimundi> they're not automatically tested :P
+[03:52:08] <rustyPipe> Sadly, I'm not in any position to write documentation, because I'm still a complete beginner with Rust
+[03:52:33] <kimundi> "example: [1, 2, 3].each { |e|  ... }" - I saw something like that just recently
+[03:53:09] <engla> I thought they were kimundi 
+[03:53:28] <kimundi> rustyPipe: sure, no problem, just wanted to explain the situation :)
+[03:53:37] <engla> I think the ~~ {.rust} examples are tested?
+[03:53:49] <rustyPipe> Yeah, I saw a couple of comments on a reddit post somewhere saying that one of Rust's main problems is the lack of good documentation
+[03:53:49] <kimundi> engla: nope. the .md docs are, but not the doccomments
+[03:54:07] <jack> dbaupp: ping
+[03:54:17] <kimundi> maybe the doccomments are tested now if they have that format, dunno
+[03:54:26] *** Quits: panzi (chatzilla@moz-EA1CC3DF.adsl.highway.telekom.at) (Quit: ChatZilla 0.9.90.1 [Firefox 23.0/20130807192336])
+[03:54:37] <engla> I'm sure I've had make check fail on that
+[03:55:11] <kimundi> rustyPipe: We have good documentation! It's just a very, uuuh, interactive system with the name #rust ;)
+[03:56:14] <rustyPipe> The documentation covering the standard library and extra library are pretty good, but the tutorial could be a bit more comprehensive
+[03:56:31] <kimundi> anyway, good night, according to my clock we have 6 am around here .... *yawn*
+[03:57:10] <chotu> hello, can any tell me what is the type of vec in :  let vec = [1,2,3]   and is it same as let vec :[int,..3] = [1,2,3]
+[03:57:16] <bjz> rusti: (sys::size_of::<u64>(), sys::size_of::<uint>())
+[03:57:18] -rusti- pastebinned 20 lines of output: http://ix.io/7cg
+[03:57:29] <bjz> rusti: (std::sys::size_of::<u64>(), std::sys::size_of::<uint>())
+[03:57:29] -rusti- (8, 8)
+[03:58:04] *** Quits: mihneadb (mihneadb@moz-BE33DA21.fw1.sfo1.mozilla.net) (Input/output error)
+[03:58:13] <engla> chotu: yes
+[03:58:21] *** Quits: dherman (dherman@moz-FEEC7E9.hsd1.ut.comcast.net) (Quit: dherman)
+[03:58:29] <kimundi> chotu: that expression results in a [T, ..N] type, yeah
+[03:58:47] <engla> right, it can also be [uint, ..3]
+[03:58:48] <kimundi> "fixed size vector"
+[03:59:05] <chotu> thanks guys
+[03:59:34] *** Joins: brendan (brendaneic@E908EF74.6BAC3F3B.56A6FAA.IP)
+[03:59:44] <bjz> rusti: std::u64::to_str_radix(!0u64, 12)
+[03:59:45] -rusti- ~"839365134a2a240713"
+[03:59:47] *** kimundi is now known as zz_kimundi
+[04:00:25] <bjz> how do you do hex?
+[04:00:40] <bjz> we need a to_hex_str :/
+[04:00:42] <cmr> extra::hex :p
+[04:00:48] <cmr> it was added literally the other day
+[04:00:56] <cmr> Also http://cmr.github.io/blog/2013/08/10/this-week-in-rust/
+[04:01:19] <bjz> rusti::std::extra::hex(!0u64)
+[04:01:19] -rusti- <anon>:5:8: 5:9 error: unexpected token: `:`
+[04:01:19] -rusti- <anon>:5         :std::extra::hex(!0u64)
+[04:01:19] -rusti-                  ^
+[04:01:19] -rusti- application terminated with error code 101
+[04:01:27] <bjz> rusti: std::extra::hex(!0u64)
+[04:01:38] <cmr> not std::extra, libextra
+[04:01:43] -rusti- pastebinned 11 lines of output: http://ix.io/7ch
+[04:01:47] <bjz> rusti: extra::hex(!0u64)
+[04:01:47] -rusti- <anon>:5:9: 5:19 error: unresolved name `extra::hex`.
+[04:01:47] -rusti- <anon>:5          extra::hex(!0u64)
+[04:01:47] -rusti-                   ^~~~~~~~~~
+[04:01:48] -rusti- error: aborting due to previous error
+[04:01:48] -rusti- application terminated with error code 101
+[04:02:01] <rustyPipe> What is the Config parameter within the method to_base64?
+[04:02:26] <cmr> rustyPipe: http://static.rust-lang.org/doc/extra/base64.html#struct-config
+[04:02:40] <cmr> there are a bunch of constants in the module
+[04:02:49] <cmr> I'd recommend STANDARD
+[04:03:24] <cmr> rusti: (!0u64).to_hex()
+[04:03:24] -rusti- <anon>:5:9: 6:5 error: type `u64` does not implement any method in scope named `to_hex`
+[04:03:24] -rusti- <anon>:5          (!0u64).to_hex()
+[04:03:24] -rusti- <anon>:6     };
+[04:03:25] -rusti- error: aborting due to previous error
+[04:03:25] -rusti- application terminated with error code 101
+[04:03:32] <cmr> hm, rusti might not be new enough
+[04:03:34] <cmr> bjz: http://static.rust-lang.org/doc/extra/hex.html#trait-tohex
+[04:03:43] <cmr> or more likely the trait isn't in scope
+[04:04:07] <rustyPipe> So I would pass a struct as for the Config parameter within the method to_base64?
+[04:04:16] <cmr> rustyPipe: yes
+[04:04:28] <jack> how do i get the ir for a function?
+[04:04:37] *** Joins: dherman (dherman@moz-FEEC7E9.hsd1.ut.comcast.net)
+[04:04:37] *** ChanServ sets mode: +o dherman
+[04:04:48] <jack> i think we're codegening this >> wrong in some cases
+[04:05:00] <cmr> jack: rustc --emit-llvm -S, look for the mangled name
+[04:05:25] <bjz> rusti: use std::extra::ToHex; (!0u64).to_hex()
+[04:05:29] -rusti- pastebinned 8 lines of output: http://ix.io/7ci
+[04:05:41] <rustyPipe> What are the different character sets that are avaiable? Also, do we have to provide a line length or not?
+[04:05:48] <bjz> rusti: use extra::hex::ToHex; (!0u64).to_hex()
+[04:05:48] -rusti- <anon>:5:32: 6:5 error: type `u64` does not implement any method in scope named `to_hex`
+[04:05:49] -rusti- <anon>:5          use extra::hex::ToHex; (!0u64).to_hex()
+[04:05:49] -rusti- <anon>:6     };
+[04:05:49] -rusti- error: aborting due to previous error
+[04:05:49] -rusti- application terminated with error code 101
+[04:05:55] <bjz> :/
+[04:06:11] <jack> any idea what the >> op code is called in LLVM IR?
+[04:06:13] <cmr> rusti: use extra::hex::ToHex; &[!0u64].to_hex()
+[04:06:14] -rusti- <anon>:5:33: 6:5 error: type `[u64, .. 1]` does not implement any method in scope named `to_hex`
+[04:06:14] -rusti- <anon>:5          use extra::hex::ToHex; &[!0u64].to_hex()
+[04:06:14] -rusti- <anon>:6     };
+[04:06:14] -rusti- error: aborting due to previous error
+[04:06:14] -rusti- application terminated with error code 101
+[04:06:27] <cmr> jack: lsr I think
+[04:07:06] <rustyPipe> cmr: Do you know the character sets that can be passed to to_base64?
+[04:07:21] <cmr> rustyPipe: no
+[04:07:31] <cmr> look at the source / tests, I guess
+[04:07:38] *** Joins: Azdle (patrick@moz-8C723B60.hsd1.mn.comcast.net)
+[04:07:46] <cmr> jack: shl
+[04:08:08] <rustyPipe> cmr: What do you mean by that?
+[04:08:27] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[04:08:29] <cmr> rustyPipe: https://github.com/mozilla/rust/blob/master/src/libextra/base64.rs
+[04:08:57] * cmr goes to bed
+[04:09:00] <jack>  %18 = lshr i64 %17, 4
+[04:09:00] <jack>  
+[04:09:28] <rustyPipe> cmr: Sorry, missed that when I was originally reading through the source
+[04:09:34] *** Joins: milinda (milinda@moz-C79ADF95.dhcp-bl.indiana.edu)
+[04:09:58] *** Quits: dherman (dherman@moz-FEEC7E9.hsd1.ut.comcast.net) (Quit: dherman)
+[04:10:43] <jack> i am really not used to reading IR
+[04:10:49] <jack> there seem to be multiple copies of main
+[04:11:34] <bjz> aye, neither
+[04:13:16] *** Quits: brendan (brendaneic@E908EF74.6BAC3F3B.56A6FAA.IP) (Quit: brendan)
+[04:14:39] <jack> cmr: https://gist.github.com/metajack/6203358
+[04:14:46] <jack> any reason that should get the wrong result?
+[04:15:15] <jack> it seems to be doing signed shr
+[04:15:42] *** Quits: boredomist (user@moz-63CF9F31.res-cmts.sesp.ptd.net) (Ping timeout)
+[04:20:37] <jack> here's a minimal rust example: https://gist.github.com/metajack/6203358
+[04:20:43] <jack> that is giving ht wrong answer afaict.
+[04:21:27] *** Quits: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP) (Quit: Konversation terminated!)
+[04:21:34] *** Joins: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP)
+[04:21:46] <klutzy> rusti: let e = !0u64; (e, e >> 4)
+[04:21:47] -rusti- (18446744073709551615, 1152921504606846975)
+[04:22:02] <klutzy> rusti: let e = !0u64; (e >> 4) as uint
+[04:22:03] -rusti- 1152921504606846975
+[04:23:39] *** Quits: Luqman (laden@moz-DCEF6040.csclub.uwaterloo.ca) (Ping timeout)
+[04:24:27] <jack> in the failing program it still outputs lshr, which is supposed to zero fill
+[04:26:51] *** Joins: brson (brson@5D3B67E3.71E1659D.DFB5E910.IP)
+[04:26:51] *** ChanServ sets mode: +o brson
+[04:28:19] *** Quits: rustyPipe (Mibbit@moz-5949C51B.dllstx.fios.verizon.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[04:29:28] <brson> cmr: re twir, RUST_OLDRT no longer works
+[04:29:34] <brson> now that the C++ rt is gone
+[04:30:03] <erickt> r? https://github.com/mozilla/rust/pull/8448 <- another rollup to cut down on the queue
+[04:32:39] *** Quits: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[04:32:54] *** Quits: nsf (nsf@moz-EEF3238A.convex.ru) (Quit: WeeChat 0.4.1)
+[04:33:18] *** Joins: ipc (ipc@moz-76ED5036.lightspeed.cicril.sbcglobal.net)
+[04:33:22] <erickt> if anyone does give it a r+, please make sure you do a p=1 to put it ahead of the PRs it's rolling up
+[04:34:15] *** Quits: jeaye (Jeaye@moz-FD505E54.hsd1.ca.comcast.net) (Ping timeout)
+[04:34:20] *** Quits: ipc (ipc@moz-76ED5036.lightspeed.cicril.sbcglobal.net) (Quit: ipc)
+[04:37:24] *** Quits: tedh (tedh@moz-76BF83CB.z180-91-67.customer.algx.net) (Ping timeout)
+[04:37:45] *** Joins: tedh (tedh@moz-76BF83CB.z180-91-67.customer.algx.net)
+[04:37:50] <acrichto> erickt: thanks for doing that!
+[04:40:10] *** Quits: KindOne (KindOne@moz-83581C9F.dynamic.ip.windstream.net) (Quit: You think I'm not online. But I'm always here. Even if I'm not typing. I'm here. Reading. Judging.)
+[04:41:03] *** Quits: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[04:44:32] *** Quits: tikue (tkuehn@moz-CF8BEBEF.dia.static.qwest.net) (Quit: tikue)
+[04:47:35] *** Quits: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP) (Quit: Konversation terminated!)
+[04:48:08] *** Quits: n0v (n0v@moz-690FFF9D.org) (Ping timeout)
+[04:48:46] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[04:50:59] *** Joins: n0v (n0v@moz-690FFF9D.org)
+[04:54:20] *** Joins: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP)
+[04:54:32] *** Joins: Luqman (laden@moz-DCEF6040.csclub.uwaterloo.ca)
+[04:55:51] *** Quits: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP) (Client exited)
+[04:57:16] *** Joins: reyre (reyre@moz-9002CDDA.cpe.net.cable.rogers.com)
+[05:01:17] *** Quits: milinda (milinda@moz-C79ADF95.dhcp-bl.indiana.edu) (Input/output error)
+[05:01:56] *** Quits: bbouvier (bnjbouv@moz-63AFAFBF.gagahome.fr) (Input/output error)
+[05:03:49] *** Joins: bbouvier (bnjbouv@moz-63AFAFBF.gagahome.fr)
+[05:09:20] *** Joins: mib_leap (Mibbit@CC451150.AB8D721.520CDC98.IP)
+[05:10:00] *** Joins: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP)
+[05:10:23] <mib_leap> cmr: ping
+[05:23:53] *** Joins: KindOne (KindOne@D57F36E5.A68CD9B.34F73994.IP)
+[05:26:33] *** Quits: brson (brson@5D3B67E3.71E1659D.DFB5E910.IP) (Quit: leaving)
+[05:27:26] *** Joins: alisdair (textual@moz-FBF4138A.vc.shawcable.net)
+[05:29:19] *** Quits: n0v (n0v@moz-690FFF9D.org) (Ping timeout)
+[05:30:56] *** Joins: mihneadb (mihneadb@moz-329F29A3.lightspeed.sntcca.sbcglobal.net)
+[05:31:33] *** Joins: hjr3 (hradtke@moz-842BF853.hsd1.ca.comcast.net)
+[05:36:50] *** Joins: ross (ross@moz-8A84103E.br.br.cox.net)
+[05:37:03] <sfackler> rustyPipe: to_base64 takes any [u8]. it doesn't matter what the significance of the buffer contents are
+[05:38:57] <sfackler> cmr: use extra::hex::ToHex; [10u8].to_hex()
+[05:41:05] <engla> maybe something about enum CharacterSet
+[05:47:33] <sfackler> bjz: extra::hex does binary <-> text encoding similarly to extra::base64.
+[05:52:57] *** Joins: maik_ (maik___@moz-C834AD21.dip0.t-ipconnect.de)
+[05:54:03] *** Joins: jeaye (Jeaye@moz-FD505E54.hsd1.ca.comcast.net)
+[05:54:21] *** Quits: vk_ (chatzilla@moz-389FEE13.hsd1.ca.comcast.net) (Ping timeout)
+[05:59:19] *** Quits: mib_leap (Mibbit@CC451150.AB8D721.520CDC98.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[05:59:55] <maik_> why is const going away? 
+[06:11:40] *** Quits: maik_ (maik___@moz-C834AD21.dip0.t-ipconnect.de) (Ping timeout)
+[06:14:10] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[06:14:10] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/s6eGZQ
+[06:14:10] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[06:17:11] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[06:17:11] <ghrust> 01[13rust01] 15bors pushed 20 new commits to 06auto: 02http://git.io/inuAog
+[06:17:11] <ghrust> 13rust/06auto 14f9b4228 15Daniel Micay: add intrinsics for checked overflow add/sub/mul
+[06:17:11] <ghrust> 13rust/06auto 14a7849c4 15Lenny222: make error messages conform to style guide
+[06:17:11] <ghrust> 13rust/06auto 14b9504d2 15blake2-ppc: syntax: Shrink enum Token and enum nonterminal...
+[06:17:13] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[06:19:03] *** Joins: mib_leap (Mibbit@9EE969DD.5F016CAB.520CDC98.IP)
+[06:19:46] *** Joins: dim-an (ermolovd@moz-FE167E47.nationalcablenetworks.ru)
+[06:20:26] *** Quits: dim-an (ermolovd@moz-FE167E47.nationalcablenetworks.ru) (Quit: dim-an)
+[06:23:12] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[06:23:13] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 143bdac11 to 14eebcff1: 02http://git.io/N3iJvQ
+[06:23:13] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[06:24:38] *** Joins: tikue (tkuehn@moz-CF8BEBEF.dia.static.qwest.net)
+[06:32:14] <dbaupp> acrichto: http://huonw.github.io/isrustfastyet/buildbot/all.html
+[06:32:30] <dbaupp> acrichto: (it's not very readable, but the data is there.)
+[06:32:41] <acrichto> dbaupp: thanks!
+[06:33:02] *** Quits: huseby (huseby@moz-4E8C421A.husebyhome.com) (Ping timeout)
+[06:36:14] *** Joins: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net)
+[06:37:11] *** Joins: infynyxx (infynyxx@moz-8BE8F2CD.hsd1.md.comcast.net)
+[06:38:10] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[06:38:10] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 148747433 to 14eebcff1: 02http://git.io/N3iJvQ
+[06:38:10] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[06:38:12] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[06:38:12] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/ZOi-_Q
+[06:38:12] <ghrust> 13rust/06auto 147a29aa5 15Daniel Micay: vec: optimize the Add implementation...
+[06:38:12] <ghrust> 13rust/06auto 14466a5b5 15Daniel Micay: str: optimize `with_capacity`...
+[06:38:13] <ghrust> 13rust/06auto 1461ae049 15Daniel Micay: move `strdup_uniq` lang item to std::str
+[06:38:15] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[06:42:42] *** Joins: brendan (brendaneic@E908EF74.6BAC3F3B.56A6FAA.IP)
+[06:42:51] *** Quits: cubic (cubic@moz-FE5AD6C7.mc.videotron.ca) (Quit: Leaving)
+[06:44:16] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[06:44:16] <ghrust> 01[13rust01] 15thestinger 04force-pushed 06try from 14ee59aac to 14f9b4228: 02http://git.io/k471pw
+[06:44:16] <ghrust> 13rust/06try 14f9b4228 15Daniel Micay: add intrinsics for checked overflow add/sub/mul
+[06:44:16] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[06:44:33] *** Quits: hjr3 (hradtke@moz-842BF853.hsd1.ca.comcast.net) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[06:47:10] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[06:47:11] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 140db654b to 14eebcff1: 02http://git.io/N3iJvQ
+[06:47:11] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[06:47:15] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[06:47:15] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/HaToCA
+[06:47:15] <ghrust> 13rust/06auto 14a7849c4 15Lenny222: make error messages conform to style guide
+[06:47:15] <ghrust> 13rust/06auto 1462544eb 15bors: auto merge of #8413 : kud1ing/rust/expect_found, r=cmr...
+[06:47:16] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[06:48:14] *** Joins: maik (maik___@moz-C834AD21.dip0.t-ipconnect.de)
+[06:48:25] *** Joins: jviereck (Adium@moz-6B21FC70.dip0.t-ipconnect.de)
+[06:49:49] *** Joins: eatkinson (eatkinson@moz-5CF47426.dia.static.qwest.net)
+[06:50:24] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[06:50:24] <ghrust> 01[13rust01] 15thestinger 04force-pushed 06try from 14f9b4228 to 140420663: 02http://git.io/k471pw
+[06:50:24] <ghrust> 13rust/06try 140420663 15Daniel Micay: add intrinsics for checked overflow add/sub/mul
+[06:50:24] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[06:57:07] *** Quits: jviereck (Adium@moz-6B21FC70.dip0.t-ipconnect.de) (No route to host)
+[06:57:09] *** Joins: jviereck1 (Adium@moz-6B21FC70.dip0.t-ipconnect.de)
+[06:58:13] *** Quits: tiffany (kawaii@moz-EB8B0C08.dhcp.embarqhsd.net) (Ping timeout)
+[06:58:34] *** Quits: jviereck1 (Adium@moz-6B21FC70.dip0.t-ipconnect.de) (Connection reset by peer)
+[07:05:02] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[07:07:09] *** Joins: hjr3 (hradtke@moz-842BF853.hsd1.ca.comcast.net)
+[07:10:00] *** Quits: eatkinson (eatkinson@moz-5CF47426.dia.static.qwest.net) (Quit: eatkinson)
+[07:11:02] *** Quits: hjr3 (hradtke@moz-842BF853.hsd1.ca.comcast.net) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[07:11:25] <chotu> how do i pass function around in rust? For example here : https://gist.github.com/veer-public/6203810 , how do I reuse "somefn"  
+[07:13:03] *** Joins: Blub\w (wry@7E3BB9D.71150E1A.237AE2BA.IP)
+[07:13:13] *** Quits: infynyxx (infynyxx@moz-8BE8F2CD.hsd1.md.comcast.net) (Client exited)
+[07:18:00] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[07:18:00] <ghrust> 01[13rust01] 15thestinger 04force-pushed 06try from 140420663 to 147db605c: 02http://git.io/k471pw
+[07:18:00] <ghrust> 13rust/06try 14076b91f 15Daniel Micay: add intrinsics for checked overflow add/sub/mul
+[07:18:01] <ghrust> 13rust/06try 147db605c 15Daniel Micay: disable 64-bit CheckedMul on 32-bit...
+[07:18:01] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[07:18:39] <dbaupp> chotu: https://github.com/mozilla/rust/wiki/Doc-under-construction-FAQ#noncopyable-stack-closures
+[07:19:13] *** Joins: eatkinson (eatkinson@moz-5CF47426.dia.static.qwest.net)
+[07:20:04] *** Quits: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP) (Client exited)
+[07:21:42] *** Joins: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP)
+[07:24:37] *** Joins: dim-an (ermolovd@moz-FE167E47.nationalcablenetworks.ru)
+[07:25:39] *** Quits: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP) (Quit: Konversation terminated!)
+[07:25:53] <chotu> dbaupp: got it , thanks a lot!
+[07:30:18] *** Quits: chotu (chotu@F5EB400F.6A92A938.A3D1B221.IP) (Quit: Leaving)
+[07:30:22] *** Joins: jaen (jaen@moz-E0979827.copit.pl)
+[07:34:03] *** Joins: sebcrozet (sebcrozet@moz-D8879CC3.w80-13.abo.wanadoo.fr)
+[07:37:29] *** Joins: vk_ (chatzilla@moz-389FEE13.hsd1.ca.comcast.net)
+[07:38:28] *** Quits: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se) (Ping timeout)
+[07:41:08] <vk_> Can @~[T]s be added/concatenated together? 
+[07:45:15] *** Joins: doomlord (doomlod@moz-13E69BC8.range86-180.btcentralplus.com)
+[07:47:10] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[07:47:10] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1462544eb to 14eebcff1: 02http://git.io/N3iJvQ
+[07:47:10] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[07:47:10] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[07:47:10] <ghrust> 01[13rust01] 15bors pushed 1 new commit to 06auto: 02http://git.io/nCDvkw
+[07:47:10] <ghrust> 13rust/06auto 14cac9aff 15bors: auto merge of #8408 : thestinger/rust/checked, r=Aatch
+[07:47:10] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[07:48:45] <dbaupp> vk_: not without copying: @(*x + *y)
+[07:53:07] *** Joins: dew (Instantbir@moz-8A63B53.dhcp.stls.mo.charter.com)
+[07:53:58] *** Joins: jensnockert (jensnocker@moz-61E1062F.tbcn.telia.com)
+[07:54:57] <vk_> dbaupp: interesting. So if failed to find an implementation of trait std::clone::Clone for T, I'll need to implement clone for T?
+[07:55:35] <vk_> *** " failed to find an implementation of trait std::clone::Clone for T" being an error
+[07:57:04] *** Quits: jensnockert (jensnocker@moz-61E1062F.tbcn.telia.com) (Input/output error)
+[07:57:26] <dbaupp> vk_: yes, you'll need T: Clone if it's a generic, or an impl if it's a concrete type
+[07:57:31] *** Joins: jensnockert (jensnocker@moz-61E1062F.tbcn.telia.com)
+[07:59:07] <vk_> dbaupp: may be a dumb question, what are enums considered to be?
+[07:59:12] *** Quits: jensnockert (jensnocker@moz-61E1062F.tbcn.telia.com) (Ping timeout)
+[07:59:17] *** Quits: jeaye (Jeaye@moz-FD505E54.hsd1.ca.comcast.net) (Quit: zzz)
+[07:59:24] <dbaupp> vk_: concrete type
+[07:59:41] <vk_> dbaupp: alright, cool. thanks much.
+[07:59:42] <dbaupp> generics are fn foo<T>(my_t: T) { ... }
+[08:00:33] <vk_> dbaupp: aye, more or less have some understanding of generics, haven't much used them before.
+[08:04:04] *** Quits: brendan (brendaneic@E908EF74.6BAC3F3B.56A6FAA.IP) (Quit: brendan)
+[08:06:41] *** Quits: dim-an (ermolovd@moz-FE167E47.nationalcablenetworks.ru) (Quit: dim-an)
+[08:13:34] *** Joins: jensnockert (jensnocker@moz-61E1062F.tbcn.telia.com)
+[08:16:18] *** Quits: vk_ (chatzilla@moz-389FEE13.hsd1.ca.comcast.net) (Quit: ChatZilla 0.9.90.1 [Firefox 23.0/20130729175331])
+[08:22:32] *** Quits: alisdair (textual@moz-FBF4138A.vc.shawcable.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[08:31:52] *** Joins: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl)
+[08:34:18] *** zz_kimundi is now known as kimundi
+[08:38:16] * kimundi yawns
+[08:38:37] <kimundi> 4 hours are not enough sleep ._.
+[08:39:28] <dbaupp> kimundi: go back to bed then :P
+[08:39:56] <kimundi> to late for that
+[08:50:16] *** Joins: mindcat (mindcat@409F5AD7.E45688C6.F21FCE99.IP)
+[08:51:16] <mindcat> Ok, so how can I compile rust to Raspberry Pi? I tried some cross compile tools and failed.
+[08:51:32] *** Joins: Cromulent (Cromulent@moz-983B638D.cable.virginmedia.com)
+[08:53:19] <Luqman> mindcat: ./configure --target-triples=arm-unknown-linux-gnueabihf && make && make install
+[08:53:43] <Luqman> then, rustc --target arm-unknown-linux-gnueabihf --linker arm-linux-gnueabi-gcc foo.rs
+[08:54:17] <Luqman> err i mean rustc --target arm-unknown-linux-gnueabihf --linker arm-linux-gnueabihf-gcc foo.rs
+[08:54:30] <mindcat> I see, I will try it.
+[08:55:40] <Luqman> mindcat: you should have arm-linux-gnueabihf-gcc & friends in your path
+[08:55:48] <mindcat> yep
+[08:55:54] *** Joins: true_droid (true_droid@moz-123FD9B8.beck.volia.net)
+[08:58:41] *** Quits: jensnockert (jensnocker@moz-61E1062F.tbcn.telia.com) (Input/output error)
+[08:58:55] *** Quits: tikue (tkuehn@moz-CF8BEBEF.dia.static.qwest.net) (Quit: tikue)
+[08:59:09] *** Joins: jensnockert (jensnocker@moz-61E1062F.tbcn.telia.com)
+[09:00:49] *** Quits: jensnockert (jensnocker@moz-61E1062F.tbcn.telia.com) (Ping timeout)
+[09:01:26] <doener> cmr: heh, you made the typo I always feared when writing commit messages, emitted -> omitted :-)
+[09:03:33] <doener> cmr: no offense was taken WRT to the non-opt benchmarks. I know I'm doing weird things there
+[09:09:19] *** Quits: Cromulent (Cromulent@moz-983B638D.cable.virginmedia.com) (Quit: KVIrc 4.2.0 Equilibrium http://www.kvirc.net/)
+[09:10:09] *** Quits: thesnowdog (doug@9842E8BA.8E46834.6F17036B.IP) (Quit: WeeChat 0.4.1)
+[09:21:26] <mindcat> Luqman, compile failed. http://paste.ubuntu.com/5972929/
+[09:21:43] <mindcat> I am using this toolchain: https://github.com/raspberrypi/tools/tree/master/arm-bcm2708/gcc-linaro-arm-linux-gnueabihf-raspbian
+[09:22:20] <SimonSapin> http://static.rust-lang.org/doc/tutorial-container.html#double-ended-queues "extra::deque […] also has O(1) indexing like a vector." Does it? I don’t find indexing at all in the code.
+[09:22:40] *** Joins: thesnowdog (doug@9842E8BA.8E46834.6F17036B.IP)
+[09:23:27] *** Joins: Ms2ger (Ms2ger@moz-E9883900.access.telenet.be)
+[09:23:46] *** Quits: mihneadb (mihneadb@moz-329F29A3.lightspeed.sntcca.sbcglobal.net) (Input/output error)
+[09:24:08] <dbaupp> SimonSapin: `.get` and `.get_mut`?
+[09:24:49] <SimonSapin> dbaupp: nope
+[09:25:35] <doener> SimonSapin: "nope", what? Those are the indexing functions for Deque/RingBuf (it's been renamed to RingBuf)
+[09:25:47] <SimonSapin> nope, I don’t find that either
+[09:25:54] <dbaupp> SimonSapin: oh; I don't know then. (it's moved to extra:ringbuf in master.)
+[09:26:11] <SimonSapin> actually extra::deque doesn’t seem to exist
+[09:26:50] <SimonSapin> I see extra::dlist::DList that implements extra::container::Deque
+[09:27:32] <doener> SimonSapin: yeah, it's extra::ringbuf::RingBuf now
+[09:27:32] <SimonSapin> haa, it’s something else
+[09:27:52] <SimonSapin> DList with O(1) indexing didn’t make sense
+[09:28:35] <doener> the tutorial could use an update *hint hint* :-D
+[09:29:54] <SimonSapin> hehe
+[09:30:43] *** Joins: Earnestly (earnest@moz-55672F6A.range86-164.btcentralplus.com)
+[09:32:01] *** Quits: mib_leap (Mibbit@9EE969DD.5F016CAB.520CDC98.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[09:32:21] *** kimundi is now known as zz_kimundi
+[09:35:38] *** Joins: spider-mario (spidermari@moz-81131DB6.fbx.proxad.net)
+[09:36:10] *** Quits: spider-mario (spidermari@moz-81131DB6.fbx.proxad.net) (Input/output error)
+[09:36:16] *** Joins: spider-mario (spidermari@moz-81131DB6.fbx.proxad.net)
+[09:36:34] *** Quits: maik (maik___@moz-C834AD21.dip0.t-ipconnect.de) (Ping timeout)
+[09:39:48] <mindcat> how can I compile rust to Raspberry Pi? I was failed to cross compile it.
+[09:43:55] *** Joins: veer (veer@F5EB400F.6A92A938.A3D1B221.IP)
+[09:51:46] *** Joins: maik (maik___@moz-C834AD21.dip0.t-ipconnect.de)
+[09:56:06] <klutzy> mindcat: afaik it does not cross compile through configure arguments
+[09:56:52] <klutzy> mindcat: patch author may have used this https://gist.github.com/crabtw/5150198
+[09:57:22] <klutzy> (I didn't tested it since found it after giving up cross compiling..
+[10:01:22] *** Quits: Earnestly (earnest@moz-55672F6A.range86-164.btcentralplus.com) (Ping timeout)
+[10:01:22] *** Joins: Ke (jkarlson@moz-40397852.org.aalto.fi)
+[10:05:06] *** Joins: peterdn (chatzilla@moz-97742234.new.ox.ac.uk)
+[10:05:06] *** Joins: Ferio (Mibbit@moz-23CDE542.fullrate.dk)
+[10:19:07] *** Joins: gits1225 (gits@8CA36187.26865C2F.A2DC32D.IP)
+[10:24:16] *** Quits: maik (maik___@moz-C834AD21.dip0.t-ipconnect.de) (Ping timeout)
+[10:26:36] *** Joins: donri (dag@moz-9BB61102.tbcn.telia.com)
+[10:27:11] *** Joins: leaper (Mibbit@9EE969DD.5F016CAB.520CDC98.IP)
+[10:29:46] *** Joins: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP)
+[10:30:41] *** Quits: james4k (james@moz-E7990244.consolidated.net) (Ping timeout)
+[10:32:36] *** Joins: Earnestly (earnest@moz-55672F6A.range86-164.btcentralplus.com)
+[10:40:14] <doener> grr... How do I "easily" get assembler / llvm output for librustc these days? Seems that it wants me to set a bunch of env vars...
+[10:41:45] <dbaupp> doener: set the env vars?
+[10:41:56] *** Quits: leaper (Mibbit@9EE969DD.5F016CAB.520CDC98.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[10:43:50] <doener> dbaupp: that misses the "easily" part ;)
+[10:43:57] * doener is lazy
+[10:44:32] <doener> e.g. CFG_COMPILER_TRIPLE isn't something I'd even want to remember the right value for
+[10:46:01] <doener> hm, apparently an empty string does it
+[10:59:08] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[10:59:08] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/OKBdmQ
+[10:59:08] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[11:04:14] *** Joins: upstream (TheDust@moz-8C2076C2.upc-d.chello.nl)
+[11:04:22] *** Quits: dwhyte (dwhyte@1922756A.EDC594B0.7BF4A4B0.IP) (Quit: Leaving.)
+[11:05:26] *** Quits: z0w0 (zack@moz-E12708D5.lns6.woo.bigpond.net.au) (Client exited)
+[11:09:57] *** Quits: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP) (Ping timeout)
+[11:10:02] *** Joins: FrozenCow_ (FrozenCow@moz-B2DF4929.chello.nl)
+[11:10:02] *** Quits: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl) (Connection reset by peer)
+[11:11:11] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[11:11:11] <ghrust> 01[13rust01] 15bors pushed 5 new commits to 06auto: 02http://git.io/9LXs3g
+[11:11:11] <ghrust> 13rust/06auto 142afed31 15Daniel Micay: vec: optimize the Add implementation...
+[11:11:11] <ghrust> 13rust/06auto 14768c9a4 15Daniel Micay: str: optimize `with_capacity`...
+[11:11:12] <ghrust> 13rust/06auto 14774c9ae 15Daniel Micay: move `strdup_uniq` lang item to std::str
+[11:11:14] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[11:12:32] *** Joins: q66 (q66@6EE9DE40.46454B5D.33AABD5F.IP)
+[11:12:34] *** Joins: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP)
+[11:13:49] <dbaupp> kemurphy: ping
+[11:15:48] <kemurphy> dbaupp: pong
+[11:16:04] <dbaupp> kemurphy: just wondering how your struct/enum mega-patch is going? :)
+[11:16:50] <kemurphy> dbaupp: it's... going. i'm currently stuck somewhere in pattern code, it's causing me a bit of woe.
+[11:17:28] <kemurphy> dbaupp: additionally i'm just wrapping up a relocation and getting settled into a new job so my time has been limited the past 2 weeks
+[11:17:54] <kemurphy> dbaupp: this weekend is ICFP so all my cycles are currently allocated to that
+[11:18:08] * dbaupp 's are too
+[11:18:46] <dbaupp> (but yeah, this sounds like a brilliant time to work on a cruft/complicated code base that is constantly changing. :P )
+[11:19:05] <kemurphy> it is certainly entertaining :P
+[11:19:06] *** Joins: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP)
+[11:19:38] <kemurphy> i just saw a patch got accepted that fixes a soundness bug in struct matching; i'll have to see how that maps to my patch
+[11:21:25] *** Quits: KindOne (KindOne@D57F36E5.A68CD9B.34F73994.IP) (Ping timeout)
+[11:22:14] <dbaupp> what's your icfp score, btw?
+[11:24:04] <kemurphy> uh, i'm not actually sure
+[11:24:13] <kemurphy> bblum: do you know?
+[11:24:50] <dbaupp> doing it in Rust too?
+[11:25:00] <kemurphy> no, SML
+[11:25:10] <kemurphy> (it is the only good common language in our team)
+[11:25:21] *** Joins: KindOne (KindOne@moz-53658478.dynamic.ip.windstream.net)
+[11:25:37] <kemurphy> though i imagine this year's problem will be a good exercise for Rust
+[11:26:37] <dbaupp> yeah, we're mostly bruteforcing it, and Rust is fast enough that this works reasonably well, I guess.
+[11:26:52] *** Quits: RMF (RMF@moz-E2EE1403.dsl.telepac.pt) (Ping timeout)
+[11:26:59] <dbaupp> (also, simple parallelism <3 )
+[11:28:36] <kemurphy> ah, so we're sitting at 361 right now
+[11:29:22] *** Quits: eatkinson (eatkinson@moz-5CF47426.dia.static.qwest.net) (Quit: eatkinson)
+[11:29:39] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[11:30:10] <dbaupp> we're at 700 and something, I believe. so I guess we're doing reasonably well
+[11:30:41] *** Quits: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net) (Client exited)
+[11:31:02] *** Joins: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net)
+[11:31:05] *** Joins: RMF (RMF@moz-19039D75.dsl.telepac.pt)
+[11:31:19] <kemurphy> ah nice
+[11:32:03] <bblum> do you guys have the bonus problems
+[11:32:28] <dbaupp> in what sense?
+[11:32:35] <bblum> i mean have you solved them
+[11:32:42] *** Quits: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net) (Ping timeout)
+[11:33:15] <dbaupp> we know some of the structure, and hav a solve that can solve them fast semireliably; but not really.
+[11:39:43] *** Quits: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP) (Ping timeout)
+[11:41:04] *** Joins: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP)
+[11:41:10] *** Quits: Earnestly (earnest@moz-55672F6A.range86-164.btcentralplus.com) (Ping timeout)
+[11:45:24] *** Quits: Ferio (Mibbit@moz-23CDE542.fullrate.dk) (Quit: http://www.mibbit.com ajax IRC Client)
+[11:45:57] *** Joins: miloshadzic (miloshadzi@5E9C7FE4.FA4D0618.449B8A48.IP)
+[11:46:42] *** Joins: threecreepio (jdp@moz-43FB9668.cust.bredbandsbolaget.se)
+[11:46:58] <doomlord_> before i write a while loop...   counting the number of items in a collection from the end that pass a predicate ..  collect.rev_iter().take_while(..condition..).len() perhaps? is there something like 'count_while'
+[11:47:26] *** Quits: sp3d (a@moz-41A29595.dhcp.stls.mo.charter.com) (Ping timeout)
+[11:47:54] <dbaupp> doomlord_: that looks good
+[11:52:39] <doener> I wonder why cmr's rtdebug! fix hangs on the buildbots, works fine here
+[11:52:48] <mindcat> now, I am cross compile rust for Raspberry Pi and failed again. http://paste.ubuntu.com/5973302/
+[11:54:49] *** Joins: tikue (tkuehn@46B5412F.3597C859.3AF705F3.IP)
+[11:56:09] <dbaupp> mindcat: http://stackoverflow.com/questions/9753749/arm-compilation-error-vpf-registered-used-by-executable-not-object-file
+[11:56:40] <dbaupp> I don't know if that's the same thing, or how to fix it for rust though.
+[11:56:58] *** Quits: dbaupp (Thunderbir@moz-712A1135.lns20.syd6.internode.on.net) (Quit: dbaupp)
+[11:58:54] *** Joins: dbaupp (Thunderbir@moz-712A1135.lns20.syd6.internode.on.net)
+[12:02:18] *** Joins: sp3d (a@moz-41A29595.dhcp.stls.mo.charter.com)
+[12:03:58] *** Quits: sp3d (a@moz-41A29595.dhcp.stls.mo.charter.com) (Ping timeout)
+[12:05:30] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[12:08:11] *** Quits: btipling (btipling@moz-D51E0AEB.xen.prgmr.com) (Quit: ZNC - http://znc.sourceforge.net)
+[12:08:50] *** Joins: btipling (btipling@moz-D51E0AEB.xen.prgmr.com)
+[12:10:15] *** Quits: btipling (btipling@moz-D51E0AEB.xen.prgmr.com) (Quit: ZNC - http://znc.sourceforge.net)
+[12:12:26] *** Joins: btipling (btipling@moz-D51E0AEB.xen.prgmr.com)
+[12:13:07] *** Quits: btipling (btipling@moz-D51E0AEB.xen.prgmr.com) (Quit: ZNC - http://znc.sourceforge.net)
+[12:13:26] *** Joins: sp3d (a@moz-41A29595.dhcp.stls.mo.charter.com)
+[12:18:56] *** Joins: btipling (btipling@moz-D51E0AEB.xen.prgmr.com)
+[12:20:22] *** Joins: mib_tzqx1u (Mibbit@moz-E80C7027.dynamic.isp.telekom.rs)
+[12:20:30] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[12:23:06] *** Quits: mib_tzqx1u (Mibbit@moz-E80C7027.dynamic.isp.telekom.rs) (Quit: http://www.mibbit.com ajax IRC Client)
+[12:40:28] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[12:46:55] <veddan> Is there a convenient way of zero-initializing vecs?
+[12:47:27] <doener> vec::from_elem(1024, 0)
+[12:47:29] <dbaupp> veddan: vec::from_elem(length, 0)
+[12:47:40] <dbaupp> (assuming you want a ~[])
+[12:47:44] <veddan> Something like: let mut buf: [u64,..buf_size] = [..0]
+[12:47:48] <veddan> For fixed-size vecs
+[12:48:07] <doener> [0, ..buf_size]
+[12:50:03] <veddan> doener: Thanks
+[12:50:11] <tikue> rusti: let mut xs = [0, ..100]; xs[99] = 1; xs
+[12:50:16] -rusti- line longer than 150 columns, pastebinned 1 lines of output: http://ix.io/7cH
+[12:50:27] <mindcat> I don't know how to fix last hour cross compile problem now.
+[12:50:38] <tikue> veddan: ^
+[12:50:44] *** Joins: sankha94 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[12:50:59] <tikue> if it's fixed-size
+[12:51:32] <mindcat> log: http://paste.ubuntu.com/5973499/
+[12:53:35] <mindcat> I am spend a day for this work, now I give up.
+[12:53:52] *** Quits: tikue (tkuehn@46B5412F.3597C859.3AF705F3.IP) (Quit: tikue)
+[12:59:18] *** Quits: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP) (Quit: Leaving.)
+[13:02:27] *** Joins: Cromulent (Cromulent@moz-983B638D.cable.virginmedia.com)
+[13:04:19] *** Joins: Florob (Florob@moz-39532932.de)
+[13:09:49] *** Quits: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP) (Ping timeout)
+[13:10:24] *** Joins: dherman (dherman@moz-FEEC7E9.hsd1.ut.comcast.net)
+[13:10:24] *** ChanServ sets mode: +o dherman
+[13:17:12] *** Quits: dherman (dherman@moz-FEEC7E9.hsd1.ut.comcast.net) (Quit: dherman)
+[13:21:25] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[13:24:29] *** Quits: tedh (tedh@moz-76BF83CB.z180-91-67.customer.algx.net) (Ping timeout)
+[13:29:09] *** Joins: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP)
+[13:29:51] *** zz_kimundi is now known as kimundi
+[13:31:21] *** Joins: Earnestly (earnest@moz-55672F6A.range86-164.btcentralplus.com)
+[13:32:40] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[13:32:49] *** Joins: milinda (milinda@moz-C79ADF95.dhcp-bl.indiana.edu)
+[13:38:29] *** Joins: peterdn_ (chatzilla@moz-97742234.new.ox.ac.uk)
+[13:38:32] *** Quits: btipling (btipling@moz-D51E0AEB.xen.prgmr.com) (Quit: ZNC - http://znc.sourceforge.net)
+[13:39:04] *** Quits: peterdn (chatzilla@moz-97742234.new.ox.ac.uk) (Ping timeout)
+[13:39:10] *** peterdn_ is now known as peterdn
+[13:42:19] *** Quits: KindOne (KindOne@moz-53658478.dynamic.ip.windstream.net) (Ping timeout)
+[13:42:30] *** Joins: btipling (btipling@moz-D51E0AEB.xen.prgmr.com)
+[13:44:27] *** Joins: peterdn_ (chatzilla@moz-97742234.new.ox.ac.uk)
+[13:45:04] *** Quits: peterdn (chatzilla@moz-97742234.new.ox.ac.uk) (Ping timeout)
+[13:45:11] *** Joins: peterdn (chatzilla@moz-97742234.new.ox.ac.uk)
+[13:46:08] *** Quits: peterdn_ (chatzilla@moz-97742234.new.ox.ac.uk) (Ping timeout)
+[13:46:08] *** Quits: peterdn (chatzilla@moz-97742234.new.ox.ac.uk) (Connection reset by peer)
+[13:46:34] *** Joins: KindOne (KindOne@moz-32B08B98.dynamic.ip.windstream.net)
+[13:51:52] <kimundi> rusti: Some(3u).take()
+[13:51:53] -rusti- Some(3)
+[13:52:18] <kimundi> rusti: let mut x = Some(3u); (x.take(), x.take())
+[13:52:19] -rusti- (Some(3), None)
+[13:52:25] <kimundi> rusti: let mut x = Some(3u); (x.take(), x.take(), x.take())
+[13:52:26] -rusti- (Some(3), None, None)
+[13:56:00] <kimundi> r? https://github.com/mozilla/rust/pull/8452
+[13:58:22] *** Joins: maik (maik___@moz-6E77C845.dip0.t-ipconnect.de)
+[13:58:52] *** Quits: gits1225 (gits@8CA36187.26865C2F.A2DC32D.IP) (Quit: )
+[13:59:10] *** Joins: BizarreCake (BizarreCak@moz-361FE9B2.dynamic.barak-online.net)
+[13:59:17] *** Joins: wartin (Mibbit@9EE969DD.5F016CAB.520CDC98.IP)
+[13:59:39] <wartin> is the configure script handwritten?
+[14:02:01] <cmr> wartin: yes
+[14:02:45] <wartin> cmr: are there any plans to move to autoconf or cmake based build system?
+[14:02:57] <cmr> doener: Well, non-opt benchmarks are important, but for the compiler, not for measuring the performance of real rust code
+[14:02:58] <cmr> wartin: no
+[14:03:02] <cmr> wartin: we'll be using rustpkg.
+[14:03:15] <cmr> dogfooding and all
+[14:03:57] <wartin> cmr: is rustpkg generic...as in can be used for building any c/c++/rust/etc projects?
+[14:04:26] *** Quits: heftig (heftig@moz-2701BAFF.dip0.t-ipconnect.de) (Quit: Quitting)
+[14:05:13] <cmr> wartin: not really, mostly just rust and C
+[14:05:22] <cmr> it can of course call out to any build system
+[14:05:27] <cmr> but that will be the built-in logic
+[14:05:37] *** Joins: heftig (heftig@moz-2701BAFF.dip0.t-ipconnect.de)
+[14:06:21] *** kimundi is now known as zz_kimundi
+[14:06:27] <wartin> wartin: cool, thanks for the information
+[14:07:23] *** Quits: Earnestly (earnest@moz-55672F6A.range86-164.btcentralplus.com) (Ping timeout)
+[14:08:01] <dbaupp> wartin: (the C functionality is a planned-feature; rustpkg barely handles rust atm.)
+[14:08:16] *** Quits: wartin (Mibbit@9EE969DD.5F016CAB.520CDC98.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[14:08:39] *** Quits: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP) (Quit: Leaving.)
+[14:09:00] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[14:09:59] *** Joins: leaper (Mibbit@9EE969DD.5F016CAB.520CDC98.IP)
+[14:10:29] *** Quits: a__ (a__@moz-250D9B4.nycmny.fios.verizon.net) (Ping timeout)
+[14:11:23] <leaper> cmr: regarding https://github.com/mozilla/rust/issues/2807, why does Terminal::new trait take an io writer as a parameter?
+[14:12:04] <cmr> leaper: it's the stream the terminal writes to when you call its writing methods
+[14:12:06] <maik> hm interesting haskell also uses a thread local gc
+[14:12:31] *** Quits: BizarreCake (BizarreCak@moz-361FE9B2.dynamic.barak-online.net) (Connection reset by peer)
+[14:12:43] <cmr> leaper: I suppose that doesn't make sense for windows
+[14:13:13] <cmr> I didn't write that codfe though, Eridius|vacation did, blame him :p
+[14:13:34] <leaper> cmr: yes , the problem in windows is the C file handles for stdout is different from the stdout handle that represents the console's screen buffer
+[14:16:29] <leaper> and having an io writer is pretty much useless as we can't set the properties of the console by writing to it
+[14:17:00] <cmr> leaper: change whatever you need to in that interface to get it properly cross-platform. I'm envisioning a Terminal::stdout method that takes no parameters and gives back whatever the platform needs for it to work
+[14:17:38] *** Joins: feduser (feduser@1FCC8EE1.AAE9A62C.650F25DA.IP)
+[14:17:55] <cmr> or maybe not supporting writing to streams at all, but that's a bit of a harsh sentance just to support the deficient cmd.exe
+[14:18:23] *** Joins: sorali (sorali@moz-AE11F11D.osk2.eonet.ne.jp)
+[14:18:39] <leaper> cmr: why not make the new itself open for stdout, if the passed in io::writer is a Screen..?
+[14:18:55] <cmr> leaper: how can you check for that?
+[14:19:16] <cmr> Maybe you can create a new structure representing the destinatino of a Terminal, rathr than passing the Writer directly
+[14:20:11] <leaper> writer.get_writer_type returns file or screen enum
+[14:20:51] *** Joins: a__ (a__@moz-250D9B4.nycmny.fios.verizon.net)
+[14:21:09] <cmr> that interface is gone with the newrt, don't depend on it.
+[14:21:49] <leaper> does it make sense to have a terminal attached to a stream other than std(out|err) ? i'm asking because i'm not familiar with what unix allows
+[14:21:55] <cmr> Yes
+[14:22:16] <cmr> You can write escape codes to a pipe or even a file
+[14:22:45] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[14:22:53] <cmr> But perhaps that should be a different interface, and not Terminal
+[14:23:08] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[14:23:08] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/9LXs3g
+[14:23:08] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[14:24:30] <leaper> cmr: what will the new interface represent? TerminalHandle?
+[14:25:43] <cmr> leaper: ANSIStream or something
+[14:26:08] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[14:26:08] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/Y9fD8Q
+[14:26:08] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[14:26:39] <leaper> can have Writer implement something like get_terminal?
+[14:26:42] *** Quits: mindcat (mindcat@409F5AD7.E45688C6.F21FCE99.IP) (Quit: Lost terminal)
+[14:26:57] <cmr> doesn't make sense, Writer is just a stream of bytes
+[14:27:21] <leaper> i agree, but ANSIStream makes it sound like its related to character encoding...
+[14:27:41] <cmr> well it's ANSI escape sequences
+[14:28:53] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[14:28:53] <leaper> i don't know...i still feel like there won't be any difference between Terminal and ANSIStream or whatever the new struct/interface is
+[14:29:08] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[14:29:08] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/Y9fD8Q
+[14:29:08] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[14:29:09] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[14:29:09] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/nppZdQ
+[14:29:09] <ghrust> 13rust/06auto 142f3fde6 15Alex Crichton: Implement an `address_insignificant` attribute...
+[14:29:09] <ghrust> 13rust/06auto 14f08851e 15bors: auto merge of #8421 : alexcrichton/rust/unnamed-addr, r=thestinger...
+[14:29:10] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[14:29:35] <leaper> or can Terminal::new return Option<Terminal> depending on the writer passed in?
+[14:31:39] <cmr> Terminal wouldn't support writing to a Writer, because Windows doesn't support that. ANSIStream would just output formatting codes directly into a Writer
+[14:33:15] <leaper> i'm not sure if i understand this correctly...are you saying unix clients can use ANSIStream and win clients will use Terminal?
+[14:33:36] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Ping timeout)
+[14:33:45] <cmr> No, most everything would use Terminal (which on unix would output to stdout as an implementation detail), but if you want to write to a file or pipe, you'd use ANSIStream
+[14:33:58] <cmr> for example, all of the current uses of Terminal wouldn't change
+[14:33:58] *** Joins: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP)
+[14:34:02] <cmr> they all just pass in stdout
+[14:34:39] *** Quits: milinda (milinda@moz-C79ADF95.dhcp-bl.indiana.edu) (Input/output error)
+[14:36:47] <leaper> wouldn't that require ANSIStream to reimplement all the methods of the Terminal ?
+[14:37:32] <cmr> yes, but on unix the Terminal's methods would just call the ANSIStream ones
+[14:46:31] <leaper> cmr: that makes sense, then can we move ANSIStream to be part of terminfo?
+[14:46:37] <cmr> yes
+[14:47:34] *** Quits: Cromulent (Cromulent@moz-983B638D.cable.virginmedia.com) (Quit: KVIrc 4.2.0 Equilibrium http://www.kvirc.net/)
+[14:52:21] *** Joins: gits1225 (gits@46F1FBE9.BED99C53.301675BC.IP)
+[14:59:38] *** Joins: MrFahrenheit (RageOfThou@3FEF494C.29C984D5.783DEDCA.IP)
+[15:02:58] *** Joins: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se)
+[15:07:03] *** Quits: leaper (Mibbit@9EE969DD.5F016CAB.520CDC98.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:21:19] *** Quits: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net) (Client exited)
+[15:23:20] *** Joins: dherman (dherman@moz-FEEC7E9.hsd1.ut.comcast.net)
+[15:23:20] *** ChanServ sets mode: +o dherman
+[15:23:33] *** Joins: orshem (orshem@C5E06B1E.A5B6B765.E3D28531.IP)
+[15:28:22] *** Quits: maik (maik___@moz-6E77C845.dip0.t-ipconnect.de) (Ping timeout)
+[15:29:05] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[15:29:10] *** Quits: sorali (sorali@moz-AE11F11D.osk2.eonet.ne.jp) (Client exited)
+[15:30:06] *** Joins: leonvv (leonvv@moz-7D83A5F1.ip.telfort.nl)
+[15:30:47] *** Quits: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net) (Ping timeout)
+[15:32:32] *** Joins: cubic (cubic@moz-FE5AD6C7.mc.videotron.ca)
+[15:32:39] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[15:33:20] *** Joins: bytewise (bytewise@moz-4A801D04.unitymediagroup.de)
+[15:35:06] *** Quits: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[15:36:01] <dbaupp> https://github.com/mozilla/rust/pull/8453 r?
+[15:37:28] <Ms2ger> There's boxplots in the stl?
+[15:37:28] <orshem> ok #rust doesn't want me to be social
+[15:37:39] <orshem> so i'll just ask
+[15:37:57] <bstrie> orshem: ???
+[15:38:09] <orshem> bstrie, i said hi all
+[15:38:17] <cmr> no you didn't
+[15:38:22] <orshem> and rust blocked me as hibot spam
+[15:38:28] <cmr> oh
+[15:38:30] <cmr> hah
+[15:39:26] <cmr> Ms2ger: yes, libextra has some basic stat stuff
+[15:39:48] <bstrie> can someone with a rust compiler update the code examples on https://github.com/mozilla/rust/wiki/Doc-language-FAQ ?
+[15:39:58] <bstrie> still using old for-loop syntax
+[15:40:17] <Ms2ger> Interesting
+[15:40:19] <orshem> is there a plan to embiggen the scope of borrows inside a for pattern ?
+[15:40:36] <Seldaek> mitsuhiko: ah you were the original twig author, cool
+[15:40:37] <orshem> currently it is unusable for stack objects and such
+[15:41:12] *** Quits: feduser (feduser@1FCC8EE1.AAE9A62C.650F25DA.IP) (Ping timeout)
+[15:41:37] *** Joins: maik (maik___@moz-6E77C845.dip0.t-ipconnect.de)
+[15:41:38] *** Joins: feduser (feduser@1FCC8EE1.AAE9A62C.650F25DA.IP)
+[15:42:14] <orshem> in a code such as "for u in [foo, bar, spam].iter() {} " you can't use u inside the loop 
+[15:43:12] *** Joins: azita (Azita@moz-7E81A256.static.qsc.de)
+[15:44:34] <engla> there should be an open bug for that orshem 
+[15:45:25] <orshem> engla, so it is known. thanks. i searched github/rust but didn't find anything.
+[15:45:33] <engla> https://github.com/mozilla/rust/issues/3511
+[15:46:41] <engla> now the rules in that issue can't apply to for in its current form
+[15:47:17] <engla> ah I don't know
+[15:47:22] <orshem> engla, hm are you sure it's the same issue? i'm not sure the vector in my example is an rvalue?
+[15:47:28] *** Quits: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP) (Quit: Leaving.)
+[15:47:32] <dbaupp> orshem: it is
+[15:47:51] <dbaupp> rusti: for u in [1i,2i].iter() { let _ = u; }
+[15:47:54] -rusti- pastebinned 11 lines of output: http://ix.io/7d4
+[15:48:10] <dbaupp> rusti: let v = [1i,2i]; for u in v.iter() { let _ = u; }
+[15:48:10] -rusti- ()
+[15:49:24] <orshem> isn't it translated to let v = [...].iter();while v.next() != None {}?
+[15:50:28] <dbaupp> you can use --pretty expanded to see exactly what it expands into :)
+[15:50:59] <orshem> dbaupp, thanks. didn't know this
+[15:52:09] <engla> cmr: can you re-r https://github.com/mozilla/rust/pull/8420 
+[15:52:12] <engla> ? thanks
+[15:59:19] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[16:00:21] <engla> thanks!
+[16:00:37] *** Joins: oren (oren@moz-B0F26027.red.bezeqint.net)
+[16:00:44] *** zz_kimundi is now known as kimundi
+[16:00:50] <engla> it doesn't even need the p=1, it's the oldest approved one in the queue by now
+[16:01:17] *** Quits: azita (Azita@moz-7E81A256.static.qsc.de) (Quit: azita)
+[16:02:01] <oren> What do I do to solve error: can't find crate for `core`
+[16:02:19] <goffrie> oren: `core` doesn't exist any more, it's been renamed to `std`
+[16:02:32] <oren> That would explain it :-)
+[16:02:34] <goffrie> :)
+[16:03:45] <cmr> engla: ah, oh well :p
+[16:04:03] <engla> I'm honored
+[16:04:05] <engla> anyway
+[16:04:14] *** Joins: tautologico (shung@74BFD9C3.5A3A7952.7B974E06.IP)
+[16:04:33] <oren> Complete rust newbie here, trying to set up a 1st project... I have crate_type = "lib" but still get an error about a missing main function?
+[16:04:45] <cmr> oren: what rust version are you using?
+[16:05:17] *** Quits: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net) (Ping timeout)
+[16:05:19] <oren> rust 0.8-pre (74efdf6 2013-08-09 08:17:04 -0700)
+[16:05:54] <tautologico> do nested modules inherit the visible items from the outer module? 
+[16:05:57] <cmr> seems it doesn't pay any attentiont to crate_type anymore.
+[16:06:06] <cmr> compile with rustc --lib
+[16:06:08] <tautologico> i.e. is a nested module a nested scope?
+[16:06:09] <oren> Ok
+[16:06:18] <cmr> tautologico: no
+[16:06:37] <cmr> tautologico: paths are always crate local, but you can do that with `use super::*`
+[16:06:52] <oren> It seems a language can by rusty and new at the same time :-)
+[16:07:18] <tautologico> I wonder why it's that way
+[16:07:34] <engla> crate_type should work
+[16:08:05] <tautologico> I can't even use std inside a nested module
+[16:08:26] <cmr> tautologico: gist your code?
+[16:09:16] <oren> Hmmm - seems it is completely ignoring the crate file, even though I say "rust src/<name>/crate.rc --lib"
+[16:09:33] <cmr> oren: `rustc`, not `rust`
+[16:10:16] <oren> s/rust build/rustc/ -> same issue (complains about "name" and "vers" not being given, though I do dive them).
+[16:10:19] <oren> Did the syntax change?
+[16:10:31] <cmr> gist your code :)
+[16:10:37] <oren> #[link(name = "anthill", vers = "0.0.62c33b2-dev")] 
+[16:10:38] <kimundi> tautologico: The rules are a bit confusing, a 'use' only works for the module it's used in, not for any child modules
+[16:10:42] <engla> shouldn't use .rc anymore, should be .rs
+[16:10:49] <oren> For a crate file?
+[16:10:54] <engla> yes
+[16:11:08] <cmr> crate files are normal rust source
+[16:11:27] <tautologico> if I "use std::io::with_str_reader"  it works, but if I use the name qualified with str::io::with_str_reader it doesn't
+[16:11:42] <oren> Ok, thanks!
+[16:11:44] <cmr> tautologico: ::std::io:...
+[16:12:05] *** Joins: Earnestly (earnest@moz-55672F6A.range86-164.btcentralplus.com)
+[16:12:06] <tautologico> right, thanks
+[16:12:07] <cmr> `use` is relative to the crate root, other uses of paths aren't.
+[16:12:14] <cmr> :: makes it relative to the crate root
+[16:12:15] <tautologico> I was trying to use super::std::io
+[16:13:30] *** Joins: tedh (tedh@moz-76BF83CB.z180-91-67.customer.algx.net)
+[16:13:47] <tautologico> and I have to qualify a method as public to use it inside a nested module? 
+[16:13:59] <cmr> for the time being, yes
+[16:14:04] <cmr> that is a resolve bug though
+[16:14:07] *** Joins: vosen (vosen@moz-266BA656.icpnet.pl)
+[16:14:19] <cmr> child modules are supposed to be allowed to access private members in the parent modules.
+[16:14:28] <tautologico> yeah, making it public exposes it to every other module, but I don't want that
+[16:14:45] <cmr> yeah
+[16:15:20] <kimundi> tautologico: there are bascally two different syntax for paths: one works only in 'use', ther other only in expressions
+[16:15:44] <kimundi> 'use' paths are allways relative to crate root
+[16:16:27] <kimundi> while expression paths are relative to what is in scope in the module and what you brought in scope with use
+[16:17:06] <kimundi> so, to make a path in an expression NOT relative to those things, but instead absolute like in 'use', you add a :: in front
+[16:17:27] *** Quits: dherman (dherman@moz-FEEC7E9.hsd1.ut.comcast.net) (Quit: dherman)
+[16:17:44] *** Joins: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP)
+[16:18:00] <kimundi> 'use foo::bar::Baz;' vs 'let x = ::foo::bnar::Baz;'
+[16:20:37] <tautologico> I'm defining a method read_char for a type but the compiler seems to be looking for an implementation of Reader for this type
+[16:21:42] *** Quits: maik (maik___@moz-6E77C845.dip0.t-ipconnect.de) (Ping timeout)
+[16:22:33] <cmr> tautologico: is the trait in scope?
+[16:23:36] *** Quits: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP) (Ping timeout)
+[16:23:41] <tautologico> I don't know but it's inside a nested module and I only used std::io::with_str_reader
+[16:23:47] <tautologico> main.rs
+[16:23:48] <tautologico> parser.rs:49:16: 49:37 error: failed to find an implementation of trait std::io::Reader for parser::LookaheadBuffer
+[16:23:48] <tautologico> parser.rs:49         assert!(buffer.read_char() == 'a');
+[16:24:11] <tautologico> but I have a read_char method defined for LookaheadBuffer… if I change read_char to another name it works
+[16:24:17] <cmr> engla: is that the method resolve bug, or just a wrong error message?
+[16:24:24] <cmr> ok, probably the method resolve bug
+[16:25:22] <tautologico> I see
+[16:25:48] <engla> yeah
+[16:27:49] *** Quits: veer (veer@F5EB400F.6A92A938.A3D1B221.IP) (Quit: Leaving)
+[16:29:09] *** Joins: maik (maik___@moz-6E77C845.dip0.t-ipconnect.de)
+[16:31:57] *** Joins: alisdair (textual@moz-FBF4138A.vc.shawcable.net)
+[16:38:25] *** Quits: doener (doener@moz-121949B3.unitymediagroup.de) (Quit: leaving)
+[16:38:44] *** Quits: tautologico (shung@74BFD9C3.5A3A7952.7B974E06.IP) (Ping timeout)
+[16:40:41] *** Joins: Palmik (palmik@moz-CC484FDD.tmcz.cz)
+[16:41:04] *** Quits: feduser (feduser@1FCC8EE1.AAE9A62C.650F25DA.IP) (Ping timeout)
+[16:42:28] *** Joins: feduser (feduser@1FCC8EE1.AAE9A62C.650F25DA.IP)
+[16:43:28] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[16:45:40] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[16:45:59] <oren> https://gist.github.com/orenbenkiki/6205631
+[16:46:51] <cmr> oren: you need a semicolon after the attributes.
+[16:47:06] <cmr> To make them apply to the parent item, rather than the item that follows
+[16:47:10] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[16:47:14] <oren> So simple :-)
+[16:47:17] <oren> Thanks
+[16:47:23] <cmr> yeah, it's really annoying and non-obvious :(
+[16:47:30] <orshem> my tests run in different order each run. is this intended?
+[16:47:41] * dbaupp thinks we should have a validator for compiler-built-in attributes
+[16:47:50] *** Joins: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP)
+[16:47:51] <cmr> orshem: yes, the testrunner uses multiple tasks
+[16:47:52] *** Quits: leonvv (leonvv@moz-7D83A5F1.ip.telfort.nl) (Client exited)
+[16:48:00] <cmr> use RUST_THREADS=1 to get it more deterministic
+[16:48:06] <cmr> (plus, color output!)
+[16:48:23] <orshem> cmr: thanks
+[16:48:47] <orshem> colored output depends on RUST_THREADS=1? why?
+[16:49:10] <cmr> otherwise the writes get interleaved and the control codes don't apply to the text they should
+[16:49:26] <orshem> oh
+[16:49:46] *** Joins: lucian (lucian@moz-22A14C6A.cable.virginmedia.com)
+[16:49:56] <cmr> what should happen is the runner runs the tests in a forked subprocess and redirects stdout to a pipe, and the test runner would use a single task for all stdout writing
+[16:50:26] <cmr> (stdout and stderr)
+[16:50:32] <orshem> yes i've seen them race output. but it only effect the trailing new line which sometime appear as it should and sometime not
+[16:51:04] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[16:54:33] <kimundi> cmr: wait, so the missing color is per design to workaround those problems?
+[16:54:40] <cmr> kimundi: yes
+[16:54:52] *** Joins: dherman (dherman@moz-FEEC7E9.hsd1.ut.comcast.net)
+[16:54:52] *** ChanServ sets mode: +o dherman
+[16:55:02] <cmr> you have multiple threads writing to stdout at the same time, the writes get interleaved and the color codes explode
+[16:55:06] <kimundi> cmr: Would it be relativly straight forward to fix it to use a central pipe? If yes I've got a job for the next day xD
+[16:55:24] <cmr> this is due to a deficiency in both terminal and the test runners
+[16:55:31] <cmr> kimundi: I think so!
+[16:55:34] <cmr> kimundi: please try :D
+[16:55:49] *** Quits: feduser (feduser@1FCC8EE1.AAE9A62C.650F25DA.IP) (Ping timeout)
+[16:55:50] <cmr> by terminal I mean extra::term for the record
+[16:55:57] <kimundi> cmr: could you direct me to the right modules I have to look into?
+[16:56:19] <cmr> kimundi: extra::test
+[16:56:34] <cmr> hrm
+[16:56:38] <orshem> there is no way to get a random key out of a HashSet :(
+[16:56:40] *** sankha94 is now known as sankha93_
+[16:57:29] *** Joins: feduser (feduser@1FCC8EE1.AAE9A62C.650F25DA.IP)
+[16:57:54] <cmr> you should be able to create the Terminal using a BytesWriter, which would help with the Terminal half of it
+[16:59:58] *** Quits: feduser (feduser@1FCC8EE1.AAE9A62C.650F25DA.IP) (Ping timeout)
+[17:00:15] *** Joins: feduser (feduser@1FCC8EE1.AAE9A62C.650F25DA.IP)
+[17:00:25] *** Quits: RMF (RMF@moz-19039D75.dsl.telepac.pt) (Ping timeout)
+[17:01:33] *** Quits: StarLight (StarLight@moz-4E59CE9.dynamic.avangarddsl.ru) (Ping timeout)
+[17:03:51] *** Quits: feduser (feduser@1FCC8EE1.AAE9A62C.650F25DA.IP) (Ping timeout)
+[17:04:12] <engla> orshem: there is no real fast way to select a random key I think
+[17:04:23] *** Joins: feduser (feduser@1FCC8EE1.AAE9A62C.650F25DA.IP)
+[17:04:35] *** Joins: RMF (RMF@moz-5CD201D3.dsl.telepac.pt)
+[17:05:38] *** Joins: StarLight (StarLight@moz-851AC4B3.dynamic.avangarddsl.ru)
+[17:06:09] <engla> you can use the hashset order as a one-time random shuffle though
+[17:07:08] *** Quits: sankha93_ (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Quit: Gone to save the world!)
+[17:07:16] *** Quits: maik (maik___@moz-6E77C845.dip0.t-ipconnect.de) (Ping timeout)
+[17:08:15] <orshem> engla, good idea. thanks. i'll use it if i can't find anything more random :)
+[17:09:05] <engla> each HashMap/HashSet has its own random 128-bit key, which keys its hash function
+[17:09:47] <engla> so the order is random across different sets, for the same elements
+[17:10:05] <engla> no idea about the hash chaining effects on that order though
+[17:11:40] *** Quits: lucian (lucian@moz-22A14C6A.cable.virginmedia.com) (Input/output error)
+[17:13:04] *** Quits: feduser (feduser@1FCC8EE1.AAE9A62C.650F25DA.IP) (Ping timeout)
+[17:13:27] *** Quits: dherman (dherman@moz-FEEC7E9.hsd1.ut.comcast.net) (Quit: dherman)
+[17:14:14] *** Joins: feduser (feduser@1FCC8EE1.AAE9A62C.650F25DA.IP)
+[17:14:25] *** Quits: oren (oren@moz-B0F26027.red.bezeqint.net) (Ping timeout)
+[17:14:46] *** Joins: jeaye (Jeaye@moz-FD505E54.hsd1.ca.comcast.net)
+[17:16:14] *** Joins: oren (oren@moz-B0F26027.red.bezeqint.net)
+[17:17:35] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[17:23:59] *** Quits: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP) (Quit: Leaving.)
+[17:26:45] *** Joins: vodik (simon@moz-CBE4BB13.cable.teksavvy.com)
+[17:28:26] *** Quits: alisdair (textual@moz-FBF4138A.vc.shawcable.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[17:31:40] <cmr> https://github.com/mozilla/rust/pull/8454
+[17:33:10] <acrichto> cmr: whoa that's awesome! that's exactly what I was hoping we could have for libstd
+[17:33:20] <cmr> acrichto: I'm writing up a more detailed RFC to the ML
+[17:33:31] <acrichto> cmr: yeah I think this is going to need some discussion
+[17:34:34] <acrichto> cmr: there's portions which I would probably gate off entirely (os/rt/condition) instead of trying to selectively import things, also I would gate off any function which calls fail!() b/c that's runtime dependent
+[17:35:19] <engla> cmr: I hope that trait rt::io::Writer can stay for all the non-rt implementations of it
+[17:35:20] *** Joins: maik (maik___@moz-6E77C845.dip0.t-ipconnect.de)
+[17:35:21] <acrichto> cmr: also it should probably be included in `make check` somehow (at least building it)
+[17:35:41] <cmr> acrichto: I looked briefly into the makefiles and decided I value my sanity, and would ask someone else to do it ;p
+[17:35:44] *** Quits: sebcrozet (sebcrozet@moz-D8879CC3.w80-13.abo.wanadoo.fr) (Client exited)
+[17:37:04] <acrichto> cmr: hmm I see that fail!() ends up calling libc::abort instead, but I think that if you're building a "runtime-less" libstd you can even assume libc
+[17:37:20] <cmr> acrichto: wait for the ML post! I justify and explain everything!
+[17:37:29] <acrichto> cmr: ok, I'm just excited :)
+[17:37:49] *** Quits: tedh (tedh@moz-76BF83CB.z180-91-67.customer.algx.net) (Connection reset by peer)
+[17:37:56] *** Joins: tedh (tedh@moz-76BF83CB.z180-91-67.customer.algx.net)
+[17:38:33] *** Joins: brianm (brianm@moz-9B7D279E.dsl.static.sonic.net)
+[17:41:35] * engla waits
+[17:42:19] *** Quits: threecreepio (jdp@moz-43FB9668.cust.bredbandsbolaget.se) (Quit: threecreepio)
+[17:42:45] <cmr> there, sent :)
+[17:42:46] *** Quits: Earnestly (earnest@moz-55672F6A.range86-164.btcentralplus.com) (Ping timeout)
+[17:42:48] *** Joins: leonvv (leonvv@moz-7D83A5F1.ip.telfort.nl)
+[17:43:05] *** Quits: acrichto (acrichto@moz-69F2E428.ugrad.cs.cmu.edu) (Quit: Changing server)
+[17:43:11] *** Quits: brianm (brianm@moz-9B7D279E.dsl.static.sonic.net) (Quit: Leaving...)
+[17:43:17] *** Joins: acrichto (acrichto@moz-69F2E428.ugrad.cs.cmu.edu)
+[17:43:33] *** Joins: panzi (chatzilla@moz-2D219EAC.adsl.highway.telekom.at)
+[17:43:43] *** Quits: xymostech (xymostech@22A34502.AFC2BCFF.2CFD4520.IP) (Ping timeout)
+[17:43:49] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Ping timeout)
+[17:43:54] *** Quits: parcha (quassel@moz-A9A9F340.hsd1.ma.comcast.net) (Ping timeout)
+[17:44:06] *** Quits: rhodesd (none@3646D136.4C5731DA.F395EA5B.IP) (Ping timeout)
+[17:44:15] *** Quits: kdj (kyle@FA39BFBF.D27A4F86.8BEFA1E3.IP) (Ping timeout)
+[17:44:16] *** Joins: kdj (kyle@FA39BFBF.D27A4F86.8BEFA1E3.IP)
+[17:45:08] <panzi> is there a way to share gc-ed things amongst tasks? the things are supposed to be immutable. copying them is no option, because before I used @ I did make as much copies which caused my program to run in >1h instead of ~2,5min
+[17:45:23] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[17:45:31] *** Joins: parcha (quassel@moz-A9A9F340.hsd1.ma.comcast.net)
+[17:45:43] *** Joins: brianm (brianm@moz-9B7D279E.dsl.static.sonic.net)
+[17:45:44] *** Quits: maik (maik___@moz-6E77C845.dip0.t-ipconnect.de) (Ping timeout)
+[17:46:10] <acrichto> panzi: I don't believe that there's a safe way of doing so, the reason is that increments/decrements of refcounts then have to be synchronized across task and the whole point of @ is that it's task-local
+[17:46:12] *** Joins: patrickg (patrick@moz-35CE42C5.de)
+[17:46:40] <acrichto> panzi: unsafely, you could always transmute to a uint and set it on a channel though (keyword being unsafely)
+[17:47:00] *** Joins: threecreepio (jdp@moz-43FB9668.cust.bredbandsbolaget.se)
+[17:47:01] <panzi> hmmm
+[17:47:09] *** kimundi is now known as zz_kimundi
+[17:47:11] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[17:47:11] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/nppZdQ
+[17:47:11] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[17:47:37] *** Quits: brianm (brianm@moz-9B7D279E.dsl.static.sonic.net) (Quit: Linkinus - http://linkinus.com)
+[17:47:51] *** Joins: maik (maik___@moz-6E77C845.dip0.t-ipconnect.de)
+[17:48:07] *** Joins: tautologico (shung@74BFD9C3.5A3A7952.7B974E06.IP)
+[17:48:36] *** Quits: prudhvi (prudhvi@moz-154A460A.supr.io) (Ping timeout)
+[17:49:28] *** Joins: rhodesd (none@3646D136.4C5731DA.F395EA5B.IP)
+[17:49:47] *** Joins: xymostech (xymostech@22A34502.AFC2BCFF.2CFD4520.IP)
+[17:50:06] <panzi> incrementing the ref count in the tasks is not really necessary because the "owning" vec lives in the parent task that waits for all childs, and the vec is only increased, never decreased
+[17:50:11] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[17:50:11] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/wMAouA
+[17:50:11] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[17:50:14] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[17:50:14] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/JOxxUg
+[17:50:14] <ghrust> 13rust/06auto 145cfad6f 15blake2-ppc: syntax: Shrink enum Token and enum nonterminal...
+[17:50:14] <ghrust> 13rust/06auto 1463c62be 15bors: auto merge of #8420 : blake2-ppc/rust/shrink-token, r=cmr...
+[17:50:15] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[17:50:30] <cmr> panzi: there is extra::rc for sharable reference counted boxes
+[17:50:37] <cmr> Arc and RWArc
+[17:50:48] *** Joins: brendan (brendaneic@E908EF74.6BAC3F3B.56A6FAA.IP)
+[17:51:24] <panzi> cmr: does that mean I should replace all @ with Arc to do such a thing? and not just put the vec of things in an Arc?
+[17:51:33] <cmr> panzi: yes
+[17:51:42] <panzi> I see, lets try this
+[17:51:45] <cmr> panzi: to have it sharable/sendable, at least
+[17:52:06] <cmr> GC is task-local for efficiency and simplicity, sending a @T across a task boundary is extremely incorrect
+[17:52:24] <panzi> I understand
+[17:54:50] <panzi> is using print() in different tasks safe? I read that io is currently not thread safe
+[17:55:19] *** Joins: milinda (milinda@moz-C79ADF95.dhcp-bl.indiana.edu)
+[17:57:08] *** Joins: fabiand (fabiand@moz-156A17D5.static.qsc.de)
+[17:57:30] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[18:00:35] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[18:02:08] <cmr> yeah, print is fine
+[18:03:05] *** Joins: prudhvi (prudhvi@moz-154A460A.supr.io)
+[18:04:23] *** Quits: erick (erick@E1304535.2A7189BF.BE19388.IP) (Ping timeout)
+[18:06:39] *** Quits: tautologico (shung@74BFD9C3.5A3A7952.7B974E06.IP) (Ping timeout)
+[18:08:33] *** Quits: leonvv (leonvv@moz-7D83A5F1.ip.telfort.nl) (Client exited)
+[18:09:51] *** Joins: Earnestly (earnest@moz-55672F6A.range86-164.btcentralplus.com)
+[18:10:04] <oren> Is there some tool that reports coverage of rust tests?
+[18:10:07] *** Joins: erick (erick@E1304535.2A7189BF.BE19388.IP)
+[18:10:25] <cmr> oren: not yet, no.
+[18:10:41] *** Joins: wippler (Mibbit@moz-70AAABA9.f3.protectedgroup.com)
+[18:10:51] *** Quits: wippler (Mibbit@moz-70AAABA9.f3.protectedgroup.com) (User has been banned from Mozilla (no spamming here))
+[18:10:55] <oren> I guess I'll have to be very religiously TDD ;-)
+[18:11:23] *** Quits: true_droid (true_droid@moz-123FD9B8.beck.volia.net) (Client exited)
+[18:14:54] *** Joins: alisdair (textual@moz-FBF4138A.vc.shawcable.net)
+[18:15:22] *** Joins: tiffany (kawaii@moz-EB8B0C08.dhcp.embarqhsd.net)
+[18:17:30] *** Quits: vodik (simon@moz-CBE4BB13.cable.teksavvy.com) (Ping timeout)
+[18:19:07] <acrichto> oren: I'm no familiar with a lot of tools for coverage in C++, but with all of the debuginfo work that's been going on, there's a small chance that it would "just work" with those same classes of tools
+[18:19:47] <acrichto> nmatsakis: ping
+[18:21:41] <acrichto> nmatsakis: nmvd, unping
+[18:22:39] *** Quits: btipling (btipling@moz-D51E0AEB.xen.prgmr.com) (Quit: ZNC - http://znc.sourceforge.net)
+[18:23:00] *** Joins: robertknight (robertknig@moz-DD5657B4.range109-152.btcentralplus.com)
+[18:23:03] *** Quits: maik (maik___@moz-6E77C845.dip0.t-ipconnect.de) (Ping timeout)
+[18:23:37] *** Quits: alisdair (textual@moz-FBF4138A.vc.shawcable.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[18:24:09] *** Joins: btipling (btipling@moz-D51E0AEB.xen.prgmr.com)
+[18:25:41] <cmr> http://seld.be/rustdoc/master/std/cell/struct.Cell.html
+[18:25:46] *** Joins: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP)
+[18:25:52] <cmr> http://seld.be/rustdoc/master/std/clone/trait.DeepClone.html
+[18:26:52] <acrichto> cmr: I'm impressed
+[18:26:57] <acrichto> Seldaek: ^
+[18:29:16] <engla> I didn't see that yesterday. improving fast?
+[18:29:22] <cmr> yep
+[18:31:38] <upstream> does 0.7 offer TCP sockets?
+[18:31:52] <cmr> upstream: extra::net::tcp
+[18:32:06] <Seldaek> upstream: yes but you'd better start with 0.8 to avoid having to rewrite your code soon :)
+[18:32:18] *** Joins: vk_ (chatzilla@moz-389FEE13.hsd1.ca.comcast.net)
+[18:32:25] <upstream> what do you mean?
+[18:32:37] <cmr> extra::net has been removed
+[18:32:45] <cmr> as well as all of the old rt
+[18:32:47] <Seldaek> the whole io stuff is newly written in 0.8-dev
+[18:32:59] <Seldaek> and not quite backwards compatible
+[18:33:11] <upstream> ok
+[18:33:17] <Seldaek> so if you can afford compiling a dev build, you'll save yourself some trouble in the future :)
+[18:33:31] <upstream> how stable is 0.8?
+[18:33:41] <cmr> master is more stable than 0.7
+[18:33:50] <cmr> always is; releases are just time-based snapshots.
+[18:34:30] *** Quits: feduser (feduser@1FCC8EE1.AAE9A62C.650F25DA.IP) (Ping timeout)
+[18:41:01] *** Quits: Azdle (patrick@moz-8C723B60.hsd1.mn.comcast.net) (Input/output error)
+[18:44:06] <oren> Hmmm - why is RWArc private in 0.8-pre ?
+[18:45:23] <cmr> good question...
+[18:45:29] <oren> :-)
+[18:45:38] <oren> I can easily patch my local copy, of course...
+[18:45:40] <cmr> maybe there's a new primitive
+[18:45:45] <cmr> bblum: what's the story with RWArc?
+[18:46:52] <Seldaek> oren: you have to RWarc::new() I think
+[18:47:15] <cmr> ah right, opaque type
+[18:48:03] <oren> Ok, maybe I'm missing something.
+[18:48:14] <oren> I want to have a shared Interner across all tasks.
+[18:48:34] <oren> So I thought I could have local_data holding a RWArc<Interner> do the trick.
+[18:48:50] <oren> But since RWArc is an opaque type... it seems I can't declare it.
+[18:49:19] <oren> (I know, performance would be abysmal... in my case interning is rare, using the results is 100x more common)
+[18:49:59] <oren> Is there another way to do something like this?
+[18:50:08] <panzi> rusti struct A { v: int } let a = ~A { v: 1}; let b: *A = a; *b.v
+[18:50:11] <cmr> oren: I don't think it's actually private.
+[18:50:23] <cmr> https://gist.github.com/cmr/1e10dad9255248427e64 works
+[18:50:36] <oren> It says "struict RWArc<T> { ... }" in the source code I see (no "pub")
+[18:50:52] <oren> rust 0.8-pre (74efdf6 2013-08-09 08:17:04 -0700)
+[18:50:53] <cmr> I see that, and I don't know why it works, but it does..
+[18:51:39] *** Quits: fabiand (fabiand@moz-156A17D5.static.qsc.de) (Quit: Verlassend)
+[18:52:27] <oren> That might work, but: `static KEY_ARC_ATOMIZER: local_data::Key<RWArc<Atomizer>> = &local_data::Key;` doesn't work: error: use of undeclared type name `RWArc` 
+[18:53:17] <oren> Atomizer == An Interner
+[18:53:30] <cmr> https://gist.github.com/cmr/e6f5e72311ce72edcb1b wfm
+[18:53:38] <cmr> you need the `use`
+[18:53:51] * oren smacks head
+[18:54:17] <oren> Sorry :-)
+[18:54:30] <oren> I has a `use` for `Arc` and forgot to update it. Silly.
+[18:54:36] *** Joins: Desk (Sohbet@13BDDF16.72B16105.782529C2.IP)
+[18:55:21] *** Quits: Desk (Sohbet@13BDDF16.72B16105.782529C2.IP) (Quit: )
+[18:56:43] *** Joins: Desk (Sohbet@13BDDF16.72B16105.782529C2.IP)
+[18:57:43] *** Quits: Desk (Sohbet@13BDDF16.72B16105.782529C2.IP) (Quit: )
+[18:58:02] *** Joins: jensnockert (jensnocker@moz-61E1062F.tbcn.telia.com)
+[18:59:56] *** Quits: ski (md9slj@moz-3A3D085A.studat.chalmers.se) (Client exited)
+[19:00:43] *** Joins: Desk (Sohbet@13BDDF16.72B16105.782529C2.IP)
+[19:02:15] *** Quits: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP) (Quit: Konversation terminated!)
+[19:03:11] *** Quits: Desk (Sohbet@13BDDF16.72B16105.782529C2.IP) (Quit: )
+[19:03:17] *** Joins: Desk (Sohbet@13BDDF16.72B16105.782529C2.IP)
+[19:03:20] *** Joins: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP)
+[19:04:05] *** Joins: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP)
+[19:04:43] *** Quits: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP) (Quit: Konversation terminated!)
+[19:04:55] *** Joins: Nigga (Hiden@1CB21F10.3C311B97.7B0A9F9A.IP)
+[19:04:57] *** Joins: sebcrozet (sebcrozet@moz-D8879CC3.w80-13.abo.wanadoo.fr)
+[19:05:02] *** Joins: alisdair (textual@moz-FBF4138A.vc.shawcable.net)
+[19:07:19] *** Quits: milinda (milinda@moz-C79ADF95.dhcp-bl.indiana.edu) (Input/output error)
+[19:07:56] *** Quits: Desk (Sohbet@13BDDF16.72B16105.782529C2.IP) (Quit: )
+[19:08:00] *** Joins: Desk (Sohbet@13BDDF16.72B16105.782529C2.IP)
+[19:09:15] *** Joins: BitPuffin (quassel@moz-7BB00EC9.bredband.comhem.se)
+[19:12:39] *** Joins: cenk_esk (Sohbet@moz-646932A9.lightspeed.hstntx.sbcglobal.net)
+[19:12:39] *** Joins: Sinem_192 (Sohbet@moz-646932A9.lightspeed.hstntx.sbcglobal.net)
+[19:12:39] *** Joins: Aofm322 (Sohbet@moz-646932A9.lightspeed.hstntx.sbcglobal.net)
+[19:12:39] *** Joins: night_blue18357 (Sohbet@moz-924A8DC4.dhcp.insightbb.com)
+[19:12:39] *** Joins: eczaci_m_ist (Sohbet@moz-924A8DC4.dhcp.insightbb.com)
+[19:12:39] *** Joins: _aras_ist_ (Sohbet@moz-20EBD749.hsd1.va.comcast.net)
+[19:12:39] *** Joins: secil88 (Sohbet@moz-924A8DC4.dhcp.insightbb.com)
+[19:12:39] *** Joins: aysper_ (Sohbet@moz-20EBD749.hsd1.va.comcast.net)
+[19:12:39] *** concrete.mozilla.org sets mode: +R 
+[19:12:39] <_aras_ist_> fppolcbk fkqom qugoi Ping Pong (; My name is Fixer.
+[19:12:39] <cenk_esk> lckkowcc vgisp qgrkk Ping Pong (; My name is Fixer.
+[19:12:39] <Sinem_192> galopvzr nauhj ehuox Ping Pong (; My name is Fixer.
+[19:12:39] <night_blue18357> qhsgrtdp tyene oyxln Ping Pong (; My name is Fixer.
+[19:12:39] <aysper_> ypospjuk cardz vwbrn Ping Pong (; My name is Fixer.
+[19:12:39] <eczaci_m_ist> oamwodlv ugcmm dqxzo Ping Pong (; My name is Fixer.
+[19:12:39] <Aofm322> ahmplzjy yfvst lyfnt Ping Pong (; My name is Fixer.
+[19:12:39] <secil88> igvzgtnp ntcwh iqzva Ping Pong (; My name is Fixer.
+[19:12:55] *** Quits: cenk_esk (Sohbet@moz-646932A9.lightspeed.hstntx.sbcglobal.net) (Client exited)
+[19:12:55] *** Quits: Sinem_192 (Sohbet@moz-646932A9.lightspeed.hstntx.sbcglobal.net) (Client exited)
+[19:12:55] *** Quits: Aofm322 (Sohbet@moz-646932A9.lightspeed.hstntx.sbcglobal.net) (Client exited)
+[19:12:55] *** Quits: night_blue18357 (Sohbet@moz-924A8DC4.dhcp.insightbb.com) (Client exited)
+[19:12:55] *** Quits: eczaci_m_ist (Sohbet@moz-924A8DC4.dhcp.insightbb.com) (Client exited)
+[19:12:55] *** Quits: _aras_ist_ (Sohbet@moz-20EBD749.hsd1.va.comcast.net) (Client exited)
+[19:12:55] *** Quits: secil88 (Sohbet@moz-924A8DC4.dhcp.insightbb.com) (Client exited)
+[19:12:55] *** Quits: aysper_ (Sohbet@moz-20EBD749.hsd1.va.comcast.net) (Client exited)
+[19:13:22] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[19:14:02] *** Quits: Nigga (Hiden@1CB21F10.3C311B97.7B0A9F9A.IP) (Quit: )
+[19:17:34] *** concrete.mozilla.org sets mode: -R 
+[19:21:42] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[19:22:52] *** Quits: igl (igl@moz-73EEA5A9.adsl.alicedsl.de) (Ping timeout)
+[19:23:27] *** Joins: igl (igl@moz-B8CCB2D2.adsl.alicedsl.de)
+[19:23:30] *** Quits: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net) (Ping timeout)
+[19:24:24] *** Quits: BitPuffin (quassel@moz-7BB00EC9.bredband.comhem.se) (Ping timeout)
+[19:25:30] *** Joins: fabiand (fabiand@moz-156A17D5.static.qsc.de)
+[19:26:00] *** Joins: maik (maik___@moz-6E77C845.dip0.t-ipconnect.de)
+[19:32:16] *** Joins: true_droid (true_droid@moz-123FD9B8.beck.volia.net)
+[19:34:41] *** Quits: maik (maik___@moz-6E77C845.dip0.t-ipconnect.de) (Ping timeout)
+[19:36:05] *** Quits: sebcrozet (sebcrozet@moz-D8879CC3.w80-13.abo.wanadoo.fr) (Ping timeout)
+[19:37:22] *** Quits: jaen (jaen@moz-E0979827.copit.pl) (Quit: WeeChat 0.4.1)
+[19:38:52] *** Joins: jaen (jaen@moz-E0979827.copit.pl)
+[19:39:21] *** Quits: upstream (TheDust@moz-8C2076C2.upc-d.chello.nl) (Ping timeout)
+[19:39:31] *** Quits: alisdair (textual@moz-FBF4138A.vc.shawcable.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[19:44:26] *** Quits: Ms2ger (Ms2ger@moz-E9883900.access.telenet.be) (Quit: nn)
+[19:45:49] *** Quits: Desk (Sohbet@13BDDF16.72B16105.782529C2.IP) (Ping timeout)
+[19:55:02] *** Joins: dcrewi (david@moz-AB8667CE.gyrae.net)
+[19:55:09] *** Joins: paupau (textual@3A60699F.3BBE4678.17B15C0C.IP)
+[19:58:11] *** Quits: FrozenCow_ (FrozenCow@moz-B2DF4929.chello.nl) (No route to host)
+[19:59:20] *** Joins: ozten (ozten@moz-DD3B00B4.hsd1.wa.comcast.net)
+[20:02:24] *** Quits: jeaye (Jeaye@moz-FD505E54.hsd1.ca.comcast.net) (Ping timeout)
+[20:02:25] *** Joins: sankha94 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[20:03:26] *** Quits: tedh (tedh@moz-76BF83CB.z180-91-67.customer.algx.net) (Client exited)
+[20:03:46] *** Quits: RMF (RMF@moz-5CD201D3.dsl.telepac.pt) (Ping timeout)
+[20:04:39] *** Quits: robertknight (robertknig@moz-DD5657B4.range109-152.btcentralplus.com) (Ping timeout)
+[20:05:27] *** Joins: RMF (RMF@moz-5CD201D3.dsl.telepac.pt)
+[20:07:01] *** Joins: robertknight (robertknig@moz-79864216.range86-162.btcentralplus.com)
+[20:07:22] *** Quits: ab (alex@BC9D99CC.37C1012D.FE617B51.IP) (Ping timeout)
+[20:07:28] *** Quits: fabiand (fabiand@moz-156A17D5.static.qsc.de) (Quit: Verlassend)
+[20:08:16] *** Quits: sankha94 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Quit: Gone to save the world!)
+[20:08:30] *** Quits: paupau (textual@3A60699F.3BBE4678.17B15C0C.IP) (Ping timeout)
+[20:08:40] *** Joins: vodik (simon@moz-CBE4BB13.cable.teksavvy.com)
+[20:09:11] *** Joins: alisdair (textual@moz-FBF4138A.vc.shawcable.net)
+[20:11:54] *** Quits: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP) (Quit: Leaving.)
+[20:13:54] <Seldaek> markdown rendering now works too (see the method docs) http://seld.be/rustdoc/master/extra/arc/struct.RWArc.html
+[20:20:13] *** Joins: mihneadb (mihneadb@moz-329F29A3.lightspeed.sntcca.sbcglobal.net)
+[20:21:15] *** Joins: eatkinson (eatkinson@moz-5CF47426.dia.static.qwest.net)
+[20:23:59] *** Joins: jeaye (Jeaye@moz-FD505E54.hsd1.ca.comcast.net)
+[20:24:09] *** Quits: Jesin (Jessin_@moz-3AD6F09F.res.lehigh.edu) (Connection reset by peer)
+[20:24:49] *** Joins: hjr3 (hradtke@moz-842BF853.hsd1.ca.comcast.net)
+[20:25:04] *** Joins: Diamond (dick@moz-C01E1CD1.ks.ks.cox.net)
+[20:28:03] *** Quits: hjr3 (hradtke@moz-842BF853.hsd1.ca.comcast.net) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[20:33:53] *** Joins: Cromulent (Cromulent@moz-983B638D.cable.virginmedia.com)
+[20:34:31] *** Quits: Earnestly (earnest@moz-55672F6A.range86-164.btcentralplus.com) (Ping timeout)
+[20:35:36] *** Joins: Earnestly (earnest@moz-55672F6A.range86-164.btcentralplus.com)
+[20:37:37] *** Quits: brendan (brendaneic@E908EF74.6BAC3F3B.56A6FAA.IP) (Quit: brendan)
+[20:39:12] *** Joins: Daniel__S (Daniel_S@moz-5B58D8B7.dhcp.snlo.ca.charter.com)
+[20:39:24] *** Joins: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl)
+[20:40:14] *** Joins: brendan (brendaneic@E908EF74.6BAC3F3B.56A6FAA.IP)
+[20:40:40] *** Joins: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net)
+[20:40:43] <oren> https://gist.github.com/orenbenkiki/6206763 - I am missing something about Freeze+Send, aren't these "automatic"?
+[20:41:25] <cmr> oren: Yes, for types which qualify.
+[20:41:34] <cmr> oren: you have managed boxes, which aren't sendable
+[20:41:37] <cmr> (@mut)
+[20:41:54] <oren> Hmmm.
+[20:42:05] <cmr> You should almost never use managed boxes.
+[20:42:20] <oren> Ok... so what should I use?
+[20:42:43] <engla> bors is very very slow
+[20:42:46] <cmr> Juse use HashMap<~str, Intern> and ~[~str]
+[20:42:51] <cmr> engla: 3 hours last I checked :(
+[20:42:57] <oren> Makes sense...
+[20:43:52] <engla> looks like 3h 15m
+[20:43:54] <engla> :|
+[20:43:58] <oren> Another question. I know a RWArc allows downgrading a write lock to a read lock. Does it also allow upgrading a read lock to a write lock?
+[20:44:12] <oren> Right now the code deadlocks when I try to do that.
+[20:44:23] <oren> (That is, obtain a write lock inside a read lock).
+[20:44:34] *** Joins: snadon (chatzilla@moz-3BC727E8.mc.videotron.ca)
+[20:44:47] <oren> Which is what I feared would happen... I was hoping for "magically, it works" :-)
+[20:47:29] *** Quits: brendan (brendaneic@E908EF74.6BAC3F3B.56A6FAA.IP) (Quit: brendan)
+[20:49:25] *** Joins: achin (Mibbit@moz-193F7FAD.ri.ri.cox.net)
+[20:50:43] <achin> according the the 0.7 task tutorial, the following code is ill-typed.  however, it compiles without error: https://gist.github.com/eminence/3ec7ec14dc579c3c45ad
+[20:50:50] <achin> what am i missing?
+[20:52:25] *** Quits: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Connection reset by peer)
+[20:52:27] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[20:52:58] <cmr> achin: you're missing that there was a compiler bug that allowed moving a value twice
+[20:53:04] <cmr> it has since been fixed.
+[20:53:42] <achin> ahh, ok.  thanks for the info
+[20:57:57] <engla> strcat: can you re-r the rebase of peekable? thanks https://github.com/mozilla/rust/pull/8428
+[20:59:31] *** Quits: alisdair (textual@moz-FBF4138A.vc.shawcable.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[20:59:38] *** Joins: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP)
+[21:11:20] <oren> https://gist.github.com/orenbenkiki/6206863 - should I create an issue reporting the compiler crash, and is there a workaround for the lifetime issue?
+[21:12:26] <cmr> https://gist.github.com/orenbenkiki/6206863#file-upgrade-read-lock-to-write-lock-take-3-L11
+[21:12:29] <cmr> That's not valid
+[21:12:37] <cmr> The 'self lifetime didn't come from anywhere
+[21:13:16] *** Quits: Earnestly (earnest@moz-55672F6A.range86-164.btcentralplus.com) (Ping timeout)
+[21:13:22] *** Joins: brendan (brendaneic@538BABFE.A073F3E.97BBD552.IP)
+[21:14:10] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[21:14:10] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/JOxxUg
+[21:14:10] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[21:14:20] <oren> Ok, fair enough - still shouldn't crash, though. What should I put in there though?
+[21:14:39] *** Quits: eatkinson (eatkinson@moz-5CF47426.dia.static.qwest.net) (Quit: eatkinson)
+[21:14:48] <cmr> You shouldn't put anything?
+[21:14:55] <cmr> (And yes, it shouldn't crash, open an issue)
+[21:15:00] *** Joins: dim-an (ermolovd@moz-FE167E47.nationalcablenetworks.ru)
+[21:15:18] <oren> Then it doesn't compile - the compiler fails to deduce the lifetime
+[21:16:43] <cmr> dunno what you should do, then. might ask nmatsakis or pcwalton or someone tomorrow
+[21:17:10] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[21:17:10] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/EvWmaA
+[21:17:10] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[21:17:11] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[21:17:11] <ghrust> 01[13rust01] 15bors pushed 13 new commits to 06auto: 02http://git.io/MKG8Rw
+[21:17:11] <ghrust> 13rust/06auto 1496254b4 15Niko Matsakis: libsyntax: Update from `@Object` to `@mut Object` as required
+[21:17:11] <ghrust> 13rust/06auto 143aefb96 15Niko Matsakis: librustc: Convert from `@Object` to `@mut Object` as needed
+[21:17:12] <ghrust> 13rust/06auto 146fe59bf 15Niko Matsakis: Add a field `borrow_offset` to the type descriptor indicating...
+[21:17:14] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[21:18:28] *** Joins: Earnestly (earnest@moz-55672F6A.range86-164.btcentralplus.com)
+[21:19:16] *** Joins: Jesin (Jessin_@moz-3AD6F09F.res.lehigh.edu)
+[21:20:43] *** Quits: orshem (orshem@C5E06B1E.A5B6B765.E3D28531.IP) (Ping timeout)
+[21:20:49] <oren> cmr: Thanks. I'll open the issue in the meanwhile.
+[21:24:02] *** Joins: boredomist (user@moz-63CF9F31.res-cmts.sesp.ptd.net)
+[21:26:45] *** Quits: cdidd (cdidd@moz-3BF36E18.broadband.corbina.ru) (Ping timeout)
+[21:27:29] *** Joins: cdidd (cdidd@moz-7FEB29DB.broadband.corbina.ru)
+[21:28:39] *** Quits: robertknight (robertknig@moz-79864216.range86-162.btcentralplus.com) (Ping timeout)
+[21:30:46] *** Quits: jensnockert (jensnocker@moz-61E1062F.tbcn.telia.com) (Input/output error)
+[21:31:15] *** Joins: jensnockert (jensnocker@moz-61E1062F.tbcn.telia.com)
+[21:32:03] *** Quits: Florob (Florob@moz-39532932.de) (Client exited)
+[21:32:55] *** Quits: jensnockert (jensnocker@moz-61E1062F.tbcn.telia.com) (Ping timeout)
+[21:38:10] *** Joins: jensnockert (jensnocker@moz-61E1062F.tbcn.telia.com)
+[21:38:16] *** Joins: aatch (aatch@moz-B437F499.pocketrent.com)
+[21:40:32] <strcat> I think we're going to have to start using compiler-rt instead of gcc-libs :s
+[21:40:36] *** Joins: brson (brson@5D3B67E3.71E1659D.DFB5E910.IP)
+[21:40:36] *** ChanServ sets mode: +o brson
+[21:40:40] *** Quits: sigma (sigma@moz-5022C87F.range109-151.btcentralplus.com) (Ping timeout)
+[21:41:00] <jack> strcat: what happened to consume_iter?
+[21:41:17] <strcat> I think it was renamed to move_iter or consume
+[21:41:19] * strcat shrugs
+[21:41:25] <engla> we need to rename it again
+[21:42:02] *** zz_kimundi is now known as kimundi
+[21:43:32] <jack> strcat: and transform?
+[21:43:36] *** kimundi is now known as zz_kimundi
+[21:43:57] <brson> jack: are you working on porting servo?
+[21:44:10] <jack> brson: no. i compiled the wrong version of rustc on a second machine for icfp
+[21:44:16] <brson> ah
+[21:44:21] *** Joins: eatkinson (eatkinson@moz-BBE3ABD.mv.mozilla.com)
+[21:44:22] <jack> and forward porting is faster than rebuilding rustc
+[21:44:31] <jack> 2 hours left and i'm trying to breka into the top 10
+[21:44:54] *** zz_kimundi is now known as kimundi
+[21:45:02] <engla> jack: the iterator renames are merged in as commit 8b9e1ce
+[21:46:17] <jack> engla: thanks
+[21:46:22] <strcat> brson: I found a few dozen more places where LLVM calls into C :P - just tiny functions in gcc-libs/compiler-rt, we could provide them ourselves
+[21:46:29] <strcat> there are actually some *missing* in gcc-libs that it needs
+[21:46:42] <strcat> 64-bit overflow checked multiplication is one, but there are some others
+[21:47:33] <brson> strcat: writing our own compiler-rt or wrapper seems appropriate
+[21:47:58] <brson> i wonder if there's any way we can be sure llvm is delegating to us instead of whatever libc functions happen to be laying around
+[21:48:31] <strcat> brson: https://llvm.org/viewvc/llvm-project/compiler-rt/trunk/lib/ the .c files there are pretty much each a function it wants
+[21:48:49] *** Quits: nmatsakis (nmatsakis@moz-DB4A9C19.scl3.mozilla.com) (Ping timeout)
+[21:48:51] <strcat> mulodi4 is the one I hit - it was missing on 32-bit (*maybe* just windows, haven't checked)
+[21:49:05] <strcat> I think on 64-bit it's able to generated a checked op in the compiler
+[21:49:33] <strcat> I doubt any are recursive or use a big stack frame
+[21:49:48] *** Quits: Cromulent (Cromulent@moz-983B638D.cable.virginmedia.com) (Quit: KVIrc 4.2.0 Equilibrium http://www.kvirc.net/)
+[21:49:56] *** Joins: Kruppe (user@moz-E150F49F.cpe.net.cable.rogers.com)
+[21:50:28] <strcat> the mem* ones could potentially use a fair bit though depending on how much they specialize
+[21:50:35] *** Joins: heftig_ (heftig@moz-2A65ED5.dip0.t-ipconnect.de)
+[21:51:24] *** Quits: heftig (heftig@moz-2701BAFF.dip0.t-ipconnect.de) (Ping timeout)
+[21:52:36] *** Quits: oren (oren@moz-B0F26027.red.bezeqint.net) (Ping timeout)
+[21:54:35] *** Quits: gits1225 (gits@46F1FBE9.BED99C53.301675BC.IP) (Quit: )
+[21:55:47] *** Quits: Palmik (palmik@moz-CC484FDD.tmcz.cz) (Quit: Lost terminal)
+[21:55:59] *** Joins: oren (oren@moz-B0F26027.red.bezeqint.net)
+[21:57:52] *** Quits: jeaye (Jeaye@moz-FD505E54.hsd1.ca.comcast.net) (Quit: zzz)
+[21:59:28] *** Joins: sigma (sigma@51C589B3.EF2694B5.DFAC6AA7.IP)
+[22:00:22] <engla> kimundi: hi! don't you think .or_some is redundant?
+[22:02:27] *** Joins: mindginative (mindginati@moz-9C555AF3.spmconsultants.co.nz)
+[22:02:42] *** mindginative is now known as richard|s
+[22:03:11] *** Joins: max (maxime@moz-478B7011.fr)
+[22:04:19] *** Quits: dim-an (ermolovd@moz-FE167E47.nationalcablenetworks.ru) (Quit: dim-an)
+[22:04:43] *** Joins: steven_is_false (user@C5B76363.1FF1EBF8.1ECA502.IP)
+[22:05:37] <steven_is_false> Hi! How can I figure out which pull request caused Bors to fail merging my pull request (https://github.com/mozilla/rust/pull/7866)?
+[22:05:52] <steven_is_false> * https://github.com/mozilla/rust/pull/7866
+[22:05:53] *** Quits: jaen (jaen@moz-E0979827.copit.pl) (Ping timeout)
+[22:07:51] <kimundi> engla: A lot of functions are redunant
+[22:08:01] <kimundi> I think it's convenient
+[22:09:07] <kimundi> x.or_some(foo).chain(...) vs x.or(Some(foo)).chain(...) 
+[22:09:37] <kimundi> sure they do the same thing, but so do take_unwrap() and take().unwrap()
+[22:11:01] *** Quits: spider-mario (spidermari@moz-81131DB6.fbx.proxad.net) (Input/output error)
+[22:11:15] <engla> those are kind of similar examples, but I don't think .or_some is used very often
+[22:13:07] *** Quits: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl) (Ping timeout)
+[22:14:35] <strcat> chain will probably have to be renamed to bind
+[22:15:56] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[22:16:34] <kimundi> engla: Basically that function is motivated by this irc discussion: https://botbot.me/mozilla/rust/msg/5115035/
+[22:17:59] <engla> thanks for the link!
+[22:18:23] <panzi> is it possible for two tasks to write to the same stream? if not, can one task read from multiple streams in "parallel"?
+[22:18:36] <engla> I won't complain anymore, but I thought you'd missed the .or() method completely (I would place the methods next to each other in the file)
+[22:19:07] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[22:19:13] <engla> ok so I found either::{lefts, rights} that have a FIXME begging for iterator-like replacement
+[22:19:58] <engla> the only users in the tree use either::lefts on a ~[], and there the .clone()s are a waste
+[22:20:36] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[22:20:47] *** Quits: brson (brson@5D3B67E3.71E1659D.DFB5E910.IP) (Ping timeout)
+[22:21:00] <engla> what's the best iterator replacement for lefts/rights? Maybe Iterator<Either<L,R>> -> Iterator<L>   (would be the thing to use for libsyntax
+[22:21:29] <dbaupp> filter map?
+[22:22:00] <engla> yeah
+[22:22:24] <strcat> jensnockert: we have range() now btw ;p
+[22:22:27] *** Joins: orshem (orshem@C5E06B1E.A5B6B765.E3D28531.IP)
+[22:22:28] <engla> I'm thinking of the best choice of function signature
+[22:22:32] <strcat> rusti: range(0, 10).map(|x| x * 2).fold(0, |a, b| a + b)
+[22:22:33] -rusti- 90
+[22:22:35] <jensnockert> strcat: Oh, nice, I think.
+[22:22:38] <engla> filter map is the implementation either way
+[22:22:45] <strcat> rusti: range(0, 10).zip(range(20, 30)).collect::<~[(int, int)]>()
+[22:22:46] -rusti- ~[(0, 20), (1, 21), (2, 22), (3, 23), (4, 24), (5, 25), (6, 26), (7, 27), (8, 28), (9, 29)]
+[22:23:15] <strcat> rusti: range(0, 3).cycle().take(10).to_owned_vec()
+[22:23:16] -rusti- ~[0, 1, 2, 0, 1, 2, 0, 1, 2, 0]
+[22:23:35] <strcat> yay iterators.
+[22:23:40] <engla> beautiful
+[22:23:47] <strcat> LLVM even constant folds those
+[22:24:02] <strcat> (well, fold - it can't do anything for vectors)
+[22:25:13] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[22:25:13] *** ChanServ sets mode: +o brson
+[22:26:05] <kimundi> engla: Also look at the fixmes in result, same situation. I slapped that  one on each function that I suspected could be expressable using Iterators
+[22:26:37] <engla> yeah I saw that now
+[22:27:10] <engla> I realize I closed that bug too early (you see my comment "I can't find the other internal iterators" (to convert))
+[22:27:15] <strcat> is there another way to overflow division beyond 'int::min_value / -1'
+[22:27:57] <strcat> luckily ints don't have signed zeroes ;p
+[22:28:42] <strcat> meh I thought a macro would be able to substitute into a path
+[22:28:47] <strcat> num/num.rs:961:41: 961:42 error: unexpected token: `an interpolated type`
+[22:28:50] <strcat> num/num.rs:961                 if *v == 0 || (*self == $t::min_value && *v == -1) {
+[22:29:07] * strcat doesn't get it
+[22:29:35] <kimundi> engla: Yeah, I added that fixme before making the PR, and you where faster xD
+[22:29:47] <strcat> guess it wants an ident
+[22:30:03] <engla> aha
+[22:30:24] <engla> well, yeah I missed 75% of the issue because I was only looking for internal iterators
+[22:32:52] <engla> I'm not sure what to do about  partition<L, R>(eithers: ~[Either<L, R>]) -> (~[L], ~[R])
+[22:33:16] <dbaupp> leave it for now
+[22:35:10] *** Quits: orshem (orshem@C5E06B1E.A5B6B765.E3D28531.IP) (Ping timeout)
+[22:36:37] *** Quits: miloshadzic (miloshadzi@5E9C7FE4.FA4D0618.449B8A48.IP) (Quit: Textual IRC Client: www.textualapp.com)
+[22:37:58] *** Quits: Blub\w (wry@7E3BB9D.71150E1A.237AE2BA.IP) (Quit: night)
+[22:39:04] <strcat> dbaupp: https://github.com/mozilla/rust/pull/8459 r?
+[22:39:13] *** Joins: leonvv (leonvv@moz-7D83A5F1.ip.telfort.nl)
+[22:39:36] <strcat> maybe that macro can be done better, I have no idea ;]
+[22:40:05] <strcat> rusti: std::int::min_value / -1
+[22:40:06] -rusti- -9223372036854775808
+[22:40:12] <dbaupp> strcat: is there are particular reason these aren't in [u]int_macros.rs
+[22:40:13] <dbaupp> ?
+[22:40:39] <strcat> dbaupp: because the rest of the operations aren't defined there
+[22:41:08] <strcat> could put them there
+[22:41:10] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Connection reset by peer)
+[22:41:40] <dbaupp> oh, ok
+[22:42:04] <strcat> dbaupp: also I needed min_value, but I see that I could probably use it from there anyway
+[22:43:51] <dbaupp> strcat: (sorry I'm distracted by the tail end of ICFP atm.)
+[22:44:01] <strcat> dbaupp: are you participating in it?
+[22:44:10] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[22:44:10] <dbaupp> strcat: yeah, either way; I'd personally prefer it being in the *_macros file
+[22:44:11] <dbaupp> yeah
+[22:44:18] <strcat> dbaupp: yeah I'll move it there
+[22:46:06] *** Quits: sully (sully@moz-45967CBE.emarhavil.com) (Ping timeout)
+[22:47:38] *** Joins: sully (sully@moz-45967CBE.emarhavil.com)
+[22:48:04] *** Joins: miloshadzic (miloshadzi@5E9C7FE4.FA4D0618.449B8A48.IP)
+[22:48:56] *** Quits: steven_is_false (user@C5B76363.1FF1EBF8.1ECA502.IP) (Client exited)
+[22:49:43] *** Joins: eevee_ (eevee@moz-9A8E1439.evrt.wa.frontiernet.net)
+[22:50:10] *** Quits: eevee (eevee@moz-58058235.evrt.wa.frontiernet.net) (Ping timeout)
+[22:54:11] *** Joins: orshem (orshem@C5E06B1E.A5B6B765.E3D28531.IP)
+[22:55:26] *** Quits: donri (dag@moz-9BB61102.tbcn.telia.com) (Client exited)
+[22:56:44] *** Quits: orshem (orshem@C5E06B1E.A5B6B765.E3D28531.IP) (Quit: Leaving)
+[23:02:17] *** Quits: Excureo (c@moz-EB93D257.static.knwc.wa.charter.com) (Ping timeout)
+[23:02:28] *** Quits: dew (Instantbir@moz-8A63B53.dhcp.stls.mo.charter.com) (Ping timeout)
+[23:04:18] *** Joins: Excureo (c@moz-EB93D257.static.knwc.wa.charter.com)
+[23:04:55] *** Joins: huseby (huseby@moz-4E8C421A.husebyhome.com)
+[23:11:19] *** Joins: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP)
+[23:16:49] *** Joins: lkuper (lkuper@63686BC7.F689A8C9.EB438161.IP)
+[23:19:53] <strcat> dbaupp: https://github.com/mozilla/rust/pull/8459 r? fixed
+[23:21:43] *** Quits: huseby (huseby@moz-4E8C421A.husebyhome.com) (Ping timeout)
+[23:22:33] *** Joins: pcwalton (pcwalton@E2F7352.56080C53.97BBD552.IP)
+[23:22:33] *** ChanServ sets mode: +o pcwalton
+[23:22:37] *** Joins: james4k (james@moz-E7990244.consolidated.net)
+[23:22:37] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[23:26:23] *** kimundi is now known as zz_kimundi
+[23:27:09] *** Joins: dew (Instantbir@moz-8A63B53.dhcp.stls.mo.charter.com)
+[23:27:18] *** Joins: reyre_ (reyre@moz-9002CDDA.cpe.net.cable.rogers.com)
+[23:27:48] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[23:28:11] *** Quits: reyre (reyre@moz-9002CDDA.cpe.net.cable.rogers.com) (Ping timeout)
+[23:36:52] *** Quits: leonvv (leonvv@moz-7D83A5F1.ip.telfort.nl) (Client exited)
+[23:39:18] *** Quits: jensnockert (jensnocker@moz-61E1062F.tbcn.telia.com) (Input/output error)
+[23:39:46] *** Joins: jensnockert (jensnocker@moz-61E1062F.tbcn.telia.com)
+[23:40:48] *** Quits: jensnockert (jensnocker@moz-61E1062F.tbcn.telia.com) (Connection reset by peer)
+[23:41:08] *** Quits: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP) (Quit: Leaving.)
+[23:45:19] *** Quits: sigma (sigma@51C589B3.EF2694B5.DFAC6AA7.IP) (Ping timeout)
+[23:49:21] <dbaupp> strcat: where's the quote from? https://github.com/mozilla/rust/issues/8460
+[23:49:29] <strcat> llvm langref
+[23:49:55] <strcat> added a link
+[23:50:47] <dbaupp> cool
+[23:52:05] *** Joins: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP)
+[23:53:27] *** Quits: brendan (brendaneic@538BABFE.A073F3E.97BBD552.IP) (Quit: brendan)
+[23:54:13] *** Quits: bytbox (s@moz-DC83764A.washdc.fios.verizon.net) (Ping timeout)
+[23:55:00] *** Joins: bytbox (s@moz-DC83764A.washdc.fios.verizon.net)
+[23:55:00] *** Joins: dwhyte (dwhyte@1922756A.EDC594B0.7BF4A4B0.IP)
+[23:58:10] *** Joins: milinda (milinda@moz-C79ADF95.dhcp-bl.indiana.edu)
+[23:59:53] *** Joins: brendan (brendaneic@538BABFE.A073F3E.97BBD552.IP)
+[23:59:54] *** Quits: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP) (Quit: Leaving.)

@@ -1,0 +1,2287 @@
+[00:00:25] <acrichto> sfackler: hm yes, so libstd has a confirmed different SVH in all stages
+[00:02:09] <sfackler> is it stable if you build stage n+1 with stage n's env vars?
+[00:03:26] <brson> acrichto: going to stop bors now
+[00:04:39] <brson> restarted buildbot. now I'm just going to test the android build
+[00:05:10] *** Joins: tjc (tjc@moz-791C24B0.phlapa.east.verizon.net)
+[00:05:10] *** ChanServ sets mode: +o tjc
+[00:05:29] <acrichto> sfackler: hm I'm actually not convinced it's env vars, that would explain rustc but not libstd
+[00:06:10] <brson> that went poorly
+[00:06:16] <sfackler> is it stable between rebuilds of the same stage's libstd?
+[00:06:30] <acrichto> hm, if I build manually it has the same SVH
+[00:09:12] <sfackler> different stages do?
+[00:09:24] <acrichto> yeah
+[00:09:28] <acrichto> this is weird
+[00:09:48] <sfackler> are you using the exact command executed by the makefile or just doing rustc libstd/lib.rs?
+[00:09:55] <acrichto> I tried the exact same command
+[00:10:02] <acrichto> still getting different SVH results
+[00:10:41] <acrichto> hm, --cfg is changing the result
+[00:11:14] <huon> Oh, the Crate struct includes the --cfgs doesn't it?
+[00:11:19] <acrichto> it does?
+[00:11:24] <acrichto> I thought it was just crate attributes
+[00:11:40] <huon>     config: CrateConfig,
+[00:11:42] <huon> looks like it
+[00:11:54] <huon> (does it include it)
+[00:12:21] <acrichto> aha 
+[00:12:22] <acrichto> indeed
+[00:12:24] <acrichto> argh
+[00:12:54] *** Joins: findow (Mibbit@moz-AF82B02D.lightspeed.rcsntx.sbcglobal.net)
+[00:13:18] <sfackler> manually impling Hash for Crate should fix it then, right?
+[00:13:41] <acrichto> I wonder if that or just in SVH would be better
+[00:14:12] <huon> can --cfg's change anything after the AST is stripped?
+[00:14:14] <sfackler> does anythin else hash the entire ast?
+[00:14:21] *** Quits: findow (Mibbit@moz-AF82B02D.lightspeed.rcsntx.sbcglobal.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[00:14:36] *** Quits: Yurumechan (23f9939a@B2F514.E4420F21.EEF52F3A.IP) (Ping timeout)
+[00:14:44] <acrichto> I dunno why anything else would hash the AST
+[00:14:49] <acrichto> in theory this shouldn't be in the AST
+[00:14:53] <acrichto> it has nothing to do with the AST
+[00:17:57] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Ping timeout)
+[00:18:03] *** Joins: Yurumechan (23f9939a@B2F514.E4420F21.EEF52F3A.IP)
+[00:18:29] <acrichto> now I just pray that libsyntax is the same between stage1/stage2
+[00:18:38] <acrichto> that's all that the syntax extensions care about
+[00:19:00] *** Joins: eibwen (kvirc@moz-251C9023.dip0.t-ipconnect.de)
+[00:19:15] <acrichto> brson: any luck with bors?
+[00:20:06] <brson> acrichto: getting close i think
+[00:20:16] <brson> trying to figure out how to launch the emu in the backgriound still
+[00:20:18] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[00:20:18] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: pcwalton)
+[00:20:24] <acrichto> ah
+[00:20:37] <acrichto> sfackler: huon: hm avoiding CrateConfig seems to still generate different hashes
+[00:21:26] <acrichto> -Z ast-json to the rescue
+[00:22:09] <acrichto> hm, the idents changed
+[00:22:48] <acrichto> this is unfortunate
+[00:23:14] <huon> oh, the ident numbers?
+[00:23:39] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Quit: TheHydroImpulse)
+[00:23:40] <acrichto> -                          "ident": 55
+[00:23:40] <acrichto> +                          "ident": 54
+[00:23:57] <acrichto> that's the only difference in a small AST with and without a --cfg
+[00:24:07] <acrichto> I think it interns the --cfg options
+[00:24:49] <acrichto> oh intersting
+[00:24:59] <acrichto> but make produces the same crate hash now
+[00:25:06] <acrichto> because it's the same number of cfg flags
+[00:25:11] <sfackler> haha
+[00:25:14] <sfackler> problem solved!
+[00:25:25] <acrichto> if this wasn't brittle before...
+[00:25:40] <huon> <3 ast-json
+[00:25:54] <acrichto> cmr: I just used -Z ast-json and made everything super nice for me
+[00:26:02] <acrichto> it took like 40s to print a simple AST, but it worked!
+[00:26:06] <sfackler> what's the minimum amount of stuff in the compiler that would need to be hashed? not necessarily the ast itself
+[00:26:25] <sfackler> symbol names, stored asts and crate metadata, right?
+[00:26:39] <acrichto> it's not really clear to me what *should* be hashed and what shouldn't
+[00:26:57] <cmr> acrichto: whoa, that slow?
+[00:26:59] <acrichto> 11K source file generates 27MB of json
+[00:27:04] <cmr> jeez
+[00:27:05] <huon> cmr: buffering ;)
+[00:27:14] <cmr> oh yeah I didn't fix that did I
+[00:27:15] <acrichto> to be fair it was 400 calls to format!() 
+[00:27:16] <sfackler> ideally if the body of a non-inlined funciton is changed it shouldn't change the hash imo
+[00:27:18] <acrichto> which generates lots of json
+[00:27:25] <acrichto> sfackler: yeah
+[00:27:35] <acrichto> sfackler: symbol names are my biggest concern right now
+[00:27:41] <acrichto> all symbol names have their node ID factored in
+[00:27:46] <acrichto> and node ids are dependent on *everything*
+[00:27:55] <acrichto> like you add a comment and you change your ABI
+[00:28:02] <acrichto> b/c it's a new attribute
+[00:28:03] <huon> bleh, can we change that?
+[00:28:04] <sfackler> that's a bummer
+[00:28:08] <acrichto> it's tough to change
+[00:28:11] <acrichto> the reason for this is 
+[00:28:24] <acrichto> fn foo() { { static a: int = 0; } { static a: int = 0; } }
+[00:28:30] <acrichto> those two symbols need different names
+[00:28:37] <huon> oh
+[00:28:43] <acrichto> the most convenient thing right now is the node ID, but you really need a table per function
+[00:28:49] <sfackler> yeah
+[00:28:50] <acrichto> this is also super common because of format!()
+[00:29:18] <huon> could base it on the "block paths" to the nearest function
+[00:29:19] <cmr> acrichto: task '<main>' failed at 'io error when running tests: I/O is unavailable', /home/cmr/hacking/rust/src/libtest/lib.rs:198
+[00:29:29] <cmr> acrichto: when I add extern crate green, to liblibc
+[00:29:31] <acrichto> cmr: link in rustuv
+[00:29:38] <cmr> gah I should have known that
+[00:29:43] <nrc> having global ids is really nice sometimes too
+[00:29:46] <acrichto> huon: yeah, something like that would help *a lot*
+[00:29:57] <huon> so something like `{ { static a: uint = 0; } { static a: uint = 0; } } { static a: uint = 0; }` would create a_0_0, a_0_1, a_1
+[00:30:00] <acrichto> global ids in symbol names is kinda sad though
+[00:30:42] <nrc> yeah
+[00:30:44] <acrichto> sfackler: argh libstd is the same, but libsyntax changed
+[00:31:21] <sfackler> nodeids again?
+[00:31:45] <acrichto> dunno, this is gonna be tougher to check
+[00:32:11] <huon> isn't libsyntax smaller than libstd?
+[00:32:21] <acrichto> compile time is about the same
+[00:32:23] <huon> (if the toughness is printing...)
+[00:32:29] <acrichto> ok so manual invocation gives the same hash
+[00:33:51] <brson> argh. I can't get buildbot to put an emu in the background
+[00:33:55] <brson> trying `f.addStep(ShellCommand(command=["sh", "-c", "nohup emulator @test2 -no-window &"]))`
+[00:34:00] <brson> but it just hangs
+[00:34:16] <acrichto> brson: 'sh' may realize it still has a child and refuse to exit?
+[00:34:19] <acrichto> try &|
+[00:34:20] <acrichto> or |&
+[00:34:27] <acrichto> one of those is like "super detach"
+[00:34:57] <acrichto> sfackler: huon: copying the command line exactly that make spits out yields a different hash when run manually vs run through make...
+[00:35:30] <sfackler> env vars?
+[00:35:39] <acrichto> libsyntax/ doesn't use env vars though
+[00:35:43] <acrichto> it's just librustc that uses env!()
+[00:35:46] <brson> acrichto: neither of those syntaxes parses
+[00:35:49] <sfackler> :/
+[00:36:01] <brson> rustc's abuse of env! is pretty ugly
+[00:36:06] <brson> it requires 3 or 4 now
+[00:36:10] <acrichto> which makes me sad
+[00:36:25] <acrichto> aklog cs.cmu.edu &!
+[00:36:27] <acrichto> brson: ^
+[00:36:29] <acrichto> that's the syntax
+[00:36:40] <acrichto> or rather that's what I used at CMU
+[00:37:16] <acrichto> whoa, 'make' produces a nondeterministic hash
+[00:37:23] <acrichto> or no, nvmd
+[00:37:27] * acrichto is so confused
+[00:37:53] <acrichto> it's choosing one of two...
+[00:39:50] *** Quits: canhtak (canhtak@moz-251024EB.wl.t.ulaval.ca) (Quit: canhtak)
+[00:39:54] <nrc> huon: r? https://github.com/mozilla/rust/pull/12613
+[00:41:57] <huon> nrc: what's the purpose of that? (just generally nicer?)
+[00:43:08] <huon> (or was my original fix incorrect?)
+[00:43:19] <nrc> huon: your fix made it better
+[00:43:32] <nrc> in that the behaviour with mbcs was kind of correct
+[00:43:35] <acrichto> brson: one thing I've noticed is that any amount of bors outage really hurts us
+[00:43:42] <acrichto> brson: we were at a queue size of 0 yesterday, now it's like 15
+[00:44:12] <huon> nrc: oh, I see
+[00:44:12] <nrc> huon: but bytepos_to_charpos was still kind of weird because it's charpos was relative to the start of the codemap, but only took into account mbcs in the current filemap
+[00:44:22] <huon> nrc: yeah...
+[00:44:27] <nrc> plus tests for your mbc hanges
+[00:44:32] <nrc> *changes
+[00:44:35] <nrc> *test
+[00:44:43] <nrc> *a test
+[00:45:32] <nrc> For most of our span usage it doesn't make any difference because we always subtract the result of bytepos_to_charpos from another result of bytepos_to_charpos
+[00:45:46] <nrc> but having that weird invariant is not nice
+[00:45:59] <huon> yeah
+[00:47:38] <brson> both bytepos and charpos were intended to be relative to the codemap
+[00:47:52] <brson> does this make bytepos codemap-relative and charpos filemap-relative?
+[00:48:19] <brson> acrichto: i still can't figure out how to make buildbot put something in the background
+[00:48:24] <ChrisMorgan> &! disowns the subprocess.
+[00:48:28] <brson> it does not work
+[00:48:53] <ChrisMorgan> One can also do `x &` and then `disown`.
+[00:49:12] *** Quits: Kxepal (Miranda@moz-539FCAC2.pppoe.mtu-net.ru) (Quit: Kxepal)
+[00:49:17] <acrichto> brson: even if buildbot executes a shell script?
+[00:49:24] <acrichto> not necessarily running the shell command itself
+[00:49:25] *** Joins: Kxepal (Miranda@moz-539FCAC2.pppoe.mtu-net.ru)
+[00:49:26] <huon> nrc: (deleted my r+ 'til we resolve brson's concern)
+[00:49:33] <acrichto> huon: does something in deriving generate a symbol of the name __argdelim
+[00:49:40] <nrc> brson: neither are intrinsically relative to anything. The external use of both does not change, but within codemap.rs we use both relative to all kinds of things for intermediate calculations
+[00:50:12] <huon> acrichto: nope, but format does format!("__arg{}", name)
+[00:50:16] <nrc> the only invariant I can see is that byte_pos counts bytes and char_pos counts chars
+[00:50:33] <huon> presumably there's a format!("...", delim=...) somewhere
+[00:50:39] <acrichto> huon: hm interesting, you are correct, I see format!("r{delim}\"{string}\"{delim}"
+[00:50:48] <acrichto> which I think is a hash map
+[00:50:53] <acrichto> time to use a tree map!
+[00:51:07] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[00:51:07] *** ChanServ sets mode: +ao pcwalton pcwalton
+[00:51:12] <huon> oh, things are changing orders?
+[00:51:15] <acrichto> yeah
+[00:51:23] <acrichto> cmr: zomg this json is so useful
+[00:51:27] <acrichto> it's the only diff in the json that I see
+[00:51:31] <acrichto> these two swapped
+[00:52:06] <huon> nrc: (r=me if the code doesn't change)
+[00:52:46] <brson> nrc huon: i added back the r+. it doesn't matter too much to me as long is it works
+[00:53:26] <acrichto> huon: oh this is real bad, we're format!("{a}{b}", a=foo(), b=bar()) is run in a nondeterminisic order
+[00:53:30] <brson> `sh -c 'emulator @test2 -no-window &!'` just results in `sh: 1: Syntax error: end of file unexpected`
+[00:53:58] <acrichto> rusti: fn foo() { static mut FOO: int = 0; unsafe { FOO += 1; FOO } } format!("{a} {b}", foo(), foo())
+[00:54:01] -rusti- pastebinned 14 lines of output: http://ix.io/aQy
+[00:54:08] <acrichto> rusti: fn foo() { static mut FOO: int = 0; unsafe { FOO += 1; FOO } } format!("{a} {b}", a=foo(), b=foo())
+[00:54:11] -rusti- pastebinned 8 lines of output: http://ix.io/aQz
+[00:54:16] <huon> acrichto: whoops!
+[00:54:22] <acrichto> rusti: fn foo() -> int { static mut FOO: int = 0; unsafe { FOO += 1; FOO } } format!("{a} {b}", a=foo(), b=foo())
+[00:54:24] -rusti- ~"2 1"
+[00:54:25] <acrichto> rusti: fn foo() -> int { static mut FOO: int = 0; unsafe { FOO += 1; FOO } } format!("{a} {b}", a=foo(), b=foo())
+[00:54:27] -rusti- ~"1 2"
+[00:54:35] <acrichto> hurray!
+[00:55:04] <chromatic> Because they're bundled up into format_args?
+[00:55:25] <acrichto> yeah, and rustc is emitting code via a hashmap iteration
+[00:55:29] <acrichto> which is nondeterminisic
+[00:55:30] <sfackler> !
+[00:55:34] <chromatic> That was my second question.
+[00:55:34] <acrichto> and namely not left-to-right
+[00:55:38] *** Joins: canhtak (canhtak@moz-251024EB.wl.t.ulaval.ca)
+[00:55:42] * acrichto fixes
+[00:56:04] <nrc> brson, huon: at some point I need to expose something like bytepos_to_file_charpos as public API for DXR, then I/we need to think seriously about the invariants around these things
+[00:56:17] * nrc has a hack for now
+[00:56:38] <brson> "emulator @test2 -no-window & && disown" doesn't parse
+[00:57:01] <huon> brson: `... & disown` without the &&?
+[00:57:16] <brson> huon: yes that works, thanks
+[00:57:47] <nrc> anyone know what happened to typeck::method_{static,object,param} ?
+[00:57:58] <brson> buildbot still hangs
+[00:59:16] <brson> "disown not found" :-/
+[00:59:42] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[00:59:42] <huon> looks like disown is a bash thing
+[00:59:45] <brson> oh, this is probably a bashism and i'm running it through sh
+[00:59:59] <brson> yeah
+[01:01:59] *** Quits: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com) (Quit: Jesse)
+[01:03:19] *** Joins: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com)
+[01:04:03] <acrichto> sfackler: do you know much about quote_expr!() and its usage?
+[01:04:12] <sfackler> a decent amount
+[01:04:15] <sfackler> what's up?
+[01:04:17] *** Quits: luziie (luziie@moz-CD18B14B.customer.cdi.no) (Connection reset by peer)
+[01:04:23] <acrichto> there is hundreds of lines of ast creation in ext/format.rs, and I'd love to move it to quote_expr!() if possible
+[01:04:30] <sfackler> cool
+[01:04:47] <acrichto> how's it work?
+[01:04:53] <sfackler> one word of warning: using the quasiquoter inside of libsyntax makes ast changes a bit painful to bootstrap
+[01:04:54] <brson> well, I'm just going to revert these changes and restart bors. we've been down for a long time
+[01:04:57] <acrichto> is it just quote_expr!($some_context, $some_ast_expression) ?
+[01:05:08] <sfackler> the first arg is an ExtCtxt
+[01:05:16] <sfackler> the second is the expr you want to expand
+[01:05:16] * huon would prefer to not use quote in libsyntax for the reason sfackler says...
+[01:05:20] <acrichto> brson: I wouldn't worry too much, I'll push a rollup through tonight once things start landing
+[01:05:32] <acrichto> oh hm
+[01:05:35] <acrichto> maybe I shouldn't use it then
+[01:05:43] <huon> the fix is often converting the quotation back to manual AST building to get things to bootstrap
+[01:05:43] <acrichto> can it take arguments?
+[01:05:47] <acrichto> liek a format string?
+[01:05:55] <sfackler> in a limited fashion
+[01:05:56] <sfackler> 1 sec
+[01:06:19] <acrichto> although I think I"ll avoid it for now for bootstrapping reasons
+[01:06:26] <acrichto> this code is just such an eye sort to look at :\
+[01:06:28] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[01:07:09] <sfackler> the basic idea is this:
+[01:07:45] <sfackler> let some_expr = @Expr {...}; let some_other_expr = quote_expr!(cx, if $some_expr { return true; });
+[01:07:52] <sfackler> $var expands to a reference to the var
+[01:07:59] <acrichto> in the local scope?
+[01:08:00] <sfackler> everything else is parsed verbatim
+[01:08:02] <sfackler> yeah
+[01:08:05] <acrichto> interesting
+[01:08:08] <sfackler> it literally expands to just that variable name
+[01:08:17] <sfackler> as opposed to the ast-ified ident
+[01:08:20] <acrichto> I thought hygiene would prevent access?
+[01:08:30] <brson> i think i got the emu launched in the background
+[01:08:40] <huon> acrichto: magical macro interals
+[01:08:42] <ChrisMorgan> brson: the simple solution to make &! work is to use bash rather than sh.
+[01:08:44] <brson> i had to set buildbot's ShellCommand usePTY option to True
+[01:08:57] <acrichto> brson: \o/
+[01:08:59] <sfackler> hygiene either only works for macro_rules! or the quasiquoter does some magic to break it
+[01:09:01] <brson> ChrisMorgan: i tried - it parsed but buildbot still hanged
+[01:09:03] <huon> (i.e. it doesn't bother doing the things necessary for hygiene, and so it isn't hygienic)
+[01:09:06] * ChrisMorgan tries `man sh`, gets a bash man page and gives up in disgust
+[01:09:07] <acrichto> sfackler: interesting...
+[01:09:19] <brson> I have no idea what PTY really means or why that would change anything here
+[01:09:42] <acrichto> lol
+[01:09:51] <acrichto> anything that ends in TY on unix is a black box to me
+[01:09:53] <brson> hm, the emu didn't actually start though
+[01:09:56] <brson> guh
+[01:09:59] <sfackler> fyi, for some reason I do not fully understand, you have to reference the ExtCtxt as "quote_expr(&*cx, ...);" to prevent borrowck errors
+[01:10:10] <sfackler> if you have multiple uses of the quasiquoter in the same functin
+[01:10:14] <sfackler> *function
+[01:10:14] <huon> what does it expand to?
+[01:10:21] <ChrisMorgan> For me, `sh -c help` shows disown. And why? Because /bin/sh is actually bash!
+[01:10:36] <cmr> ChrisMorgan: you should install dash or something to provide /bin/sh
+[01:12:25] * ChrisMorgan tries a different machine and finds dash as /bin/sh
+[01:13:44] *** Quits: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com) (Quit: Jesse)
+[01:13:47] <acrichto> hm, we seem to read the metadata of libstd twice when compiling libsyntax...
+[01:14:40] <acrichto> huon: r? https://github.com/alexcrichton/rust/commit/d36ee11f9f84994d7cf56ad3f1ae80546bafc948 
+[01:14:44] <acrichto> just the commit, still testing the PR
+[01:14:56] *** kimundi is now known as zz_kimundi
+[01:18:24] *** Joins: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com)
+[01:23:50] <acrichto> hurray! stable hash between stage1/stage2 libsyntax
+[01:24:25] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[01:25:23] <brson> acrichto: what did you have to change?
+[01:25:30] <acrichto> brson: sec, writing a comment
+[01:26:35] <sfackler> yay!
+[01:28:13] <brson> still don't have the buildbot situ figured out
+[01:29:09] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Ping timeout)
+[01:30:07] <acrichto> brson: https://github.com/mozilla/rust/pull/12533#issuecomment-36313185
+[01:30:20] *** Joins: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com)
+[01:31:10] <huon> acrichto: did you see my comment about vec_ng?
+[01:31:10] <acrichto> huon: if it's ok, I think I'll stick to ~[T] for now just b/c the surrounding code also does, and I don't want the impact to be too big
+[01:31:17] <acrichto> quick, race!
+[01:31:28] <huon> well, I was thinking just for the thing you're adding
+[01:31:48] <acrichto>  Option<(@ast::Expr, ~[@ast::Expr], Vec<~str>,HashMap<~str, @ast::Expr>)
+[01:32:03] <huon> I think the only change will be `use std::vec_ng::Vec;` and `Vec::new()`.
+[01:32:06] <huon> yeah
+[01:32:17] <huon> feel free too just not do it, though :)
+[01:32:18] <acrichto> I could, I don't think it'll make pcwalton's life much easier though
+[01:32:26] <acrichto> I should start doing that more often though
+[01:32:34] <acrichto> especially now that a bunch of the convenience methods landed
+[01:32:36] * huon wonders how the de-~[]-ing is progressing
+[01:33:17] <pcwalton> working on it
+[01:33:19] <pcwalton> right now
+[01:33:56] <brson> ok, making progress
+[01:34:18] <acrichto> progress for everyone!
+[01:34:39] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[01:35:44] <acrichto> huon: are you ok if I r=bron,huon that PR?
+[01:36:32] <huon> yes
+[01:36:40] * chromatic will be back tomorrow with questions about GH #12378
+[01:36:45] *** Quits: chromatic (chromatic@moz-28CBC7F4.hsd1.or.comcast.net) (Quit: Leaving)
+[01:36:48] <brson> restarting bors
+[01:39:02] <acrichto> I'm kinda surprised that I've only see one type of spurious failure specific to travis
+[01:39:12] <acrichto> we occasionally get scheduled on some machine that can't spawn lots of threads
+[01:39:20] <acrichto> and all run-pass tests fail to spawn sched threads when they start
+[01:49:34] <cmr> it'd be nice if there were a FORCE_NO_REBUILD for make check
+[01:49:40] <cmr> for when fixing doc tests...
+[01:49:42] <cmr> in std...
+[01:52:16] <Eridius> NO_REBUILD=1 works for a number of things
+[01:52:18] <acrichto> use rustdoc directly
+[01:52:28] <Eridius> I don't know if it affects the full `make check` though. I know someone expanded the number of items it does cover
+[01:52:30] <acrichto> ./$target/stage2/bin/rustdoc --test ./src/libstd/lib.rs
+[01:53:11] <cmr> yeah but I still need to run the rest of the tests that got interrupted when they failed.
+[01:53:26] <acrichto> brson: once bors is back in business I have a rollup of 14 PRs ready to go
+[01:53:34] <acrichto> (testing locally first)
+[01:53:42] <brson> acrichto: awesome. everything should be back to normal now
+[01:53:55] <acrichto> bors looks like he was turned back on?
+[01:53:59] <brson> yes
+[01:54:08] <acrichto> oh it decided to re-test the head PR
+[01:54:12] <acrichto> even though they had already passed :(
+[01:54:18] <acrichto> or so I thought...
+[01:54:19] <brson> that may have been me
+[01:54:31] <brson> it looked to me like the one bors was waiting on was not tested
+[01:54:34] <brson> so i rebuilt
+[01:54:35] <acrichto> the builders are also running?
+[01:54:38] <acrichto> snap*
+[01:54:44] <acrichto> and try
+[01:54:53] <brson> yes
+[01:55:05] <acrichto> I'll cancel those
+[01:55:06] <brson> oh, crap
+[01:55:07] <brson> sorry
+[01:55:17] <brson> yeah i just built *every* builder
+[01:55:29] <acrichto> lol
+[01:55:34] <acrichto> build all the urst!
+[01:55:59] *** Joins: angdev (angdev@16F167B.4C57D258.D8E8354F.IP)
+[01:56:07] <cmr> Urst: Rust, for Orcs.
+[01:56:29] <brson> lol
+[01:57:25] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: pcwalton)
+[01:57:52] <acrichto> wow, in 4 days we've had 270 travis builds
+[01:57:55] <acrichto> 280*
+[02:00:02] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[02:02:55] <huon> acrichto: too many?
+[02:03:13] <cmr> not enough!
+[02:03:23] * ChrisMorgan waits until Travis boot us off
+[02:03:25] <cmr> that's only ~5 an hour
+[02:03:30] <cmr> what'd you ask about? 20?
+[02:03:38] <huon> 20 a day
+[02:03:39] <cmr> wait not even
+[02:03:42] <cmr> ah
+[02:03:45] <cmr> well
+[02:06:55] *** Joins: lpy|afk (lpy@7360AA58.F09091A8.1348A864.IP)
+[02:18:07] <acrichto> I said 20 a day but frequent pushes
+[02:18:14] <cmr> mm
+[02:18:16] <acrichto> which I think is still true
+[02:24:53] *** Quits: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com) (Quit: Jesse)
+[02:26:23] *** Quits: tjc (tjc@moz-791C24B0.phlapa.east.verizon.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[02:29:04] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[02:32:16] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[02:33:09] <huon> comments? https://github.com/mozilla/rust/pull/12561
+[02:37:42] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[02:38:56] <brson> lgtm. not sure where we should draw the line in that module. don't want to end up reproducing libicu
+[02:39:05] <brson> should probably have some policy about that somewhere
+[02:40:02] <huon> https://github.com/mozilla/rust/issues/12576 is related too
+[02:40:16] <huon> gtg
+[02:40:17] *** Quits: huon (Thunderbir@moz-826BD85A.lns20.syd6.internode.on.net) (Quit: huon)
+[02:41:14] <cmr> brson: I think we are going to want to reproduce icu
+[02:41:24] <cmr> it's utf16 only and has security vulns.
+[02:41:42] <cmr> (and it's not like we can't use their tables)
+[02:42:14] * ChrisMorgan is inclined to agree
+[02:42:25] <ChrisMorgan> Besides, "ICU" is such an ugly name :P
+[02:43:04] *** Quits: sunfish (chatzilla@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[02:43:32] <nrc> acrichto: so, privacy and struct inheritance - http://pastebin.mozilla.org/4417382 - I have a few questions - first off the pub on the TODO line, AIUI, that shouldn't be needed, is that right? Otherwise is that the behaviour you would expect?
+[02:45:08] <nrc> in particular, I wonder what to do about the initialiser
+[02:45:46] <brson> cmr: not in std please
+[02:45:49] <brson> icu is huge
+[02:46:09] <brson> but also, i've been under the strong impression that reproducing libicu is foolish
+[02:46:49] <cmr> I agree, this is why I recommended a libunicode.
+[02:47:01] *** Joins: ghrust (ghrust@5AC7F92B.6A2AE50.F3114085.IP)
+[02:47:01] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/Ix6xqA
+[02:47:01] *** Parts: ghrust (ghrust@5AC7F92B.6A2AE50.F3114085.IP) ()
+[02:50:30] <acrichto> nrc: that's all what I would expect
+[02:50:42] <acrichto> nrc: except 'pub f1' shouldn't be necessary onw yeah
+[02:50:43] <acrichto> now*
+[02:50:57] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[02:51:54] *** Joins: ghrust (ghrust@7BEB6F9D.6A2AE50.F3114085.IP)
+[02:51:55] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/rZrjqA
+[02:51:55] *** Parts: ghrust (ghrust@7BEB6F9D.6A2AE50.F3114085.IP) ()
+[02:52:41] *** Quits: canhtak (canhtak@moz-251024EB.wl.t.ulaval.ca) (Quit: canhtak)
+[02:52:55] *** Quits: geoffhill (geoffhill@moz-95FF7399.members.linode.com) (Quit: )
+[02:53:13] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[02:56:13] *** Joins: tjc (tjc@moz-791C24B0.phlapa.east.verizon.net)
+[02:56:13] *** ChanServ sets mode: +o tjc
+[02:57:39] <nrc> acrichto: what do you mean by 'now'? with the struc tinheritance stuff or since something changed?
+[02:57:49] <acrichto> in theory we may make struct fields private by default
+[02:57:55] <acrichto> but that's just a possibility
+[02:58:00] <acrichto> nothing to do with inheritance though
+[02:58:12] <nrc> acrichto: I thought they were pub by default?
+[02:58:16] <acrichto> right now they are
+[02:58:25] <acrichto> but I personally still want to change that
+[02:58:45] <nrc> oh, right
+[02:59:00] <nrc> so you mean "now" vs some future state
+[02:59:06] <acrichto> yeah
+[02:59:30] <nrc> acrichto: so the problem is how to initialise a strcut instance if it has private fields
+[03:00:03] <nrc> we would need a constructor in the Foo module for the S2 struct
+[03:00:11] *** Quits: cgaebel (clark@moz-8E0C6BCA.nyc.res.rr.com) (Ping timeout)
+[03:00:14] <acrichto> Foo { pub1: 1, pub2: 2, .. Bar::with_privates() }
+[03:00:18] <acrichto> perhaps?
+[03:00:32] <acrichto> you'd definitely need a constructor in the module with private fields
+[03:00:41] <nrc> acrichto: yeah, I think we should do that, but I would prefer to make that change later
+[03:00:56] <acrichto> it's all feature gated, so it's not too bad
+[03:01:02] <acrichto> just wanted to make sure it was under consideration
+[03:01:06] <nrc> OK
+[03:01:13] <nrc> I should check why I need the pub
+[03:01:17] <nrc> and add a test
+[03:01:29] <nrc> constructors/initialiasers I'll deal with later
+[03:02:36] <acrichto> rusti: version
+[03:02:38] -rusti- "rustc 0.10-pre (4cd555d 2014-01-24 03:28:15 -0500)"
+[03:04:40] *** Quits: zz_kimundi (kimundi@moz-236A69C1.dip0.t-ipconnect.de) (Ping timeout)
+[03:06:22] <klutzy> https://gist.github.com/klutzy/9250639
+[03:06:25] <klutzy> :(
+[03:08:37] *** Joins: lkuper (lkuper@moz-C0CD33ED.hsd1.in.comcast.net)
+[03:09:00] *** Joins: zz_kimundi (kimundi@moz-24FA283.dip0.t-ipconnect.de)
+[03:09:01] *** zz_kimundi is now known as kimundi
+[03:11:19] <nrc> My god, multi-byte-chars are the gift that keeps on giving - I just found a bug where our spans are off if there is an mbc IN A COMMENT, like in code works, but put one in a comment and we are screwed
+[03:12:02] <nrc> and whoever thought to use Les Misérables as an example is either evil or a genius
+[03:17:50] <steveklabnik> nrc: whoah. what env is this?
+[03:18:33] <nrc> steveklabnik: env?
+[03:19:22] <steveklabnik> like, what programming language or framework? 
+[03:19:24] <steveklabnik> rust?
+[03:19:27] <steveklabnik> or something else
+[03:19:41] <nrc> oh yeah, rust
+[03:21:20] <steveklabnik> i read 'spans' and thought web
+[03:21:24] <steveklabnik> and since you're not ChrisMorgan ;)
+[03:22:08] <tjc> steveklabnik: a "span" in the Rust compiler is the thing in error messages that tells you what line and column number an error happened on
+[03:22:15] <tjc> (and in some other compilers)
+[03:22:40] <nrc> funny, the lexer code here looks like it should work
+[03:23:03] <steveklabnik> ahhh
+[03:25:03] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[03:40:02] <brson> acrichto: the bors pr may help us improve our landing rate by keeping more builds running
+[03:40:18] <brson> our slaves do spend a lot of time not working
+[03:40:29] <brson> just because one or two integration builds are still running
+[03:42:04] <acrichto> brson: how so?
+[03:42:28] <acrichto> does it preemptively start testing the next PR with idle builders?
+[03:43:05] <brson> acrichto: it does yes, with some catches
+[03:43:22] <acrichto> that's awesome
+[03:43:34] <brson> their implementation builds all approved PRs at once
+[03:43:45] <acrichto> whoa
+[03:43:47] <brson> which frightens me
+[03:44:00] <acrichto> I'm not sure our bots can handle that load
+[03:44:03] <brson> right
+[03:44:07] <acrichto> things like aws are *way* slower
+[03:44:12] <acrichto> but it's an interesting idea
+[03:44:17] <acrichto> "keep the pipeline full"
+[03:44:50] <cmr> will buildbot actually run multiple jobs at once for a single builder?
+[03:44:55] <cmr> (not a slave, but a builder)
+[03:44:55] <brson> they also don't merge if another integration succeeded ahead of it
+[03:45:01] <brson> so they are counting on failures
+[03:45:07] <acrichto> interesting
+[03:45:16] <acrichto> I figured travis would do most of that work for us at this point
+[03:46:32] <brson> yeah, so if we did that we could end up with a bunch of successful test runs that can't be merged
+[03:48:53] <brson> acrichto: that's a bold rollup
+[03:49:04] <acrichto> "let's see if it pays off for him"
+[04:01:49] *** Quits: angdev (angdev@16F167B.4C57D258.D8E8354F.IP) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[04:01:52] *** Joins: angdev (angdev@16F167B.4C57D258.D8E8354F.IP)
+[04:04:56] *** Quits: angdev (angdev@16F167B.4C57D258.D8E8354F.IP) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[04:06:57] *** Joins: ghrust (ghrust@B750D19A.6A2AE50.F3114085.IP)
+[04:06:57] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/GLfEiA
+[04:06:57] *** Parts: ghrust (ghrust@B750D19A.6A2AE50.F3114085.IP) ()
+[04:09:46] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[04:11:57] *** Joins: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP)
+[04:11:57] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/s5nucQ
+[04:11:57] *** Parts: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP) ()
+[04:11:58] *** Joins: ghrust (ghrust@94BD74B8.6A2AE50.F3114085.IP)
+[04:11:58] <ghrust> [13rust] 15bors pushed 27 new commits to 06auto: 02http://git.io/VEK3eg
+[04:11:58] <ghrust> 13rust/06auto 14032e1d9 15Brian Leibig: Add new target 'make dist-osx' to create a .pkg installer for OS X
+[04:11:58] <ghrust> 13rust/06auto 148a92ee8 15Brian Leibig: Make OS X installer build from /tmp/dist/pkgroot, and have it be part of the 'make dist' target
+[04:11:58] <ghrust> 13rust/06auto 14732bfc3 15Alex Crichton: rustc: Move local native libs back in link-args...
+[04:12:00] *** Parts: ghrust (ghrust@94BD74B8.6A2AE50.F3114085.IP) ()
+[04:26:52] *** Joins: ghrust (ghrust@38D6F008.6A2AE50.F3114085.IP)
+[04:26:52] <ghrust> [13rust] 15bors 04force-pushed 06auto from 14a550bae to 14700fd35: 02http://git.io/N3iJvQ
+[04:26:52] *** Parts: ghrust (ghrust@38D6F008.6A2AE50.F3114085.IP) ()
+[04:26:53] *** Joins: ghrust (ghrust@B750D19A.6A2AE50.F3114085.IP)
+[04:26:53] <ghrust> [13rust] 15bors pushed 23 new commits to 06auto: 02http://git.io/gS0YTg
+[04:26:53] <ghrust> 13rust/06auto 14bbec2c5 15Brian Leibig: Add new target 'make dist-osx' to create a .pkg installer for OS X
+[04:26:53] <ghrust> 13rust/06auto 144d4ccb5 15Brian Leibig: Make OS X installer build from /tmp/dist/pkgroot, and have it be part of the 'make dist' target
+[04:26:53] <ghrust> 13rust/06auto 14cdc5729 15Alex Crichton: rustc: Move local native libs back in link-args...
+[04:26:55] *** Parts: ghrust (ghrust@B750D19A.6A2AE50.F3114085.IP) ()
+[04:29:09] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[04:31:28] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[04:35:07] <nrc> hmm, actually I think Rust might be OK, but the tool I wrote for analysing spans in Python is broken :-s
+[04:46:16] <sfackler> acrichto: I've been thinking about how item-modifying decorator extensions should work and I'm coming up with 2 options, each of which are a bit janky
+[04:47:04] <sfackler> option 1: find the first ItemModifier attribute on the item, pass the @Item to it, return expand_item on the result
+[04:47:29] <sfackler> option 2: thread the Item_ through all ItemModifiers on the @Item
+[04:47:49] <sfackler> this will prohibit the creation of items that are themselves tagged with new ItemModifiers thoush
+[04:47:52] <sfackler> *though
+[04:47:54] <sfackler> and is a bit weird
+[04:48:02] <sfackler> it may make more sense than the first option
+[04:48:15] <acrichto> this is for things with something like two #[deriving] tags?
+[04:48:40] <sfackler> #[deriving] is easy because it just makes new items
+[04:49:05] <sfackler> if you end up with an item tagged with two ItemModifier attributes, you run into this issue
+[04:49:19] <acrichto> I would expect both of them to operate on the original item
+[04:49:25] <acrichto> not like a pipeline
+[04:49:42] <sfackler> with option 1, you have to make part of the API: "you almost always want to set the attrs of the new item to the attrs of the given item minus your attribute"
+[04:50:18] <sfackler> but they can't both operate on the original item, since that would create two resulting items, where what we really want to do is modify it in place
+[04:50:40] <acrichto> oh so you basically consume the tagged item and are expected to reproduce it?
+[04:50:48] <acrichto> at least in the case of #[deriving]
+[04:51:15] <sfackler> deriving is an ItemDecorator, which gets a reference to the original item and creates new items based on it
+[04:51:28] <sfackler> but there's a use case for direct modification as well
+[04:51:41] <acrichto> ah ok, this is different
+[04:51:57] <acrichto> so it's basically "fn(@Item) -> ~[@Item]"
+[04:52:03] <acrichto> and the array replaces the original item in the AST?
+[04:52:20] <sfackler> I think it'll actually be fn(@Item) -> @Item
+[04:52:43] <sfackler> since you can always tag the new item with some ItemDecorator to create the other items you need
+[04:53:14] <sfackler> but that method is weird since expansion then becomes order dependant
+[04:53:26] <sfackler> since the first ItemModifier can return an item without the second ItemMOdifier's attribute
+[04:53:32] <acrichto> do we have an existing examples of ItemModifier?
+[04:53:50] <acrichto> from what you've said I think I agree with you that option 1 seems the way to go
+[04:53:55] <sfackler> nope, since it doesn't exist currently
+[04:54:00] <acrichto> this is stuff I haven't dealt with much before though
+[04:54:05] <sfackler> but I was talking with kballard at the meetup last night about it
+[04:54:13] <acrichto> oh ok
+[04:54:29] <sfackler> he wants to use this to annotate functions that are used with his LUA bindings
+[04:54:53] <sfackler> where the extension will basically wrap the initial function in another one that does some work to make sure the interface is safe
+[04:55:26] <acrichto> interesting
+[04:56:48] <sfackler> lua apparently does some terrible things with setjmp so he wants a syntax extension to add in the neccessary support code to callbacks and a loadable lint to make sure that some restrictions are met
+[04:58:03] <acrichto> so the only way for a syntax extension to get activated through an attribute is ItemDecorator right now?
+[04:58:32] <sfackler> yep
+[04:58:58] <sfackler> which has the signature fn(&mut ExtCtxt, Span, MetaItem, @Item, |@Item|)
+[04:59:10] <sfackler> where the closure is used to add new items that the extension creates
+[04:59:12] <acrichto> it doesn't remove the original item?
+[04:59:19] <sfackler> nope
+[04:59:27] <acrichto> perhaps it should just remove the original item?
+[04:59:38] <acrichto> and #[deriving] just needs to add it back in
+[05:00:19] <sfackler> the issue there is that expansion stops being a simple iteration over the item's attributes
+[05:00:28] <sfackler> it turns into this weird recursive thing
+[05:00:34] *** Quits: bytbox (s@moz-E1E7FAC3.washdc.fios.verizon.net) (Ping timeout)
+[05:00:47] <acrichto> it's too restrictive to not run it tiwce?
+[05:00:51] <acrichto> and just assume that it only runs once?
+[05:01:08] <sfackler> but we do want to expand the created items
+[05:01:14] <sfackler> and you can't tell which one was the original
+[05:01:40] <acrichto> why do we want to expand the created items?
+[05:01:46] <sfackler> if we recurisvely expand all the new ones, extensions will have to be very careful to remove their attribute from the item but keep all the others to prevent infinite recursion
+[05:02:16] <sfackler> otherwise the created items can't e.g. contain macros or be tagged with item decorators
+[05:02:52] <acrichto> maybe the ItemDecorator could return a boo
+[05:02:54] <acrichto> bool*
+[05:02:58] <acrichto> which says to keep it or not
+[05:03:42] <sfackler> that seems a bit janky
+[05:04:35] <acrichto> hmm
+[05:06:57] *** Joins: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP)
+[05:06:57] <ghrust> [13rust] 15bors 04force-pushed 06auto from 14166696a to 14700fd35: 02http://git.io/N3iJvQ
+[05:06:57] *** Parts: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP) ()
+[05:06:57] *** Joins: ghrust (ghrust@94BD74B8.6A2AE50.F3114085.IP)
+[05:06:57] <ghrust> [13rust] 15bors pushed 20 new commits to 06auto: 02http://git.io/eUqaiw
+[05:06:57] <ghrust> 13rust/06auto 14bbec2c5 15Brian Leibig: Add new target 'make dist-osx' to create a .pkg installer for OS X
+[05:06:57] <ghrust> 13rust/06auto 144d4ccb5 15Brian Leibig: Make OS X installer build from /tmp/dist/pkgroot, and have it be part of the 'make dist' target
+[05:06:58] <ghrust> 13rust/06auto 14cdc5729 15Alex Crichton: rustc: Move local native libs back in link-args...
+[05:07:00] *** Parts: ghrust (ghrust@94BD74B8.6A2AE50.F3114085.IP) ()
+[05:08:37] *** Quits: aatch (James@moz-B437F499.pocketrent.com) (Client exited)
+[05:09:52] *** Joins: ktt3ja (ktt3ja@moz-85E2770C.hsd1.va.comcast.net)
+[05:10:06] <sfackler> the Item_ option seems like it may be a bit more sane imo
+[05:10:43] <sfackler> hmm, you can't change the ident or visibility, then
+[05:11:33] <sfackler> we could take the result @Item and *append* its attributes to the initial set, stripping the ItemModifier
+[05:12:16] <acrichto> seems reasonable
+[05:14:59] <sfackler> it's still a bit bizzaro but probably makes more sense than the other options
+[05:15:12] <sfackler> it does mean the the extension can't strip attributes but that's probably okay
+[05:17:33] *** Quits: mawuli (mawuli@moz-A89BBCE.com.gh) (Ping timeout)
+[05:20:47] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Quit: TheHydroImpulse)
+[05:21:15] *** Quits: tjc (tjc@moz-791C24B0.phlapa.east.verizon.net) (Quit: Textual IRC Client: www.textualapp.com)
+[05:24:44] *** Joins: angdev (angdev@16F167B.4C57D258.D8E8354F.IP)
+[05:29:47] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[05:31:30] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[05:40:44] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[05:46:54] *** Quits: ktt3ja (ktt3ja@moz-85E2770C.hsd1.va.comcast.net) (Ping timeout)
+[05:46:55] *** Joins: ghrust (ghrust@7BEB6F9D.6A2AE50.F3114085.IP)
+[05:46:55] <ghrust> [13rust] 15bors pushed 19 new commits to 06auto: 02http://git.io/C3g6HA
+[05:46:55] <ghrust> 13rust/06auto 144c553af 15Bruno de Oliveira Abinader: Replaced @List with ~List in Rust's recursive example
+[05:46:55] <ghrust> 13rust/06auto 141e6151a 15Bruno de Oliveira Abinader: Renamed variables
+[05:46:56] <ghrust> 13rust/06auto 148846970 15Bruno de Oliveira Abinader: Implement Eq for Cell<T>
+[05:46:58] *** Parts: ghrust (ghrust@7BEB6F9D.6A2AE50.F3114085.IP) ()
+[05:49:04] *** Joins: edwardw (edwardw@96E7298D.3E260003.B9C6B12A.IP)
+[05:49:52] *** Quits: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com) (Ping timeout)
+[05:53:40] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Ping timeout)
+[05:54:50] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[06:09:00] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[06:14:49] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[06:24:04] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse)
+[06:25:49] *** Joins: whitglint (uid15486@moz-31ABA2C0.irccloud.com)
+[06:29:28] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[06:30:58] *** Quits: lkuper (lkuper@moz-C0CD33ED.hsd1.in.comcast.net) (Quit: lkuper)
+[06:31:30] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[06:31:45] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[06:33:49] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[06:35:14] *** Joins: eddyb (eddy@moz-41DB10DA.residential.rdsnet.ro)
+[06:35:33] <eddyb> hmm, about numerics in generics
+[06:35:43] <eddyb> we already have a literal, [u8, ..N]
+[06:36:12] <eddyb> all you need is a way to extract the length from a constexpr context
+[06:36:18] <edwardw> is huo around?
+[06:36:52] <eddyb> nmatsakis: I guess I'll dump this on you: [u8, A::LEN + B::LEN]
+[06:37:07] <eddyb> well, I'm missing ...
+[06:37:18] <eddyb> .. even (should not attempt writing code at this hour of morning)
+[06:41:54] *** Joins: mawuli (mawuli@moz-A89BBCE.com.gh)
+[06:44:31] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[06:44:49] *** Joins: huon (Thunderbir@moz-826BD85A.lns20.syd6.internode.on.net)
+[06:44:49] *** ChanServ sets mode: +o huon
+[06:48:35] <edwardw> huon: ping
+[06:50:06] <eddyb> http://www.reddit.com/r/rust/comments/1z3dnx/ints_in_generic_type_parameters/cfqs71e?context=10
+[06:50:52] <eddyb> huon: no need for lambda calculus to add numbers or other nonsense ^^
+[06:53:03] <huon> edwardw: I'm occupied for a bit, will pong you in 5 minutes or so
+[06:53:38] * eddyb pokes huon about the graph
+[06:53:51] <huon> eddyb: that requires allowing + in types
+[06:53:59] <eddyb> hmm?
+[06:54:04] <eddyb> huon: we already allow that
+[06:54:10] <huon> oh, constexprs...
+[06:54:12] <huon> bleh
+[06:54:35] <eddyb> who needs CTFE when you can have recursive trait implementations :)
+[06:54:48] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[06:55:17] *** Joins: nanotech (nanotech@moz-DD3580FD.members.linode.com)
+[06:55:18] <edwardw> CTFE = compile time function what?
+[06:55:21] <eddyb> evaluation
+[06:55:28] <edwardw> ah, ok
+[06:56:08] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Connection reset by peer)
+[06:56:10] <eddyb> (CTFE would still be nice for algorithms on vectors/strings, calling Vec::new(), Atomic::new(42), MyStructureWithManyPrivFields::new())
+[06:56:32] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[06:56:43] <eddyb> Vec::new() would be tricky, after variadic generics, as I expect it to take any number of arguments. could still provide Vec::empty()
+[06:56:58] *** Joins: ghrust (ghrust@49477F7E.6A2AE50.F3114085.IP)
+[06:56:58] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/C3g6HA
+[06:56:58] *** Parts: ghrust (ghrust@49477F7E.6A2AE50.F3114085.IP) ()
+[06:57:31] <edwardw> can CTFE play some roles TLS plays today?
+[06:57:46] <eddyb> what's the relation?
+[06:58:10] <edwardw> then I can simply CTFE assigns value to a static
+[06:58:21] <edwardw> and use that static instead of TLS
+[06:58:31] <eddyb> TLS is thread-local storage
+[06:58:38] <eddyb> CTFE wouldn't be able to assign values to statics
+[06:58:46] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[06:58:53] <edwardw> ok, fair enough
+[06:58:55] <eddyb> edwardw: do you know C++11 constexpr?
+[06:59:04] <edwardw> eddyb: not really
+[06:59:16] <eddyb> Rust CTFE would be something like that, but maybe a bit more relaxed
+[06:59:26] <eddyb> (let's say, like C++14 constexpr)
+[06:59:44] <eddyb> edwardw: pure function that can be evaluated at compile-time
+[07:00:08] <eddyb> in Rust, it's even better, because you can allow &'static str and &'static [T], as they are truly safe
+[07:00:16] * edwardw duckduckgo-ing C++11 constexpr
+[07:00:29] <huon> edwardw: pong
+[07:00:34] <edwardw> huon: r?
+[07:01:07] <huon> edwardw: I still don't understand your clarification
+[07:01:25] <edwardw> huon: about fold_expr vs. fold_ident?
+[07:01:41] <edwardw> or the performance one?
+[07:01:43] <huon> Yeah, why is fold_expr related to fold_ident?
+[07:02:00] *** Joins: ghrust (ghrust@23EC81EC.6A2AE50.F3114085.IP)
+[07:02:00] <ghrust> [13rust] 15bors pushed 20 new commits to 06auto: 02http://git.io/cxHWsg
+[07:02:00] <ghrust> 13rust/06auto 14bbec2c5 15Brian Leibig: Add new target 'make dist-osx' to create a .pkg installer for OS X
+[07:02:00] <ghrust> 13rust/06auto 144d4ccb5 15Brian Leibig: Make OS X installer build from /tmp/dist/pkgroot, and have it be part of the 'make dist' target
+[07:02:00] <ghrust> 13rust/06auto 14cdc5729 15Alex Crichton: rustc: Move local native libs back in link-args...
+[07:02:02] *** Parts: ghrust (ghrust@23EC81EC.6A2AE50.F3114085.IP) ()
+[07:02:17] <edwardw> if fold_ident, then both fold_expr and fold_tts can use it. but not the other way around
+[07:02:41] <huon> give me a sec to pull up the code
+[07:06:10] <huon> edwardw: ok: basically: you deal with the namespacing by passing the IdentKind into fold_ident, right?
+[07:06:20] <edwardw> correctly
+[07:06:32] <edwardw> correct*
+[07:06:37] <huon> this means that every call to fold_ident has to pass an IdentKind into that call
+[07:06:49] <edwardw> also correct
+[07:07:27] <edwardw> the nodes in higher level know what to pass
+[07:07:27] <huon> so (a) why is fold_expr vs. fold_tts relevant to this operation?
+[07:07:49] <huon> and (b) why doesn't the `a` in `fn foo<'a>(...)` get folded as a lifetime?
+[07:08:38] <huon> eddyb: "nasty recursion" == infinite recursion? (i.e. will someone writing `&1 + 2` in user code get met with a "rustc overflowed its stack" message?)
+[07:08:50] <eddyb> huon: no, overloaded autoderef
+[07:09:17] <eddyb> you don't want the method search for .deref() (done as part of the autoderef of another method search) to do another deref search
+[07:09:20] <huon> edwardw: (specifically: fold_tts knows when it has a LIFETIME token, and fold_expr knows when it has something that is a lifetime)
+[07:09:33] <huon> eddyb: is it infinite recursion?
+[07:09:35] <eddyb> it should also take as little time as possible, as to not impact typeck performance
+[07:09:44] <eddyb> huon: if I didn't do it right, could be
+[07:09:53] <huon> did you do it right?
+[07:10:05] <eddyb> did you not see my example on IRC :)?
+[07:10:05] <edwardw> huon: so why not let them delegate the folding of ident to fold_ident? that's all what I'm saying
+[07:10:15] <eddyb> let x = Rc::new(RefCell::new(~"foo")); x.borrow_mut().push_str("bar"); println!("{:?}", x.borrow().as_slice());
+[07:10:16] <huon> edwardw: they are?
+[07:10:39] <huon> edwardw: that's exactly what they are doing, right? calling fold_ident to fold the identifiers?
+[07:11:10] <edwardw> huon: so?
+[07:11:14] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Ping timeout)
+[07:11:40] <huon> edwardw: oh
+[07:11:44] <edwardw> huon: so dealing with namespaing in the very leaf
+[07:11:54] <edwardw> nsmaespacing*
+[07:11:58] <huon> are you saying why you can't use very first suggestion in https://github.com/mozilla/rust/issues/12512#issuecomment-35885548 ?
+[07:12:03] <edwardw> namespacing*
+[07:12:10] <huon> bleh, I should've removed it, since the second one is clearly better
+[07:12:41] <edwardw> heh
+[07:12:56] <edwardw> that's what I'm saying
+[07:13:01] <huon> ok, I understand
+[07:13:02] <eddyb> https://github.com/mozilla/rust/pull/12610#issuecomment-36327002 I don't think I like how the formatting becomes all over the places
+[07:13:11] <eddyb> but I wouldn't want code to wrap, either
+[07:13:16] <eddyb> *all over the place
+[07:13:25] <eddyb> (look at that space after "instead of")
+[07:13:39] <eddyb> hang on, I have a solution :P
+[07:14:04] <eddyb> (firefox doesn't allow me to double click a word to select it :/)
+[07:14:46] <huon> eddyb: what's wrong with the formatting?
+[07:15:01] <huon> (also firefox lets me double click to select a single word?)
+[07:15:04] <eddyb> I think I meant "format". actually, "layout"
+[07:15:09] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[07:15:27] <eddyb> huon: it thinks foo.bar.baz is a word
+[07:15:38] <eddyb> which is very wrong from a coder POV
+[07:16:35] <huon> it's in my dictionary :P
+[07:16:56] <huon> (but yeah, inline code blocks make github unhappy.)
+[07:17:18] * eddyb throws a \b at firefox devs
+[07:17:21] <huon> eddyb: also, what do I need to do about the graphs?
+[07:17:34] <eddyb> huon: did you update them when cmr redid that one range?
+[07:17:41] <eddyb> s/them/it/
+[07:17:41] <huon> yes
+[07:17:47] <eddyb> so there is a difference
+[07:17:52] <eddyb> but it's still weird :/
+[07:18:28] <huon> maybe should bench outside that range to see if the discripancies are actually the high bits, instead of the low bits
+[07:18:50] <eddyb> yeah, I may have had too tight of a range
+[07:19:04] * eddyb is always to blame
+[07:19:11] <huon> eddyb: btw, does your #12610 allow for rc_refcell.borrow_mut() directly (without an explicit *)
+[07:19:16] <huon> ?
+[07:19:23] <eddyb> not even with *
+[07:19:25] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[07:19:40] <huon> eh?
+[07:19:40] <eddyb> requires a method lookup rewrite, among other things
+[07:19:40] <huon> https://github.com/mozilla/rust/pull/12610/files#diff-bef50602aaaaff957007b1c58e5de9c7R35
+[07:20:08] <eddyb> though I'm not sure I know what you're referring to
+[07:20:27] <eddyb> .borrow().borrow_mut().get().foo -> .borrow_mut().foo
+[07:20:31] <huon> I'm comparing (now) rc_refcell.borrow().borrow_mut() vs. (*rc_refcell).borrow_mut() vs. rc_refcell.borrow_mut)
+[07:20:33] <eddyb> borrow_mut itself doesn't disappear
+[07:20:37] <huon> yes
+[07:20:44] <huon> I didn't drop it from my snippet ;)
+[07:21:12] <huon> basically, if that 3rd thing is possible with #12610, there should be a test
+[07:21:19] <eddyb> hah
+[07:21:22] <eddyb> "a test"
+[07:21:30] <eddyb> huon: more like twenty
+[07:21:39] <huon> where?
+[07:21:47] <huon> everything in https://github.com/mozilla/rust/pull/12610/files#diff-48
+[07:21:53] <huon> has explicit dereferencing with *
+[07:21:54] <eddyb> I just wanted to get somewhere with the implementation and let nmatsakis take a look at it
+[07:22:01] <huon> ok
+[07:22:18] <eddyb> #12491 also needs more than one test
+[07:22:58] <huon> edwardw: <3 removing @ btw
+[07:23:07] <eddyb> huon: there are so many implicit things that can go wrong in this area, it's a nightmare >_>
+[07:23:17] <edwardw> huon: yep, all of them!
+[07:23:28] <huon> edwardw: now do the rest of the compiler! :P
+[07:23:35] <eddyb> need that CFG transform to actually make sure you don't break anything
+[07:23:42] <eddyb> huon: hold your horses
+[07:23:57] * huon holds them
+[07:24:12] <eddyb> which PR removes some @?
+[07:24:13] <edwardw> LOL. I feel a lot more comfortable using Rc, RefCell and whatnot
+[07:24:31] <eddyb> I don't really want Rc to be overused
+[07:24:33] <huon> eddyb: #12563 removes some from inside libsyntax
+[07:24:36] <huon> came down
+[07:24:38] <huon> *calm
+[07:24:47] <edwardw> eddyb: https://github.com/mozilla/rust/pull/12563
+[07:24:49] <huon> Rc is 10000x better than @
+[07:25:08] <huon> and, for now, replacing @ with Rc is basically the easiest thing to do
+[07:25:08] <eddyb> edwardw: did you fix the perf problem?
+[07:25:16] <edwardw> eddyb: I did
+[07:25:38] <huon> such a tiny adjustment
+[07:25:49] *** Joins: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[07:25:55] <huon> eddyb: https://github.com/mozilla/rust/pull/12563#issuecomment-36276821
+[07:26:51] <eddyb> riight
+[07:27:03] <eddyb> so it wasn't the hashmap indirection?
+[07:27:16] <huon> mostly not
+[07:27:40] <edwardw> no, hashmap doesn't hurt very much, surprisingly 
+[07:28:06] <eddyb> edwardw: I'd still want an array of SCTable's instead of a HashMap...
+[07:28:21] <edwardw> eddyb: yes sure, I did that too
+[07:28:21] <eddyb> OH. oh. I've had an idea last night
+[07:28:34] <eddyb> acrichto: I can see the travis failures, btw :P
+[07:28:49] <eddyb> mkay, so, there's an issue with expansion running before resolution
+[07:29:02] <eddyb> but resolution needs to run on the fully expanded AST, right?
+[07:29:08] <eddyb> *wrong*
+[07:29:19] <eddyb> introducing resolution hygiene
+[07:29:37] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[07:29:59] <eddyb> (I know intertwining expansion and resolution could be a mess, so we have to think a lot before we try it)
+[07:30:34] <huon> what's the problem that occurs with our current design?
+[07:30:40] <huon> and yes, it needs expanded an AST
+[07:30:47] <huon> (it == resolution)
+[07:31:01] <eddyb> macro contents are resolved in their expansion site
+[07:31:29] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[07:31:45] <eddyb> so they can't depend on items visible at the definition site
+[07:31:53] <eddyb> I think Julia does this very well
+[07:32:20] <edwardw> Julia, another language?
+[07:32:48] <eddyb> someone linked their hygienic macro docs in here, a few days ago
+[07:33:35] <edwardw> ah ok
+[07:33:46] <eddyb> I also think there are some performance benefits arising from not really needing to store renames (at least in some cases)
+[07:34:01] <eddyb> you don't have macro expansions, you don't need renames
+[07:34:03] <huon> "macro contents are resolved in their expansion site  so they can't depend on items visible at the definition site"
+[07:34:07] <huon> is the opposite of hygiene
+[07:34:24] <eddyb> huon: that is the current situation
+[07:34:29] <huon> no it's not
+[07:34:50] <eddyb> macros need absolute paths to items and whatnot
+[07:34:50] <huon> rusti: macro_rules! foo( () => { a }) { let a = 1; foo!() }
+[07:34:51] -rusti- <anon>:10:53: 10:61 error: unresolved name `a`.
+[07:34:51] -rusti- <anon>:10         macro_rules! foo( () => { a }) { let a = 1; foo!() }
+[07:34:51] -rusti-                                                               ^~~~~~~~
+[07:34:51] -rusti- error: aborting due to previous error
+[07:34:51] -rusti- application terminated with error code 101
+[07:35:01] <huon> oh, for items, yes
+[07:35:01] <eddyb> I'm not talking about our hygienic let
+[07:35:07] <eddyb> I'm talking about resolution
+[07:35:14] <huon> resolution handles that too
+[07:35:28] <huon> resolution handles all name -> <thing> mapping, including local variables
+[07:35:28] <eddyb> module hierarchies, privacy etc.
+[07:35:49] <eddyb> yeah, because we store all the renames ever, including the ones we don't need
+[07:36:19] <eddyb> our hygiene cost could go up significantly if we started renaming *everything*
+[07:36:20] <huon> that's not the reason resolution handles that
+[07:36:45] <eddyb> s/because/and because of that/, I guess
+[07:36:50] <huon> resolution has to be the pass that handles name -> thing, because... like, by definition, that's what "resolution"
+[07:36:58] <huon> right
+[07:37:37] <huon> what renamings don't we need? when there are no macros in the current function, right?
+[07:37:53] <eddyb> scope, even
+[07:38:20] <eddyb> with item-level hygiene, it gets pretty messy *unless you use the information early*
+[07:38:34] <huon> we can't use the information early, in general
+[07:38:55] <edwardw> another way is to do renaming inside macro definition, but that could just be me
+[07:39:02] <huon> because some item may be created with macros
+[07:39:23] <eddyb> what I'm thinking... mod foo {/* priv */ static mut X: AtomicUint = ATOMIC_UINT; macro_rules! get_x(() => X.get())} fn main() {let x = foo::get_x!();}
+[07:40:26] <eddyb> that should also require no renaming IMO (or at least no expensive renaming-related operation)
+[07:41:09] <huon> if it was `get_x($a:ident) -> ( $a + X.get() )` it does need renaming
+[07:41:24] <sfackler> eddyb: jbclements mentioned that at the meetup a couple of days ago. It'd be cool
+[07:41:38] <huon> does jbclements go to meetups?
+[07:41:45] <sfackler> he came to this one
+[07:41:53] <huon> ooh, to see your talk, right?
+[07:42:01] <sfackler> maybe?
+[07:42:10] <huon> I think I saw him mention that
+[07:42:21] <sfackler> he's in santa clara I think so it's not a super long trip
+[07:42:46] <sfackler> but he mentioned eddyb's type of hygeine wrt cross-crate macros
+[07:42:55] <sfackler> which would be an interesting undertaking
+[07:43:24] <eddyb> nmatsakis: I just came up with an usecase for DerefMove. more like DerefCopy. *atomic could do something like atomic.get(), with no references involved (which wouldn't be atomic)
+[07:44:07] <sfackler> but would probably be doable with a post-expansion pass to mess around with paths/idents
+[07:44:07] <eddyb> huon: because we expand first and then resolve... hmm
+[07:44:15] <eddyb> pls no
+[07:44:23] <eddyb> if we do this, let's do it the right way
+[07:44:29] <edwardw> huon: that's it then? I'll off to do the refactoring and cleanup
+[07:44:52] <sfackler> pulling resolve into expansion in some form would also allow for use foo::bar::macro!;
+[07:44:55] <sfackler> which would be sweet
+[07:45:09] <eddyb> sfackler: see my example above :P
+[07:45:16] <eddyb> ahh, use
+[07:45:16] <sfackler> ah!
+[07:45:26] *** Joins: sigma (sigma@moz-55097A0B.range86-163.btcentralplus.com)
+[07:45:39] <sfackler> the really interesting one would be pub use imo
+[07:45:47] <eddyb> sure
+[07:46:41] <huon> eddyb: in general, I think interleaving expansion and resolve would require O(number of macro invocations) passes over the AST
+[07:46:44] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[07:46:49] <eddyb> maybe
+[07:46:59] <huon> and that doesn't seem like "the right way"
+[07:47:36] <eddyb> over the entire AST, it's bad
+[07:48:31] *** Joins: jsonnull (Thunderbir@20DADFC2.48C8B17D.494A0F8B.IP)
+[07:48:38] <huon> but, I really want namespace macros/item decorators
+[07:48:44] <huon> so.. bleh :(
+[07:49:16] <sfackler> hmm, stage2-rpass-full seems to be running way more than rpass-fulldeps
+[07:49:30] <eddyb> huon: I think we could attach context infor to idents (do we do that already?) sent in a macro, so when the macro expands, those idents are resolved in the context of the macro expansion
+[07:49:55] <eddyb> what we do now is... complicated. maybe it has something to do with nested macro expansions
+[07:50:12] <eddyb> s/infor/information
+[07:51:02] <eddyb> huon: how about resolve vising the AST as it's folded?
+[07:51:11] <eddyb> *visiting
+[07:51:38] <eddyb> I guess that's complicated for items because we don't require a strict order, as in C/C++
+[07:52:03] <huon> complicated == multiple passes
+[07:52:27] <sfackler> one thing I would love is to split expansion into two passes to avoid the stupid lexical ordering issue in macro definitions
+[07:52:27] <huon> (that's the O(#macro invocations).)
+[07:52:28] <edwardw> huon: any other comments?
+[07:52:40] <huon> edwardw: I'm progressing through it slowly
+[07:52:47] <huon> so maybe
+[07:53:00] *** flaper87|afk is now known as flaper87
+[07:53:05] <huon> eddyb: I'd guess it is nested macro expansions... I don't really know
+[07:53:17] <huon> read the paper for more details, I guess: http://dl.acm.org/citation.cfm?id=2349617
+[07:53:31] <huon> (google will find you a pdf)
+[07:54:50] <eddyb> I guess functions are "sync points"
+[07:55:13] <huon> (so many syntax::ext PRs!)
+[07:55:25] <sfackler> huon: how does this look? the semantics are a bit strange, but I think it's about as reasonable as it can be: https://github.com/mozilla/rust/pull/12617
+[07:55:30] <sfackler> speaking of syntax::ext prs
+[07:55:31] <eddyb> so item-level macro expansions have to be treated differently from expression-level macros
+[07:55:31] <sfackler> :P
+[07:56:14] <eddyb> ohh, mutators?
+[07:56:21] <eddyb> #[evolve]
+[07:56:26] <huon> sfackler: (the cc email from that PR prompted my outburst ;P )
+[07:56:33] <sfackler> haha
+[07:56:42] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[07:56:55] <flaper87> w0000t the patch landed, droids don't hate me anymore
+[07:57:17] <sfackler> implementations of ItemModifier will have to be careful to do reasonable things, but I don't think they'll be all that common anyway
+[07:57:27] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[07:57:57] <huon> edwardw: does pending_renames ever have more than 1 element in it?
+[07:58:05] <eddyb> yes
+[07:58:17] <eddyb> more like N * N
+[07:58:37] <eddyb> or N * M. for some values that are very large in my test cases :P
+[07:58:41] <edwardw> huon: of course. in the performance stressing you gave, there's as many as ~5000 elements in it
+[07:58:50] <huon> ok, cool
+[07:58:52] <eddyb> I guess it's not quadratic. still
+[07:58:52] <edwardw> stressing test case*
+[07:59:00] * huon doesn't actually understand the internals :P
+[07:59:13] * eddyb neither, but he reserves the right to whine about perf
+[07:59:22] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[07:59:26] <eddyb> because it *looks* like it could be better
+[08:00:13] <huon> it's not obvious to me
+[08:00:21] <huon> I had a glance at some hygiene papers/history a while ago
+[08:00:28] <eddyb> hmm, so what mutations would actually be interesting?
+[08:00:31] <huon> and it seems that everything before MTWT was even worse
+[08:00:47] <eddyb> sfackler: do you have anything specific in mind?
+[08:00:56] <huon> #[prefix="mylib_"] extern { fn func1(); fn func2(); }
+[08:01:03] <eddyb> ohh
+[08:01:10] <sfackler> eddyb: kballard wants this so he can wrap functions to make them safe to use as LUA callbacks or something
+[08:01:13] <huon> instead of `extern { fn mylib_func1(); fn mylib_func2(); }`
+[08:01:18] <sfackler> tldr setjmp is a horror
+[08:01:21] <sfackler> and that
+[08:01:36] <eddyb> I guess I was thinking of struct definitions
+[08:01:37] <huon> (but extern definitions should really not be done by hand...)
+[08:02:06] *** Quits: sigma (sigma@moz-55097A0B.range86-163.btcentralplus.com) (Client exited)
+[08:02:16] <huon> ( https://github.com/mozilla/rust/issues/2124 )
+[08:02:28] <sfackler> the other use cases I would think of would be in libraries a bit like Qt that uses a *ton* of syntactic sugar to make coding in some framework easier
+[08:02:30] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[08:02:50] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[08:02:53] <eddyb> sfackler: so, hmm, you would use this wherever you could've wrapped the code in a macro, but the syntax matches and it's much easier to just mutate the AST than "manually" parse it
+[08:03:05] <sfackler> yeah
+[08:03:07] <eddyb> I guess I could use this for generators, modulo "yield"
+[08:03:17] <eddyb> (if I ever get time to play with them)
+[08:03:32] <sfackler> an alternative would be to do my_macro!(struct Foo { ... }) but that's a bit gross
+[08:03:35] <eddyb> #[evolve(state_machine)]
+[08:04:47] <eddyb> sfackler: does a phase(syntax) crate have access to the token interner and whatnot?
+[08:05:00] <sfackler> yep, it's a task local
+[08:05:19] <eddyb> I'm thinking... we should be able to remove reserved keywords from it >:)
+[08:05:39] <eddyb> ohh, but it's loaded too late :(
+[08:05:58] <eddyb> maybe we should move reserved keyword checking into rustc::front?
+[08:06:39] <eddyb> or I can just have an yield!(x) macro that expands to __do_yield__(x). idk
+[08:06:53] <eddyb> the idea is that a generator transformer should be able to see yields somehow
+[08:07:42] <sfackler> or use yield_ while experimenting
+[08:07:55] <sfackler> and if it works out yield can be un-reserved
+[08:08:31] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[08:08:38] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[08:09:18] <huon> edwardw: btw, have you seen the `fold_lifetime` function in syntax::fold?
+[08:09:39] <huon> specifically, it seems like adjusting that makes function lifetimes hygienic
+[08:09:49] <edwardw> huon: no, I didn't notice
+[08:09:51] <huon> (feel free to do that separately though)
+[08:10:47] <edwardw> ok
+[08:13:12] <huon> flaper87: my suggestion about #8215 was implied to apply to all such FIXMEs ;P
+[08:13:34] <huon> flaper87: what's your next big project now that statics are sane? :)
+[08:15:01] <flaper87> huon: hahah, and then I saw another one right below that and I thought: "mmhh, lets just leave that as implied for all cases :P"
+[08:15:27] <huon> edwardw: could you write a summary of the implementation details of the changes (along the lines of "maintain two renaming tables, one for lifetime one for non-lifetime idents ...."), to make it easier for jbclements to glance at without having to review in detail?
+[08:15:58] <edwardw> huon: sure, and put that summary where?
+[08:16:03] <flaper87> huon: Share kind (which also implies fixing what Freeze means and probably cleaning up TypeContents)
+[08:16:23] <flaper87> well, most likely the TypeContents clean up will come in a separate PR
+[08:16:26] <edwardw> huon: in commit message I suppose
+[08:16:44] <huon> edwardw: yeah, and copy it into the PR description too
+[08:16:59] *** Joins: ghrust (ghrust@B750D19A.6A2AE50.F3114085.IP)
+[08:16:59] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/cxHWsg
+[08:16:59] *** Parts: ghrust (ghrust@B750D19A.6A2AE50.F3114085.IP) ()
+[08:17:13] <edwardw> huon: certainly, I'll be off to do the refactoring and cleanup. See u
+[08:17:26] <huon> edwardw: (btw, it looks like removing the FIXME #8215 might be a little tricky, feel free to not do it)
+[08:17:43] <huon> flaper87: awesome!
+[08:18:31] *** Quits: edwardw (edwardw@96E7298D.3E260003.B9C6B12A.IP) (Quit: Leaving...)
+[08:18:54] <huon> who needs PRs when you can close 20 in one go
+[08:20:34] <flaper87> :P
+[08:21:05] <huon> sfackler: the ItemModifier does "weird" things to attributes, right?
+[08:21:34] *** Joins: ghrust (ghrust@5AC7F92B.6A2AE50.F3114085.IP)
+[08:21:34] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/qExfaw
+[08:21:34] *** Parts: ghrust (ghrust@5AC7F92B.6A2AE50.F3114085.IP) ()
+[08:25:58] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[08:26:35] *** Joins: ghrust (ghrust@C95C9FF.6A2AE50.F3114085.IP)
+[08:26:35] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/qExfaw
+[08:26:35] *** Parts: ghrust (ghrust@C95C9FF.6A2AE50.F3114085.IP) ()
+[08:26:36] *** Joins: ghrust (ghrust@38D6F008.6A2AE50.F3114085.IP)
+[08:26:36] <ghrust> [13rust] 15bors pushed 3 new commits to 06auto: 02http://git.io/qKDXww
+[08:26:36] <ghrust> 13rust/06auto 1472b5e30 15Erick Tryzelaar: collections: allow `HashMap` to work with generic hashers
+[08:26:36] <ghrust> 13rust/06auto 14adeb730 15Erick Tryzelaar: std: cut down on the memory usage of `SipHasher`
+[08:26:36] <ghrust> 13rust/06auto 1431e9c94 15bors: auto merge of #12544 : erickt/rust/hash, r=acrichto...
+[08:26:38] *** Parts: ghrust (ghrust@38D6F008.6A2AE50.F3114085.IP) ()
+[08:29:48] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[08:31:30] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[08:41:12] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[08:53:21] *** Quits: angdev (angdev@16F167B.4C57D258.D8E8354F.IP) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[08:55:04] *** Joins: Zr40 (zr40@EE4BB9F5.926C319A.BE2F4011.IP)
+[08:57:29] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[08:59:27] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[09:02:15] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[09:02:19] *** Joins: glaebhoerl_ (glaebhoerl@moz-B5B88D72.catv.broadband.hu)
+[09:04:19] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[09:12:44] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[09:21:20] <eddyb> now I want lifetimes to magically works with arenas :/
+[09:21:34] <eddyb> *work
+[09:22:17] <eddyb> but that may very well be impossible, the way we erase lifetimes
+[09:29:25] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[09:31:29] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[09:41:33] *** Joins: ghrust (ghrust@2E45E35D.6A2AE50.F3114085.IP)
+[09:41:33] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/qKDXww
+[09:41:33] *** Parts: ghrust (ghrust@2E45E35D.6A2AE50.F3114085.IP) ()
+[09:46:36] *** Joins: ghrust (ghrust@4BC7FFDD.6A2AE50.F3114085.IP)
+[09:46:36] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/orD4xA
+[09:46:36] *** Parts: ghrust (ghrust@4BC7FFDD.6A2AE50.F3114085.IP) ()
+[09:51:31] *** Joins: ghrust (ghrust@2E45E35D.6A2AE50.F3114085.IP)
+[09:51:31] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/orD4xA
+[09:51:31] *** Parts: ghrust (ghrust@2E45E35D.6A2AE50.F3114085.IP) ()
+[09:51:32] *** Joins: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP)
+[09:51:32] <ghrust> [13rust] 15bors pushed 4 new commits to 06auto: 02http://git.io/1qe4_w
+[09:51:32] <ghrust> 13rust/06auto 144ad9412 15Huon Wilson: rustc: implement a lint for publicly visible private types....
+[09:51:32] <ghrust> 13rust/06auto 149b9ab27 15Huon Wilson: sync: Rename arc::Condvar to arc::ArcCondvar....
+[09:51:32] <ghrust> 13rust/06auto 1438c5e60 15Huon Wilson: Add #[allow(visible_private_types)]; to a variety of places....
+[09:51:34] *** Parts: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP) ()
+[09:57:27] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[09:59:21] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[10:11:31] *** Joins: ghrust (ghrust@38D6F008.6A2AE50.F3114085.IP)
+[10:11:31] <ghrust> [13rust] 15bors 04force-pushed 06auto from 14dc71dd6 to 1431e9c94: 02http://git.io/N3iJvQ
+[10:11:31] *** Parts: ghrust (ghrust@38D6F008.6A2AE50.F3114085.IP) ()
+[10:15:19] *** Joins: doener (bs@moz-AA189A5A.unitymedia.biz)
+[10:15:40] *** flaper87 is now known as flaper87|afk
+[10:18:14] <nmatsakis> eddyb: I thnk there are plenty of use cases for DerefMove, I just was concerned more about it fitting in in other ways, essentially you might have to go patch things up again because whether you want DerefMove or not depends on whether T : Pod, and we may not know what T is until much later really
+[10:18:29] <eddyb> myeah
+[10:18:41] <eddyb> though method lookup works with concrete types
+[10:18:56] <eddyb> (structurally_resolved_type)
+[10:19:13] <eddyb> not monomorphized, but resolved
+[10:19:37] <eddyb> nmatsakis: pretend this never failed in travis :P https://github.com/mozilla/rust/pull/12610
+[10:20:22] <eddyb> error: internal compiler error: borrow-vec associated with bad sty: &ty_infer(TyVar(middle::ty::TyVid(39u)))
+[10:20:53] <eddyb> could be a derp-up on my side
+[10:21:00] <nmatsakis> eddyb: the problem is the type T
+[10:21:03] <nmatsakis> not the receiver
+[10:21:14] <eddyb> ohh?
+[10:21:15] <nmatsakis> so if you write let x = *y
+[10:21:26] <nmatsakis> whether that's a DerefMove or not would depend on the type of x
+[10:21:36] <nmatsakis> which doesn't (at present) need to be resolved
+[10:21:53] <eddyb> well...
+[10:22:07] <nmatsakis> maybe this doesn't matter,
+[10:22:12] <nmatsakis> and we should just require a deeply resolved type
+[10:22:31] <nmatsakis> people will complain because they'll write things like
+[10:22:37] <nmatsakis> let mut x = box None;
+[10:22:41] <nmatsakis> let y = *x
+[10:22:52] <nmatsakis> and the type checker will say "I don't know what trait to use here"
+[10:22:53] <eddyb> and expect ~Option<T>?
+[10:23:08] <eddyb> the way I see box working... that wouldn't be valid anyway
+[10:23:21] <nmatsakis> I...hope that is valid
+[10:23:31] <eddyb> let mut x = Box::box(None);
+[10:23:41] <nmatsakis> box is an operator
+[10:23:49] <nmatsakis> at present anywya
+[10:23:55] <nmatsakis> but it actually doesn't matter
+[10:24:09] <eddyb> but desugaring to a trait call is the sanest thing we can do with it...
+[10:24:12] <nmatsakis> the point is that the type of `None` is incompletely specified
+[10:24:14] <nmatsakis> yes, sure
+[10:24:18] <nmatsakis> what's the difference?
+[10:24:27] <nmatsakis> I think it'll be desugared to:
+[10:24:30] <nmatsakis> Box::box(|| None)
+[10:24:32] <nmatsakis> more specifically
+[10:24:35] <eddyb> heh?
+[10:24:41] <nmatsakis> where || is a once closure,
+[10:24:57] <nmatsakis> and the `Box` trait is something like:
+[10:25:05] <nmatsakis> (probably Alloc, actually, but never mind)
+[10:25:19] <eddyb> (ohh, the closure forces RVO)
+[10:25:47] <nmatsakis> trait Box<E,T> { fn box<F: Fn<(),E>>(f: F) -> T; }
+[10:26:08] <eddyb> you mean Fn<E> I think
+[10:26:09] <nmatsakis> err
+[10:26:12] <nmatsakis> trait Box<E,T> { fn box<F: OnceFn<(),E>>(f: F) -> T; }
+[10:26:19] <nmatsakis> yeah, sure,
+[10:26:33] <eddyb> wait, that trait doesn't include Self
+[10:26:35] <nmatsakis> I don't like putting return argument first, but I confess it makes more sense if we impl variadic args
+[10:26:41] <nmatsakis> sorry
+[10:26:46] <eddyb> it's not really first...
+[10:26:59] <nmatsakis> oh, true
+[10:27:01] <nmatsakis> ok here:
+[10:27:08] <nmatsakis> trait Box<E,T> { fn box<F: OnceFn<E>>(&mut self, f: F) -> T; }
+[10:27:11] <nmatsakis> I tihnk that's right this time :)
+[10:27:16] <eddyb> trait Box<T> { fn box<F: OnceFn<T>>(f: F) -> Self; }
+[10:27:19] <nmatsakis> er,
+[10:27:21] <nmatsakis> I think we wanted
+[10:27:24] <nmatsakis> trait Box<E,T> { fn box<F: OnceFn<E>>(&self, f: F) -> T; }
+[10:27:30] <nmatsakis> which means that allocators must use Cell and friends
+[10:27:38] <nmatsakis> but also means you cna have static allocators
+[10:27:47] <nmatsakis> in other words, allocators must be aliasable. 
+[10:27:56] <eddyb> allocators should be Share IMO
+[10:28:02] <nmatsakis> that's irrelevant
+[10:28:06] <nmatsakis> that is, some may opt to be Share
+[10:28:09] <nmatsakis> but the trait doesn't care :)
+[10:28:28] <eddyb> well, it has some aliasability guarantees, doesn't it?
+[10:28:35] <eddyb> anyways, I thought boxing would work like from_str
+[10:29:27] <nmatsakis> but all of this is neither here nor there,
+[10:29:31] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[10:29:33] <eddyb> and I did mention yesterday a trick that you can do, if you return Self - allow box "foo" to be either SomePtr<str> or SomePtr<&'static str>
+[10:30:06] <eddyb> may require too many type hints, I'm not sure :/
+[10:30:06] <nmatsakis> ah, that's a rub with strings I had forgotten about,
+[10:30:13] <nmatsakis> but I don't quite follow your trick.
+[10:30:19] <nmatsakis> well anyway
+[10:30:23] <nmatsakis> the type of "str" will be str/3
+[10:30:27] <eddyb> hehe
+[10:30:34] <nmatsakis> (I don't really see any other choice)
+[10:30:56] <nmatsakis> hmm
+[10:31:01] <eddyb> impl Box<&'static str> for Rc<str> and impl Box<T> for Rc<T>
+[10:31:02] <nmatsakis> I wonder if we can assume str/N is statically allocated
+[10:31:17] <nmatsakis> I guess not
+[10:31:31] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[10:31:53] <nmatsakis> that's a coherence violation
+[10:32:01] <eddyb> why?
+[10:32:06] <eddyb> T is sized there
+[10:32:20] <nmatsakis> oh, I see.
+[10:32:28] <eddyb> I wonder how much fallout there would be if we used a from_str-like scheme for boxing and removed ~
+[10:32:58] <eddyb> "aborting due to 9001 errors"
+[10:33:16] <huon> eddyb: you mean removing `~str` specifically?
+[10:33:24] <nmatsakis> I have to say, reading examples with box it doesn't look as nice as ~
+[10:33:30] <nmatsakis> I guess i'll get used to it
+[10:33:34] <eddyb> I mean let x: ~int = box 5;
+[10:33:37] <nmatsakis> I like having a unified boxing operator tho
+[10:33:48] <eddyb> without the type hint, my scheme wouldn't know what to create
+[10:34:56] <eddyb> hmm... a combination of DerefImm and Box (or Alloc) would get you some genericity over the smart pointer type
+[10:35:17] <huon> (not being able to pattern match through ~ would be mildly annoying... but only mildly.)
+[10:35:18] <eddyb> could implement all the slices methods for T: DerefImm<str>
+[10:35:33] <eddyb> huon: I would suggest we add a generic deref pattern
+[10:35:43] <eddyb> that goes through DerefImm
+[10:35:56] <eddyb> or DerefMut... the choice there might be complicated
+[10:36:16] <eddyb> (and let's not forget moving out of ~T)
+[10:36:42] <eddyb> rusti: let *x = &0;
+[10:36:43] -rusti- <anon>:10:13: 10:14 error: unexpected token: `*`
+[10:36:43] -rusti- <anon>:10         let *x = &0;
+[10:36:44] -rusti-                       ^
+[10:36:44] -rusti- application terminated with error code 101
+[10:36:50] <eddyb> so we have that free...
+[10:37:12] <huon> eddyb: making pattern matching execute arbitrary code seems annoying...
+[10:37:23] <eddyb> it's only autoderef
+[10:37:49] <eddyb> a.b() can call an unbounded number of overloaded deref implementations
+[10:38:13] <eddyb> might make pattern matching harder to reason about
+[10:38:17] <huon> impl Deref for Foo { fn deref(&self) { download("http://hugefile.com"); sleep(100); /* ... */ } }
+[10:38:29] <huon> but that's a good point about a.b too.
+[10:38:51] <eddyb> you want trivial, and maybe even pure implementations of DerefImm/DerefMut
+[10:39:04] <huon> yes, that's what you want
+[10:39:20] <huon> but enforcing it...
+[10:39:33] <eddyb> need purity in the language
+[10:39:50] <eddyb> then all you can do is loop {}
+[10:40:31] <eddyb> but do we really want to guard against that? I mean, what is this, middle school?
+[10:41:38] <eddyb> nmatsakis: I wonder if we can directly acquire low-level information in that CFG of yours
+[10:42:31] <eddyb> like, know sizes of types, desugar field access / pattern matching / etc.
+[10:42:49] <eddyb> though integrating the ABI in there might not be the best idea
+[10:43:42] * eddyb is such a sadist. woke up thinking about entangling expand and resolve, now wants to move half of trans into typeck
+[10:44:43] <eddyb> mkay, so for some reason, can't call .iter() on Ref<&~[T]>
+[10:45:19] <eddyb> the type looks not structurally_resolved... but I tried to do that :/
+[10:45:59] <eddyb> "Explicit index of non-index type `<generic #17>`"
+[10:46:14] <eddyb> but... there's no index in (*self.overlaps.borrow()).iter()
+[10:46:39] <eddyb> I must've nicked something badly
+[10:50:58] *** Quits: glaebhoerl_ (glaebhoerl@moz-B5B88D72.catv.broadband.hu) (Connection reset by peer)
+[10:51:03] *** Joins: glaebhoerl_ (glaebhoerl@moz-B5B88D72.catv.broadband.hu)
+[10:51:52] *** Joins: doomlord_ (servitor@moz-99BE89EC.range86-184.btcentralplus.com)
+[10:54:02] <eddyb> nmatsakis: lol... Creates a cmt for an indexing operation (`[]`); this indexing operation may occurs as part of an AutoBorrowVec, which when converting a `~[]` to an `&[]` effectively takes the address of the 0th element.
+[10:54:18] <eddyb> >_>
+[10:55:01] <eddyb> it seems to ignore derefs :/
+[10:55:39] <eddyb> rusti: (& & &[])[0]
+[10:55:43] -rusti- pastebinned 8 lines of output: http://ix.io/aaw
+[10:55:47] <eddyb> rusti: (& & &[1])[0]
+[10:55:49] -rusti- 1
+[10:55:55] <eddyb> rusti: (& & ~[1])[0]
+[10:55:57] -rusti- 1
+[10:56:02] <eddyb> rusti: (& & ~[1]).as_slice()
+[10:56:05] -rusti- pastebinned 16 lines of output: http://ix.io/aQW
+[10:56:43] *** Joins: angdev (angdev@7F09863D.2070CE2.413CBA8C.IP)
+[10:56:50] <eddyb> magic?
+[10:57:27] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[10:57:27] *** Joins: angdev_ (angdev@5FD7B3EC.D2E4DD4E.B176C581.IP)
+[10:58:33] *** Quits: angdev (angdev@7F09863D.2070CE2.413CBA8C.IP) (Ping timeout)
+[10:58:35] <huon> eddyb: is that last one unexpected?
+[10:58:46] <eddyb> rusti: (& & ~[1]).as_slice().to_owned()
+[10:58:48] -rusti- ~[1]
+[10:58:59] <eddyb> I'm amazed that this works >_>
+[10:59:17] <huon> it's called "auto-deref", you may've heard of it :P
+[10:59:22] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[10:59:38] <eddyb> huon: given the awkward code that deals with it...
+[11:00:13] <huon> heh :)
+[11:02:37] <eddyb> hmpf...
+[11:02:47] <huon> stuff is broken?
+[11:03:38] <eddyb> it goes through mc.cat_expr_autoderefd which *knows* how to do overloaded autoderef
+[11:04:35] <eddyb> "Explicit index of non-index type `<generic #17>`" does that mean it's not a structurally_resolved_type?
+[11:04:51] <eddyb> oh, yeah, <generic #n> is a ty_infer
+[11:05:18] <eddyb> but why would... hmm...
+[11:08:31] <nmatsakis> eddyb: re: patterns,
+[11:08:36] <nmatsakis> I think the plan was to have a `box` pattern
+[11:08:41] <nmatsakis> which is basically a generic deref pattern
+[11:08:42] <eddyb> ah, ok
+[11:08:53] <nmatsakis> and yes, it makes pattern matching harder to reason about 
+[11:09:00] <nmatsakis> we'll have to fallback to a simpler impl strategy
+[11:09:01] <nmatsakis> if you use it
+[11:09:11] <nmatsakis> or at least if we don't know the fn is pure
+[11:09:21] <nmatsakis> that's an optimiation though
+[11:09:22] <nmatsakis> we can infer it
+[11:11:14] <eddyb> wha, borrowck got *stricter* on this code of mine
+[11:11:45] *** Quits: angdev_ (angdev@5FD7B3EC.D2E4DD4E.B176C581.IP) (Ping timeout)
+[11:11:50] <eddyb> anyways, I have to choose between an arena pointer per value + explicit lifetimes anywhere
+[11:11:53] <eddyb> *everywhere
+[11:12:02] <eddyb> or Rc
+[11:12:20] <nmatsakis> eddyb: elaborate
+[11:12:46] <eddyb> it's some auto-generated code... a DAG "IR"
+[11:13:20] <eddyb> not really relevant, other than being an interesting testing ground for overloaded deref
+[11:15:32] <nmatsakis> ok, I'd like to know what's changed with regard to borrowck
+[11:15:37] <nmatsakis> make sure it's something I expect to change :)
+[11:16:01] <eddyb> wait, hmm, it's about lifetimes, but it may not be borrowck
+[11:16:43] <eddyb> "error: cannot infer an appropriate lifetime for automatic coercion due to conflicting requirements"
+[11:16:48] <eddyb> nmatsakis: ^^ is that regionck?
+[11:16:53] <nmatsakis> that's region inference
+[11:16:57] <nmatsakis> which is informed by regionck
+[11:17:12] <eddyb> mkay. I've seen it output false positive before
+[11:17:21] <eddyb> and without any of my deref changes
+[11:17:31] <eddyb> or false negatives? false errors, I should say
+[11:17:47] <eddyb> nmatsakis: is it supposed to throw errors around if type checking failed?
+[11:18:24] <nmatsakis> eddyb: (so far this first PR is very clean, nice)
+[11:18:44] <nmatsakis> eddyb: it tries to avoid that, but...
+[11:18:50] <eddyb> I think it wants to do something with lifetimes in *x, so if checking that explicit dereference failed (like, dereferencing a tuple struct), it breaks down
+[11:19:31] <eddyb> rusti: struct Foo(int); fn foo<'a>(x: &'a Foo) -> &'a int {&*x}
+[11:19:31] -rusti- <anon>:10:61: 10:64 error: mismatched types: expected `&'a int` but found `&main::Foo` (expected int but found struct main::Foo)
+[11:19:31] -rusti- <anon>:10         struct Foo(int); fn foo<'a>(x: &'a Foo) -> &'a int {&*x}
+[11:19:31] -rusti-                                                                       ^~~
+[11:19:32] -rusti- error: aborting due to previous error
+[11:19:33] -rusti- application terminated with error code 101
+[11:19:39] <eddyb> rusti: struct Foo(int); fn foo<'a>(x: &'a Foo) -> &'a int {&**x}
+[11:19:42] -rusti- pastebinned 8 lines of output: http://ix.io/aQX
+[11:20:11] <eddyb> hmm
+[11:20:38] *** Joins: luz (lu.cy@moz-CD18B14B.customer.cdi.no)
+[11:20:46] <eddyb> rusti: struct Foo<'a>(&'a int); fn foo<'a, 'b>(x: &'a Foo<'b>) -> &'a int {**x}
+[11:20:49] -rusti- pastebinned 8 lines of output: http://ix.io/aQY
+[11:21:13] <eddyb> rusti: struct Foo<'a>(&'a int); fn foo<'a, 'b>(x: &'a Foo<'b>) -> Foo<'b> {**x}
+[11:21:14] -rusti- <anon>:10:77: 10:80 error: single-field tuple-structs can no longer be dereferenced
+[11:21:14] -rusti- <anon>:10         struct Foo<'a>(&'a int); fn foo<'a, 'b>(x: &'a Foo<'b>) -> Foo<'b> {**x}
+[11:21:14] -rusti-                                                                                       ^~~
+[11:21:14] -rusti- error: aborting due to previous error
+[11:21:16] -rusti- application terminated with error code 101
+[11:21:19] <eddyb> odd
+[11:22:46] <eddyb> Updating variable <generic #4> to Redirect(<generic #2>)
+[11:22:50] *** Quits: jsonnull (Thunderbir@20DADFC2.48C8B17D.494A0F8B.IP) (Ping timeout)
+[11:23:29] *** Joins: jsonnull (Thunderbir@20DADFC2.48C8B17D.494A0F8B.IP)
+[11:24:19] <eddyb> Resolved to fn(&std::rc::Rc<<generic #4>>) -> &<generic #4> + fn(&std::rc::Rc<<generic #4>>) -> &<generic #4> (modes =5)
+[11:24:28] <nmatsakis> eddyb: (just fyi, I'll probably not finish these reviews until sunday or monday)
+[11:24:39] <eddyb> so no TWiR :(
+[11:24:52] <nmatsakis> there's always next week
+[11:24:59] <eddyb> nmatsakis: that debug line... pretty sure it's DerefImm::<for Rc<T>>::deref
+[11:25:13] <eddyb> the receiver is a structurally_resolved_type - twice, even
+[11:25:28] <eddyb> do I have to call structurall_resolved_type on the function type?
+[11:25:54] <nmatsakis> I don't get the question
+[11:25:58] <eddyb> I wish there were some nesting to all this debug info :/
+[11:25:58] <nmatsakis> a fn type IS a structurally resolved type
+[11:26:09] <eddyb> but look at it, it has ty_infer
+[11:26:21] <nmatsakis> so?
+[11:26:24] <nmatsakis> structurally resolved types can have ty_infer
+[11:26:29] <eddyb> ohh
+[11:26:29] <nmatsakis> just not at the outermost level
+[11:26:35] <eddyb> AAAAAH
+[11:26:44] <eddyb> nmatsakis: thanks, I know what to do now :D
+[11:26:47] <nmatsakis> np
+[11:26:47] <nmatsakis> :)
+[11:27:28] <huon> nmatsakis: did something happen to invalidate pnkfelix's comment: https://github.com/mozilla/rust/issues/5074#issuecomment-35010799
+[11:27:46] <nmatsakis> no
+[11:28:07] <nmatsakis> just nobody did it I guess
+[11:28:49] <eddyb> wait, so writeback replaces all those ty_infer?
+[11:29:06] <eddyb> since all the other examples do compile
+[11:29:12] <nmatsakis> eddyb: writeback does a deep resolve
+[11:29:16] <nmatsakis> structural resolve is shallow
+[11:29:23] <nmatsakis> the naming is kind of goofy
+[11:29:25] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[11:29:36] <nmatsakis> we ought to call it shallow/deep, not sure where the term structural came from, I just kept it on from older code iirc
+[11:29:57] <eddyb> there's also "structure_of"
+[11:30:16] <nmatsakis> sure
+[11:30:20] <nmatsakis> but that's just a convenience fn
+[11:30:26] <nmatsakis> I guess it ties in to the naming
+[11:30:35] <eddyb> I would think that's where the name "structural" came from
+[11:30:37] <eddyb> and sty
+[11:30:53] <nmatsakis> yes
+[11:30:57] <nmatsakis> sty for sure,
+[11:31:08] <nmatsakis> but "structural resolve" says nothing to me in particular
+[11:31:23] <eddyb> I only guessed what it does by reading its code
+[11:31:30] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[11:31:36] <nmatsakis> whereas shallow_resolve() seems...fairly clear
+[11:31:57] <eddyb> let x = (*Rc::new(~[42]))[0]; doesn't work either
+[11:32:23] <eddyb> but deref calls work...
+[11:32:37] *** Joins: ghrust (ghrust@B750D19A.6A2AE50.F3114085.IP)
+[11:32:37] <ghrust> [13rust] 15huonw 04force-pushed 06try from 14ccfef54 to 14c7784f6: 02http://git.io/k471pw
+[11:32:37] <ghrust> 13rust/06try 144ad9412 15Huon Wilson: rustc: implement a lint for publicly visible private types....
+[11:32:37] <ghrust> 13rust/06try 149b9ab27 15Huon Wilson: sync: Rename arc::Condvar to arc::ArcCondvar....
+[11:32:37] <ghrust> 13rust/06try 1438c5e60 15Huon Wilson: Add #[allow(visible_private_types)]; to a variety of places....
+[11:32:39] *** Parts: ghrust (ghrust@B750D19A.6A2AE50.F3114085.IP) ()
+[11:34:23] <eddyb> nmatsakis: what I don't understand... why does x.deref()[0] work and not (*x)[0]?
+[11:34:26] *** Joins: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP)
+[11:34:45] <eddyb> both do a shallow resolve on receiver
+[11:35:06] <eddyb> (that is, x)
+[11:36:25] <eddyb> nmatsakis: derp, I know... resolving T in ~[T] is shallow!
+[11:36:32] <eddyb> because it's not ~([T])
+[11:37:22] <eddyb> and what deref() returns is &~[T]
+[11:38:26] <eddyb> I just hope I don't break anything if I make try_overloaded_deref resolve its return type
+[11:41:47] <eddyb> nmatsakis: am I seeing comments from the first PR on here? https://github.com/mozilla/rust/pull/12610
+[11:42:04] <eddyb> hehe, yes, confusing
+[11:43:50] *** Quits: luz (lu.cy@moz-CD18B14B.customer.cdi.no) (Connection reset by peer)
+[11:45:43] *** Joins: luz (lu.cy@moz-CD18B14B.customer.cdi.no)
+[11:45:58] <eddyb> nmatsakis: are you working on the commits?
+[11:46:04] <eddyb> s/working/reviewing/
+[11:46:34] <eddyb> because I want to change things around a bit, but I should rather wait until you've found all the nits :S
+[11:47:19] <eddyb> I ommited an indexing test in the first PR because it didn't work, I'll fix it there if I can fix it at all
+[11:48:22] <nmatsakis> eddyb: i'm not actively reviewing at the moment, I started but decided to do a checkout,
+[11:48:29] <nmatsakis> feel free to push revised revision
+[11:48:32] <nmatsakis> ping me when you do
+[11:53:17] <eddyb> I actually thought about using an enum in typeck (if you see bools in trans, in the first PR, ignore them, replaced with enum in the second PR)
+[11:53:40] <eddyb> enum LvaluePreference { NoPreference, PreferMut }
+[11:54:21] <eddyb> nmatsakis: about the names, DerefImm::deref and DerefMut::deref_mut feel a bit.. inconsistent
+[11:55:37] <nmatsakis> eddyb: deref_imm() and deref_mut()
+[11:55:44] <nmatsakis> I tend to agree :)
+[11:56:01] <nmatsakis> if one trait extends another,
+[11:56:08] <nmatsakis> you can't (or shouldn't be able to) define methods with the same name
+[11:56:18] <nmatsakis> at least not presently, someday I'd like to enable refinement
+[11:56:31] <eddyb> right... it only works now because I've restricted overloaded op search
+[11:56:37] <eddyb> to the trait in question
+[11:57:27] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[11:59:21] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[12:13:10] *** Quits: glaebhoerl_ (glaebhoerl@moz-B5B88D72.catv.broadband.hu) (Quit: )
+[12:13:11] *** Joins: ghrust (ghrust@5AC7F92B.6A2AE50.F3114085.IP)
+[12:13:11] <ghrust> [13rust] 15huonw pushed 1 new commit to 06try: 02http://git.io/T9azJg
+[12:13:11] <ghrust> 13rust/06try 14db81497 15Huon Wilson: maybe make mac work?
+[12:13:11] *** Parts: ghrust (ghrust@5AC7F92B.6A2AE50.F3114085.IP) ()
+[12:13:13] *** Joins: glaebhoer1 (glaebhoerl@moz-B5B88D72.catv.broadband.hu)
+[12:13:55] <huon> queue is empty? crazy stuff
+[12:14:45] <eddyb> huon: that's because everything is being discussed
+[12:22:33] *** lpy|afk is now known as lpy
+[12:25:09] <eddyb> nmatsakis: hah, the change you requested to that match pattern... it doesn't compile :P
+[12:25:37] <eddyb> "error: non-exhaustive patterns: Some not covered"
+[12:25:59] <eddyb> Some, Some is possible
+[12:26:36] <nmatsakis> ah, yes :)
+[12:26:44] <huon> pnkfelix: (or anyone) r? https://github.com/mozilla/rust/pull/12621
+[12:26:46] <nmatsakis> I'd rather write (Some, Some(_)) | (Some, None) 
+[12:26:47] <huon> (minor docs)
+[12:26:57] <nmatsakis> but i'm maybe a bit... obsessive
+[12:27:07] <nmatsakis> or (None, Some(_)) rather...
+[12:27:09] <eddyb> (finally managed to make sense of this): Some Some means a DerefMut impl was found, and there is a DerefImm trait
+[12:27:22] * huon likes exhaustive matches too: helps when adding a new variant
+[12:27:31] <eddyb> nmatsakis: I like to explicitly ignore things I don't need
+[12:27:31] <pnkfelix> maybe I will try to fix that bors bug today
+[12:27:46] <huon> (although I guess it's... unlikely for option to get a new variant)
+[12:27:48] <pnkfelix> (rather than continuing to ask people to work around it
+[12:27:49] <pnkfelix> )
+[12:27:53] <eddyb> huon: hehe
+[12:27:57] * huon works around it
+[12:28:06] <nmatsakis> eddyb: sure, I don't like to give names, but writing Some(_) | None means you thought about all the cases :)
+[12:28:18] <pnkfelix> huon: I already d8id
+[12:28:18] <nmatsakis> whereas _ means "ignore this, doesn't matter"
+[12:28:22] * huon doesn't, because pnkfelix is faster
+[12:28:23] <eddyb> it's a fallback
+[12:28:23] <huon> heh
+[12:28:26] <nmatsakis> (to me)
+[12:28:51] <nmatsakis> eddyb: anyway, if it's not just None, I don't care, your call. if it were just None I'd say it's mandatory :)
+[12:29:02] <eddyb> I've written too many unidiomatic matches
+[12:29:13] <eddyb> some of them could've been 150 character long and_then invocations
+[12:29:30] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[12:29:55] <eddyb> if iterating options were linear, like matching them is, I would use it more
+[12:30:52] <eddyb> and match method_call { Some(method_call) => ... reads like "unwrap method_call from Some" to me
+[12:31:20] <eddyb> for method_call in method_call.move_iter() is... a bit silly
+[12:31:28] <huon> pnkfelix: thanks
+[12:31:29] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[12:32:56] *** ChanServ sets mode: +o cmr
+[12:33:19] <cmr> who knew, I had auto-identify off.
+[12:33:47] * huon didn't know
+[12:33:56] <huon> ;P
+[12:34:05] <pnkfelix> "-NickServ- You are already identified."
+[12:34:11] *** Joins: canhtak (canhtak@moz-251024EB.wl.t.ulaval.ca)
+[12:34:19] * pnkfelix continues to ponder why he only gets op-status at home
+[12:36:34] *** Joins: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP)
+[12:36:34] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/R9pedA
+[12:36:34] <ghrust> 13rust/06auto 141b5be76 15Huon Wilson: Add `time` crate to index, expand docs of `test`.
+[12:36:34] <ghrust> 13rust/06auto 14b99a8ff 15bors: auto merge of #12621 : huonw/rust/time-test-doc, r=pnkfelix...
+[12:36:35] *** Parts: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP) ()
+[12:39:04] <eddyb> so if we dynamically link rustc...
+[12:39:12] <eddyb> why does it take so long?
+[12:39:19] <cmr> to do what?
+[12:39:29] <eddyb> it spends like 5 minutes in the linker IIRC
+[12:40:04] <cmr> uhhh it takes a total of no more than 5 minutes to compile on my machine
+[12:40:24] <eddyb> cmr.pc.clone()
+[12:40:33] <cmr> our symbol names probably have something to do with it
+[12:40:50] <cmr> the linker may also be doing something stupid with metadata being so huge
+[12:40:51] <huon> can we just... make them shorter?
+[12:41:06] <cmr> huon: I want to just not emit names, just emit hashes.
+[12:41:10] <cmr> debuginfo has names.
+[12:41:27] <eddyb> cmr: if only LLVM IR was readable without symbols...
+[12:41:39] <eddyb> but we can have a flag for that
+[12:42:12] <eddyb> hash + node ID is enough to make a symbol unique
+[12:42:30] <eddyb> (though not cross-crate)
+[12:42:51] <eddyb> cmr: I got confused, I guess. 5min is LLVM passes
+[12:42:55] <eddyb> but still, time: 76.428 s  linking
+[12:43:05] <cmr> eddyb: are you using gold?
+[12:43:12] <cmr> if not, why aren't you? :p
+[12:43:13] *** Joins: luzie (lu.cy@moz-CD18B14B.customer.cdi.no)
+[12:43:17] <eddyb> rustc uses ld?
+[12:43:23] *** Quits: luz (lu.cy@moz-CD18B14B.customer.cdi.no) (Connection reset by peer)
+[12:43:28] <cmr> yes, the system ld
+[12:43:33] <eddyb> GNU ld (GNU Binutils; devel:gcc / openSUSE_13.1) 2.24.0.20131209-177
+[12:43:34] <cmr> but it could be either bfd or gold
+[12:43:36] <eddyb> hmm
+[12:44:07] <eddyb> /usr/bin/ld -> /etc/alternatives/ld*
+[12:44:11] <cmr> ok, so bfd.
+[12:44:53] <eddyb> * 0            /usr/bin/ld.bfd    2         auto mode
+[12:45:18] <pnkfelix> eddyb: in the past I've used the `-fuse-ld=gold` option to gcc
+[12:45:20] <eddyb> well, I've switched it, I hope it helps
+[12:45:23] <pnkfelix> eddyb: that might work as a linker arg
+[12:45:37] <pnkfelix> eddyb: (or you could change it globally, which I assume is what you've done at this point...)
+[12:45:47] <cmr> gold is stable enough these days that it can be the system linker, IME
+[12:46:30] <eddyb> borrow-vec associated with bad sty: &ty_infer(TyVar(middle::ty::TyVid(39u)))
+[12:47:32] <cmr> hm https://github.com/llvm-mirror/lld/commit/ac3832145b1817d74428997f7f01d69d0a3e2bfc may have fixed our problems with lld
+[12:48:03] <eddyb> nmatsakis: odd, forcing structurally_resolved_type on the dereferenced return value doesn't help
+[12:49:33] <eddyb> loop: self_ty=std::rc::Rc<~[<generic integer #0>]> autoderefs=0
+[12:51:18] *** Joins: bytbox (s@moz-E1E7FAC3.washdc.fios.verizon.net)
+[12:52:09] <eddyb> is_relevant(rcvr_ty=&std::rc::Rc<~[uint]>, candidate=Candidate(rcvr_ty=RcvrMatchesIfSubtype(std::rc::Rc<<generic #4>>), rcvr_substs=substs(regions=[], self_ty=None, tps=[<generic #4>]), origin=MethodStatic(syntax::ast::DefId{krate: 1u32, node: 74771u32})))
+[12:52:17] *** Quits: glaebhoer1 (glaebhoerl@moz-B5B88D72.catv.broadband.hu) (Quit: )
+[12:52:32] <huon> cmr: will you experiement?
+[12:52:45] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Client exited)
+[12:53:06] *** Joins: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[12:54:48] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Ping timeout)
+[12:55:58] <doener> eddyb: the linker step is incredibly IO heavy for me... Almost no user/sys, just iowait in top
+[12:56:16] <eddyb> smells of quadratic
+[12:56:33] <eddyb> I've heard servo has a similar problem, with N rpaths and M libraries
+[12:56:42] <eddyb> resulting in O(N * M) in the linker
+[12:58:28] * eddyb throws some resolutions at regionck
+[12:58:37] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Quit: TheHydroImpulse)
+[12:59:29] <cmr> huon: yes
+[13:00:51] <eddyb> HAH
+[13:00:53] <eddyb> let x = (&*Rc::new(~[42u]))[0]; // this works
+[13:01:04] <eddyb> with the extra &
+[13:01:15] <huon> :( rustdoc gives horrible error when multiple examples have errors: the output all interleaves
+[13:01:53] <eddyb> pipe the output through a channel with multiple Senders
+[13:04:20] <eddyb> btw, with variadic IndexAssign...
+[13:04:26] <eddyb> vec[] = x; is possible
+[13:05:07] <eddyb> only one $ away from PHP!
+[13:05:13] <eddyb> (well, two $)
+[13:10:18] <eddyb> ohh, this is all in mem_categorization?
+[13:12:57] <huon> use it in a macro, then you get $vec[] = $x
+[13:13:07] <cmr> what does vec[] = x even mean
+[13:13:16] <eddyb> push
+[13:13:23] <cmr> how?
+[13:13:36] <eddyb> didn't you see "PHP"?
+[13:14:10] <huon> cmr: what's a "harry" roll-up?
+[13:14:51] <eddyb> cmr: if you're asking how it would be implemented, IndexAssign::<>::index_assign(vec, x)
+[13:15:02] <eddyb> just like you could do mat[i, j] = x
+[13:16:12] * eddyb has variadic dreams, after counting <..Sheep>
+[13:17:01] <cmr> I'm pretty sure empty typarams are not a thing
+[13:17:16] <eddyb> they might be buggy
+[13:17:36] <eddyb> but they should work with default or variadic type params
+[13:17:41] <cmr> certainly I'd expect it to be vec[()] = x
+[13:17:47] <cmr> huon: hairy... may have typod. 
+[13:17:54] <eddyb> nmatsakis: I don't think our current method lookup would work with variadic impls
+[13:18:16] <eddyb> it seems to be a complete lookup, requiring all candidates to be considered
+[13:19:04] <eddyb> so you'd have to throw in every possible arity
+[13:20:15] *** Joins: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[13:28:22] <eddyb> nmatsakis: okay, the type of the expression (what I've changed) doesn't matter
+[13:28:58] <eddyb> nmatsakis: the problem is the type of the method, from which I extract the return type, in mem_categorization
+[13:29:20] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[13:31:30] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[13:33:15] <pnkfelix> When I add a method to a impl in libsyntax to be used in librustc
+[13:33:30] <pnkfelix> what should I do to get around the dead_code warning during the libsyntax compile?
+[13:33:40] <cmr> is it pub?
+[13:33:42] <pnkfelix> Add a #[test] of the new method to libsyntax?  Will that work for this?
+[13:33:44] <pnkfelix> cmr: Yes
+[13:33:44] <eddyb> make it pub?
+[13:33:59] <pnkfelix> oh wait
+[13:34:05] <eddyb> ;)
+[13:34:13] <pnkfelix> (put the `pub` in the wrong file)
+[13:34:46] <eddyb> pnkfelix: dead_code just saved you from a libsyntax recompile
+[13:35:09] <huon> dead_code never lies
+[13:35:14] <huon> (most of the time)
+[13:35:20] <eddyb> it's too relaxed IMO
+[13:35:53] <eddyb> sucks a bit that the way we structured rustc... everything appears to be exported from librustc
+[13:36:04] <pnkfelix> requiring an inline #[test] of the pub methods would be an interesting lint pass
+[13:36:06] <eddyb> I find dead functions all the time
+[13:36:17] <pnkfelix> (but probably would be better off separate from dead_code)
+[13:36:25] <eddyb> (but only because I'm OCD)
+[13:37:12] <eddyb> self.resolve_type(t)
+[13:37:30] *** Quits: bytbox (s@moz-E1E7FAC3.washdc.fios.verizon.net) (Ping timeout)
+[13:37:41] <eddyb> nmatsakis: ahhh...
+[13:38:03] *** Joins: jdm (jdm@moz-AC9499B2.cable.teksavvy.com)
+[13:38:08] <eddyb> regionck resolves types (deeply) on behalf of mc
+[13:38:24] <eddyb> but not for overloaded derefs, because I didn't realize I had to do it
+[13:38:59] *** Joins: bytbox (s@moz-E1E7FAC3.washdc.fios.verizon.net)
+[13:39:36] <huon> cmr: do you still want to be cc'd on rustdoc bugs?
+[13:40:04] *** Joins: glaebhoer1 (glaebhoerl@moz-B5B88D72.catv.broadband.hu)
+[13:40:14] <huon> eddyb: yeah, the older modules have ended up with a lot of `pub fn`'s :/
+[13:40:23] <eddyb> *sigh* now I have to revert get_method_map
+[13:41:11] <eddyb> and I have to deal with ty::adjust_ty... not good
+[13:43:04] <eddyb> nmatsakis: this would work better if regionck worked on resolved types
+[13:44:11] <eddyb> instead of having to go into *type* inference for everything
+[13:44:24] <eddyb> oi, this explains all the HashMap abuse during typeck
+[13:45:16] <eddyb> we don't use information directly, we put it in maps, take it out, perform type inference.... like a dozen times per expression
+[13:47:18] <eddyb> &(**Rc::new(~0u)) fails with "Explicit deref of non-derefable type: <generic #1>"
+[13:47:27] <eddyb> so I guess I'm on the right track
+[13:47:50] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[13:57:29] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[13:59:22] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[13:59:56] <eddyb> nmatsakis: it feels that I've done more reverts than actual work :/
+[14:00:20] <eddyb> this week is just full of paradoxes
+[14:01:34] *** Joins: ghrust (ghrust@5AC7F92B.6A2AE50.F3114085.IP)
+[14:01:34] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/R9pedA
+[14:01:34] *** Parts: ghrust (ghrust@5AC7F92B.6A2AE50.F3114085.IP) ()
+[14:06:32] *** Joins: ghrust (ghrust@49477F7E.6A2AE50.F3114085.IP)
+[14:06:32] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/v0xjQA
+[14:06:32] *** Parts: ghrust (ghrust@49477F7E.6A2AE50.F3114085.IP) ()
+[14:06:33] *** Joins: ghrust (ghrust@7BEB6F9D.6A2AE50.F3114085.IP)
+[14:06:33] <ghrust> [13rust] 15bors pushed 4 new commits to 06auto: 02http://git.io/ia7HkA
+[14:06:33] <ghrust> 13rust/06auto 14859277d 15Huon Wilson: rustc: implement a lint for publicly visible private types....
+[14:06:33] <ghrust> 13rust/06auto 14fbdd3b2 15Huon Wilson: sync: Rename arc::Condvar to arc::ArcCondvar....
+[14:06:33] <ghrust> 13rust/06auto 14218eae0 15Huon Wilson: Publicise types/add #[allow(visible_private_types)] to a variety of places....
+[14:06:35] *** Parts: ghrust (ghrust@7BEB6F9D.6A2AE50.F3114085.IP) ()
+[14:14:06] *** Joins: edwardw (edwardw@96E7298D.3E260003.B9C6B12A.IP)
+[14:24:18] *** Quits: lpy (lpy@7360AA58.F09091A8.1348A864.IP) (Ping timeout)
+[14:30:20] <cmr> huon: I'm not very likely to fix them atm
+[14:33:35] *** Quits: jsonnull (Thunderbir@20DADFC2.48C8B17D.494A0F8B.IP) (Ping timeout)
+[14:37:14] *** Joins: jsonnull (Thunderbir@20DADFC2.48C8B17D.494A0F8B.IP)
+[14:52:52] <nmatsakis> eddyb: much of coding is reverting or debugging, I fear :)
+[14:56:25] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Client exited)
+[14:56:47] *** Joins: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[14:57:07] <eddyb> nmatsakis: I've forgotten that I've littered the codebase with deref calls... would Deref/DerefMut be ok with you?
+[14:57:28] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[14:58:28] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Ping timeout)
+[14:58:55] <nmatsakis> eddyb: yes
+[14:59:22] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[15:01:10] <eddyb> nmatsakis: thanks :). about regionck, could it run after a type-var-only (no lifetime resolution) writeback?
+[15:01:24] <eddyb> (in a perfect world)
+[15:03:03] <nmatsakis> eddyb: yes, that's basically what it does
+[15:03:15] <nmatsakis> it might be nice to make writeback customizable
+[15:03:20] <nmatsakis> and run one writeback phase that skips lifetime res,
+[15:03:23] <nmatsakis> writing into an intermediate map,
+[15:03:26] <nmatsakis> and then run regionck,
+[15:03:26] <eddyb> yeah, that's what I was thinking
+[15:03:28] <nmatsakis> and run the final writeback
+[15:03:30] <nmatsakis> yeah I'd like that
+[15:03:38] <nmatsakis> it'd also mean that mem_categoriztaion can go back to being infallible
+[15:03:45] <nmatsakis> because right now we have to be wary of undetected errors
+[15:03:49] <nmatsakis> that would show up in that first writeback pass
+[15:04:09] <nmatsakis> (actually, the first writeback phase could just update the fcx in place I guess)
+[15:04:22] <nmatsakis> (no need for a new map)
+[15:04:41] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[15:05:49] <doomlord_> looking at the compiler now i'm seeing  'SpannedIdent' ...  is that new, i wonder if that would have saved me needing to replicate the ast to get nodes from code positions
+[15:05:50] <eddyb> that makes me think we could have multiple ty::ctxt's
+[15:06:28] <nmatsakis> eddyb: perhaps, or just factor out these maps into a separate data structure.
+[15:06:43] <nmatsakis> (one copy of which is stored in the tcx)
+[15:06:52] <eddyb> in your CFG view, they would just be part of the graph, no?
+[15:07:17] <cmr> doomlord_: type SpannedIdent = Spanned<Ident>
+[15:07:31] <cmr> which used to be spanned_<ident>, I believe.
+[15:07:35] <eddyb> (Span, Ident), really
+[15:07:41] <eddyb> (but with named fields)
+[15:07:44] <doomlord_> ok not somethig so new
+[15:07:47] <cmr> nope
+[15:09:30] *** Quits: Zr40 (zr40@EE4BB9F5.926C319A.BE2F4011.IP) (Quit: leaving)
+[15:12:28] <eddyb> check_expr_with_opt_hint_and_lvalue_pref
+[15:12:37] * eddyb bashes that with default arguments
+[15:14:29] *** Joins: lkuper (lkuper@F143C963.654CD82F.51B6877.IP)
+[15:15:18] * pnkfelix imagines one could do `enum CheckExprArgs { has_type(..), with_hint(..), with_opt_hint(..), etc }` today
+[15:15:31] <pnkfelix> though of course that then violates our convention for naming enum variants
+[15:15:38] * pnkfelix shrugs
+[15:15:51] <cmr> is this not just the builder pattern?
+[15:16:05] <pnkfelix> cmr: we could encode it that way too
+[15:16:16] <doomlord_> can anyone remember 'item_enum' and what its become
+[15:16:22] <pnkfelix> cmr: I'm just giving my usual response to when I see people bemoaning lack of default args
+[15:16:23] <eddyb> ItemEnum?
+[15:16:33] <doomlord_> i see one of those in rustdoc
+[15:17:12] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[15:17:31] <doomlord_> librustdoc/clean.rs pub enum ItemEnum ;; however i was using a "ast::item_enum"
+[15:17:36] *** Joins: lpy (lpy@12172131.F09091A8.1348A864.IP)
+[15:17:54] <cmr> it's ast::ItemEnum
+[15:18:05] <eddyb> doomlord_: lrn2grep
+[15:18:25] <eddyb> hmm, is there a fuzzy grep mode?
+[15:18:45] <eddyb> kdevelop (katepart, actually) autocompletes something like foo_bar to FooBar
+[15:18:46] <doomlord_> eddyb i have a grep script for rust setup
+[15:18:51] <pnkfelix> eddyb: http://www.tgries.de/agrep/
+[15:19:00] <doomlord_> "rg def ..."  gets me (fn|enum|stuct..." etc
+[15:19:12] <eddyb> oh, cool
+[15:19:21] <eddyb> ItemEnum is a variant, though
+[15:19:47] <doomlord_> yeah it wont find variants with 'def' , it reverts to brute force if you dont give a 'command' (def ,  enum, fn ...)
+[15:19:59] <eddyb> doomlord_: anyways, I'm to blame for most of the renamings in libsyntax
+[15:20:12] <doomlord_> i shouldn't have left this code for N months :)
+[15:21:14] <eddyb> my (..T) patch is so bitrotted I'd probably just start over
+[15:21:17] <doomlord_> i realise the compiler source has a lot of legacy to clean up
+[15:21:21] <eddyb> it's not that complicated, anyways
+[15:21:37] *** Joins: ghrust (ghrust@4BC7FFDD.6A2AE50.F3114085.IP)
+[15:21:37] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/ia7HkA
+[15:21:37] *** Parts: ghrust (ghrust@4BC7FFDD.6A2AE50.F3114085.IP) ()
+[15:21:40] <doomlord_> Ah. "Item_" . when grep fails, just load the source file and flick through
+[15:26:30] *** Joins: ghrust (ghrust@94BD74B8.6A2AE50.F3114085.IP)
+[15:26:30] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/CcHOqQ
+[15:26:30] *** Parts: ghrust (ghrust@94BD74B8.6A2AE50.F3114085.IP) ()
+[15:26:33] *** Joins: ghrust (ghrust@49477F7E.6A2AE50.F3114085.IP)
+[15:26:33] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/v8EKqw
+[15:26:33] <ghrust> 13rust/06auto 14daa6da7 15Felix S. Klock II: Improve vec `partition` and `partitioned` method doc....
+[15:26:33] <ghrust> 13rust/06auto 149b1be3d 15bors: auto merge of #12622 : pnkfelix/rust/fsk-improve-vec-partition-doc, r=huonw...
+[15:26:33] *** Parts: ghrust (ghrust@49477F7E.6A2AE50.F3114085.IP) ()
+[15:27:12] <eddyb> nmatsakis: should have fixed all nits and that one bug, testing now
+[15:27:32] *** Quits: lkuper (lkuper@F143C963.654CD82F.51B6877.IP) (Quit: lkuper)
+[15:27:37] <nmatsakis> eddyb: ok
+[15:27:37] *** Joins: lkuper (lkuper@F143C963.654CD82F.51B6877.IP)
+[15:27:50] <eddyb> I'll add tests for ***Rc::new(~~5) == 5 and indexing, if they work
+[15:29:05] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[15:31:26] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[15:33:06] *** Quits: Axord (xord@moz-C0D5F15A.lsanca.dsl-w.verizon.net) (Ping timeout)
+[15:36:24] <eddyb> nmatsakis: at least I'm not hacking on GCC :P
+[15:37:06] <eddyb> Rust: whining about perfection when you're so much better anyway
+[15:40:32] *** Joins: Axord (xord@moz-C0D5F15A.lsanca.dsl-w.verizon.net)
+[15:43:57] <eddyb> hmm, what did I do wrong... nothing works :/
+[15:44:47] <eddyb> oops, I reversed the method names and traits >_>
+[15:56:58] *** Quits: Axord (xord@moz-C0D5F15A.lsanca.dsl-w.verizon.net) (Quit: I'm sure it's perfectly safe)
+[15:57:27] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[15:58:57] <eddyb> hehe, I got lost in the pointers with the test
+[15:59:12] <eddyb> nmatsakis: but that regionck-related bug was fixed :D
+[15:59:22] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[16:03:27] <doomlord_> rustfind.rs:212:12: 212:38 error: unresolved name `driver::driver::file_input`.
+[16:03:27] <doomlord_> rustfind.rs:212 	let input=driver::driver::file_input(cpath.clone());
+[16:03:27] <doomlord_>  <<< i had this, file_input no longer exists, anyone know what it might have become?
+[16:04:43] <eddyb> git history/blame
+[16:07:42] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[16:08:09] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[16:08:39] <doener> doomlord_: "git log -Sfile_input" points to f30a9b3d5bb8c6173507e338b4635491383de10d "Capitalize structs and enums". Where it was renamed to FileInput
+[16:11:04] <doomlord_> thanks ( i'd tried to grep for 'FileInput', my grep script wasn't finding that)
+[16:13:20] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[16:19:03] <eddyb> nmatsakis: I've pushed the second PR, even though it might not build
+[16:20:05] <eddyb> just because I don't have time left to make sure it actually works
+[16:22:29] <nmatsakis> eddyb: no worries.
+[16:22:50] <nmatsakis> eddyb: I plan to check it out while I review it so i'll find out soon enough ;) in any case, I DEFINITELY won't get to the second one until next week. Too much preparation to do.
+[16:23:02] <nmatsakis> nice work
+[16:23:25] <eddyb> thanks, I just wish I could do more ^_^
+[16:23:26] <SimonSapin> nmatsakis: In your email, "invariant with respect to its type argument" look like some markup for links, but I don’t find the URL
+[16:23:49] <nmatsakis> SimonSapin: oh, d'oh
+[16:23:56] <nmatsakis> I was just going to link to wikipedia :)
+[16:24:31] <SimonSapin> which page?
+[16:24:56] <nmatsakis> SimonSapin: http://en.wikipedia.org/wiki/Variance_%28computer_science%29
+[16:25:08] <SimonSapin> cool
+[16:25:20] <SimonSapin> by the way, the proposal looks good to me, for what it’s worth
+[16:25:30] <nmatsakis> SimonSapin: in general I wanted to clean up that sec of my post but realized I didn't have time to do that AND prepare the other RFcs I'm supposed to do before rust work week next week :)
+[16:25:40] <nmatsakis> cool
+[16:25:51] <nmatsakis> so I left it a bit less explained than I'd like
+[16:26:06] <SimonSapin> I suppose it’s pre-1.0 stuff?
+[16:27:01] <nmatsakis> this would definitely have to be pre 1.0 if we go forward with it
+[16:27:07] *** Quits: lkuper (lkuper@F143C963.654CD82F.51B6877.IP) (Quit: lkuper)
+[16:27:11] <nmatsakis> not settled at this point
+[16:27:20] <nmatsakis> (though I'm leaning more and more in favor)
+[16:29:23] <eddyb> /home/travis/build/mozilla/rust/src/librustc/middle/trans/expr.rs:217: line longer than 100 chars
+[16:29:28] <eddyb> ooops
+[16:29:40] *** Quits: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP) (Quit: rcirc on GNU Emacs 24.3.1)
+[16:29:44] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[16:29:57] *** Quits: doener (bs@moz-AA189A5A.unitymedia.biz) (Quit: leaving)
+[16:30:27] <SimonSapin> "variance engine" reminds me a bit of "infinite improbability drive"
+[16:31:08] *** Quits: eddyb (eddy@moz-41DB10DA.residential.rdsnet.ro) (Ping timeout)
+[16:31:33] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[16:32:52] <SimonSapin> "Therefore, any future bounds will *have* to be opt out anyway" s/opt out/opt in/ ?
+[16:34:06] *** Quits: lpy (lpy@12172131.F09091A8.1348A864.IP) (Client exited)
+[16:34:23] *** Joins: eddyb (eddy@moz-41DB10DA.residential.rdsnet.ro)
+[16:41:38] *** Joins: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP)
+[16:41:38] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/v8EKqw
+[16:41:38] *** Parts: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP) ()
+[16:43:14] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Ping timeout)
+[16:44:29] <eddyb> acrichto: I like how I get multiple travis markers when I stack PRs :D
+[16:44:49] <eddyb> helps with delimiting them, among other things
+[16:47:12] *** Quits: Kxepal (Miranda@moz-539FCAC2.pppoe.mtu-net.ru) (Ping timeout)
+[16:49:26] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[16:49:27] *** ChanServ sets mode: +ao dherman dherman
+[16:50:01] <eddyb> acrichto: is there any way to get build results from travis? like, download a zip of a fully functional stage1 compiler and its libs
+[16:50:37] <eddyb> since it's running anyway, might be nice to not redo the same thing locally - though I should give in and setup multiple checkouts
+[16:51:34] *** Joins: Kxepal (Miranda@moz-7ED40455.pppoe.mtu-net.ru)
+[16:52:06] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse)
+[16:52:18] <nmatsakis> acrichto: ping
+[16:53:08] <eddyb> nmatsakis: reading your blog post, all Freeze types are Share?
+[16:54:28] <nmatsakis> eddyb: yes
+[16:54:40] <eddyb> makes sense
+[16:54:41] <nmatsakis> eddyb: well, I'm not sure, Gc might be an exception
+[16:54:45] <nmatsakis> but I think Gc is not freeze
+[16:54:54] <eddyb> Gc is... magic
+[16:54:55] <nmatsakis> if we want to support a moving Gc anyway
+[16:55:01] <eddyb> oh yeah
+[16:55:04] <nmatsakis> as glaeborhoerl (sp) pointed out
+[16:55:19] <nmatsakis> as long as freeze *really means* deeply immutable,
+[16:55:26] <nmatsakis> it can probably imply share,
+[16:55:50] <nmatsakis> though I guess there might be types that you don't semantically want to share
+[16:55:57] <nmatsakis> so I'm not entirely sure
+[16:56:11] <nmatsakis> eddyb: did I say that Freeze implies share in that document I sent out? :)
+[16:56:39] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[16:56:57] <eddyb> Share – a type which is threadsafe when accessed via an &T reference. (Examples: int, ~int, &int, &mut int, Atomic<int>, not Cell<int>)
+[16:57:19] <eddyb> I just deduced it from that statement
+[16:57:37] <eddyb> and "Freeze – a type which is deeply immutable when accessed via an &T reference. "
+[16:58:38] <nmatsakis> ok
+[16:58:50] <nmatsakis> so I think we could safely make Freeze imply Share, but I'm not sure if we want to
+[16:59:01] <nmatsakis> in short
+[16:59:46] <eddyb> not really imply, but consider all built-in Freeze types also Share
+[17:01:15] <nmatsakis> right
+[17:02:35] <eddyb> so a ParallelHashMap would be Send and Share, but not Freeze
+[17:03:02] <eddyb> I wonder if we have anything that can work with &T across tasks
+[17:04:53] *** Joins: sunfish (chatzilla@moz-BBE3ABD.mv.mozilla.com)
+[17:04:58] <eddyb> I would think a channel could pass a &'a T from one task to another, borrowing it for the lifetime of the channel, and link it with the lifetime of the channel on both sides, actually
+[17:05:23] <eddyb> but then, how do you ensure the Sender isn't destroyed before the Receiver is?
+[17:06:06] <eddyb> map-reduce (or fork-something, can't really remember) would probably make such things easier to reason about
+[17:07:04] <cmr> fork-join? :P
+[17:08:45] *** Joins: doener (doener@moz-C68F600D.unity-media.net)
+[17:16:56] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[17:19:31] <eddyb> cmr: derp, yeah
+[17:27:29] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[17:29:19] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[17:34:29] *** jdm is now known as jdm|away
+[17:44:56] <eddyb> strcat, cmr: is there a good persistent HashMap we could have?
+[17:45:11] <eddyb> I'm having some thoughts about resolution and hygiene
+[17:50:14] *** Quits: eddyb (eddy@moz-41DB10DA.residential.rdsnet.ro) (Ping timeout)
+[17:52:48] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[17:54:05] *** jdm|away is now known as jdm
+[18:02:00] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[18:02:03] <acrichto> nmatsakis: pong
+[18:09:42] <nmatsakis> acrichto: ... let me try and remember what I was thinking about... :)
+[18:10:20] <nmatsakis> I should have learned by now not to write "ping" but rather summarize what I want to talk about, not for you, but for me
+[18:10:23] <nmatsakis> acrichto: I forget
+[18:10:39] <acrichto> lol
+[18:11:13] <nmatsakis> acrichto: ah I remember
+[18:11:31] <nmatsakis> priv fields. I was wondering what kind of data we could gather THERE
+[18:11:54] <acrichto> oh I was just thinking that last night
+[18:11:57] <nmatsakis> I have this feeling we have the wrong default
+[18:11:59] <nmatsakis> i.e., most types want priv
+[18:12:00] <acrichto> I mean to do that this weekend at some point
+[18:12:05] <acrichto> or today...
+[18:12:15] <nmatsakis> I was thinking we could try to measure (1) how many fields are declared pub but never accessed
+[18:12:36] <nmatsakis> (2) naturally just what percentage are declared priv/pub today
+[18:12:46] <acrichto> sounds good to me
+[18:12:50] <nmatsakis> as part of (1), we'd have to consider cross-crate
+[18:12:57] <nmatsakis> i.e., it's going to be hard, just by looking at libstd, to get a #
+[18:13:10] <nmatsakis> and of course any kind of examples of accidentally public fields would be good
+[18:13:13] <nmatsakis> but the more I wrote examples
+[18:13:17] <nmatsakis> the more I find if confusing that I have to write priv
+[18:13:19] <nmatsakis> and pub everywhere else
+[18:13:25] <acrichto> I agree
+[18:13:34] <acrichto> I think I may just switch it and see what happens along the way
+[18:13:34] <nmatsakis> just seems to stand out
+[18:13:36] <acrichto> just for statistics
+[18:13:39] <nmatsakis> that'd work too
+[18:13:52] <nmatsakis> anyway, I'm pretty sure sure I want priv to be default now.
+[18:13:53] <cmr> (it'd be nice if there were a tool, an extension of dead-code, that considers a set of crates and finds everything not used amongst them)
+[18:14:11] <nmatsakis> regardless of the stats, but I'd like to see them nonetheless :)
+[18:14:47] <nmatsakis> acrichto: but not for enum variants :)
+[18:14:52] <nmatsakis> is that hypocritical?
+[18:15:08] <nmatsakis> private enum variants seem to be *VERY* unusual; so much so, I'm not sure they're a useful feature at all
+[18:15:12] <nmatsakis> (if we even support those)
+[18:15:15] <acrichto> enum variants are the one wrench in all this
+[18:15:17] <nmatsakis> i.e., you can always do
+[18:15:26] <acrichto> we do have a few use cases
+[18:15:26] <nmatsakis> enum Foo { Pub1, Pub2, Priv3(SomePrivateType) }
+[18:15:30] <acrichto> but they're pretty minor
+[18:15:34] <nmatsakis> and then you can't instantiate Priv3
+[18:15:38] <nmatsakis> even though you can name it
+[18:15:40] <acrichto> we're just making some things a ltitle wordier than they would otherwise need to be
+[18:15:48] <acrichto> that's my idea though
+[18:15:59] <nmatsakis> yeah I thikn that's *really* borderline
+[18:16:04] <nmatsakis> it'd be good to know where we want that,
+[18:16:10] <nmatsakis> but I can't imagine it's frequently
+[18:16:26] <acrichto> if we can completely axe the priv keyword I'd be happy
+[18:19:25] *** Parts: jsonnull (Thunderbir@20DADFC2.48C8B17D.494A0F8B.IP) ()
+[18:19:35] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[18:21:19] *** Joins: geoffhill (geoffhill@moz-95FF7399.members.linode.com)
+[18:22:00] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[18:23:47] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[18:27:27] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[18:28:14] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[18:29:21] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[18:29:52] <nmatsakis> acrichto: now the move to have enum variants live alongside the type (rather than within) seems prescient
+[18:30:01] <nmatsakis> that makes it more natural for them to inherit the privacy of their type :)
+[18:30:46] <acrichto> yeah I don't think anyone will miss priv variants too much
+[18:34:54] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[18:35:46] *** Quits: [o__o] (~o__o@604A2740.DB688352.F4ADE383.IP) (Input/output error)
+[18:40:13] *** Joins: [o__o] (~o__o@604A2740.DB688352.F4ADE383.IP)
+[18:40:15] <Eridius> I didn't realize you could have priv variants
+[18:43:47] *** Parts: edwardw (edwardw@96E7298D.3E260003.B9C6B12A.IP) (Leaving...)
+[18:43:49] *** Joins: edwardw (edwardw@96E7298D.3E260003.B9C6B12A.IP)
+[18:46:02] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[18:49:02] *** Quits: jxs (joaoxsouls@1FF12F4F.CDF09DE2.D6573861.IP) (Ping timeout)
+[18:51:15] *** Joins: jxs (joaoxsouls@1FF12F4F.CDF09DE2.D6573861.IP)
+[18:51:38] *** Joins: ghrust (ghrust@49477F7E.6A2AE50.F3114085.IP)
+[18:51:38] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/6jkuIg
+[18:51:38] *** Parts: ghrust (ghrust@49477F7E.6A2AE50.F3114085.IP) ()
+[18:53:31] <strcat> at least the rust-lang.org SEO isn't *this* bad http://blogs.gnome.org/robots.txt
+[18:53:33] * strcat sighs
+[19:01:58] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[19:01:58] *** ChanServ sets mode: +ao pcwalton pcwalton
+[19:07:01] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[19:07:08] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[19:10:28] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[19:13:29] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[19:14:49] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[19:15:24] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[19:15:35] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[19:17:14] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[19:27:32] *** Quits: geoffhill (geoffhill@moz-95FF7399.members.linode.com) (Ping timeout)
+[19:45:26] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[19:48:01] *** kimundi is now known as zz_kimundi
+[19:48:04] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[19:48:04] *** ChanServ sets mode: +qo brson brson
+[19:51:44] *** zz_kimundi is now known as kimundi
+[19:56:37] *** Joins: ktt3ja (ktt3ja@moz-54586A12.washdc.fios.verizon.net)
+[19:57:26] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[19:59:20] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[19:59:55] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[20:01:36] *** Joins: ghrust (ghrust@4BC7FFDD.6A2AE50.F3114085.IP)
+[20:01:36] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/rma-mg
+[20:01:36] *** Parts: ghrust (ghrust@4BC7FFDD.6A2AE50.F3114085.IP) ()
+[20:02:09] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[20:06:32] *** Joins: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP)
+[20:06:32] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/XlPzMg
+[20:06:32] <ghrust> 13rust/06auto 14311ac8f 15Alex Crichton: std: Improve some I/O documentation...
+[20:06:32] <ghrust> 13rust/06auto 1484ebf74 15bors: auto merge of #12607 : alexcrichton/rust/io++, r=brson...
+[20:06:32] *** Parts: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP) ()
+[20:06:34] *** Joins: ghrust (ghrust@38D6F008.6A2AE50.F3114085.IP)
+[20:06:34] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/kEiCmQ
+[20:06:34] *** Parts: ghrust (ghrust@38D6F008.6A2AE50.F3114085.IP) ()
+[20:06:36] *** Joins: Axord (xord@moz-C0D5F15A.lsanca.dsl-w.verizon.net)
+[20:08:16] *** Quits: edwardw (edwardw@96E7298D.3E260003.B9C6B12A.IP) (Quit: Leaving...)
+[20:21:48] *** flaper87|afk is now known as flaper87
+[20:22:05] *** jdm is now known as jdm|away
+[20:23:54] <flaper87> nmatsakis: +1 for your proposal
+[20:24:02] * flaper87 should probably reply to that thread
+[20:24:04] <nmatsakis> flaper87: (opt-in?)
+[20:24:30] <flaper87> nmatsakis: yes
+[20:27:39] <flaper87> nmatsakis: if we agree on going with this proposal, I think we should do it pre-1.0. Actually, I could probably tackle it since I'm already working on adding the Share kind anyway
+[20:27:50] <nmatsakis> flaper87: yes definitely pre 1.0
+[20:30:42] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[20:30:46] <strcat> nmatsakis: imo we should just have unsafe fields
+[20:31:01] <strcat> nmatsakis: safe code can already cause unsafety just like an incorrect derived Clone
+[20:31:32] <strcat> (just do what deriving does yourself)
+[20:31:42] <nmatsakis> strcat: can you elaborate on what an unsafe field means?
+[20:31:59] <strcat> nmatsakis: can't write/read from/to it in safe code, and it can disable those kinds
+[20:32:07] <kmc> if a struct has an unsafe field, can it only be constructed in unsafe code?
+[20:32:14] <strcat> kmc: yes
+[20:32:29] <strcat> otherwise you can do evil things with the dtor
+[20:32:42] <strcat> construct a Vec with ptr as 0x10 and len as 2
+[20:33:16] <strcat> safe code can already do that
+[20:33:18] <nmatsakis> hmm. potentially a nice idea, i'm not sure how or if it interacts with the opt-in proposal.
+[20:33:24] <nmatsakis> that is to say,
+[20:33:30] <nmatsakis> it doesn't invalidate the reasons I like opt-in
+[20:33:39] <nmatsakis> the unsafety part is not the main motivator for me
+[20:33:55] <strcat> but I don't really see when else you'd opt-out of Send/Share/Freeze
+[20:34:15] <nmatsakis> when you don't want to guarantee that you'll stay Send/Share/Freeze, to start.
+[20:35:25] <nmatsakis> I guess it feels..somehow messy to have types with unsafe fields be opt-in and the rest opt-out. I'd not want to opt in with impls then.
+[20:35:50] <strcat> *shrug*
+[20:36:01] <strcat> there's something to be said for a language that's not inconvenient to write code in
+[20:36:24] <nmatsakis> well, I agree with that!
+[20:36:49] <strcat> imo, the situation with Clone/DeepClone shows that there's already a problem just with what we have in that sense
+[20:36:50] <nmatsakis> not sure I agree with the implication that this will make this inconvenient
+[20:37:02] <strcat> because many types won't implement them
+[20:37:10] <strcat> in the stdlib, for a long time, and in third party libs (forever)
+[20:37:12] *** Joins: lkuper (lkuper@moz-AD4C50F5.dhcp-bl.indiana.edu)
+[20:37:39] <nmatsakis> If we had something like deriving(Data), why wouldn't they?
+[20:37:49] <nmatsakis> because people would rather enumerate things?
+[20:38:27] <strcat> I don't think we can have deriving(Data) (assuming it means what I think it means) unless we move deriving into librustc
+[20:38:31] <nmatsakis> acrichto: just found a use case where private variants might be ok ;) but it'd be just as good to wrap in a struct
+[20:38:46] <nmatsakis> strcat: it'd just be a shorthand for a fixed set of traits
+[20:38:59] <nmatsakis> there might be multiple such shorthands, idk
+[20:39:10] <nmatsakis> though I'd prefer to have no more than 1 or 2
+[20:39:40] <nmatsakis> probably one for pod things
+[20:39:42] <nmatsakis> and one for non-pod things
+[20:39:49] <nmatsakis> which ... it would be nice to have a name for
+[20:39:53] <nmatsakis> or maybe just Data is for non-pod things
+[20:39:55] <nmatsakis> and you opt in to pod
+[20:39:59] <nmatsakis> #[deriving(Data,Pod)]
+[20:41:04] <acrichto> nmatsakis: where at?
+[20:41:35] <acrichto> nmatsakis: also, the "standard practice" for moving out of something with a destructor is just using Option?
+[20:41:56] <nmatsakis> acrichto: yes to #2
+[20:42:05] <nmatsakis> to #1, OptVec<T> wants to hide its variants I think
+[20:42:12] <nmatsakis> don't want people matching against it
+[20:42:17] <acrichto> hm good point
+[20:42:26] *** Quits: whitglint (uid15486@moz-31ABA2C0.irccloud.com) (Quit: Connection closed for inactivity)
+[20:42:31] <acrichto> but it's true that you can easily sidestep
+[20:42:35] <acrichto> just making things more verbose
+[20:42:37] <acrichto> which is a little sad
+[20:42:41] <nmatsakis> I find it cleaner actually
+[20:42:47] <nmatsakis> the idea is, I don't want to make public
+[20:42:50] <nmatsakis> the idea that this is an enum
+[20:42:55] <acrichto> I feel like we're doing that a lot, making simple-ish, but less common things, a little more verbose
+[20:43:05] <acrichto> true
+[20:43:23] <nmatsakis> I think that's what it means to simplify the language...
+[20:43:53] <acrichto> true
+[20:43:57] <nmatsakis> remove as many pointless knobs as possible
+[20:44:00] <acrichto> I'm ok with it for now
+[20:44:11] <acrichto> I think we've done a good job so far
+[20:44:38] <acrichto> hm, I thought get_mut_ref() on options was get_mut() ...
+[20:45:09] <strcat> acrichto: as_mut().get() (well, I guess we never renamed unwrap)
+[20:45:42] <nmatsakis> I really wish we would
+[20:45:55] <nmatsakis> well, I don't care that much
+[20:46:07] <nmatsakis> I guess get *does* sound innocuous
+[20:46:26] <strcat> rusti: let x = [1]; x[2]
+[20:46:27] -rusti- task '<main>' failed at 'index out of bounds: the len is 1 but the index is 2', <anon>:10
+[20:46:27] -rusti- application terminated with error code 101
+[20:46:29] <strcat> bit too late to worry about that
+[20:46:30] <acrichto> if we have as_{ref,mut}, seems liek we should have get_{mut,ref}
+[20:47:36] <strcat> if Option is a pain, people will just use APIs doing failure as a convenience instead
+[20:47:38] <strcat> :P
+[20:47:41] <strcat> we already have that problem
+[20:47:49] <strcat> HashMap has get, get_mut, etc.
+[20:48:05] <strcat> although the indexing trait will keep those around
+[20:50:38] *** Quits: bytbox (s@moz-E1E7FAC3.washdc.fios.verizon.net) (Ping timeout)
+[20:51:08] *** Joins: bytbox (s@moz-E1E7FAC3.washdc.fios.verizon.net)
+[20:54:03] *** Joins: eddyb (eddy@moz-41DB10DA.residential.rdsnet.ro)
+[20:56:30] *** Quits: vadimcn (chatzilla@FB06B64.76F9E272.DA40C4B3.IP) (Ping timeout)
+[20:56:52] *** Joins: cmr (moznet@moz-EC676DFE.members.linode.com)
+[20:57:27] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[20:59:20] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[21:05:08] *** Joins: ghrust (ghrust@99CAE845.6A2AE50.F3114085.IP)
+[21:05:08] <ghrust> [13rust] 15alexcrichton merged 06master into 06snap-stage3: 02http://git.io/ZrZz3A
+[21:05:08] *** Parts: ghrust (ghrust@99CAE845.6A2AE50.F3114085.IP) ()
+[21:08:37] *** Quits: [o__o] (~o__o@604A2740.DB688352.F4ADE383.IP) (Input/output error)
+[21:08:54] *** Joins: [o__o] (~o__o@604A2740.DB688352.F4ADE383.IP)
+[21:11:46] *** Quits: lkuper (lkuper@moz-AD4C50F5.dhcp-bl.indiana.edu) (Quit: lkuper)
+[21:12:25] <nmatsakis> strcat: I'm not the kind of freak out about calls to get(); but there is a difference in kind between indexing and option.get()
+[21:12:31] <nmatsakis> *to
+[21:12:54] <nmatsakis> in particular, simple restructuring of the code can easily eliminate most calls to unwrap() I seein the wild
+[21:13:02] <nmatsakis> the same is not true for array indexing
+[21:13:04] <nmatsakis> that said,
+[21:13:12] <nmatsakis> people call unwrap() just as easily as they call get() -- I don't think it's the name :)
+[21:13:23] <nmatsakis> the main advantage of unwrap() is that it makes it easier for REVIEWERS to spot something and say
+[21:13:31] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[21:13:31] <nmatsakis> "hey, can you restructure this code so that you don't need to call unwrap"
+[21:14:07] <eddyb> I just wrote an unwrap to quickly replace it with expect
+[21:16:15] <strcat> nmatsakis: get_ref/get_mut_ref are only there because as_mut().unwrap() is viewed as too long
+[21:16:45] <brson> nmatsakis: i love that i can see 'unwrap' by glancing at the code
+[21:17:33] <brson> it's a name that has big flashing warning lights
+[21:18:09] <nmatsakis> brson: I didn't used to buy it, but I was jsut reviewing some code and saw some unwraps and thought "we could so easily get rid of those". I'd prob not have noticed if it was called get()
+[21:19:13] <nmatsakis> the problem is not so much get vs unwrap,
+[21:19:18] <nmatsakis> as that get is used in other, innocuous contexts
+[21:19:36] <eddyb> need more lints, really
+[21:19:44] <nmatsakis> lints don't help when reviewing code, sadly
+[21:19:52] <nmatsakis> well I guess that's not true
+[21:19:58] <eddyb> #[disallow(footgun)] at the top of librustc
+[21:19:58] <nmatsakis> just set them to deny >:)
+[21:20:06] <eddyb> or deny
+[21:20:14] <strcat> get on HashMap means the same thing, as does get
+[21:20:19] <strcat> get_ref *
+[21:20:36] <nmatsakis> yes;
+[21:20:41] <eddyb> strcat: but not get on slices. which is a bit odd
+[21:20:42] <nmatsakis> I feel differently about hashmap
+[21:20:46] <nmatsakis> because it's like a vector
+[21:20:52] <nmatsakis> it's often a fairly complex invariant that tells me the key will be present
+[21:20:56] <eddyb> maybe we should rename the slice get to at?
+[21:21:01] <eddyb> :S
+[21:21:14] <nmatsakis> I'd be fine with trying to make get always mean "fallible", but that may be an uphill battle,
+[21:21:17] <nmatsakis> the name is...common
+[21:21:31] <strcat> nmatsakis: there's often an invariant telling you the Option isn't None too
+[21:21:41] *** Joins: ghrust (ghrust@49477F7E.6A2AE50.F3114085.IP)
+[21:21:41] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/XlPzMg
+[21:21:41] *** Parts: ghrust (ghrust@49477F7E.6A2AE50.F3114085.IP) ()
+[21:21:45] <nmatsakis> strcat: yes of course, but with option, it's usually fairly trivial to encode.
+[21:21:48] <eddyb> (and #[lint(footgun="this can fail. consider using matching instead")] fn unwrap...)
+[21:22:07] <strcat> eddyb: so does indexing warn?
+[21:22:11] <nmatsakis> not always, just frequently.
+[21:22:34] <eddyb> strcat: let's try to turn that on!
+[21:22:34] <flaper87> eddyb: unwrap("BANG");
+[21:22:36] <flaper87> :D
+[21:22:42] <nmatsakis> ok, g2g
+[21:23:04] <eddyb> strcat: and just use pattern matching in librustc :P
+[21:23:15] <eddyb> and all the safe idioms
+[21:23:45] <eddyb> we have too many "index out of bounds" ICEs with no information of where it happened
+[21:24:11] <eddyb> maybe we should lint fallibility
+[21:24:37] <eddyb> *fail-ability?
+[21:24:45] <eddyb> with things like fatal_span opting out
+[21:25:16] <eddyb> but then there's borrow_mut() and you don't want more special handling around that
+[21:25:30] <eddyb> (I considered get/get_mut instead of borrow/borrow_mut)
+[21:26:09] *** kimundi is now known as zz_kimundi
+[21:26:33] *** Joins: ghrust (ghrust@511FAEBD.6A2AE50.F3114085.IP)
+[21:26:33] <ghrust> [13rust] 15bors pushed 5 new commits to 06auto: 02http://git.io/KYIqyA
+[21:26:33] <ghrust> 13rust/06auto 14d5aa795 15Alex Crichton: std: Add cfg(test) to UnsafeArc assertions...
+[21:26:33] <ghrust> 13rust/06auto 14d89074c 15Alex Crichton: std: Remove lots of allocations from log settings...
+[21:26:33] <ghrust> 13rust/06auto 1479e6ab5 15Alex Crichton: std: Avoid using "{:?}" in format strings...
+[21:26:35] *** Parts: ghrust (ghrust@511FAEBD.6A2AE50.F3114085.IP) ()
+[21:27:01] <eddyb> nmatsakis: travis runs anyways on PRs... we could maybe have a bot take information from it and insert automatic comments in the diff
+[21:27:34] <eddyb> that feels better than what servo has (detecting changes to unsafe code with just regexp)
+[21:29:33] <eddyb> we should also consider general auto-borrow more
+[21:29:49] <eddyb> maybe only for Pod's?
+[21:30:05] <eddyb> (where it doesn't change semantics-at-a-glance)
+[21:30:26] <eddyb> the number of places where we do .find(&id) is disturbing IMO
+[21:32:26] *** Joins: pauls (pauls@moz-BFEF1F22.ccs.neu.edu)
+[21:41:42] *** Joins: tjc (tjc@moz-5335BC44.phlapa.fios.verizon.net)
+[21:41:42] *** ChanServ sets mode: +o tjc
+[21:42:12] <nmatsakis> eddyb: I do occasionally wonder if C++ refs would have been a better model than C pointers. Hard to say.
+[21:42:51] <nmatsakis> though honestly .find(&id) doesn't bother me anymore, I've kind of gotten used to it, it bothers me more when the auto-borrow kicks in
+[21:43:01] <eddyb> let's not go into the other extreme
+[21:43:23] <nmatsakis> I think we're not going to make such a change now (C++ refs I mean)
+[21:43:38] <eddyb> I would do it to model *x in the type system... but w/e
+[21:43:44] <nmatsakis> strcat: there was an issue at some point about whether or not the addr of a static ought to be significant?
+[21:44:25] <nmatsakis> or was that just for fns
+[21:44:35] <nmatsakis> ah, #8598
+[21:44:40] <nmatsakis> #8958
+[21:44:41] <brson> acrichto: i'm amazed you got that rollup through last night
+[21:44:49] <acrichto> magic!
+[21:44:57] <acrichto> it is quite satisfying to see them land though
+[21:45:02] <brson> aw, but my atomics didn't make it :(
+[21:45:11] <acrichto> yeah :(
+[21:45:13] <nmatsakis> acrichto brson : https://github.com/mozilla/rust/issues/8958 seems to relate
+[21:45:14] <acrichto> see the comments I put on it
+[21:45:23] <nmatsakis> I wonder if we should disallow takin the address of a static
+[21:45:30] <nmatsakis> unless it is annotated in some way to indicate that its addr is significant
+[21:45:38] <acrichto> you couldn't implement methods on statics then though
+[21:45:44] <nmatsakis> sure you can
+[21:45:49] <acrichto> fn foo(&self) {} 
+[21:45:49] <nmatsakis> you indicate their adr is significant
+[21:45:54] <acrichto> oh hm
+[21:45:55] <nmatsakis> (which it is
+[21:45:58] <acrichto> interesting
+[21:46:04] <nmatsakis> that would solve your problem acrichto :)
+[21:46:08] <acrichto> indeed that would
+[21:46:19] <acrichto> we could lift the Freeze restriction then
+[21:46:22] <nmatsakis> right
+[21:46:26] <acrichto> very interesting
+[21:46:46] <nmatsakis> I feel like we want another keyword almost
+[21:46:48] <nmatsakis> e.g. const vs static
+[21:46:55] <nmatsakis> const being "not a memory location"
+[21:46:59] <nmatsakis> static being "a memory location"
+[21:47:09] <acrichto> most statics don't want memory locations
+[21:47:17] <nmatsakis> yes, const would be the normal thing
+[21:47:17] <acrichto> calling a method on a non-mut static I think is very rrare
+[21:47:18] <eddyb> so TLD keys would use static
+[21:47:23] <acrichto> yeah
+[21:47:30] <eddyb> but, hmm
+[21:47:40] <eddyb> I've had it with all these keywords in Rust :P
+[21:48:03] <nmatsakis> const is already a keyword ;)
+[21:48:07] <eddyb> for what?
+[21:48:11] <eddyb> or just reserved?
+[21:48:13] <nmatsakis> mostly in case we want it :)
+[21:48:13] <flaper87> I think it's reserved
+[21:48:24] <nmatsakis> I also do want to be able to write *const 
+[21:48:33] <nmatsakis> (with same meaning as C)
+[21:48:37] <eddyb> like syntax-level Freeze?
+[21:48:41] <nmatsakis> no, just *const
+[21:48:52] <eddyb> do you want to bring &const back?
+[21:48:54] <nmatsakis> no
+[21:48:56] <nmatsakis> just *const
+[21:49:07] <nmatsakis> well tbh i'm not sure what I want :)
+[21:49:07] <eddyb> or make *T a syntax error?
+[21:49:10] <nmatsakis> yes
+[21:49:15] <eddyb> okay, that's interesting
+[21:49:20] <nmatsakis> I've considered this: *const and *mut as the two options
+[21:49:47] <nmatsakis> anyway, g2g again, bbl
+[21:49:59] <eddyb> I hope static-levle const doesn't bite new people
+[21:50:05] <eddyb> though it looks nicer than static
+[21:52:05] <eddyb> including in the theoretical type params: <const N: uint>
+[21:52:50] <brson> pcwalton: i still haven't been able to get a comment from you on https://github.com/mozilla/rust/pull/12538
+[21:52:58] <brson> pcwalton: can we do `#![foo]` for inner attributes?
+[21:53:09] <pcwalton> sure
+[21:53:13] <brson> thanks
+[21:53:14] <flaper87> brson: FWIW +1
+[21:53:16] <flaper87> :D
+[21:54:48] <eddyb> why not #!foo?
+[21:55:49] <flaper87> bah, we already have #[foo] having #!foo would be inconsistent
+[21:55:54] <acrichto> I think that attributes are the bikeshed that will never end
+[21:56:02] <flaper87> acrichto: yeah
+[21:56:30] <brson> they are ending today
+[21:56:33] <acrichto> lol
+[21:56:40] <eddyb> I only asked because I thought there was some move towards bracket-less
+[21:57:07] <brson> i'm not sure where the shebang parsing is...
+[21:57:13] <brson> don't see how this patch actually avoids the ambig
+[21:57:26] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[21:58:35] <brson> well, i'll figure it out
+[21:58:42] <acrichto> rust has shebang parsing?
+[21:59:21] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[21:59:32] <brson> yeah, it ignores a shebang on the first line
+[21:59:40] <brson> it's in parse/comments.rs
+[22:00:04] <acrichto> weird
+[22:00:43] <brson> oh, actually, that must not be the main shebang parser
+[22:00:52] <brson> that's part of gather_comments_and_literals
+[22:03:25] *** jdm|away is now known as jdm
+[22:06:00] *** Joins: jensnockert (jensnocker@moz-9353D75F.e0f8471ae7fa.afb.bredband2.com)
+[22:06:13] *** Joins: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[22:09:23] <strcat> nmatsakis: so, if you have struct Foo { x: SomeNonSendThing }
+[22:09:34] <strcat> nmatsakis: is there a barrier to implementing Send for it without thinking clearly about it?
+[22:13:36] <eddyb> kind checking
+[22:13:58] <eddyb> and impl of Send requires all fields to be Send
+[22:14:46] <eddyb> haha wat https://travis-ci.org/mozilla/rust/builds/19833641
+[22:15:02] <eddyb> acrichto: more spurious travis failures?
+[22:15:38] <acrichto> eddyb: that's happening on the bots as well
+[22:15:44] <eddyb> :(
+[22:40:58] <eddyb> ohh... http://www.haskell.org/haskellwiki/Orphan_instance
+[22:48:20] <brson> acrichto: is this a new spurious failure?
+[22:49:05] <acrichto> brson: the travis one?
+[22:51:31] *** Joins: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP)
+[22:51:31] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/KYIqyA
+[22:51:31] *** Parts: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP) ()
+[22:51:51] <brson> yes
+[22:52:14] <acrichto> nah
+[22:52:22] <acrichto> looked like the broken pipe one
+[22:52:30] <acrichto> output just getting cut off
+[22:52:35] *** Quits: glaebhoer1 (glaebhoerl@moz-B5B88D72.catv.broadband.hu) (Ping timeout)
+[22:54:35] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[22:56:37] *** Joins: ghrust (ghrust@5AC7F92B.6A2AE50.F3114085.IP)
+[22:56:37] <ghrust> [13rust] 15bors pushed 4 new commits to 06auto: 02http://git.io/Ru9b-A
+[22:56:37] <ghrust> 13rust/06auto 14d8907aa 15Brian Anderson: Remove check-fast. Closes #4193, #8844, #6330, #7416
+[22:56:37] <ghrust> 13rust/06auto 14972cef1 15Brian Anderson: test: Ignore compile-fail/issue-5806.rs...
+[22:56:37] <ghrust> 13rust/06auto 14e6b6c21 15Brian Anderson: mk: Pass the name of the make command to maketest.py...
+[22:56:39] *** Parts: ghrust (ghrust@5AC7F92B.6A2AE50.F3114085.IP) ()
+[22:56:58] *** Parts: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (WeeChat 0.4.3)
+[22:57:26] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[22:59:21] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[23:06:08] *** Joins: chromatic (chromatic@moz-28CBC7F4.hsd1.or.comcast.net)
+[23:08:26] <chromatic> How does a &'static str get stored in a crate?
+[23:10:41] <acrichto> chromatic: take a look at the C_str_slice function I believe
+[23:11:04] <chromatic> I've been poking at that.
+[23:12:17] <chromatic> I have: let filename = C_str_slice(bcx.ccx(), token::intern_and_get_ident(loc.file.name)));
+[23:12:50] <acrichto> something like that should work yeah
+[23:12:54] <eddyb> isn't intern_and_get_ident one of those bad functions?
+[23:12:58] <chromatic> If I'm write, I have to wrap that up as a ValueRef so that LLVM can do an indirect function call and unwrap the value.
+[23:13:37] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: Leaving)
+[23:13:44] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[23:13:47] <eddyb> I should've removed it when I had the chance
+[23:14:06] <eddyb> now people are putting even more things in the ident interner
+[23:14:21] <eddyb> it's not enough that hygiene inflates it
+[23:14:58] <eddyb> chromatic: the result of C_str_slice should be a ValueRef
+[23:15:35] <chromatic> eddyb, looks right to me. Let me see how far that gets me.
+[23:17:02] <nrc> eddyb: so I was thinking over your concerns with struct single inheritance - they seem to be realted to subtyping, in that the 'single inheritance privilege' is related to the subtyping from inhertiance, not the inheritance itself. Is that correct? Furthermore, if (and that is a big if, obviously) we don't derive subtyping from inheritance, there is nothing stopping us using multiple...
+[23:17:04] <nrc> ...inheritance for structs, would that sit better with you?
+[23:18:22] <eddyb> that could work
+[23:18:58] <eddyb> I would go for an anonymous field model, but that's just because I'm a flexibility nut
+[23:19:29] <nrc> I'll make a proper RFC at some point (hopefully next week), but I want to make sure I properly understand the issues first
+[23:20:22] <nrc> eddyb: please make an RFC or a blog post to spell out your ideas, I'd be interested in seeing alternatives
+[23:20:45] <eddyb> I actually had a blog. maybe a couple of them
+[23:20:49] <eddyb> 0 posts
+[23:21:19] <chromatic> Here's what I have so far:
+[23:21:21] <chromatic> https://gist.github.com/chromatic/9262349
+[23:22:22] <chromatic> I *think* the type checker is complaining about &str versus &'static str, but my confidence here is not 100%
+[23:23:18] <eddyb> mkay, so here's how it goes
+[23:23:30] <nrc> huon: so I have this tool for finding span errors - your changes to mbc handling took us from ~10,000 -> ~3,000, so huon++ 
+[23:23:42] *** Quits: eibwen (kvirc@moz-251C9023.dip0.t-ipconnect.de) (Ping timeout)
+[23:23:45] <eddyb> ValueRef and Result should die
+[23:23:47] <cmr> wait how do you detect span errors
+[23:23:56] <eddyb> cmr: fuzzing?
+[23:23:58] <nrc> (doesn't count anything to do with macros or type or lifetime params, so the real total is much higher
+[23:24:17] <cmr> eddyb: that doesn't help detection, that helps finding source which has them.
+[23:24:21] <cmr> detection is separate...
+[23:24:43] <eddyb> chromatic: a &str is represented as (*u8, uint)
+[23:24:50] <nrc> cmr: I basically walk the ast and dump every span I find, then compare the source to the snippet for the span bounds - obvoiously it misses a lot of errors, but it catches a fair few too
+[23:25:15] <eddyb> chromatic: that's not immediate, so it's passed by reference
+[23:25:20] <nrc> er, source for the span bounds to the snippet for the span
+[23:25:42] <chromatic> I'm with you so far, eddyb.
+[23:25:48] <eddyb> chromatic: filename_and_line_num_from_span is an anti-pattern
+[23:26:01] <eddyb> you'll have to wrap it at call sites
+[23:26:22] <nrc> cmr: I run it over the rust source, it takes forever because Python unicode is tres slow
+[23:26:31] *** Joins: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP)
+[23:26:31] <ghrust> [13rust] 15bors 04force-pushed 06auto from 1407ec2d0 to 145b4a141: 02http://git.io/N3iJvQ
+[23:26:31] *** Parts: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP) ()
+[23:26:32] *** Joins: ghrust (ghrust@99CAE845.6A2AE50.F3114085.IP)
+[23:26:32] <ghrust> [13rust] 15bors pushed 4 new commits to 06auto: 02http://git.io/tfc4KA
+[23:26:32] <ghrust> 13rust/06auto 14d8907aa 15Brian Anderson: Remove check-fast. Closes #4193, #8844, #6330, #7416
+[23:26:32] <ghrust> 13rust/06auto 14972cef1 15Brian Anderson: test: Ignore compile-fail/issue-5806.rs...
+[23:26:32] <ghrust> 13rust/06auto 14e6b6c21 15Brian Anderson: mk: Pass the name of the make command to maketest.py...
+[23:26:34] *** Parts: ghrust (ghrust@99CAE845.6A2AE50.F3114085.IP) ()
+[23:26:46] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[23:27:07] <eddyb> chromatic: something like Datum(val, ty::mk_str(vstore_slice), Rvalue(ByValue))
+[23:27:21] <cmr> nrc: does it only do off-by-one, comparing to the lines above it?
+[23:27:21] <eddyb> now that's type-aware
+[23:27:21] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[23:27:28] <chromatic> Is this within trans_fail_bounds_check?
+[23:27:36] <cmr> for whitespace / punctation I imagine
+[23:27:37] <eddyb> is that the only call site?
+[23:27:56] <chromatic> It's the only one that I can tell affects the fail code.
+[23:28:04] <eddyb> no, look for all call sites
+[23:28:14] <nrc> cmr: it does a very naive comparison, which means once you're out of sync on a file you get errors for every other span in the file
+[23:28:18] <eddyb> chromatic: changes like this should be total, not partial
+[23:28:48] <eddyb> chromatic: okay, only one call site. move the function body to trans_fail_bounds_check
+[23:29:02] <nrc> but then any spans would be out too, so it's not so bad
+[23:29:21] <eddyb> chromatic: then, try to not even store the ValueRef in a local, box it in a Datum ASAP
+[23:29:34] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[23:29:36] <eddyb> free ValueRef's are a footgun IME
+[23:29:50] <chromatic> Because they're type unsafe?
+[23:29:58] <eddyb> and also mode unsafe
+[23:30:05] <cmr> mode?
+[23:30:16] <chromatic> I haven't been here long enough to know what that means, other than that everyone shudders when you say it.
+[23:30:23] <eddyb> Lvalue, Rvalue(ByValue / ByRef)
+[23:30:27] <cmr> ah that
+[23:30:35] <cmr> that's just type unsafe :p
+[23:30:43] <eddyb> the type is the same
+[23:30:44] <cmr> in a context sensitive way, perhaps
+[23:30:54] <cmr> it's a pointer-to-thing
+[23:31:02] <cmr> it's not typesafe in anyway in the C API
+[23:31:12] <cmr> it won't lead to corrupt state, just aborts.
+[23:31:13] <eddyb> chromatic: okay, so a Datum should have a .to_appropriate_mode() method
+[23:31:53] <eddyb> chromatic: that will put a ByValue Rvalue in an alloca and give you a ByRef Rvalue, *if required*
+[23:32:11] <eddyb> then .val should be safe, I think
+[23:32:25] <chromatic> Working on it now.
+[23:32:42] <eddyb> IMO we should refactor callee::trans_lang_call to take datums
+[23:33:21] <chromatic> That would have given me better error messages.
+[23:33:22] <eddyb> my second deref PR replaces trans_arg_expr with trans_arg_datum :D
+[23:33:48] <eddyb> so ArgVals(&[ValueRef]) could easily die
+[23:35:03] *** flaper87 is now known as flaper87|afk
+[23:35:05] <eddyb> chromatic: Datum<Rvalue> is also linear (non-Pod), so you can't copy it around (which is bad if it's a ~T)
+[23:35:55] <chromatic> AFAIK that should be okay.
+[23:36:15] <eddyb> you can create an InternedString from a &str, no need to actually intern it, btw
+[23:37:12] <eddyb> bleah, intern_and_get_ident is used in waaay too many places
+[23:37:25] <eddyb> it's... useless IMO
+[23:38:05] <chromatic> Mostly I just want something that'll call fail_bounds_check( &'static str, ... ) instead of fail_bounds_check( *u8, ... )
+[23:38:06] <eddyb> either intern it and use a Name or keep the string you have
+[23:38:11] <eddyb> chromatic: yeah
+[23:38:20] <chromatic> Ambivalent about how to accomplish that here; whatever's cleanest makes me happy.
+[23:38:47] <eddyb> to_appropriate_mode on a Datum with a ty = ty::mk_str(ty::vstore_slice) should do the right thing
+[23:39:20] <eddyb> without you having to carry about the way &str is represented
+[23:39:48] <eddyb> chromatic: is there any benefit to the lang item having &'static str and not &str?
+[23:40:20] <chromatic> begin_unwind wants &'static str
+[23:40:39] <chromatic> There's probably room for more cleanup there as well.
+[23:40:40] <eddyb> right, it creates an Any from it, fine then
+[23:40:43] <acrichto> pcwalton: hm, so I just switched rustc to using an id function for hashing node ids and def ids, and compiling libstd went from 8s to 13s :\
+[23:40:59] <pcwalton> profile it?
+[23:41:05] <acrichto> it's all in insert_internal
+[23:41:11] <acrichto> and const_eval::classify
+[23:41:14] <pcwalton> probably too many collisions?
+[23:41:17] <chromatic> eddyb, I worry a little about the format! in fail_bounds_check; seems like that is something a little unclean.
+[23:41:19] <acrichto> that's my guess
+[23:41:19] <pcwalton> mix it up a lil' bit
+[23:41:24] <pcwalton> don't use an id function
+[23:41:26] <eddyb> acrichto: don't do it for DefId
+[23:41:32] <acrichto> what's a fast way to mix it?
+[23:41:34] <acrichto> eddyb: why not?
+[23:41:43] <eddyb> because the CrateId will be 0 most of the time
+[23:41:54] <acrichto> that sounds like a fact
+[23:42:05] <pcwalton> acrichto: FNV hash? http://en.wikipedia.org/wiki/Fowler%E2%80%93Noll%E2%80%93Vo_hash_function
+[23:42:17] <pcwalton> has no setup time
+[23:42:23] <eddyb> if it were me, I would bitrev the CrateId
+[23:42:24] <acrichto> sure
+[23:42:42] <eddyb> and xor it with the NodeId
+[23:42:55] <eddyb> though that's still a bit whack
+[23:43:19] <eddyb> acrichto: if you want an u64, try putting the CrateId in the higher bits and see what happens
+[23:43:36] <cmr> (do our hashmaps depend at all on distribution?)
+[23:43:46] <eddyb> if you hash NodeId << 32 | CrateId, you'll *only* have collisions
+[23:43:56] <eddyb> so there's that
+[23:44:12] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Ping timeout)
+[23:44:13] <eddyb> only one bucket will ever be used
+[23:44:25] <eddyb> acrichto: I really hope it's just that
+[23:44:39] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[23:45:40] <eddyb> chromatic: format! returns a ~str which you can't borrow to &'static str
+[23:46:03] <chromatic> Yeah, that's the next problem on my list.
+[23:46:13] <eddyb> actually... LOL
+[23:46:23] <chromatic> You should have seen the *other* guy.
+[23:46:38] <eddyb> do we leak?
+[23:47:11] <eddyb> if we don't, it's only because stack unwinding will free the strings
+[23:47:14] <eddyb> but then...
+[23:47:17] <eddyb> the message is freed
+[23:47:22] <chromatic> msg.with_c_str(|buf| fail_(buf as *u8, file, line))
+[23:47:27] <eddyb> yeah
+[23:47:31] <chromatic> That looked sane-ish.
+[23:47:42] <eddyb> the message is freed before it gets to the responsible parties
+[23:47:51] <chromatic> Because it should be copied to a Task?
+[23:48:09] <eddyb> begin_unwind packs a &'static str in an ~Any, I think
+[23:48:15] <chromatic> Right.
+[23:48:25] <eddyb> which is only safe if it's truly static
+[23:48:48] <chromatic> Hence the fun with unsafe castings I'm trying to elide.
+[23:49:34] <eddyb> acrichto: is it just me or fail_bounds_check is not sane?
+[23:50:25] <eddyb> yupp, it doesn't allocate
+[23:50:44] <eddyb> so the string you get back from unwinding can be overwritten
+[23:50:53] <eddyb> it's just hard to trigger
+[23:51:13] <eddyb> rusti: try(proc() {fail!("boo");})
+[23:51:14] -rusti- <anon>:10:9: 10:12 error: unresolved name `try`.
+[23:51:14] -rusti- <anon>:10         try(proc() {fail!("boo");})
+[23:51:14] -rusti-                   ^~~
+[23:51:14] -rusti- error: aborting due to previous error
+[23:51:14] -rusti- application terminated with error code 101
+[23:51:22] <eddyb> rusti: std::task::try(proc() {fail!("boo");})
+[23:51:24] -rusti- pastebinned 8 lines of output: http://ix.io/aaw
+[23:51:54] <eddyb> great
+[23:52:12] <eddyb> rusti: std::task::try(proc() {[0][1]})
+[23:52:14] -rusti- task '<unnamed>' failed at 'index out of bounds: the len is 1 but the index is 1', <anon>:10
+[23:52:15] -rusti- Err(~std::any::Any:Send)
+[23:52:21] <eddyb> yuss
+[23:52:33] <eddyb> rusti: std::task::try(proc() {[0][1]}).err().as_ref::<&'static str>()
+[23:52:34] -rusti- <anon>:10:9: 11:6 error: this method does not take type parameters
+[23:52:34] -rusti- <anon>:10         std::task::try(proc() {[0][1]}).err().as_ref::<&'static str>()
+[23:52:34] -rusti- <anon>:11     };
+[23:52:34] -rusti- error: aborting due to previous error
+[23:52:34] -rusti- application terminated with error code 101
+[23:52:42] <eddyb> rusti: std::task::try(proc() {[0][1]}).err().unwrap().as_ref::<&'static str>()
+[23:52:45] -rusti- pastebinned 16 lines of output: http://ix.io/aRI
+[23:53:15] <eddyb> rusti: let s = std::task::try(proc() {[0][1]}).err().unwrap(); s.as_ref::<&'static str>()
+[23:53:17] -rusti- pastebinned 16 lines of output: http://ix.io/aRJ
+[23:53:31] <eddyb> ahh
+[23:53:47] <eddyb> rusti: let s = std::task::try(proc() {[0][1]}).err().unwrap(); s.as_ref::<&'static str>().to_owned()
+[23:53:48] -rusti- <anon>:10:65: 11:6 error: type `std::option::Option<&&'static str>` does not implement any method in scope named `to_owned`
+[23:53:48] -rusti- <anon>:10         let s = std::task::try(proc() {[0][1]}).err().unwrap(); s.as_ref::<&'static str>().to_owned()
+[23:53:48] -rusti- <anon>:11     };
+[23:53:48] -rusti- error: aborting due to previous error
+[23:53:49] -rusti- application terminated with error code 101
+[23:53:57] <eddyb> rusti: let s = std::task::try(proc() {[0][1]}).err().unwrap(); s.as_ref::<&'static str>().unwrap().to_owned()
+[23:54:00] -rusti- task '<unnamed>' failed at 'index out of bounds: the len is 1 but the index is 1', <anon>:10
+[23:54:00] -rusti- application terminated abnormally with signal 11 (Segmentation fault)
+[23:54:08] <eddyb> hahahaha
+[23:54:11] *** Quits: doomlord_ (servitor@moz-99BE89EC.range86-184.btcentralplus.com) (Ping timeout)
+[23:54:20] <eddyb> I thought at least that would work
+[23:55:13] <eddyb> also, why is fail_bounds_check trying to begin_unwind *twice*?
+[23:55:23] <eddyb> chromatic: thank you for this, it's golden :D
+[23:55:50] <chromatic> I'm just the messenger!
+[23:55:58] <eddyb> chromatic: you need to use a begin_unwind version that takes a ~str or ~Any
+[23:56:11] *** Joins: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com)
+[23:56:19] <chromatic> So that the formatted result isn't kablooey, yes.
+[23:56:42] <eddyb> chromatic: http://static.rust-lang.org/doc/master/std/rt/unwind/fn.begin_unwind.html
+[23:56:52] <eddyb> begin_unwind_raw can die now ;)
+[23:57:22] <eddyb> keep it with a #[cfg(stage0)] and a // NOTE remove after next snapshot
+[23:57:44] <eddyb> and fix all errors that result in stage1, from it missing
+[23:57:50] <eddyb> chromatic: oh, no, nevermind me
+[23:57:57] <acrichto> pcwalton: 8.180 => 6.989s for libstd with FNV hashing
+[23:58:14] <eddyb> acrichto: did you try id with that fix for DefId?
+[23:58:27] <acrichto> what fix?
+[23:58:40] <eddyb> moving CrateId to the top bits
+[23:58:53] <acrichto> I was already doing that
+[23:58:57] <eddyb> ohhh
+[23:58:59] *** Joins: doomlord_ (servitor@moz-99BE89EC.range86-184.btcentralplus.com)
+[23:59:31] <acrichto> although hm
+[23:59:32] <acrichto> *state = (krate << 32) as u64 | (node as u64);
+[23:59:33] <acrichto> spot the bug
+[23:59:44] <eddyb> yeah, well, no
+[23:59:48] <eddyb> std doesn't import other crates

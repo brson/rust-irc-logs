@@ -1,0 +1,2285 @@
+[00:01:43] *** Quits: sigma (sigma@51C589B3.EF2694B5.DFAC6AA7.IP) (Client exited)
+[00:02:14] *** Joins: Diamond (dick@moz-C01E1CD1.ks.ks.cox.net)
+[00:03:28] *** Quits: jfbk (textual@moz-EEA9CFB3.nyc.res.rr.com) (Ping timeout)
+[00:03:45] <Thiez> brson: really? as I recall it's multiple-producer, multiple-consumer
+[00:03:59] *** Joins: sigma (sigma@51C589B3.EF2694B5.DFAC6AA7.IP)
+[00:04:30] <brson> Thiez: oh! I was just reading the comment at the top of message_queue. I guess that was just describing MessageQueue and not michael/scott
+[00:04:34] <brson> well, that's good
+[00:04:36] * brson tries harder
+[00:04:52] <Thiez> I think it says single consumer in the comments of the message_queue.rs file
+[00:04:58] <brson> yah
+[00:05:32] <Thiez> yeah but that's about what I thought the messagequeue should do
+[00:05:45] <toddaaro> Thiez: so yours is done and works?
+[00:06:25] <sigma> This channel is great for suggesting reading material.
+[00:06:32] <Thiez> toddaaro: last time I checked it worked, but I only tested with single consumer and it's a while ago and I can't test it because my computer is broken and running a linux vm is an exercise in frustration :p
+[00:07:44] <Thiez> running a linux vm on my laptop*
+[00:09:02] <toddaaro> ah
+[00:09:08] <toddaaro> we will have to take a look at that
+[00:09:18] <toddaaro> if it works the "free perf" level is high
+[00:10:47] *** Quits: Azdle (patrick@moz-8C723B60.hsd1.mn.comcast.net) (Ping timeout)
+[00:10:52] <acrichto> I recently started looking into adding bindings for process managment into libuv, but I'm running into some weird no-progress situtations. Would some rt-folk be willing to answer a few questions?
+[00:11:22] <toddaaro> sure, what are you running into?
+[00:12:07] <acrichto> I got everything working so far except with multiple io-loops, the relevant uv_spawn function takes a callback to invoke when the process terminates, but with multiple io loops the callback is only being called some of the time
+[00:12:36] <toddaaro> multiple loops on the same thread?
+[00:12:40] *** Quits: SingingBoyo (brandon@4DF3381A.51F4D838.4F048BDC.IP) (Input/output error)
+[00:12:46] <acrichto> I'm not sure if this is a race going on, but all it looks like is that in one task you spawn a process, and in another task (with a separate io loop) you spawn a process as well. Most of the time the test makes no progress because the callback doesn't get invoked
+[00:12:52] <acrichto> it should be different io loops on different threds
+[00:13:05] <acrichto> gdb at least confirms that uv_spawn is called on different threads and some debugging prints shows different io loops
+[00:13:19] <toddaaro> ah, so in tasks spawning processes
+[00:13:57] <acrichto> yeah, I'm doubting this is a uv bug, but none of the threads seemed blocked in anything but libuv, and I just can't figure out why the callback isn't being invoked
+[00:14:00] *** Quits: glennsl (textual@moz-5D7B804F.getinternet.no) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[00:14:01] <toddaaro> that sounds odd, is the code up somewhere?
+[00:14:29] <acrichto> head commit of https://github.com/alexcrichton/rust/tree/issue-6436-run-non-blocking
+[00:14:37] <acrichto> it's got a lot of stuff though so may be hard to sift through :(
+[00:14:48] <acrichto> ended up having to write some bindings for pipes as well
+[00:15:01] <acrichto> although https://github.com/alexcrichton/rust/blob/issue-6436-run-non-blocking/src/libstd/rt/uv/process.rs is the most relevant file
+[00:15:26] <acrichto> in the `new` function I'm always seeing prints for "%? spawned in", but I'm only sometimes seeing the prints of "%? exit in"
+[00:15:55] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[00:15:55] *** ChanServ sets mode: +o dherman
+[00:15:58] <strcat> meh we've regressed a lot in mem usage 
+[00:16:31] <toddaaro> ok, I'll take a look and see what I see
+[00:16:40] <acrichto> toddaaro: thanks!
+[00:16:44] <brson> the way i/o works is currently not thread safe, so if your task is migrating away from the thread it registered some I/O on then things could go bad in unexpected ways.
+[00:16:44] <toddaaro> brson/ecr are more knowledgable about the libuv bindings though
+[00:17:09] <brson> ecr is working on a mechanism to make sure that I/O is handled on the correct thread
+[00:17:23] <acrichto> brson: oh that may be the problem, I'm performing I/O on libuv pipes in multiple tasks at once
+[00:17:40] <toddaaro> hm, that could easily be it
+[00:17:53] <acrichto> oh that's unfortunate :(
+[00:18:04] <acrichto> maybe this should wait until that's fixed up
+[00:18:09] <toddaaro> but maybe not, it seems like process spawning would stay pretty local
+[00:18:17] <toddaaro> I think there is a PR up for this right now
+[00:18:37] <acrichto> well actually they're set up to perform I/O, but the tests aren't actually performing io
+[00:18:45] <acrichto> as in it's never read out
+[00:18:50] <acrichto> oh wait...
+[00:20:31] <toddaaro> the other thing that comes to mind is that if you destruct a watcher I believe libuv can miss events that it was watching, so you have to do some sort of destruction dance to make sure it goes off
+[00:21:09] <toddaaro> this is more theoretical, I haven't dug into libuv source enough to get to the bottom of this, but the async callback code does the dance to ensure arrival
+[00:21:35] <acrichto> oh interesting... I have a feeling that the problem is with the pipes I'm creating somehow, and that may explain it
+[00:22:04] *** Quits: donri (dag@moz-9BB61102.tbcn.telia.com) (Client exited)
+[00:23:02] <toddaaro> where is the test code that fails?
+[00:23:22] <acrichto> https://github.com/alexcrichton/rust/blob/issue-6436-run-non-blocking/run.rs
+[00:23:25] <acrichto> it's at the bottom
+[00:23:32] <acrichto> just the main function
+[00:24:13] *** Quits: sigma (sigma@51C589B3.EF2694B5.DFAC6AA7.IP) (Client exited)
+[00:24:19] <acrichto> and I thought for a second that if I wasn't reading back from the pipes the process was actually just hanging waiting to write back, but that doesn't appear to be the case b/c when the test hangs the process pids don't exist, so I think they've exited
+[00:25:10] <acrichto> oh wait no this has nothing to do with pipes because all I/O is set up to redirect to/from normal file descriptors
+[00:25:40] <toddaaro> have you tried RUST_THREADS=1?
+[00:25:50] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[00:26:01] <acrichto> yeah that makes things pass just fine
+[00:26:04] <acrichto> all the time
+[00:26:09] <toddaaro> ah
+[00:26:21] <toddaaro> in that case I bet it is some sort of IO-not-threadsafe thing
+[00:26:22] <toddaaro> somewhere
+[00:26:24] <acrichto> oh well not with that test
+[00:26:31] <acrichto> but I think that's b/c it force-creates a threads
+[00:26:37] <toddaaro> ok, makes sense
+[00:26:43] <acrichto> but if I run the libstd/run.rs test suite with RUST_THREADS=1 they all pass
+[00:27:07] <toddaaro> if ecr has his PR up I recommend rebasing onto that
+[00:27:09] <toddaaro> could fix things up
+[00:27:30] <acrichto> ok, I'll check that out
+[00:27:46] <acrichto> is that open on bors right now?
+[00:28:25] <toddaaro> I'm looking for it now
+[00:28:35] <toddaaro> the code is basically done so it should be somewhere
+[00:28:49] <acrichto> what's his github username?
+[00:29:10] <brson> Thiez: I haven't had luck so far converting SleeperList to use this queue. Hitting various corrupted memory errors. I'm going to look at other optimizations now, but this is something worth investigating more.
+[00:30:31] <toddaaro> anasazi
+[00:30:43] <toddaaro> looks like he didn't push it though, hopefully he will be around
+[00:31:00] <acrichto> oh ok, I'll watch out for it, thanks for your help!
+[00:31:29] *** Joins: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net)
+[00:31:34] <Thiez> brson: I hope to have a working machine soon so I'll be able to check it out
+[00:32:20] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[00:37:26] *** Quits: Earnestly (earnest@B0BDF733.8FDE20A.5411983D.IP) (Ping timeout)
+[00:40:34] *** Quits: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net) (Quit: kevincantu)
+[00:41:02] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Client exited)
+[00:41:06] *** Quits: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[00:41:08] *** Quits: doomlord (doomlod@moz-13E69BC8.range86-180.btcentralplus.com) (Ping timeout)
+[00:41:18] *** Joins: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net)
+[00:42:04] *** Quits: dim-an (ermolovd@moz-2590E524.yandex.net) (Ping timeout)
+[00:42:08] <acrichto> toddaaro: I think this may actually be a libuv bug
+[00:42:31] <acrichto> toddaaro: for this code https://gist.github.com/alexcrichton/6259377 I would expect the 'exit' callback to print twice
+[00:42:43] <acrichto> sometimes it is, sometimes it isn't
+[00:43:00] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[00:43:03] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Client exited)
+[00:44:13] <acrichto> or maybe it's a bug in how I'm using it because installing a current libuv (0.10.13) via homebrew has the same problems...
+[00:46:31] <toddaaro> hm, yea that is fishy
+[00:46:36] <toddaaro> I would expect it twice too
+[00:46:47] <toddaaro> it never prints 0 times right?
+[00:47:01] <acrichto> it does sometimes
+[00:47:45] <toddaaro> that code must violate some invariant they assume that I'm not spotting
+[00:48:01] <toddaaro> it is a nice short sample, so the libuv irc channel should be able to tell you what is going on
+[00:48:15] <toddaaro> I think that is #libuv on Freenode? don't remember for sure
+[00:48:15] <acrichto> yeah I may go ask there
+[00:48:59] *** Joins: Azdle (patrick@moz-8C723B60.hsd1.mn.comcast.net)
+[00:51:48] <brson> i don't like the indentation in the new rust-mode as much as the old
+[00:54:21] *** Joins: dew1 (Instantbir@moz-D2FA52B6.static.stls.mo.charter.com)
+[00:55:00] *** Quits: dew (Instantbir@moz-D2FA52B6.static.stls.mo.charter.com) (Ping timeout)
+[00:57:19] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.1)
+[00:57:23] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[00:59:11] *** Quits: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net) (Quit: kevincantu)
+[00:59:13] *** Quits: rust-buildbot (rust-build@505BFA3.C3CCCE8C.D25A875A.IP) (Quit: buildmaster reconfigured: bot disconnecting)
+[00:59:50] *** Joins: rust-buildbot (rust-build@505BFA3.C3CCCE8C.D25A875A.IP)
+[01:00:42] *** Joins: huseby (huseby@moz-4E8C421A.husebyhome.com)
+[01:00:50] *** Joins: dim-an (ermolovd@moz-FE167E47.nationalcablenetworks.ru)
+[01:01:22] *** Quits: infynyxx (infynyxx@moz-E95B370B.nyc.res.rr.com) (Client exited)
+[01:06:25] <acrichto> toddaaro: oh reading the libuv source code this is just a bug in libuv, turns out "register_for_sigchld(); fork(); add_child_to_list();" is a tad bit racy
+[01:06:43] *** Joins: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net)
+[01:07:38] *** Quits: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net) (Quit: kevincantu)
+[01:08:00] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[01:08:01] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/ms5eKw
+[01:08:01] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[01:08:30] <cmr> Only 46 PRs this week :(
+[01:10:32] <acrichto> toddaaro: wait no nvmd, false alarm
+[01:10:52] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[01:10:52] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02https://github.com/mozilla/rust/compare/679102109fd7...679102109fd7
+[01:10:52] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[01:10:52] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[01:10:52] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/805SCQ
+[01:10:52] <ghrust> 13rust/06auto 14820813e 15Corey Richardson: Add a Default trait.
+[01:10:52] <ghrust> 13rust/06auto 141c4457e 15Corey Richardson: Update visibility
+[01:10:52] <ghrust> 13rust/06auto 1494bceb0 15bors: auto merge of #8438 : cmr/rust/default, r=thestinger
+[01:10:53] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[01:14:07] *** Quits: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP) (Quit: Leaving.)
+[01:15:08] <brson> i added an optimization that drastically reduces contention on SleeperList ... and it had no effect on perf
+[01:18:09] *** Quits: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl) (Ping timeout)
+[01:19:08] <brson> not sure how that's possible :-/
+[01:21:32] <brson> well, actually mutrace says it reduced contention from 250 ms to 3 ms, so that's something
+[01:23:00] <brson> 4 other locks have contention time at similar scales, though less. they are probably the WorkQueues since there's not much message passing in this bench
+[01:24:09] <bblum> what was your test case setup
+[01:24:31] <bblum> was it running on enough cores? did it have enough time hitting the sleeper list as opposed to running other instructions
+[01:24:34] <bblum> ?
+[01:27:00] <engla> is there anything like __builtin_expect for branches?
+[01:27:06] <brson> bblum: it's toddaaro's rt-messaging-ping-pong test on 4 cores. the test runs in ~1.5 seconds, so 250ms should be significant. i didn't see an obvious improvement from just looking at the wall clock
+[01:27:22] <brson> going to try digging a little more
+[01:27:56] <bblum> engla: no but i've imagined such a thing existing
+[01:28:20] <bblum> engla: it seems pretty simple of a feature to have a likely!() and unlikely!() macro which take a bool and produce the same bool
+[01:28:45] <brson> grrr this is frustrating
+[01:28:58] <brson> mutex functions don't show up in the profile now, but perf is unchanged
+[01:29:02] <graydon> brson: I just made a change on the buildbot to pass RUST_RT_TEST_THREADS=1 to the valgrind tests
+[01:29:15] <graydon> brson: hope that's ok. they seemed to have spiked with your most recent more-threads change
+[01:29:34] <graydon> ideally the thing you added to do a new thread before waitpid would also sleep on V
+[01:29:36] <graydon> we
+[01:29:43] <graydon> also sniff V and not spawn a thread
+[01:29:47] <graydon> *er
+[01:29:51] <graydon> yeah. that.
+[01:30:05] <graydon> (sorry, fingers not hitting the keys I mean to today)
+[01:30:47] <bblum> brson: try using your computer's clock instead of the wall clock; you probably spend about 1.5 additional seconds turning your head to look at it ;)
+[01:31:07] <brson> graydon: ok
+[01:31:19] <brson> graydon: sorry
+[01:31:26] <graydon> np. it sped up the non-V bots
+[01:31:29] <bblum> brson: did something take their place in the profile or did everything else just get an even upgrade in percentage?
+[01:36:51] <brson> bblum: i'm not sure. it looks to me like all the mutex functions related to SleeperList disappeared from the profile, and they were the highest percentage accounting for mutex functions
+[01:36:56] *** Quits: dim-an (ermolovd@moz-FE167E47.nationalcablenetworks.ru) (Quit: dim-an)
+[01:36:58] <brson> i should stop testing with firefox running
+[01:37:49] <brson> my current measurements have us 4.6x slower than go
+[01:37:53] <brson> on this one benchmark
+[01:38:17] <brson> i'll try testing this locking change again more carefully
+[01:39:08] <brson> go has *far* fewer context switches than us
+[01:39:16] <brson> 9000 vs 200
+[01:39:24] <brson> page faults too
+[01:39:31] <brson> but they don't allocate on send
+[01:39:40] <brson> fixing that should help
+[01:39:41] *** kimundi is now known as zz_kimundi
+[01:39:46] *** Joins: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP)
+[01:39:56] <brson> they're are just doing way less work all around
+[01:41:25] *** Joins: Yurume_ (yurume@AC58A8CE.8A059B47.E313B915.IP)
+[01:41:26] *** Quits: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP) (Ping timeout)
+[01:42:15] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[01:42:15] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1494bceb0 to 146791021: 02http://git.io/N3iJvQ
+[01:42:15] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[01:42:17] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[01:42:17] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02https://github.com/mozilla/rust/compare/679102109fd7...1d8360eb2f20
+[01:42:17] <ghrust> 13rust/06auto 141cd04b2 15Brian Anderson: std: Restore dynamic borrow tracking
+[01:42:17] <ghrust> 13rust/06auto 141d8360e 15bors: auto merge of #8463 : brson/rust/borrowck, r=nikomatsakis...
+[01:42:18] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[01:42:49] *** Quits: MrFahrenheit (RageOfThou@3FEF494C.29C984D5.783DEDCA.IP) (Ping timeout)
+[01:43:47] *** Quits: mihneadb (Mihnea@moz-329F29A3.lightspeed.sntcca.sbcglobal.net) (Quit: Leaving)
+[01:46:59] *** Quits: KindOne (KindOne@moz-9FF38FFD.dynamic.ip.windstream.net) (Ping timeout)
+[01:48:26] *** Joins: mihneadb (Mihnea@moz-329F29A3.lightspeed.sntcca.sbcglobal.net)
+[01:49:04] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Ping timeout)
+[01:49:38] <brson> what tool should I use to track context switches?
+[01:50:43] *** Joins: KindOne (KindOne@moz-378A481F.dynamic.ip.windstream.net)
+[01:54:18] *** Yurume_ is now known as Yurume
+[01:54:25] *** Quits: KindOne (KindOne@moz-378A481F.dynamic.ip.windstream.net) (Ping timeout)
+[01:54:33] <brson> ok, reducing that lock contention was definitely a win
+[01:54:42] * brson going to use `perf stat` from now on, not `time`
+[01:55:23] <brson> the next-highest contended locks in this benchmark are the message queues, not the work queues.
+[01:55:28] <brson> i'm not sure why
+[01:55:29] *** Quits: mihneadb (Mihnea@moz-329F29A3.lightspeed.sntcca.sbcglobal.net) (Quit: Leaving)
+[01:55:36] <brson> under load, neither of them should be doing much
+[01:55:49] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[01:56:06] <bblum> huh
+[01:56:14] <bblum> were you looking at user cpu time only, with time, or something?
+[01:56:28] <brson> bblum: i was looking at 'real'
+[01:56:37] <bblum> odd
+[01:56:40] <brson> i was also running firefox, so there was a lot of noise
+[01:56:44] <bblum> oh yeah
+[01:57:05] <bblum> real is usually pretty reliable for me though
+[01:57:31] <Luqman> brson: i think the naming for the read methods (read_le/be and friends) in ReaderUtil are slighty confusing
+[01:57:49] <brson> Luqman: i'm not in love with them. do you have suggestions/
+[01:57:52] <brson> *?
+[01:58:16] *** Joins: KindOne (KindOne@moz-1834AB7F.dynamic.ip.windstream.net)
+[01:58:35] *** Quits: huseby (huseby@moz-4E8C421A.husebyhome.com) (Ping timeout)
+[01:58:40] <acrichto> toddaaro: if you're curious https://github.com/joyent/libuv/issues/887
+[02:01:44] <Luqman> brson: i'm not sure what would be the best way to name it. right now to read a uint from a TcpStream you'd use read_le_uint which seems odd considering network order is big endian
+[02:05:29] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[02:06:15] <brson> Luqman: is network byte order automatically accounted for at a lower layer of the stack?
+[02:07:31] <Luqman> hmm, actually i think i'm wrong
+[02:08:08] <Luqman> didn't recompile the c program i was testing with :P
+[02:11:14] <brson> cmr strcat: are there optimizations we don't do by default that i can turn on?
+[02:12:02] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[02:12:02] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 141d8360e to 146791021: 02http://git.io/N3iJvQ
+[02:12:02] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[02:12:04] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[02:12:05] <ghrust> 01[13rust01] 15bors pushed 5 new commits to 06auto: 02https://github.com/mozilla/rust/compare/679102109fd7...1d9595952ad3
+[02:12:05] <ghrust> 13rust/06auto 14453ef66 15Graydon Hoare: test: un-xfail now working run-pass/foreign-struct.rs, close #2334.
+[02:12:05] <ghrust> 13rust/06auto 1416443a3 15Graydon Hoare: test: add testcase, close #4929 which was already fixed.
+[02:12:05] <ghrust> 13rust/06auto 14986ac74 15Graydon Hoare: Add tests for cross-crate condition handling. Close #5446.
+[02:12:07] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[02:12:08] <brson> i.e. does rust give me the best optimizations for my processor by default
+[02:13:30] *** Quits: q66 (q66@6EE9DE40.46454B5D.33AABD5F.IP) (Quit: Leaving)
+[02:13:50] *** Joins: sinma (sinma@moz-6A11C47C.fbx.proxad.net)
+[02:13:56] <sinma> hi
+[02:14:39] <sinma> with 0.7, «for uint::rang(0. 101) |n| { … }» doesn’t compile anymore
+[02:15:20] <sinma> rustc complain about «unresolved name»
+[02:15:52] <brson> sinma: try `for n in range(0u, 101u) { ... }`
+[02:17:03] <sinma> tried that too, but: «expected `{` but found `in`»
+[02:17:09] *** Quits: heftig (heftig@moz-FBD651D9.dip0.t-ipconnect.de) (Ping timeout)
+[02:18:22] <brson> oh you're on 0.7, not master. sorry, my mistake
+[02:18:47] <doy> it's "range", not "rang"
+[02:19:27] <sinma> It complain about uint and I’ve only made the mistake in the chat, not in my code :)
+[02:19:49] <brson> sinma: add `use std::uint` somewhere
+[02:19:59] <brson> sinma: no modules are imported by default now
+[02:20:09] <brson> due to changes in name resolution
+[02:21:57] <sinma> ok thx
+[02:25:22] *** Joins: Bernkastel (user@580120F5.8ED93E28.1C8C8CE9.IP)
+[02:26:07] *** Quits: sinma (sinma@moz-6A11C47C.fbx.proxad.net) (Quit: Konversation terminated!)
+[02:26:51] *** Quits: zz_kimundi (kimundi@moz-84498CE3.dip0.t-ipconnect.de) (Ping timeout)
+[02:27:58] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[02:28:30] <sfackler> is it possible to cast a string literal to an &-trait object for something that it implements? I can't get it to work
+[02:28:33] <sfackler> e.g. trait Foo {} impl<'self> Foo for &'self str {} let _ = "foo" as &Foo
+[02:29:56] *** Joins: zz_kimundi (kimundi@moz-BF1F3A15.dip0.t-ipconnect.de)
+[02:30:03] <strcat> no, because &str isn't a borrowed pointer
+[02:30:24] *** Quits: KindOne (KindOne@moz-1834AB7F.dynamic.ip.windstream.net) (Ping timeout)
+[02:30:26] *** zz_kimundi is now known as kimundi
+[02:31:35] *** Joins: heftig (heftig@moz-FBD651D9.dip0.t-ipconnect.de)
+[02:34:14] *** Joins: KindOne (KindOne@moz-1834AB7F.dynamic.ip.windstream.net)
+[02:37:04] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[02:42:03] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[02:42:03] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 141d95959 to 146791021: 02http://git.io/N3iJvQ
+[02:42:03] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[02:42:03] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[02:42:03] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02https://github.com/mozilla/rust/compare/679102109fd7...ac6976a618f2
+[02:42:03] <ghrust> 13rust/06auto 14411d211 15Tim Chevalier: rustc: More helpful error message when using a struct type like a function...
+[02:42:03] <ghrust> 13rust/06auto 14ac6976a 15bors: auto merge of #8502 : catamorphism/rust/issue-6702, r=pcwalton...
+[02:42:04] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[02:49:35] <brson> strcat: I created this ENFORCE_SANITY constant, which should be 'false' and the compiler is not optimizing out the branches
+[02:50:06] <brson> i see this: https://gist.github.com/brson/6259666
+[02:50:10] <strcat> brson: as in LLVM, or the rustc frontend trick to kill those?
+[02:50:18] <brson> idk
+[02:50:31] <strcat> are optimizations on?
+[02:50:37] <brson> yes
+[02:50:49] <brson> omg if optimizations aren't on then i've been wasting the entire day
+[02:50:55] <strcat> brson: is this cross-crate?
+[02:51:16] <brson> strcat: no
+[02:51:20] <brson> it's all in std
+[02:51:20] <strcat> hm
+[02:55:51] <strcat> weird
+[02:56:54] *** Joins: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net)
+[02:57:03] <brson> microoptimization is addictive
+[02:57:06] * brson dinner
+[03:08:14] <Luqman> brson: init'ing SDL should be fine if done within std::rt::start_on_main_thread { ... } right?
+[03:12:04] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[03:12:04] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14ac6976a to 146791021: 02http://git.io/N3iJvQ
+[03:12:04] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[03:12:06] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[03:12:06] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/J_ed-w
+[03:12:06] <ghrust> 13rust/06auto 146d95765 15Dmitry Ermolov: Cleanup: remove useless parameter
+[03:12:06] <ghrust> 13rust/06auto 146365c4a 15Dmitry Ermolov: Test for issue #6338.
+[03:12:06] <ghrust> 13rust/06auto 14f4b8854 15Dmitry Ermolov: Pointers to bound variables are stored after all patterns are matched....
+[03:12:08] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[03:12:42] <bjz> Luqman: yup
+[03:14:53] *** Joins: z0w0 (zack@moz-7E6DC3A.lnse2.woo.bigpond.net.au)
+[03:16:08] <Luqman> bjz: i'm getting: Terminating app due to uncaught exception 'NSInternalInconsistencyException', reason: 'Error (1000) creating CGSWindow on line 259'
+[03:16:21] <bjz> :/
+[03:16:40] <Luqman> it doesn't seem to like the call to set_video_mode
+[03:23:04] *** Quits: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se) (Ping timeout)
+[03:24:46] *** Quits: graydon (graydon@moz-F14EE0DB.cable.teksavvy.com) (Ping timeout)
+[03:30:15] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Connection reset by peer)
+[03:32:19] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[03:34:42] <Luqman> bjz: any ideas? https://gist.github.com/luqmana/6259766
+[03:39:39] *** Quits: KindOne (KindOne@moz-1834AB7F.dynamic.ip.windstream.net) (Ping timeout)
+[03:40:19] *** Quits: boredomist (user@moz-63CF9F31.res-cmts.sesp.ptd.net) (Ping timeout)
+[03:40:55] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[03:43:31] *** Joins: KindOne (KindOne@moz-90585A01.dynamic.ip.windstream.net)
+[03:47:45] *** Joins: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[03:59:35] *** Joins: chee (chee@moz-E5A0DD8.org)
+[04:11:59] *** Joins: geomyidae (geomyidae@DD6F7E3A.21468E9A.30200F38.IP)
+[04:17:06] *** Joins: tikue (tkuehn@moz-F4812C6E.hsd1.fl.comcast.net)
+[04:26:15] <bjz> Luqman: sorry, no idea :(
+[04:26:25] <bjz> Luqman: it works for glfw
+[04:31:10] <brson> Luqman: do you have a branch I can try?
+[04:32:16] <brson> Luqman: where in that gist is the sdl main event loop?
+[04:32:59] <strcat> Luqman: are you using SDL2?
+[04:33:15] <strcat> the old SDL required that you use the SDL main function as your entry point
+[04:33:17] <brson> Luqman: I don't think you can poll_event in a diferent task like that
+[04:33:38] <brson> that will be happening on not-the-main-thread
+[04:33:56] <brson> is it really crashing in set_video_mode?
+[04:35:04] *** Joins: sanxiyn (tinuviel@5DAC0FAD.5592B676.8A051A1C.IP)
+[04:40:25] <brson> sanxiyn: hi :)
+[04:43:33] <bjz> Luqman: I like your way of separating start_on_main_thread into a different fn
+[04:44:39] *** Joins: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com)
+[04:44:43] * bjz changes his glfw examples to suit
+[04:47:11] *** Joins: nsf (nsf@moz-EEF3238A.convex.ru)
+[04:47:31] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[04:48:16] *** Quits: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net) (Client exited)
+[04:51:02] *** Joins: james4k (james@moz-E7990244.consolidated.net)
+[04:51:17] <Luqman> brson: commenting out the event stuff makes no difference
+[04:51:39] <Luqman> strcat: no, it's not sdl2
+[04:52:03] <strcat> sdl2 is so nice though :P
+[04:52:25] <strcat> from a user POV :)
+[04:52:58] <bjz> Luqman: weee https://github.com/bjz/glfw-rs#example-code
+[04:54:15] <Luqman> bjz: nice
+[04:54:36] <bjz> Luqman: I was doing it in a do block
+[04:54:44] <bjz> nice to remove a level of indentation
+[04:57:41] *** Quits: james4k (james@moz-E7990244.consolidated.net) (Ping timeout)
+[04:57:51] *** Joins: james4k (james@moz-E7990244.consolidated.net)
+[05:01:35] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[05:01:40] *** Quits: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net) (Client exited)
+[05:01:40] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[05:09:53] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[05:10:02] <strcat> rusti: 2222222222
+[05:10:05] -rusti- 2222222222
+[05:15:00] <Eridius> rusti: 22222222222222222222222
+[05:15:02] -rusti- <anon>:4:12: 4:13 error: int literal is too large
+[05:15:03] -rusti- <anon>:4     let r = {
+[05:15:03] -rusti-                      ^
+[05:15:03] -rusti- application terminated with error code 101
+[05:15:56] <bjz> rusti: return 2;
+[05:15:59] -rusti- pastebinned 12 lines of output: http://ix.io/7mH
+[05:16:29] <bjz> hehe
+[05:16:54] <bjz> strcat: so that's what rusti looks like
+[05:17:19] <strcat> bjz: http://ix.io/7mI it's this
+[05:17:30] <strcat> bjz: https://github.com/thestinger/rust-playpen I uploaded the source for the web version
+[05:17:41] <strcat> http://strcat.zapto.org:8000/
+[05:17:44] <bjz> neat
+[05:20:54] *** Joins: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se)
+[05:22:04] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[05:22:04] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/J_ed-w
+[05:22:04] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[05:23:05] *** Quits: mark_edward (quassel@21027BAA.520D6B7D.BF46A673.IP) (Ping timeout)
+[05:27:11] *** Joins: mark_edward (quassel@21027BAA.520D6B7D.BF46A673.IP)
+[05:29:11] *** Quits: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net) (Client exited)
+[05:30:41] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: sleep)
+[05:32:01] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[05:32:01] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02https://github.com/mozilla/rust/compare/6a88415ed80c...6a88415ed80c
+[05:32:01] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[05:32:03] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[05:32:03] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/6NN5Bg
+[05:32:03] <ghrust> 13rust/06auto 1410cc61e 15Jed Davis: Remove discriminant symbols....
+[05:32:03] <ghrust> 13rust/06auto 149adf5e3 15bors: auto merge of #8546 : jld/rust/discrim-symbol-rm, r=graydon...
+[05:32:04] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[05:34:45] *** Quits: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[05:42:14] *** Quits: KindOne (KindOne@moz-90585A01.dynamic.ip.windstream.net) (Ping timeout)
+[05:45:30] *** Quits: james4k (james@moz-E7990244.consolidated.net) (Ping timeout)
+[05:46:54] *** Joins: KindOne (KindOne@moz-CCEAAAF.dynamic.ip.windstream.net)
+[05:52:01] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[05:52:01] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 149adf5e3 to 146a88415: 02https://github.com/mozilla/rust/commits/auto
+[05:52:01] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[05:52:03] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[05:52:03] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/NuVlqw
+[05:52:03] <ghrust> 13rust/06auto 141fcb7ed 15Kevin Ballard: Fix error message when trait method ends with wrong token...
+[05:52:03] <ghrust> 13rust/06auto 14758c5e8 15bors: auto merge of #8547 : kballard/rust/trait-parse-err-msg, r=alexcrichton...
+[05:52:04] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[05:54:08] <bjz> rusti: match "abc" { "ab",..tl => tl, _ => fail!() }
+[05:54:09] -rusti- <anon>:5:27: 5:28 error: expected `=>` but found `,`
+[05:54:10] -rusti- <anon>:5          match "abc" { "ab",..tl => tl, _ => fail!() }
+[05:54:10] -rusti-                                     ^
+[05:54:10] -rusti- application terminated with error code 101
+[05:54:21] <bjz> rusti: match "abc" { ["ab",..tl] => tl, _ => fail!() }
+[05:54:22] -rusti- <anon>:5:23: 5:34 error: mismatched types: expected `&'static str` but found a vector pattern
+[05:54:22] -rusti- <anon>:5          match "abc" { ["ab",..tl] => tl, _ => fail!() }
+[05:54:22] -rusti-                                 ^~~~~~~~~~~
+[05:54:22] -rusti- error: aborting due to previous error
+[05:54:22] -rusti- application terminated with error code 101
+[05:54:42] <bjz> can you match on parts of strs?
+[06:00:13] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[06:06:11] *** Quits: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net) (Ping timeout)
+[06:08:32] *** Quits: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Connection reset by peer)
+[06:09:29] *** Joins: BizarreCake (BizarreCak@moz-361FE9B2.dynamic.barak-online.net)
+[06:10:55] <brson> woo! i found a major source of unnecessary allocations in the scheduler - vec::unshift doesn't reserve_at_least so the message queues were reallocating constantly
+[06:11:04] <brson> now go is only 3.88x faster than rust
+[06:11:15] <brson> was 8x yesterday
+[06:11:35] <brson> getting better
+[06:12:07] <engla>  vec unshift is O(N), but I guess the vectors are small?
+[06:12:51] *** Quits: tedh (tedh@moz-D8911C58.public.wayport.net) (Ping timeout)
+[06:13:47] <brson> engla: not really sure. the queues could be smarter of course, and one way they could be is by not reallocating every unshift!
+[06:14:00] <engla> hehe yes
+[06:16:42] <mark_edward> I am upset that this PR failed some tests https://github.com/mozilla/rust/pull/8519
+[06:17:03] <mark_edward> that's the reason I first visited this IRC channel, to ask about that!
+[06:17:40] *** Joins: tedh (tedh@moz-D8911C58.public.wayport.net)
+[06:19:34] *** Joins: james4k (james@moz-E7990244.consolidated.net)
+[06:21:19] <tikue> wow brson that's really great news O_O
+[06:22:57] <mark_edward> brson: what is go faster than Rust in?
+[06:23:32] <brson> mark_edward: message passing
+[06:27:04] <mark_edward> brson: is it faster than Rust in anything else?
+[06:27:09] <brson> mark_edward: I/O
+[06:27:27] <tikue> go is quite good at i/o isn't it?
+[06:27:38] *** Joins: graydon (graydon@moz-F14EE0DB.cable.teksavvy.com)
+[06:27:38] *** ChanServ sets mode: +qo graydon graydon
+[06:27:39] <mark_edward> brson: is that getting betttter too?
+[06:27:49] <brson> not yet, but it will
+[06:28:01] <mark_edward> tikue: i watched a lot of talks on Go and it basically seems a language built for lots of IO
+[06:28:19] <tikue> mark_edward: yeah, that sounds about right
+[06:29:50] *** Quits: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se) (Ping timeout)
+[06:30:00] *** Quits: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[06:30:59] *** Quits: graydon (graydon@moz-F14EE0DB.cable.teksavvy.com) (Quit: Leaving.)
+[06:31:24] *** Joins: victorporof (victorporo@69BF4ADB.B434C58E.9B1E38F4.IP)
+[06:33:37] *** Joins: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se)
+[06:34:15] *** Joins: sebcrozet (sebcrozet@moz-C27D92D8.w193-252.abo.wanadoo.fr)
+[06:34:52] *** Quits: cubic (cubic@moz-FE5AD6C7.mc.videotron.ca) (Connection reset by peer)
+[06:45:10] *** Joins: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP)
+[06:54:50] *** Joins: eatkinson (eatkinson@moz-5CF47426.dia.static.qwest.net)
+[06:55:07] *** Quits: eatkinson (eatkinson@moz-5CF47426.dia.static.qwest.net) (Quit: eatkinson)
+[06:55:57] <sanxiyn> Re: #8519: failed in doc-tutorial test?!
+[06:58:29] *** Quits: cdidd (cdidd@moz-6072AF01.broadband.corbina.ru) (Input/output error)
+[07:08:21] *** Joins: dbaupp (Thunderbir@moz-EAA09AEF.lns20.syd7.internode.on.net)
+[07:11:06] *** Quits: sanxiyn (tinuviel@5DAC0FAD.5592B676.8A051A1C.IP) (Quit: Bye)
+[07:11:30] *** Quits: dbaupp (Thunderbir@moz-EAA09AEF.lns20.syd7.internode.on.net) (Quit: dbaupp)
+[07:12:56] *** Joins: dbaupp (Thunderbir@moz-EAA09AEF.lns20.syd7.internode.on.net)
+[07:13:33] *** Quits: dbaupp (Thunderbir@moz-EAA09AEF.lns20.syd7.internode.on.net) (Quit: dbaupp)
+[07:14:19] *** Joins: dbaupp (Thunderbir@moz-EAA09AEF.lns20.syd7.internode.on.net)
+[07:18:00] *** Quits: jeaye (Jeaye@moz-FD505E54.hsd1.ca.comcast.net) (Quit: zzz)
+[07:24:43] *** Joins: Ms2ger (Ms2ger@59A8FC80.80FA5708.187A1082.IP)
+[07:25:10] *** Joins: cdidd (cdidd@moz-E950CFB4.broadband.corbina.ru)
+[07:27:19] *** Joins: valenting (Thunderbir@moz-7BACEE12.residential.rdsnet.ro)
+[07:31:04] *** Quits: cdidd (cdidd@moz-E950CFB4.broadband.corbina.ru) (Ping timeout)
+[07:31:34] *** Joins: cdidd (cdidd@moz-7F167C87.broadband.corbina.ru)
+[07:34:46] *** Joins: doomlord (doomlod@moz-13E69BC8.range86-180.btcentralplus.com)
+[07:40:40] *** Quits: sebcrozet (sebcrozet@moz-C27D92D8.w193-252.abo.wanadoo.fr) (Ping timeout)
+[07:42:21] <tikue> rusti: let mut seen = ~[]; [1u, 1, 2, 2, 3, 3].filter(|n| { if seen.contains(n) { seen.push(*n); true } false });
+[07:42:24] -rusti- pastebinned 10 lines of output: http://ix.io/7mP
+[07:42:24] *** Joins: kermi (Mibbit@moz-F7E4A404.hsd1.ca.comcast.net)
+[07:42:40] <tikue> rusti: let mut seen = ~[]; [1u, 1, 2, 2, 3, 3].iter().filter(|n| { if seen.contains(n) { seen.push(*n); true } false });
+[07:42:40] -rusti- <anon>:5:89: 5:112 error: mismatched types: expected `()` but found `bool` (expected () but found bool)
+[07:42:40] -rusti- <anon>:5          let mut seen = ~[]; [1u, 1, 2, 2, 3, 3].iter().filter(|n| { if seen.contains(n) { seen.push(*n); true } false });
+[07:42:40] -rusti-                                                                                                   ^~~~~~~~~~~~~~~~~~~~~~~
+[07:42:41] -rusti- error: aborting due to previous error
+[07:42:42] -rusti- application terminated with error code 101
+[07:44:41] <tikue> rusti: let mut seen = ~[]; [1u, 1, 2, 2, 3, 3].iter().filter(|n| seen.contains(n));
+[07:44:43] -rusti- pastebinned 12 lines of output: http://ix.io/7mQ
+[07:45:00] <tikue> rusti: let mut seen = ~[]; let xs = [1u, 1, 2, 2, 3, 3]; xs.iter().filter(|n| seen.contains(n));
+[07:45:01] -rusti- <anon>:5:17: 5:21 warning: variable does not need to be mutable [-W unused-mut (default)]
+[07:45:01] -rusti- <anon>:5          let mut seen = ~[]; let xs = [1u, 1, 2, 2, 3, 3]; xs.iter().filter(|n| seen.contains(n));
+[07:45:01] -rusti-                           ^~~~
+[07:45:01] -rusti- ()
+[07:45:47] <tikue> rusti: let mut seen = ~[]; let xs = [1u, 1, 2, 2, 3, 3]; xs.iter().filter(|n| if seen.contains(n) { seen.push(*n); true } else { false });
+[07:45:53] -rusti- ()
+[07:46:15] *** Quits: eevee (eevee@moz-9A8E1439.evrt.wa.frontiernet.net) (Connection reset by peer)
+[07:46:28] *** Joins: eevee (eevee@moz-9A8E1439.evrt.wa.frontiernet.net)
+[07:47:15] *** Quits: kermi (Mibbit@moz-F7E4A404.hsd1.ca.comcast.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[07:47:57] <tikue> rusti: let mut seen = ~[]; let xs = [1u, 1, 2, 2, 3, 3]; let no_copies: ~[uint] = xs.iter().filter(|n| if seen.contains(n) { seen.push(*n); true } else { false }).collect();
+[07:48:09] <tikue> rusti: let mut seen = ~[]; let xs = [1u, 1, 2, 2, 3, 3]; let no_copies: ~[uint] = xs.iter().filter(|n| if seen.contains(n) { seen.push(*n); true } else { false }).collect(); no_copies
+[07:48:16] -rusti- pastebinned 8 lines of output: http://ix.io/7mR
+[07:48:16] -rusti- pastebinned 8 lines of output: http://ix.io/7mS
+[07:48:54] <tikue> rusti: let mut seen = ~[]; let xs = [1u, 1, 2, 2, 3, 3]; let no_copies: ~[uint] = xs.move_iter().filter(|n| if seen.contains(n) { seen.push(*n); true } else { false }).collect(); no_copies
+[07:48:56] -rusti- pastebinned 7 lines of output: http://ix.io/7mT
+[07:49:13] <tikue> rusti: let mut seen = ~[]; let xs = ~[1u, 1, 2, 2, 3, 3]; let no_copies: ~[uint] = xs.move_iter().filter(|n| if seen.contains(n) { seen.push(*n); true } else { false }).collect(); no_copies
+[07:49:24] -rusti- ~[]
+[07:49:35] <tikue> rusti: let mut seen = ~[]; let xs = ~[1u, 1, 2, 2, 3, 3]; let no_copies: ~[uint] = xs.move_iter().filter(|n| if !seen.contains(n) { seen.push(*n); true } else { false }).collect(); no_copies
+[07:49:36] -rusti- ~[1, 2, 3]
+[07:50:38] *** Joins: sebcrozet (sebcrozet@moz-F96421F3.w80-13.abo.wanadoo.fr)
+[07:51:24] *** Quits: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net) (Client exited)
+[07:54:12] <tikue> rusti: 2u.sqrt()
+[07:54:13] -rusti- <anon>:5:9: 6:5 error: type `uint` does not implement any method in scope named `sqrt`
+[07:54:13] -rusti- <anon>:5          2u.sqrt()
+[07:54:13] -rusti- <anon>:6     };
+[07:54:13] -rusti- error: aborting due to previous error
+[07:54:14] -rusti- application terminated with error code 101
+[07:54:21] <tikue> rusti: 2i.sqrt()
+[07:54:22] -rusti- <anon>:5:9: 6:5 error: type `int` does not implement any method in scope named `sqrt`
+[07:54:22] -rusti- <anon>:5          2i.sqrt()
+[07:54:22] -rusti- <anon>:6     };
+[07:54:22] -rusti- error: aborting due to previous error
+[07:54:23] -rusti- application terminated with error code 101
+[07:54:59] <myname> rusti: 2i.to_float().sqrt()
+[07:55:00] -rusti- 1.41421356
+[07:55:01] <tikue> rusti: use std::num::Algebraic; 2u.sqrt()
+[07:55:02] -rusti- <anon>:5:34: 6:5 error: type `uint` does not implement any method in scope named `sqrt`
+[07:55:02] -rusti- <anon>:5          use std::num::Algebraic; 2u.sqrt()
+[07:55:02] -rusti- <anon>:6     };
+[07:55:02] -rusti- error: aborting due to previous error
+[07:55:02] -rusti- application terminated with error code 101
+[07:55:10] <tikue> rusti: 2f.sqrt()
+[07:55:10] -rusti- 1.41421356
+[07:56:27] <myname> it took me a while, too
+[08:00:22] *** Joins: SingingBoyo (brandon@4DF3381A.51F4D838.4F048BDC.IP)
+[08:03:43] <SingingBoyo> Haven't had a chance to use rust in over a month... so much new stuff to play with
+[08:04:36] <tikue> rusti: 1 <= 2f
+[08:04:37] -rusti- <anon>:5:14: 5:16 error: mismatched types: expected `<VI0>` but found `float` (expected integral variable but found float)
+[08:04:37] -rusti- <anon>:5          1 <= 2f
+[08:04:37] -rusti-                        ^~
+[08:04:37] -rusti- error: aborting due to previous error
+[08:04:37] -rusti- application terminated with error code 101
+[08:04:38] *** Quits: BizarreCake (BizarreCak@moz-361FE9B2.dynamic.barak-online.net) (Connection reset by peer)
+[08:04:40] <tikue> blah
+[08:04:48] *** Quits: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net) (Quit: kevincantu)
+[08:05:08] <SingingBoyo> what's the 'up-to-date' branch to build from now? auto?
+[08:05:14] <tikue> master
+[08:05:49] *** Joins: doener (doener@moz-A47ED54E.unitymediagroup.de)
+[08:06:45] *** Quits: vadimcn (chatzilla@A2267643.76F9E272.DA40C4B3.IP) (Quit: ChatZilla 0.9.90.1 [Firefox 22.0/20130618035212])
+[08:06:52] <SingingBoyo> huh. when I last used it master had stayed at 0.6 while some other branch got updated.  has that changed since 0.7??
+[08:07:02] <tikue> yep
+[08:07:04] <tikue> :)
+[08:07:13] <tikue> master is now, indeed, master
+[08:08:09] <myname> should one know what <VI0> actually is?
+[08:08:25] <Ms2ger> Clearly, the I stands for Integer
+[08:09:01] <myname> V may stand for variable, as far as the error message tells
+[08:14:02] *** Quits: z0w0 (zack@moz-7E6DC3A.lnse2.woo.bigpond.net.au) (Client exited)
+[08:16:07] <dbaupp> rusti: 2.0 <= 1i
+[08:16:08] -rusti- <anon>:5:16: 5:18 error: mismatched types: expected `<VF0>` but found `int` (expected floating-point variable but found int)
+[08:16:08] -rusti- <anon>:5          2.0 <= 1i
+[08:16:08] -rusti-                          ^~
+[08:16:09] -rusti- error: aborting due to previous error
+[08:16:09] -rusti- application terminated with error code 101
+[08:17:28] <tikue> rusti: Cell::new(2u)
+[08:17:32] -rusti- pastebinned 11 lines of output: http://ix.io/7mU
+[08:17:48] <SingingBoyo> did self get removed?  old project doesn't build, trying to figure out what needs to change.
+[08:17:52] <dbaupp> rusti: std::cell::Cell::new(2u)
+[08:17:53] -rusti- {value: Some(2)}
+[08:18:01] <dbaupp> SingingBoyo: no; what's the error message?
+[08:18:04] <dbaupp> (and the code?)
+[08:18:09] *** Joins: dim-an (ermolovd@moz-FE167E47.nationalcablenetworks.ru)
+[08:19:31] <SingingBoyo> found `self` in ident position
+[08:19:35] <SingingBoyo> also: expected `in`, found `.`
+[08:19:51] *** Quits: dim-an (ermolovd@moz-FE167E47.nationalcablenetworks.ru) (Ping timeout)
+[08:19:53] <SingingBoyo> both on this line: for self.contents.each |ctnt| {
+[08:20:15] <tikue> is there a way to capture mutably in a closure?
+[08:20:17] *** Joins: Blub\w (wry@7E3BB9D.71150E1A.237AE2BA.IP)
+[08:20:20] <dbaupp> SingingBoyo: ah! the for loops got changed:
+[08:20:21] <myname> the for syntax in 0.8 pre changed
+[08:20:35] <myname> for ctnt in self.contents
+[08:20:41] <dbaupp> SingingBoyo: you'll need to use `do` manually do replicate that exact syntax
+[08:20:43] <tikue> SingingBoyo: for syntax is now ```for pattern in container.iter()```
+[08:21:14] <dbaupp> SingingBoyo: (if `self.contents` is a vector, or a stdlib type, then tikue's suggestion should work.)
+[08:21:35] <Ms2ger> (If it's not, you might want to make it work)
+[08:21:37] <dbaupp> tikue: doesn't Cell do that?
+[08:21:48] <myname> dbaupp: mind explaining the do part?
+[08:21:48] <tikue> dbaupp: yes, but Cell doesn't implement Send
+[08:22:04] <tikue> so my question wasn't specific enough :P I need a way to capture mutably without losing the ability to send
+[08:22:05] <dbaupp> tikue: I thought it did... I thought that was part of the use of it?
+[08:22:14] <tikue> hmmm unless i'm mistaken
+[08:22:33] <dbaupp> myname: for f |x| { .... } => `do f |x| { ... true }`
+[08:22:45] <tikue> rusti: use std::cell::Cell; use std::comm::stream; let (port, chan) = stream(); chan.send(Cell::new(2u)); port.recv().take()
+[08:22:46] -rusti- 2
+[08:22:48] <tikue> ah
+[08:22:50] <tikue> weird
+[08:23:07] *** Joins: dim-an (ermolovd@moz-FE167E47.nationalcablenetworks.ru)
+[08:23:24] <dbaupp> myname: (break and loop have to be implemented manually; break was rewritten to return false from the closure, and loop was a `return true`; although actually writing `return false`/`return true` won't work, since return doesn't work in closures yet.)
+[08:23:48] <dbaupp> s/break was rewritten/`for` rewrote `break`/
+[08:23:49] <myname> i see
+[08:24:49] <SingingBoyo> alright great.  that definitely helps.
+[08:25:37] *** Quits: dim-an (ermolovd@moz-FE167E47.nationalcablenetworks.ru) (Ping timeout)
+[08:28:52] *** flaper87 is now known as flaper87|afk
+[08:30:50] <engla> I found a bug where the name of inner functions matter x_x
+[08:30:51] <engla> https://gist.github.com/anonymous/36b0f697c032585bc394
+[08:30:57] <engla> nested functions
+[08:31:12] *** Joins: maik (maik___@moz-9E1D04D0.dip0.t-ipconnect.de)
+[08:31:56] <dbaupp> engla: oh, awesome
+[08:32:39] <SingingBoyo> so has something changed with copy as well?  'copy self.<someFieldName>' doesn't work anymore
+[08:33:00] <engla> yes
+[08:33:07] <engla> awesome it is
+[08:33:24] <dbaupp> SingingBoyo: self.someFieldName.clone()
+[08:33:31] <dbaupp> SingingBoyo: (copy was actually removed.)
+[08:34:43] <SingingBoyo> good to know, thanks
+[08:35:51] *** Joins: pyrac (pyrac@moz-F2B1E85D.w92-162.abo.wanadoo.fr)
+[08:38:38] <tikue> what does is a lifetime error trying to tell you when it says that ```borrowed pointer must be valid for block X…but is only valid for block X```
+[08:38:49] <tikue> where X === X
+[08:39:23] <dbaupp> code?
+[08:39:42] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[08:40:46] <tikue> dbaupp: https://gist.github.com/tikue/2585c650cbefd1c84558
+[08:42:25] *** Joins: jaen (jaen@moz-E0979827.copit.pl)
+[08:43:56] <SingingBoyo> so I have code that used to provide extra methods if a type parameter was a copyable type.  but now I get this: attempt to bound type parameter with a nonexistant trait `Copy`.
+[08:44:10] <tikue> SingingBoyo: it's called Clone now
+[08:44:57] <SingingBoyo> ah okay.  copy -> clone(), Copy -> Clone.  makes sense.  thanks
+[08:45:46] *** Quits: tiffany (kawaii@moz-EB8B0C08.dhcp.embarqhsd.net) (Ping timeout)
+[08:45:57] *** Quits: Ms2ger (Ms2ger@59A8FC80.80FA5708.187A1082.IP) (Ping timeout)
+[08:46:20] <dbaupp> tikue: ah! I think it's because &fn closures are only valid for the scope in which they are defined
+[08:46:39] <dbaupp> tikue: (and ~fn gets demoted to &fn for .filter)
+[08:47:51] <tikue> oh, yeah that does make sense
+[08:48:00] <tikue> but i'm not sure how to fix it :(
+[08:49:06] <dbaupp> you can pass it into a closure
+[08:49:18] <dbaupp> (i.e. not return it from the fn.)
+[08:49:43] * dbaupp wonders if the adaptors should be generic over the function type, to allow this to work.
+[08:50:41] <tikue> hmm
+[08:51:29] <tikue> i'd say yes :P
+[08:51:45] *** Joins: spider-mario (spidermari@moz-81131DB6.fbx.proxad.net)
+[08:51:46] * dbaupp files a bug
+[08:52:40] * dbaupp 's bug filing is getting interrupted by food.
+[08:52:44] <tikue> lol
+[08:52:57] <tikue> TLS is another option in the meantime, i suppose
+[08:53:03] <tikue> though an ugly one
+[08:53:14] <myname> dbaupp: are you a dwarf by chance? :p
+[08:53:16] <dbaupp> you could go full ugly and use an static mut global :P
+[08:53:46] <dbaupp> myname: I wasn't one last time I checked, but you never know :P
+[08:53:49] <tikue> dbaupp: i thought you couldn't do that?
+[08:53:53] <engla> dbaupp: I've tested making iterator::Map generic over a function type
+[08:54:33] <engla> dbaupp: in my attempt, you have to annotate closure arguments with types to make it work. so I thought it wasn't worth that
+[08:55:06] <engla> (that attempt implemented Map for extern "Rust" fn() and &fn)
+[08:55:09] <myname> oh, there are globals?
+[08:56:25] <engla> tikue: you can return iterator::Filter if the closure is &'static fn  (no captures)
+[08:56:50] <tikue> engla: yeah, the problem in this case is that it needs to capture :\
+[08:57:45] <tikue> basically was trying to do a prime sieve iterator without creating a PrimeIterator struct, but it requires keeping a running tally of all prime number in the closure
+[08:59:00] *** Joins: dim-an (ermolovd@moz-2590E524.yandex.net)
+[09:00:53] <engla> calling a ~fn() is slow anyway
+[09:02:03] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[09:02:03] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/NuVlqw
+[09:02:03] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[09:02:16] *** Joins: Ms2ger (Ms2ger@moz-E5FA052E.ugent.be)
+[09:02:37] *** Quits: valenting (Thunderbir@moz-7BACEE12.residential.rdsnet.ro) (Ping timeout)
+[09:05:08] *** Joins: true_droid (true_droid@moz-123FD9B8.beck.volia.net)
+[09:07:59] *** Quits: heftig (heftig@moz-FBD651D9.dip0.t-ipconnect.de) (Ping timeout)
+[09:08:35] *** Joins: heftig (heftig@moz-C32EAC78.dip0.t-ipconnect.de)
+[09:10:38] *** Quits: pyrac (pyrac@moz-F2B1E85D.w92-162.abo.wanadoo.fr) (Quit: pyrac)
+[09:12:02] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[09:12:02] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/p973og
+[09:12:02] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[09:12:03] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[09:12:03] <ghrust> 01[13rust01] 15bors pushed 1 new commit to 06auto: 02http://git.io/TdGheg
+[09:12:03] <ghrust> 13rust/06auto 14c9c6e04 15bors: auto merge of #8548 : catamorphism/rust/unignore-rustpkg-tests, r=brson...
+[09:12:03] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[09:12:54] <bjz> rusti: extern "C" fn f(x: int) -> int { x } static F: extern "C" fn(x: int) -> int = f;
+[09:12:54] -rusti- <anon>:5:87: 5:88 error: mismatched types: expected `extern "C" fn(int) -> int` but found `*u8` (expected extern fn but found *-ptr)
+[09:12:55] -rusti- <anon>:5          extern "C" fn f(x: int) -> int { x } static F: extern "C" fn(x: int) -> int = f;
+[09:12:55] -rusti-                                                                                                 ^
+[09:12:55] -rusti- error: aborting due to previous error
+[09:12:56] -rusti- application terminated with error code 101
+[09:13:07] <bjz> rusti: extern "C" fn f(x: int) -> int { x } static mut F: extern "C" fn(x: int) -> int = f;
+[09:13:08] -rusti- <anon>:5:91: 5:92 error: mismatched types: expected `extern "C" fn(int) -> int` but found `*u8` (expected extern fn but found *-ptr)
+[09:13:08] -rusti- <anon>:5          extern "C" fn f(x: int) -> int { x } static mut F: extern "C" fn(x: int) -> int = f;
+[09:13:09] -rusti-                                                                                                     ^
+[09:13:09] -rusti- error: aborting due to previous error
+[09:13:10] -rusti- application terminated with error code 101
+[09:13:21] <bjz> rusti: fn f(x: int) -> int { x } static mut F: extern fn(x: int) -> int = f;
+[09:13:22] -rusti- ()
+[09:14:23] *** Joins: donri (dag@moz-9BB61102.tbcn.telia.com)
+[09:14:40] <bjz> rusti: fn f(x: int) -> int { x } static mut F: extern fn(x: int) -> int = f; F(1)
+[09:14:45] -rusti- <anon>:5:79: 5:80 error: use of mutable static requires unsafe function or block
+[09:14:45] -rusti- <anon>:5          fn f(x: int) -> int { x } static mut F: extern fn(x: int) -> int = f; F(1)
+[09:14:45] -rusti-                                                                                         ^
+[09:14:45] -rusti- error: aborting due to previous error
+[09:14:47] -rusti- application terminated with error code 101
+[09:14:55] <bjz> rusti: fn f(x: int) -> int { x } static mut F: extern fn(x: int) -> int = f; unsafe { F(1) }
+[09:14:56] -rusti- <anon>:5:88: 5:89 error: internal compiler error: Cannot translate def def_static({crate: 0, node: 23}, true) to a callable thing!
+[09:14:56] -rusti- <anon>:5          fn f(x: int) -> int { x } static mut F: extern fn(x: int) -> int = f; unsafe { F(1) }
+[09:14:56] -rusti-                                                                                                  ^
+[09:14:58] -rusti- application terminated with error code 101
+[09:15:25] <bjz> rusti: fn f(x: int) -> int { x } static mut F: fn(x: int) -> int = f; unsafe { F(1) }
+[09:15:29] -rusti- pastebinned 6 lines of output: http://ix.io/7mY
+[09:17:10] *** Joins: pyrac (pyrac@moz-F2B1E85D.w92-162.abo.wanadoo.fr)
+[09:17:56] <engla> tikue: this rewrite compiles
+[09:18:02] <engla> no idea if it's correct ^ ^
+[09:18:05] <engla> https://gist.github.com/anonymous/055a8676866a35502507
+[09:18:26] <bjz> rusti: fn f(x: int) -> int { x } static F: extern fn(x: int) -> int = f; F(1)
+[09:18:27] -rusti- <anon>:5:75: 5:76 error: internal compiler error: Cannot translate def def_static({crate: 0, node: 23}, false) to a callable thing!
+[09:18:27] -rusti- <anon>:5          fn f(x: int) -> int { x } static F: extern fn(x: int) -> int = f; F(1)
+[09:18:27] -rusti-                                                                                     ^
+[09:18:28] -rusti- application terminated with error code 101
+[09:18:53] <engla> tikue: the difference is that  Repeat::new() + Zip can be used to create an "explicit capture" for an iterator. In no way this is ideal
+[09:19:07] <engla> and @mut ~[] is a clonable (clone for Repeat) way to handle your prime list
+[09:19:09] <tikue> huh that's really interesting
+[09:19:55] <tikue> thanks for that engla
+[09:20:17] <tikue> i'm thinking maybe to spawn a task that handles the list
+[09:20:25] <tikue> would be an elegant way of handling it
+[09:20:29] <tikue> perhaps more rustic as well
+[09:20:39] <myname> thinking about it, a threaded prime generator would be a nice learning project, too
+[09:22:17] <maik> rusti: (1,1).fst()
+[09:22:18] -rusti- <anon>:5:9: 6:5 error: type `(<VI0>,<VI1>)` does not implement any method in scope named `fst`
+[09:22:18] -rusti- <anon>:5          (1,1).fst()
+[09:22:18] -rusti- <anon>:6     };
+[09:22:18] -rusti- error: aborting due to previous error
+[09:22:18] -rusti- application terminated with error code 101
+[09:22:24] <maik> rusti: (1,1).first()
+[09:22:25] -rusti- 1
+[09:24:13] <engla> the Repeat thing is kind of cute. you create a gc pointer that's shared by all the invocations of the prime filter function
+[09:25:19] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: leaving)
+[09:26:14] <tikue> where in std are duplex streams?
+[09:27:08] <tikue> thought they were in comm but i don't see it
+[09:27:34] <maik> tikue, weren't they in extra?
+[09:27:51] <tikue> maik: are you're right, thank you!
+[09:29:34] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[09:31:14] *** Quits: dim-an (ermolovd@moz-2590E524.yandex.net) (Quit: dim-an)
+[09:31:22] *** Quits: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net) (Ping timeout)
+[09:32:05] *** Joins: BitPuffin_ (quassel@moz-8370D1B9.bredband.comhem.se)
+[09:35:33] <dbaupp> engla: oh, right; yeah, I guess that would happen.
+[09:35:59] <dbaupp> engla: (annotating arguments)
+[09:36:30] <tikue> rusti: use extra::comm::DuplexStream; 0
+[09:36:30] -rusti- <anon>:5:13: 5:38 warning: unused import [-W unused-imports (default)]
+[09:36:31] -rusti- <anon>:5          use extra::comm::DuplexStream; 0
+[09:36:31] -rusti-                       ^~~~~~~~~~~~~~~~~~~~~~~~~
+[09:36:31] -rusti- 0
+[09:37:07] <tikue> rust/primes.rs:36:8: 36:13 error: unresolved import. maybe a missing `extern mod extra`?
+[09:37:08] <tikue> rust/primes.rs:36     use extra::comm::DuplexStream;
+[09:37:08] <tikue>                                                   ^~~~~
+[09:37:10] <tikue> any idea what that's about
+[09:38:10] <SingingBoyo> not sure but I just ran into what may/may not be exactly the same thing 
+[09:38:17] *** Quits: Bernkastel (user@580120F5.8ED93E28.1C8C8CE9.IP) (Quit: ERC Version 5.3 (IRC client for Emacs))
+[09:38:22] <dbaupp> tikue: you have an extern mod extra right?
+[09:38:34] <dbaupp> oh... it needs to be at the top of the crate too
+[09:38:42] <tikue> just added it; can you not put extern mods inside functions?
+[09:38:58] <dbaupp> you can probably use them unqualified
+[09:39:04] <dbaupp> *fully qualified
+[09:39:15] <dbaupp> i.e. extra::comm::DuplexStream everywhere
+[09:39:38] <dbaupp> (since it introduces the `extra` "mod" in that scope, and `use`s are always from the top of the crate.)
+[09:40:14] <SingingBoyo> I feel like there could be a whole section in the tutorial on how imports get resolved
+[09:40:16] <dbaupp> so I guess `mod foo { extern mod extra; use foo::extra::comm::DuplexStream; }` would work, but I don't think you can use use to get inside a function, so it'll never work there.
+[09:40:22] <dbaupp> SingingBoyo++
+[09:43:05] <tikue> argh
+[09:43:13] <tikue> so the filter problem is for any closure that captures?
+[09:43:18] <tikue> not just if it captures and uses stuff mutably?
+[09:45:06] <dbaupp> yeah
+[09:45:32] <dbaupp> the environment goes on the stack (and is dynamically sized), so captures make it non-returnable.
+[09:46:30] <dbaupp> (I'm not sure if noncapturing ones are also non-returnable atm; I don't think they need to be though.)
+[09:47:14] <tikue> ok well that's enough for one night
+[09:47:15] <tikue> heh
+[09:47:38] <tikue> this is one of those areas of rust that's still a little warty i suppose
+[09:47:46] <tikue> i'm trying to imagine what it'll look like ideally...
+[09:49:29] <tikue> i honestly can't even think of a way to solve this elegantly
+[09:49:30] <dbaupp> rusti: fn foo() -> &fn() { || {println("hi");} } foo()
+[09:49:35] <tikue> or rather, begin to think of a way
+[09:49:51] <tikue> dbaupp: well that seems to work just finfe
+[09:50:02] <dbaupp> tikue: more @, I guess; since that's how Haskell-et-al work
+[09:50:31] *** Joins: z0w0 (zack@moz-7E6DC3A.lnse2.woo.bigpond.net.au)
+[09:50:49] <tikue> rusti: fn foo() -> &fn() { let a = 1u; || { printfln!(a); } } foo()
+[09:50:52] -rusti- pastebinned 17 lines of output: http://ix.io/7n0
+[09:51:28] <tikue> dbaupp: what do you mean more @?
+[09:51:50] <dbaupp> tikue: use GC, like in engla's rewrite to use @mut ~[]
+[09:52:01] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[09:52:01] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14c9c6e04 to 14758c5e8: 02http://git.io/N3iJvQ
+[09:52:01] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[09:52:02] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[09:52:02] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/tIdc_A
+[09:52:02] <ghrust> 13rust/06auto 14fdaae34 15Kevin Ballard: Better error message for unknown start of token...
+[09:52:02] <ghrust> 13rust/06auto 146009011 15bors: auto merge of #8550 : kballard/rust/token-start-err-msg, r=catamorphism...
+[09:52:03] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[09:52:12] <tikue> idk i mean that defeats the whole purpose of closures
+[09:52:18] <dbaupp> right
+[09:52:19] <tikue> might as well just use fn thingy()
+[09:52:26] <tikue> if you're not closing over anything
+[09:52:49] * dbaupp doesn't have any idea how to solve this elegantly/safely either
+[09:53:15] *** Quits: BitPuffin_ (quassel@moz-8370D1B9.bredband.comhem.se) (Ping timeout)
+[09:53:53] <maik> rusti: fn foo<'r>() -> &'r fn() { let a = 1u; || &'r { printfln!(a) } } foo()
+[09:53:54] -rusti- <anon>:5:51: 5:71 error: mismatched types: expected `()` but found `&()` (expected () but found &-ptr)
+[09:53:54] -rusti- <anon>:5          fn foo<'r>() -> &'r fn() { let a = 1u; || &'r { printfln!(a) } } foo()
+[09:53:54] -rusti-                                                             ^~~~~~~~~~~~~~~~~~~~
+[09:53:54] -rusti- error: aborting due to previous error
+[09:53:56] -rusti- application terminated with error code 101
+[09:54:00] <dbaupp> the inverse of the xorshift state transition matrix: http://ix.io/7n1 (looks kinda cool, if anyone is interested.)
+[09:54:10] <tikue> i have a feeling rust will infest my dreams tonight :P
+[09:54:18] <dbaupp> tikue: doesn't it always? :P
+[09:54:23] <tikue> haha
+[09:54:30] <tikue> true 
+[09:56:10] *** Quits: tikue (tkuehn@moz-F4812C6E.hsd1.fl.comcast.net) (Quit: tikue)
+[09:56:36] <engla> dbaupp: &'static fn are returnable
+[09:56:48] <engla> I *think* they should be Send as well, but they aren't
+[09:56:54] <dbaupp> maik: that won't work for 2 reasons, but mainly because `a` is on the stack, so it doesn't have the appropriate lifetime
+[09:57:17] <dbaupp> (the other reason is the whole captures-go-on-the-stack thing I mentioned before)
+[09:57:27] <dbaupp> engla: right
+[09:58:07] * dbaupp thinks it's weird that everyone has an icon on github now
+[09:58:57] <engla> it's nice
+[09:59:37] <dbaupp> not complaining; just strange not seeing any white/grey octocats.
+[10:00:48] *** Joins: dim-an (ermolovd@moz-FE167E47.nationalcablenetworks.ru)
+[10:01:46] *** Quits: nsf (nsf@moz-EEF3238A.convex.ru) (No route to host)
+[10:02:20] <maik> dbaupp, ah right
+[10:02:41] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[10:03:37] <mm> cannot move out of captured outer variable in a heap closure
+[10:03:40] <mm> .. but I want to!
+[10:04:11] <mm> I have let (port, chan) = stream(); and then I want to pass port & chan to seperate tasks...
+[10:04:12] <dbaupp> mm: https://github.com/mozilla/rust/wiki/Doc-under-construction-FAQ#once-functions
+[10:05:26] *** Quits: doener (doener@moz-A47ED54E.unitymediagroup.de) (Quit: leaving)
+[10:06:50] *** Quits: pyrac (pyrac@moz-F2B1E85D.w92-162.abo.wanadoo.fr) (Quit: pyrac)
+[10:07:42] *** Joins: nsf (nsf@moz-EEF3238A.convex.ru)
+[10:08:29] <dbaupp> ChrisMorgan: I keep getting github notifications when you rebase your augmented-assignment branch :P
+[10:08:35] <dbaupp> ChrisMorgan: does it work yet?
+[10:08:54] <mm> heh, this is what google gave me for "rust cell" http://www.amazon.com/Rust-Volume-2-Secrets-Cell/dp/1936393581 -- not quite the same thing, but the title is good :P
+[10:10:09] <dbaupp> mm: close enough! :P
+[10:12:27] *** Joins: MrFahrenheit (RageOfThou@3FEF494C.29C984D5.783DEDCA.IP)
+[10:14:22] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Client exited)
+[10:15:10] *** Quits: carleastlund (cce@moz-C8071335.c3-0.smr-ubr1.sbo-smr.ma.cable.rcn.com) (Quit: carleastlund)
+[10:15:48] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[10:15:58] <Thiez> what is the replacement of consume_iter?
+[10:16:15] <dbaupp> move_iter
+[10:16:24] <dbaupp> s/consume/move/ in general too
+[10:16:31] <Thiez> ok, thanks :)
+[10:16:42] *** Quits: SingingBoyo (brandon@4DF3381A.51F4D838.4F048BDC.IP) (Ping timeout)
+[10:20:18] *** Joins: glennsl (textual@moz-5D7B804F.getinternet.no)
+[10:24:28] <nsf> can anyone help me with this line: https://bitbucket.org/jlm/rust-sdl2/src/36f3a35f96c83e9c66c26d9acfc84044029ba923/src/video.rs?at=default#cl-59
+[10:24:30] <nsf> not sure I get it
+[10:24:37] <nsf> why double-deref it here
+[10:25:00] <nsf> and deref is applied to a tuple O_o
+[10:25:37] <engla> struct Window(SDL_Window)   is derefed to SDL_Window
+[10:25:44] <nsf> oh, I see
+[10:25:48] <nsf> thanks
+[10:29:11] *** Joins: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP)
+[10:29:20] <nsf> isn't it better to pass the self by value in that kind of functions then?
+[10:29:29] *** Quits: glennsl (textual@moz-5D7B804F.getinternet.no) (Ping timeout)
+[10:29:51] *** Quits: pauls (pauls@moz-BFEF1F22.ccs.neu.edu) (Ping timeout)
+[10:31:11] <dbaupp> nsf: self by value/by &mut is a yet-to-be-resolved thing
+[10:31:23] <dbaupp> (for drop)
+[10:31:49] <dbaupp> self-by-val would be optimal, but it's tricky to do it so that the dtor only runs once (aiui)
+[10:32:12] <nsf> dbaupp: I see, thanks, yep compiler complains if I'm trying to do that here by value
+[10:32:59] <dbaupp> yeah, it has to match the definition on the trait exactly; so that would have to be changed in std.
+[10:33:51] <nielsle> I am a little confused about the Send trait. Is there a simple trick to make the following compile?   http://pastebin.com/HHcfhJs4
+[10:35:03] *** Joins: pauls (pauls@moz-BFEF1F22.ccs.neu.edu)
+[10:35:10] <dbaupp> nielsle: &fn isn't Send-able (i.e. transferrable across tasks) since that would allow for data-races (e.g. it might capture a mutable variable)
+[10:35:28] <dbaupp> (and other things, like making @ non-task-local)
+[10:35:47] <dbaupp> but if you use `op: ~fn() -> A` it should work
+[10:35:55] <nielsle> Ah, thanks
+[10:39:18] *** Quits: james4k (james@moz-E7990244.consolidated.net) (Ping timeout)
+[10:39:40] *** Joins: q66 (q66@6EE9DE40.46454B5D.33AABD5F.IP)
+[10:40:25] *** Quits: nsf (nsf@moz-EEF3238A.convex.ru) (Quit: WeeChat 0.4.1)
+[10:42:08] *** Joins: Earnestly (earnest@B0BDF733.8FDE20A.5411983D.IP)
+[10:43:42] <maik> if I have let mut vec = ~[], and I want to get it immutable again so I do let vec = vec; this is o(n) right?
+[10:44:24] <Thiez> it is o(1) as far as I'm aware
+[10:44:34] <Thiez> a noop, really.
+[10:44:44] <maik> so the compiler knows what I want to do? cool
+[10:45:20] *** Joins: valenting (Thunderbir@moz-7BACEE12.residential.rdsnet.ro)
+[10:46:55] <engla> generically, a move should/will be optimized to a noop, further, ~[] is just a pointer
+[10:48:03] <Thiez> the compiler can simply choose to start treating that pointer as immutable because nothing else is pointing at it :)
+[10:58:56] *** Joins: glennsl (textual@moz-5D7B804F.getinternet.no)
+[11:04:17] *** Quits: Ms2ger (Ms2ger@moz-E5FA052E.ugent.be) (Connection reset by peer)
+[11:11:09] *** Quits: Liothen (liothen@moz-80EF0CD7.spkn.qwest.net) (Quit: Textual IRC Client: www.textualapp.com)
+[11:15:17] *** Quits: dim-an (ermolovd@moz-FE167E47.nationalcablenetworks.ru) (Quit: dim-an)
+[11:16:42] *** Quits: maik (maik___@moz-9E1D04D0.dip0.t-ipconnect.de) (Ping timeout)
+[11:23:07] *** Joins: Ms2ger (Ms2ger@59A8FC80.80FA5708.187A1082.IP)
+[11:25:11] <engla> did we agree on removing str::WordIterator since it's not really doing the correct thing?
+[11:25:17] <engla> I'm editing things there anyway
+[11:26:48] <dbaupp> what's the problem with it?
+[11:27:16] *** Quits: mibitzi_ (mibitzi@659DAD1F.60DF3A09.8395810B.IP) (Ping timeout)
+[11:27:26] <engla> unicode defines word boundaries
+[11:27:28] <engla> self.split_iter(char::is_whitespace).filter(|s| !s.is_empty())
+[11:27:30] <engla> is too simple
+[11:27:57] <engla> and that above solution to split on whitespace is a simple replacement for those that explicitly want to split on whitespace
+[11:28:18] *** Quits: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP) (Connection reset by peer)
+[11:28:20] *** Joins: maxli1 (maxli@B5559308.9C54E60.2FA4EA88.IP)
+[11:28:38] <dbaupp> ah, damn unicode :P
+[11:29:53] <Ms2ger> Damn those Asians who don't use our conventions? :)
+[11:32:47] *** Joins: fabiand (fabiand@moz-2C9D602E.adsl.alicedsl.de)
+[11:40:39] *** Joins: nsf (nsf@moz-EEF3238A.convex.ru)
+[11:40:57] *** Quits: busylizzy (lisa@85228838.12D0DC84.211374C4.IP) (Ping timeout)
+[11:46:11] *** Quits: valenting (Thunderbir@moz-7BACEE12.residential.rdsnet.ro) (Ping timeout)
+[11:47:00] *** Quits: z0w0 (zack@moz-7E6DC3A.lnse2.woo.bigpond.net.au) (Ping timeout)
+[11:47:55] <Thiez> so ~Trait, @Trait, and &Trait all consist of a vtable pointer and a pointer to data, yes? Do they use the same vtables when the traits are the same?
+[11:49:00] <Thiez> e.g. if ~Trait_A = (vtable,~data) and @Trait_B = (vtable,~data) and Trait_A == Trait_B, will the vtables be the same?
+[11:49:21] <dbaupp> I think the vtable is based on the type with which they were created?
+[11:49:33] <Thiez> ah, good point
+[11:49:55] <Thiez> okay, so if ~Trait and @Trait are based on the same type (apart from the pointer type), will they share a vtable?
+[11:50:03] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[11:50:11] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: samx)
+[11:52:11] <dbaupp> I think so
+[11:52:25] <dbaupp> (I don't actually know though)
+[11:52:55] <Thiez> okay, let's find out
+[11:53:40] *** Joins: pyrac (pyrac@moz-F2B1E85D.w92-162.abo.wanadoo.fr)
+[11:54:05] <dbaupp> rusti: use std::cast::transmute; trait Foo { fn foo(&self) {} } impl Foo for uint {} impl Foo for int {} (transmute::<~Foo, (uint,uint)>(~1i as ~Foo),transmute::<@Foo, (uint,uint)>(@1i as @Foo),transmute::<~Foo, (uint,uint)>(~1u as ~Foo),transmute::<@Foo, (uint,uint)>(@1u as @Foo))
+[11:54:07] -rusti- pastebinned 14 lines of output: http://ix.io/7n8
+[11:54:19] <dbaupp> rusti: use std::cast::transmute; trait Foo { fn foo(&self) {} } impl Foo for uint {} impl Foo for int {} unsafe {(transmute::<~Foo, (uint,uint)>(~1i as ~Foo),transmute::<@Foo, (uint,uint)>(@1i as @Foo),transmute::<~Foo, (uint,uint)>(~1u as ~Foo),transmute::<@Foo, (uint,uint)>(@1u as @Foo))}
+[11:54:20] -rusti- ((6340760, 140351276846384), (6340840, 140351276846416), (6340984, 140351276846464), (6341064, 140351276846496))
+[11:54:57] <dbaupp> rusti: use std::cast::transmute; trait Foo { fn foo(&self) {} } impl Foo for uint {} impl Foo for int {} unsafe {(transmute::<~Foo, (uint,uint)>(~1i as ~Foo),transmute::<@Foo, (uint,uint)>(@1i as @Foo),transmute::<~Foo, (uint,uint)>(~1u as ~Foo),transmute::<@Foo, (uint,uint)>(@1u as @Foo),transmute::<~Foo, (uint,uint)>(~2i as ~Foo),transmute::<@Foo, (uint,uint)>(@2i as @Foo),transmute::<~Foo, (uint,uint)>(~2u as ~Foo),transmute::<@
+[11:54:57] -rusti- <anon>:6:4: 6:5 error: incorrect close delimiter: `}`
+[11:54:57] -rusti- <anon>:6     };
+[11:54:57] -rusti-              ^
+[11:54:57] -rusti- application terminated with error code 101
+[11:55:05] *** Quits: veddan (viktor@moz-C79BC80B.csbnet.se) (Client exited)
+[11:55:28] <dbaupp> rusti: use std::cast::transmute; trait Foo { fn foo(&self) {} } impl Foo for uint {} impl Foo for int {} unsafe {(transmute::<~Foo, (uint,uint)>(~1i as ~Foo),transmute::<@Foo, (uint,uint)>(@1i as @Foo),transmute::<~Foo, (uint,uint)>(~2i as ~Foo),transmute::<@Foo, (uint,uint)>(@2i as @Foo))}
+[11:55:29] -rusti- ((6340760, 140201758297392), (6340840, 140201758297424), (6340856, 140201758297472), (6340872, 140201758297504))
+[11:55:33] <Thiez> nice.
+[11:55:41] *** Joins: vmx (vmx@moz-B23D5E9F.pools.arcor-ip.net)
+[11:55:57] <dbaupp> it appears they don't ever share a vtable??
+[11:56:04] *** Joins: dim-an (ermolovd@moz-2590E524.yandex.net)
+[11:56:13] <Thiez> perhaps the vtables are created dynamically.
+[11:56:31] <dbaupp> rusti: use std::cast::transmute; trait Foo { fn foo(&self) {} } impl Foo for uint {} impl Foo for int {} unsafe {(transmute::<~Foo, (uint,uint)>(~1i as ~Foo),transmute::<~Foo, (uint,uint)>(~2i as ~Foo),transmute::<~Foo, (uint,uint)>(~3i as ~Foo),transmute::<~Foo, (uint,uint)>(~4i as ~Foo))}
+[11:56:33] -rusti- ((6336664, 140590251511088), (6336680, 140590251511120), (6336696, 140590251511152), (6336712, 140590251511184))
+[11:56:45] <dbaupp> in theory those could be all the same, I think?
+[11:56:52] <Thiez> yes that was what I would expect
+[11:57:23] <dbaupp> it looks like each trait object gets it's own vtable, given the regular increments there
+[11:57:37] <dbaupp> *its
+[11:58:05] <Thiez> silly, the compiler could detect which objects get cast to a trait object at compile-time and emit the vtable only once.
+[11:59:17] <dbaupp> yeah, have a side table of vtables
+[11:59:24] <dbaupp> (yet another side table :P )
+[12:00:59] <dbaupp> rusti: use std::cast::transmute; trait Foo { fn foo(&self) {} } impl Foo for uint {} impl Foo for int {} unsafe { let (ptr1, _): (*(uint, uint), uint)) = transmute(~1i as ~Foo); let (ptr2, _): (*(uint, uint), uint)) = transmute(~2i as ~Foo); (*ptr1, *ptr2)}
+[12:01:07] -rusti- line longer than 150 columns, pastebinned 4 lines of output: http://ix.io/7n9
+[12:01:25] <dbaupp> rusti: use std::cast::transmute; trait Foo { fn foo(&self) {} } impl Foo for uint {} impl Foo for int {} unsafe { let (ptr1, _): (*(uint, uint), uint) = transmute(~1i as ~Foo); let (ptr2, _): (*(uint, uint), uint) = transmute(~2i as ~Foo); (*ptr1, *ptr2)}
+[12:01:26] -rusti- ((6336544, 4210000), (6336544, 4210000))
+[12:01:38] <dbaupp> yup the vtables are identical
+[12:01:53] <Thiez> hmmn, that means we can frankenstein this
+[12:02:01] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[12:02:01] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/tIdc_A
+[12:02:01] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[12:02:27] <dbaupp> rusti: use std::cast::transmute; trait Foo { fn foo(&self) {} } impl Foo for uint {} impl Foo for int {} unsafe { let (ptr1, _): (*(uint, uint), uint) = transmute(~1i as ~Foo); let (ptr2, _): (*(uint, uint), uint) = transmute(@2i as @Foo); (*ptr1, *ptr2)}
+[12:02:28] -rusti- ((6340640, 4210288), (6340784, 4210288))
+[12:03:03] <dbaupp> they're not identical for the different pointer types... but I have a feeling the first one is the tydesc, and so should be different.
+[12:03:15] <dbaupp> rusti: use std::cast::transmute; trait Foo { fn foo(&self) {} fn bar(&self) {} } impl Foo for uint {} impl Foo for int {} unsafe { let (ptr1, _): (*(uint, uint), uint) = transmute(~1i as ~Foo); let (ptr2, _): (*(uint, uint), uint) = transmute(@2i as @Foo); (*ptr1, *ptr2)}
+[12:03:16] -rusti- ((6340640, 4210288), (6340800, 4210288))
+[12:03:28] <dbaupp> rusti: use std::cast::transmute; trait Foo { fn foo(&self) {} fn bar(&self) {} } impl Foo for uint {} impl Foo for int {} unsafe { let (ptr1, _): (*(uint, uint, uint), uint) = transmute(~1i as ~Foo); let (ptr2, _): (*(uint, uint, uint), uint) = transmute(@2i as @Foo); (*ptr1, *ptr2)}
+[12:03:29] -rusti- ((6340640, 4210304, 4210368), (6340800, 4210304, 4210368))
+[12:03:32] *** Quits: glennsl (textual@moz-5D7B804F.getinternet.no) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[12:04:00] <dbaupp> rusti: use std::cast::transmute; trait Foo { fn foo(&self) {} fn bar(&self) {} } impl Foo for uint {} impl Foo for int {} unsafe {(transmute::<~Foo, (uint,uint)>(~1i as ~Foo),transmute::<~Foo, (uint,uint)>(~2i as ~Foo),transmute::<~Foo, (uint,uint)>(~3i as ~Foo),transmute::<~Foo, (uint,uint)>(~4i as ~Foo))}
+[12:04:00] -rusti- ((6336688, 140056736042288), (6336720, 140056736042320), (6336752, 140056736042352), (6336784, 140056736042384))
+[12:04:37] <dbaupp> rusti: use std::cast::transmute; trait Foo { fn foo(&self) {} fn bar(&self) {} } impl Foo for uint {} impl Foo for int {} unsafe { let (ptr1, _): (*[uint, .. 4], uint) = transmute(~1i as ~Foo); let (ptr2, _): (*[uint, .. 4], uint) = transmute(@2i as @Foo); (*ptr1, *ptr2)}
+[12:04:38] -rusti- ([6340640, 4210336, 4210400, 0], [6340800, 4210336, 4210400, 0])
+[12:04:46] *** Quits: pyrac (pyrac@moz-F2B1E85D.w92-162.abo.wanadoo.fr) (Quit: pyrac)
+[12:05:03] <dbaupp> rusti: use std::cast::transmute; trait Foo { fn foo(&self) {} fn bar(&self) {} fn baz(&self) {} fn qux(&self) {} } impl Foo for uint {} impl Foo for int {} unsafe {(transmute::<~Foo, (uint,uint)>(~1i as ~Foo),transmute::<~Foo, (uint,uint)>(~2i as ~Foo),transmute::<~Foo, (uint,uint)>(~3i as ~Foo),transmute::<~Foo, (uint,uint)>(~4i as ~Foo))}
+[12:05:04] -rusti- ((6336896, 140603471957296), (6336944, 140603471957328), (6336992, 140603471957360), (6337040, 140603471957392))
+[12:07:01] * dbaupp stops investigating the vtables by brute-force & experimentation
+[12:08:58] *** Joins: sigma (sigma@51C589B3.EF2694B5.DFAC6AA7.IP)
+[12:09:12] <engla> by brute-force and spam
+[12:09:23] <dbaupp> that too :P
+[12:09:48] *** Quits: fabiand (fabiand@moz-2C9D602E.adsl.alicedsl.de) (Quit: Verlassend)
+[12:09:58] <engla> I think word_iter will have to stay but under a different name
+[12:10:15] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[12:10:21] <engla> (seems like a couple of users in the tree enjoy .word_iter() as it is at least)
+[12:11:16] <dbaupp> they're presumably unicode-wrong, though.
+[12:11:59] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[12:12:00] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/oYG_Xg
+[12:12:00] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[12:12:01] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[12:12:01] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/0Vj7zw
+[12:12:01] <ghrust> 13rust/06auto 14abe94f9 15Huon Wilson: doc: correct spelling in documentation.
+[12:12:01] <ghrust> 13rust/06auto 1472fd02d 15Huon Wilson: doc: convert remaining uses of core:: to std::.
+[12:12:02] <ghrust> 13rust/06auto 146440343 15Huon Wilson: More spelling corrections.
+[12:12:03] <Thiez> here, a monster:
+[12:12:03] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[12:12:04] <Thiez> rusti: use std::cast::transmute; trait Foo{fn foo(&self)->int;} impl Foo for int{fn foo(&self)->int{*self}}; unsafe{ let (a1,a2)=transmute::<~Foo,(uint,uint)>(~1 as ~Foo); let (b1,b2)=transmute::<~Foo,(uint,uint)>(~2 as ~Foo); let (a,b)=(transmute::<(uint,uint),~Foo>((b1,a2)),transmute::<(uint,uint),~Foo>((a1,b2))); (a.foo(),b.foo()) }
+[12:12:05] -rusti- (1, 2)
+[12:12:14] <kimundi> just rename it to split_ws()
+[12:12:20] <Thiez> swapping the vtables :D
+[12:12:38] <dbaupp> Thiez: that's amazing! :D
+[12:12:55] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[12:14:53] <Thiez> hmmn, it doesn't work when we swap ~ and @ vtables
+[12:14:56] <Thiez> rusti: use std::cast::transmute; trait Foo{fn foo(&self)->int;} impl Foo for int{fn foo(&self)->int{*self}}; unsafe{ let (a1,a2)=transmute::<~Foo,(uint,uint)>(~1 as ~Foo); let (b1,b2)=transmute::<@Foo,(uint,uint)>(@2 as @Foo); let (a,b)=(transmute::<(uint,uint),~Foo>((b1,a2)),transmute::<(uint,uint),@Foo>((a1,b2))); (a.foo(),b.foo()) }
+[12:14:57] -rusti- out: /build/rust-git/src/rust/src/rt/boxed_region.cpp:71: void boxed_region::free(rust_opaque_box*): Assertion `box->td != __null' failed.
+[12:14:57] -rusti- application terminated abnormally with signal 11 (Segmentation fault)
+[12:16:08] <Thiez> rusti: use std::cast::transmute; trait Foo{fn foo(&self)->int;} impl Foo for int{fn foo(&self)->int{*self}}; unsafe{ let (a1,a2)=transmute::<~Foo,(uint,uint)>(~1 as ~Foo); let (b1,b2)=transmute::<&Foo,(uint,uint)>(&2 as &Foo); let (a,b)=(transmute::<(uint,uint),~Foo>((b1,a2)),transmute::<(uint,uint),&Foo>((a1,b2))); (a.foo(),b.foo()) }
+[12:16:09] -rusti- (1, 2)
+[12:16:13] <Thiez> this works though :D
+[12:16:19] <Thiez> swapping ~ and & vtables
+[12:17:45] <engla> which kind of object is going to be used more? &Trait or ~Trait? I haven't really learned anything about it yet
+[12:18:03] <dbaupp> I wonder how generic methods work on trait objects/vtables
+[12:18:14] <dbaupp> engla: probably &mut Trait, purely because of fmt!
+[12:18:26] <engla> aha
+[12:18:32] <engla> which trait is that, &mut Writer ?
+[12:18:39] <dbaupp> yup
+[12:19:04] <engla> aha. so not a complete "paradigm shift" from @Writer to generics, but to  &mut Writer
+[12:19:07] <engla> that's nice
+[12:19:34] <dbaupp> I think it'll be both: to generics but fmt! uses &mut Writer as the genric
+[12:19:59] <dbaupp> (to avoid the code bloat, but still provide the flexibility required for performance.)
+[12:20:16] <dbaupp> (at least, I hope it'll be that, for that reason.)
+[12:20:29] *** Joins: pyrac (pyrac@moz-F2B1E85D.w92-162.abo.wanadoo.fr)
+[12:24:01] <Thiez> rusti: use std::cast::transmute; trait Foo{fn foo(&mut self);fn bar(&self)->int;} impl Foo for int{fn foo(&mut self){*self=*self+1}fn bar(&self)->int{*self}}; unsafe{ let (a1,a2)=transmute::<~Foo,(uint,uint)>(~1 as ~Foo); let (b1,b2)=transmute::<&mut Foo,(uint,uint)>(&mut 2 as &mut Foo); let mut a=transmute::<(uint,uint),~Foo>((b1,a2));let b = transmute::<(uint,uint),&mut Foo>((a1,b2)); a.foo();b.foo();(a.bar(),b.bar()) }
+[12:24:02] -rusti- (2, 3)
+[12:24:07] <Thiez> >:D
+[12:24:47] <myname> i don't even
+[12:25:24] <Thiez> I wonder if &mut Trait vtables are compatible with &Trait vtables, since the latter don't require methods that take &mut self
+[12:26:01] *** Quits: sigma (sigma@51C589B3.EF2694B5.DFAC6AA7.IP) (Client exited)
+[12:26:08] *** Joins: sigma (sigma@51C589B3.EF2694B5.DFAC6AA7.IP)
+[12:26:18] <Thiez> then again if we create the vtables at compile time rather than creating them at runtime there is no reason for them to be different
+[12:30:55] *** Joins: orshem (orshem@C5E06B1E.A5B6B765.E3D28531.IP)
+[12:33:46] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[12:36:39] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[12:40:30] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[12:43:11] <dbaupp> engla: I don't understand the motivation for the code duplication just to make CharIterator cloneable? ... is there a compelling use-case for that functionality to exist right now?
+[12:44:45] <dbaupp> (i.e. compelling enough to be required now, rather than waiting until bounds on fn's work well enough for MapIterator itself to be Clone?)
+[12:45:29] <engla> not sure, it's not really code duplication since charoffsetiterator reuses chariterator
+[12:47:29] <dbaupp> ah, right
+[12:47:51] <engla> but it is more code, and one more struct
+[12:49:07] <engla> I'm not sure it matters. "".iter() is very basic so of course we want it to be clonable (and some have asked for it). but at the same time, as long as it's hard to know which ones are .clone()-able and which ones are not, the problem at large still exists
+[12:49:27] <dbaupp> engla: I think you may've broken the doc-comment on str btw; it should be `//!` to be attached to the module, rather than the next item (i.e. the `use at_vec;`.)
+[12:49:37] <engla> oops
+[12:49:42] <engla> thanks for that
+[12:50:56] <Thiez> dbaupp: I've posted an issue about the vtables.
+[12:51:26] <engla> I'll fixup that doc change and rebase it in
+[12:51:50] <dbaupp> engla: I think you may need //! on each line too, but I'm not sure; worth checking.
+[12:52:04] *** Quits: dim-an (ermolovd@moz-2590E524.yandex.net) (Ping timeout)
+[12:52:17] <engla> hah, I'm not that good at this
+[12:52:19] <engla> :)
+[12:52:35] <dbaupp> I actually don't know which is correct :)
+[12:52:58] <dbaupp> rusti: fn foo() {} std::cast::transmute::<extern fn(), uint>(foo)
+[12:52:59] -rusti- <anon>:5:21: 6:5 error: call to unsafe function requires unsafe function or block
+[12:52:59] -rusti- <anon>:5          fn foo() {} std::cast::transmute::<extern fn(), uint>(foo)
+[12:52:59] -rusti- <anon>:6     };
+[12:52:59] -rusti- error: aborting due to previous error
+[12:52:59] -rusti- application terminated with error code 101
+[12:53:05] <dbaupp> rusti: fn foo() {} unsafe{std::cast::transmute::<extern fn(), uint>(foo)}
+[12:53:06] -rusti- 4208496
+[12:53:47] <dbaupp> (ah right, vtables are double-indirection)
+[12:54:05] * dbaupp was confused by the numbers not matching up
+[12:54:24] <Thiez> hmmn?
+[12:55:06] <dbaupp> I was expecting that to be 6... like the vtables; but that's obviously silly, it should be (and is) 4... like the elements of the vtables above
+[12:56:20] <Thiez> you know you're working too much with a compiler when you can tell the difference between vtables, functions, and data by their location in memory :p
+[12:56:35] <dbaupp> Thiez: only because I spammed #rust :P
+[12:57:04] <Thiez> I'm a little surprised that vtables are not a part of TyDescs
+[12:57:40] <dbaupp> tydescs are a part of vtables
+[12:57:55] <Thiez> ah, that makes sense
+[12:59:13] <dbaupp> engla: what's the difference between slice_bytes and slice_unchecked?
+[12:59:24] <engla> the assertions
+[12:59:28] <dbaupp> engla: ... oh wait, doesn't matter; _bytes has bounds assertions
+[12:59:30] <dbaupp> yeah
+[13:00:49] <engla> ideally those assertions should be optimized away, but they are not together with char_range_at at least
+[13:00:59] <dbaupp> engla: is it possible for the self[prev]'s here https://github.com/mozilla/rust/pull/8590/files#L3R1743 to be unsafe_index or something like that?
+[13:01:21] <engla> yes
+[13:01:24] <dbaupp> actually, no; needs the bounds assertions
+[13:01:38] <engla> it needs one check, that the number of steps back maches w
+[13:01:39] <dbaupp> might as well be the vec indexing ones
+[13:01:49] <engla> well a manual check would be cheaper
+[13:02:03] <dbaupp> why?
+[13:02:29] <engla> not 100% sure, but only one place to branch to failure
+[13:02:45] <engla> also each indexing of s[] is behind a branch on the value for w
+[13:03:23] <dbaupp> I'd really hope that llvm would optimise that to a single index
+[13:04:43] <engla> I talked with strcat and the CharIterator can perform much better, I implemented it in pointer arithmetic (basically implementing char_range_at_* inline in pointer arith)
+[13:04:49] <dbaupp> .. I guess one could force the issue with `let b = self[prev]; if b < 128 { ... b as char ... }`
+[13:04:56] <dbaupp> ah, cool
+[13:04:59] <engla> but that complexity is.. saved for another day
+[13:05:08] <engla> dbaupp: no
+[13:05:15] <dbaupp> hm?
+[13:05:26] <engla> oh.. that line. that's a single index
+[13:05:39] <engla> I thought you were talking about s[i], s[i+1] etc
+[13:05:45] <engla> I'm sorry
+[13:06:00] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Client exited)
+[13:06:19] <dbaupp> oh, I hadn't even got to the inner function :P
+[13:06:38] <engla> I'm sorry. that line is fine. it's a single index it seems.
+[13:06:59] <dbaupp> ok, cool
+[13:07:34] <engla> now you know where I found the identically named nested function bug
+[13:07:45] *** Joins: newbie (Mibbit@moz-814C464D.static.netvigator.com)
+[13:07:50] * dbaupp guessed that was the place
+[13:09:03] *** Joins: dave1629 (dave@moz-17578A1A.hsd1.va.comcast.net)
+[13:09:11] <newbie> Hi guys, hopefully this is the right forum for beginner questions, feel free to redirect me if not.
+[13:09:22] <newbie> graph_gen.rs:1:4: 1:23 error: failed to resolve import `core::rand::RngUtil` graph_gen.rs:1 use core::rand::RngUtil;
+[13:09:52] <dbaupp> newbie: this is the right place
+[13:09:54] <newbie> I just installed rust and am getting the above error trying to import the random number generator library.
+[13:09:58] <newbie> Thanks.
+[13:10:00] <dbaupp> you might need `std::rand::RngUtil`
+[13:10:12] <newbie> Ah, it's moved.
+[13:10:13] <dbaupp> (core got renamed to std, and what was std got renamed to extra)
+[13:10:14] <newbie> Thanks.
+[13:10:34] <engla> newbie: Rust is changing all the time! There will be lots of renamed and moved or even removed things
+[13:11:01] <dbaupp> (the best ones are when behaviour changes with no visible sign in name or type signature.)
+[13:11:14] <miloshadzic> what are the pros/cons of --enable-clang
+[13:13:59] <dbaupp> faster/requires the extra flag --enable-ccache to work with ccache?
+[13:14:59] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[13:16:02] <vmx> is there a way to have a shorter compilation time when i only did changes in libextra?
+[13:16:18] <newbie> Is there a better way to find my way around the current version of the standard libraries? Maybe some auto-generated documentation somewhere?
+[13:16:21] <kimundi> you can test only up to stage1
+[13:16:26] *** Quits: dave1629 (dave@moz-17578A1A.hsd1.va.comcast.net) (Quit: dave1629)
+[13:16:35] <dbaupp> newbie: http://static.rust-lang.org/doc/std/index.html
+[13:16:52] <dbaupp> newbie: (also, http://seld.be/rustdoc/std/index.html, which are generated less often, but are much nicer.)
+[13:16:54] <newbie> Thanks dbaupp, will bookmark it.
+[13:17:03] <newbie> *them.
+[13:17:13] <dbaupp> newbie: the latter will hopefully become the former someday soon!
+[13:17:27] <dbaupp> (i.e. that tool will replace the old rustdoc tool.)
+[13:17:49] <kimundi> 'make check-stage1' will compile and test at stage1
+[13:17:53] <dbaupp> vmx: you can compile with e.g. `make check-stage2-extra NO_REBUILD=1`, although I'm not sure that actually works any more
+[13:18:07] <dbaupp> (in theory it should mean that it just builds extratest and runs it)
+[13:18:19] <kimundi> 'make check-stage1-extra' will compile up to libextra stage1 and then test that without running the rest of the testsuite
+[13:18:23] <vmx> dbaupp: thanks, will try
+[13:18:27] <dbaupp> vmx: (you'll need to have done at least one full bootstrap for it to be reliable)
+[13:18:29] *** Quits: victorporof (victorporo@69BF4ADB.B434C58E.9B1E38F4.IP) (Quit: victorporof)
+[13:18:48] <vmx> yes, sure. i've compiled it. added my code, now i try to unit test it
+[13:19:12] <engla> dbaupp: this link is newer! http://seld.be/rustdoc/master/index.html   
+[13:19:30] <dbaupp> engla: awesome!
+[13:19:53] <dbaupp> engla: (I would r+ your pr, but I'm too tired be a trustworthy reviewer... bedtime for me.)
+[13:20:07] <engla> ok! thanks for reading it anyway
+[13:20:16] <engla> thanks a lot
+[13:20:34] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[13:20:52] <dbaupp> newbie: engla's link^ (if you missed it)
+[13:22:09] *** Joins: victorporof (victorporo@69BF4ADB.B434C58E.9B1E38F4.IP)
+[13:22:38] <newbie> Thanks engla and dbaupp.
+[13:22:46] <newbie> That most recent link is much better.
+[13:22:55] <Thiez> rusti: use std::unstable::intrinsics::*; trait Foo{fn foo(&self){}} impl<T> Foo for T{};trait GetTy { fn ty(&self)->uint{unsafe{transmute( get_tydesc::<Self>())}}} impl<T> GetTy for T{}; unsafe{ (*transmute::<uint,*[uint, ..8]>(8.ty()),*transmute::<uint,*[uint, ..8]>((&8 as &Foo).ty()))}
+[13:22:56] -rusti- ([8, 8, 4208944, 4208992, 4209040, 4209088, 0, 0], [16, 8, 4208944, 4208992, 4209040, 4209230, 0, 0])
+[13:23:23] <Thiez> how confusing :D
+[13:24:30] *** Quits: victorporof (victorporo@69BF4ADB.B434C58E.9B1E38F4.IP) (Quit: victorporof)
+[13:25:32] <Thiez> but it kind of makes sense when looking at the TyDesc struct layout I suppose. I just wasn't able to find the values of 8.ty() in the vtable of (&8 as &Foo)
+[13:26:20] *** Joins: mibitzi_ (mibitzi@659DAD1F.60DF3A09.8395810B.IP)
+[13:29:31] *** Joins: Sindwiller (quassel@moz-743130B2.dynamic.hispeed.ch)
+[13:30:31] *** Quits: Earnestly (earnest@B0BDF733.8FDE20A.5411983D.IP) (Ping timeout)
+[13:32:07] <engla> what are you doing Thiez?
+[13:32:36] * engla is fishing for some objective education
+[13:32:40] <Thiez> not anything important, really
+[13:32:55] <Thiez> just satisfying some curiousity
+[13:33:51] *** Joins: victorporof (victorporo@69BF4ADB.B434C58E.9B1E38F4.IP)
+[13:34:31] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Client exited)
+[13:35:04] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[13:36:36] *** Quits: victorporof (victorporo@69BF4ADB.B434C58E.9B1E38F4.IP) (Quit: victorporof)
+[13:36:45] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Ping timeout)
+[13:37:13] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[13:39:19] *** Joins: rovar (rovar@moz-203658CB.nycmny.fios.verizon.net)
+[13:40:20] *** Quits: cdidd (cdidd@moz-7F167C87.broadband.corbina.ru) (Ping timeout)
+[13:42:49] *** Quits: Ms2ger (Ms2ger@59A8FC80.80FA5708.187A1082.IP) (Ping timeout)
+[13:43:53] *** Joins: glennsl (textual@moz-5D7B804F.getinternet.no)
+[13:44:52] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[13:50:00] *** Quits: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net) (Client exited)
+[13:50:37] *** Joins: Ms2ger (Ms2ger@moz-8B089F06.ugent.be)
+[13:53:42] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Client exited)
+[13:57:40] *** Quits: newbie (Mibbit@moz-814C464D.static.netvigator.com) (Quit: http://www.mibbit.com ajax IRC Client)
+[13:58:08] *** Joins: maik (maik___@moz-9E1D04D0.dip0.t-ipconnect.de)
+[14:01:57] *** Quits: Sindwiller (quassel@moz-743130B2.dynamic.hispeed.ch) (Connection reset by peer)
+[14:03:33] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[14:06:07] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Client exited)
+[14:06:11] *** Joins: cdidd (cdidd@moz-36700788.broadband.corbina.ru)
+[14:06:20] *** Quits: pyrac (pyrac@moz-F2B1E85D.w92-162.abo.wanadoo.fr) (Ping timeout)
+[14:07:59] *** Quits: cdidd (cdidd@moz-36700788.broadband.corbina.ru) (Ping timeout)
+[14:10:25] <maik> are there already some concurrency libs around?
+[14:11:19] *** Joins: Earnestly (earnest@B0BDF733.8FDE20A.5411983D.IP)
+[14:11:39] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[14:12:00] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[14:12:00] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/0Vj7zw
+[14:12:00] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[14:12:29] *** Joins: dwrensha (chatzilla@moz-DE44EA45.hsd1.pa.comcast.net)
+[14:13:31] <maik> Seldaek, cmr is this expected? http://seld.be/rustdoc/master/std/rt/comm/struct.Port.html
+[14:14:09] <dwrensha> Anyone know of a way to borrow a ~[~[u8]] as a &[&[u8]] ?
+[14:14:19] *** Joins: cubic (cubic@moz-FE5AD6C7.mc.videotron.ca)
+[14:15:07] *** Quits: mibitzi_ (mibitzi@659DAD1F.60DF3A09.8395810B.IP) (Ping timeout)
+[14:15:24] *** Joins: mibitzi_ (mibitzi@659DAD1F.60DF3A09.8395810B.IP)
+[14:16:27] *** dew1 is now known as dew
+[14:16:28] <engla> that's not possible dwrensha, well, unless you iterate through the former
+[14:19:32] <dwrensha> I don't mind iterating, if that's what I need to do to build the &[&[u8]]
+[14:20:10] <engla> well you can build a ~[&[u8]].. i.e. a new vector of vec slices
+[14:20:16] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[14:20:18] <engla> or just an iteratator with &[u8] elements
+[14:20:23] *** Quits: mibitzi_ (mibitzi@659DAD1F.60DF3A09.8395810B.IP) (Ping timeout)
+[14:20:28] *** Quits: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net) (Connection reset by peer)
+[14:20:42] *** Joins: mibitzi_ (mibitzi@659DAD1F.60DF3A09.8395810B.IP)
+[14:20:46] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[14:22:00] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[14:22:01] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/YWtF1Q
+[14:22:01] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[14:22:26] <dwrensha> Hm. I was running into lifetime errors when I tried that. I'll try again...
+[14:23:18] <engla> yes each &[u8] will have a region derived from where you borrow from the ~[]
+[14:24:05] <engla> rusti: let v = ~[~[1,2], ~[3]]; printf!("%?", v.iter().map(|x| x.as_slice()).to_owned_vec())
+[14:24:06] -rusti- ~[&[1, 2], &[3]]()
+[14:24:22] *** Joins: mrordinaire (Mibbit@1A659656.A607747.FD383126.IP)
+[14:25:02] <mrordinaire> hi, is there method like push on ~[T] for &mut [T]?
+[14:25:12] <engla> no, it can't grow
+[14:25:34] *** Quits: glennsl (textual@moz-5D7B804F.getinternet.no) (Ping timeout)
+[14:25:39] <mrordinaire> engla: thanks
+[14:26:02] *** Joins: tumdum (tumdum@moz-5856E72B.neoplus.adsl.tpnet.pl)
+[14:26:37] *** Joins: cdidd (cdidd@moz-61ECBB0E.broadband.corbina.ru)
+[14:26:44] *** Quits: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net) (Ping timeout)
+[14:29:04] <Seldaek> maik: I suppose not ;)
+[14:29:22] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[14:29:44] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Client exited)
+[14:29:54] <Seldaek> maik: not sure why the entire rt::comm module is missing.
+[14:33:06] *** Quits: mark_edward (quassel@21027BAA.520D6B7D.BF46A673.IP) (Ping timeout)
+[14:34:05] <maik> Seldaek, the whole rt::* is missing
+[14:34:12] <tumdum> where can I find list of currently opened issues ?
+[14:34:22] *** Joins: Florob (Florob@moz-39532932.de)
+[14:35:02] *** Quits: mrordinaire (Mibbit@1A659656.A607747.FD383126.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[14:36:36] <tumdum> nvm
+[14:39:39] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[14:42:22] *** Joins: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl)
+[14:42:43] <maik> what was the of continue in rust?
+[14:42:51] <maik> to continue a loop
+[14:42:52] <Seldaek> loop?
+[14:43:01] <maik> just loop; ?
+[14:43:03] <Seldaek> yes
+[14:43:10] <Seldaek> freaks me out as well :p
+[14:43:15] <maik> I wonder why I always forget this :D
+[14:43:17] <Seldaek> but it's for keyword reuse AFAIK
+[14:43:36] *** flaper87|afk is now known as flaper87
+[14:45:28] *** Joins: ofeldt- (ofeldt@moz-F34E29B7.dip0.t-ipconnect.de)
+[14:46:19] *** Quits: ofeldt (ofeldt@moz-6027DE8F.dip0.t-ipconnect.de) (Ping timeout)
+[14:50:39] <rovar> what is the current state of the art for FFI in Rust? 
+[14:50:59] <rovar> IIRC there were some problems re calling to and from C with regards to the scheduler
+[14:51:03] <rovar> is this still the case? 
+[14:51:41] *** Parts: true_droid (true_droid@moz-123FD9B8.beck.volia.net) (Leaving...)
+[14:53:57] <strcat> rovar: there aren't really problems afaik, the only issue is when you *need* to run something on the main thread
+[14:54:30] <rovar> hrrm..
+[14:54:57] <SiegeLord> Really, you can spawn a thread in C, call a Rust callback and have it work?
+[14:55:12] <SiegeLord> Pretty sure that's still impossible in the general case
+[14:55:35] <strcat> why not? if you don't use the runtime in the rust callback
+[14:55:58] <SiegeLord> That's not a "general case" :P
+[14:56:06] <strcat> I guess the __morestack prelude might do something strange
+[14:56:25] <strcat> SiegeLord: yeah but it's not fixable afaict
+[14:56:54] <SiegeLord> D's runtime can do it, so I'm sure with some cleverness Rust can do it too
+[14:57:15] <strcat> D doesn't have userland threads
+[14:57:26] <strcat> if rust didn't, I don't think there would be an issue
+[14:57:46] <strcat> what is *task-local* storage going to be, in that callback?
+[14:58:18] <SiegeLord> You'd do something like: rt::spawn_on_foreign_stack or w/e
+[14:58:30] <SiegeLord> And that'll give you a perfectly usable task
+[14:58:32] <orshem> i remember reading that rust supports labeled breaks. what's the syntax?
+[14:58:56] <strcat> rusti: foo: loop { break 'foo; }
+[14:58:56] -rusti- <anon>:5:12: 5:13 error: expected one of `; }` but found `:`
+[14:58:56] -rusti- <anon>:5          foo: loop { break 'foo; }
+[14:58:56] -rusti-                      ^
+[14:58:56] -rusti- application terminated with error code 101
+[14:59:00] <strcat> er
+[14:59:03] * strcat forgets
+[14:59:12] <strcat> rusti: 'foo: loop { break 'foo; }
+[14:59:12] -rusti- ()
+[14:59:15] <strcat> there
+[14:59:22] <kimundi> rusti: 'loop loop { break 'loop; }; "foo"
+[14:59:23] -rusti- <anon>:5:15: 5:19 error: expected `:` but found `loop`
+[14:59:23] -rusti- <anon>:5          'loop loop { break 'loop; }; "foo"
+[14:59:23] -rusti-                         ^~~~
+[14:59:23] -rusti- application terminated with error code 101
+[14:59:35] <kimundi> rusti: 'loop: loop { break 'loop; }; "foo"
+[14:59:37] -rusti- "foo"
+[15:01:19] <orshem> great!! thanks
+[15:02:18] <SiegeLord> My main FFI issue is by value structs not working (at least last I checked a month or so ago)
+[15:02:22] *** Joins: dim-an (ermolovd@moz-C6393EED.yandex.net)
+[15:04:52] <orshem> rusti: for x in range(0, 5) { for y in range(0, 5) { break 'r; } }; 'r: "boo"
+[15:04:53] -rusti- <anon>:5:74: 5:79 error: expected `loop`, found `"boo"`
+[15:04:53] -rusti- <anon>:5          for x in range(0, 5) { for y in range(0, 5) { break 'r; } }; 'r: "boo"
+[15:04:53] -rusti-                                                                                    ^~~~~
+[15:04:53] -rusti- application terminated with error code 101
+[15:05:51] <orshem> what am i doing wrong ? ^
+[15:06:03] <bjz> orshem: we don't have goto, don't worry
+[15:06:13] <bjz> orshem: only labeled loops
+[15:06:19] <strcat> orshem: it goes before a loop
+[15:06:27] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Client exited)
+[15:06:33] <strcat> and it doesn't accept it before a for loop
+[15:06:36] <strcat> you have to use while/loop for now
+[15:06:44] <strcat> it should work before a for loop now
+[15:08:06] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[15:08:13] <orshem> strcat, bjz: if it goes only before a loop shouldn't it lead to infinite loop?
+[15:08:35] *** Joins: glennsl (textual@moz-5D7B804F.getinternet.no)
+[15:08:36] <engla> it
+[15:08:46] <engla> it's a break label, not a goto label :)
+[15:08:48] <strcat> orshem: it doesn't jump before the loop, it breaks out of the labelled loop
+[15:09:31] <bjz> rusti: 'a: loop { 'b: loop { break 'a; } } "hi"
+[15:09:32] -rusti- "hi"
+[15:10:17] <maik> can I embed github source code in the github markdown?
+[15:10:28] <bjz> ?
+[15:10:36] <bjz> github source code?
+[15:10:57] <bjz> ~~~rust\n\n~~~
+[15:10:59] <bjz> ?
+[15:11:06] <maik> so that I can link https://github.com/MaikKlein/Wyre/blob/master/examples/linear_pipe.rs and the source code will be displayed in the readme
+[15:11:35] <maik> I am too lazy to update my examples every time, I just want to reference them
+[15:12:59] <vmx> i'm a newbie and try to get a ratio from a string: i try: let myratio = rational::from_str("1/2"); but get an unresolved name `rational::from_str` error (although i've extern mod extra; use extra::rational;). what am i doing wrong?
+[15:13:28] *** Joins: dave1629 (dave@moz-17578A1A.hsd1.va.comcast.net)
+[15:14:26] <vmx> (float::from_str works for me)
+[15:14:54] <nielsle>  Is it possible to create a rustpkg target that creates several executables?  (one executable for each file in src/examples) 
+[15:16:01] *** Quits: brian (chatzilla@moz-A87574A6.hsd1.pa.comcast.net) (Client exited)
+[15:17:41] <engla> vmx: there is no function rational::from_str. You need FromStr::from_str
+[15:18:35] <vmx> engla: thanks. as you say it i spot the difference in the api docs. thanks
+[15:21:01] *** Joins: mark_edward (quassel@21027BAA.520D6B7D.BF46A673.IP)
+[15:21:28] *** Joins: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com)
+[15:22:05] *** Quits: dim-an (ermolovd@moz-C6393EED.yandex.net) (Connection timed out)
+[15:22:31] *** Joins: dim-an (ermolovd@moz-C6393EED.yandex.net)
+[15:22:35] <maik> like they did here https://help.github.com/articles/github-flavored-markdown#code
+[15:23:55] <mark_edward> i like the http://static.rust-lang.org/doc/tutorial-conditions.html condition tutorial. how do they work?
+[15:24:49] <vmx> fyi: let myratio: Option<Rational> = FromStr::from_str("1/2"); did the trick. thanks again
+[15:27:04] *** Joins: valenting (Thunderbir@moz-7BACEE12.residential.rdsnet.ro)
+[15:27:11] <mark_edward> we have fractions???
+[15:27:23] <mark_edward> I LOVE FRACtiONS! I used to be so good at them
+[15:27:42] <mark_edward> not anymore though, havent done any math since college
+[15:29:20] <rovar> how could you have not done fractions since college?
+[15:29:42] <mark_edward> i did a high level calc class. all we did was prove things
+[15:30:20] <mark_edward> besides that the only class inw hich i might have opportunity for fractions is a physics class i will do soon
+[15:31:08] <rovar> you do any baking?
+[15:31:16] <mark_edward> nope. 
+[15:31:23] <rovar> driving?
+[15:31:29] <mark_edward> yup
+[15:31:48] <mark_edward> what's that got to do with fractions
+[15:32:13] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[15:33:15] <maik> well when you drive you try to get from point A to point B in a fraction of time
+[15:33:36] <maik> :p
+[15:33:54] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[15:33:57] <mark_edward> i guess.
+[15:34:07] <mark_edward> maik: are you MaikKlein?
+[15:34:22] <maik> mark_edward, yeah
+[15:34:28] <maik> maik, 
+[15:34:46] <mark_edward> how is your Actor thing going?
+[15:34:51] <maik> mark_edward, forgot the password for my other account :x
+[15:34:59] <vmx> is there any other way to do something like: let mut numerator: T = num::cast(somefloat); without num::cast()? (T is Clone + Integer + Ord).
+[15:35:07] <maik> mark_edward, well I am currently doing this https://github.com/MaikKlein/Wyre
+[15:35:18] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[15:36:02] <maik> mark_edward, will be a building block for my actors, but it's no really usable yet
+[15:36:36] <mark_edward> it looks pretty cool
+[15:37:35] <rovar> maik,  I can definitely see the point of running some code concurrently, but your example of  f g h x  seems like the worst possible case, since those functions are necisarrily serial.. 
+[15:37:39] <flaper87> Hey guys, I'm writing a test to make sure rekillable fails when called outside an unkillable block. Is something along this lines correct? http://pastebin.mozilla.org/2879429 Basically, the asserition within std::kill:allow_kill should fail 
+[15:38:08] <maik> rovar, I should remove this, this was a complete stupid sentence :D
+[15:38:10] <flaper87> I don't want to make the rt fail, though. Some more context here: https://github.com/FlaPer87/rust/commit/6863d1bf71c9178df35fb59a20d774d070abc6d9
+[15:38:19] *** Quits: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[15:38:28] <flaper87> maik: hey, you working on an Actor lib for rust? I would love to help with that
+[15:38:58] <clonejo> rovar: not at all if these functions all do map operations
+[15:39:17] <maik> flaper87, yeah well... I started sth 1 month ago but atm I am creating some wires https://github.com/MaikKlein/Wyre
+[15:39:18] <rovar> clonejo, care to elaborate? 
+[15:39:29] <maik> flaper87, I haven't much experience with actors
+[15:41:30] <vmx> nevermind, it was a stupid question
+[15:42:17] <flaper87> maik: seems cool, are you still planning to work on that?
+[15:42:24] <clonejo> rovar: A map function basically applies some computation on each element of a list. So if the inner-most function has already done 10% of the list, it could pass the results to the outer-next function.
+[15:42:53] <clonejo> maik: Îsn't MapReduce what you're aiming at?
+[15:43:41] <rovar> clonejo, I hear ya. You're talking about streaming computation.  So  f g h x isn't actually describing function calls in the mathematical sense, but rather a relationship of "filtering" operations
+[15:44:07] <rovar> I'm all for that,  if it is possible to describe such a system in Rust elegantly,  I'm all for it
+[15:44:36] <rovar> all for it.. definitely definitely 
+[15:44:56] <maik> yeah I removed the example
+[15:45:29] <rovar> in that context, Wyre seems a lot more useful :)
+[15:45:44] <maik> clonejo, didn't hear about mapreduce yet. I am currently reading it, but it seems similar to what I wanna do
+[15:45:57] *** Quits: dave1629 (dave@moz-17578A1A.hsd1.va.comcast.net) (Quit: dave1629)
+[15:46:45] <clonejo> maik: mapreduce is probably streaming computation applied to a database.
+[15:47:54] <flaper87> clonejo: not exactly, plus, mapreduce is not wired. Map functions can be called several times and the order is not guaranteed.
+[15:48:08] *** Quits: rovar (rovar@moz-203658CB.nycmny.fios.verizon.net) (Connection reset by peer)
+[15:48:19] *** Joins: rovar (rovar@moz-203658CB.nycmny.fios.verizon.net)
+[15:48:21] <flaper87> man this std tests take forever
+[15:48:34] <rovar> errg
+[15:48:54] <rovar> yea... the operations don't boil to map-reduce
+[15:49:12] <maik> does anyone know FRP? :P
+[15:49:15] <rovar> I'm using Haskell as an example here, because it is lazy
+[15:49:17] <rovar> maik, yes
+[15:49:28] <rovar> maik,  I've contributed to the Elm project
+[15:49:36] <maik> rovar, is my lib similar to FRP?
+[15:50:07] <rovar> what you end up doing when you define    f g h x   is you are composing F of G of H and applying that to the data, whether it is event driving, or scanning across a huge file. 
+[15:51:17] *** Quits: maxli1 (maxli@B5559308.9C54E60.2FA4EA88.IP) (Quit: Leaving.)
+[15:51:47] *** Quits: dwrensha (chatzilla@moz-DE44EA45.hsd1.pa.comcast.net) (Ping timeout)
+[15:52:40] <rovar> maik,  I haven't looked at the implementation,  but only vaguely..    the missing piece is that in FRP, the results of a new event or new computation are rendered immediately,  there isn't a phase where you have to iterate over a pipe to consume data, like you do in your example in your Readme
+[15:53:17] <maik> rovar, ah okay 
+[15:53:19] <rovar> so what your pipe would need would be for other consumers to subscribe to changes in your pipe
+[15:53:28] <rovar> and so on, and so on
+[15:53:46] <rovar> there aren't any iterators in FRP, except when you're manually injecting data into the system
+[15:53:55] <maik> ah now it makes sense when ppl are talking about values that change over time
+[15:53:57] <rovar> iterators are too imperative :)
+[15:54:51] <rovar> so if I could make a pipe that upercases things, then I attach my pipe as a listener to your pipe,   then I make a STDOUT pipe, which subscribes to changes in a pipe and then prints them
+[15:54:55] <rovar> now we basically have FRP
+[15:55:20] <rovar> or we more accurately have a data-flow language
+[15:55:20] <maik> yeah that was actually my goal
+[15:55:43] <rovar> streambase provides such things
+[15:56:09] <rovar> also.. Esper
+[15:56:23] <rovar> and I would be very interested in having such a system in Rust
+[15:56:29] *** kimundi is now known as zz_kimundi
+[15:56:34] <rovar> it's a bit of a specialization of Actors, but in a useful way
+[15:56:44] <maik> is FRP in haskell concurrent?
+[15:57:01] <maik> or spread across different threads?
+[15:57:02] <rovar> http://esper.codehaus.org/
+[15:57:12] <rovar> both
+[15:57:41] <rovar> the thing about describing data flow at a high level, is the runtime can be free to decide what can run where
+[15:58:01] <rovar> if there are no dependencies on a set of computations, they can run independently in separate threads. 
+[15:59:27] *** Joins: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP)
+[16:00:06] *** Joins: dwrensha (chatzilla@moz-DE44EA45.hsd1.pa.comcast.net)
+[16:00:54] <maik> okay I still have to figure out how to implement an event based system with tasks, but thanks for the link. I will do some research
+[16:03:03] <flaper87> maik: I'm not a rust expert but I guess streams can help you there. You could send signals across tasks to notify when they should run. (Again, not a Rust expert)
+[16:03:04] <rovar> it is tricky, if you want to have the flexibility to enable the concurrent optimizations.. what you'll probably end up doing is having your object/call structure describe a map
+[16:03:15] <rovar> rather than chaining the function calls directly. 
+[16:03:35] <rovar> so your miniature runtime will do the actual data passing
+[16:05:38] <rovar> yea.. I think the pipes::stream can aid here
+[16:05:41] <rovar> http://static.rust-lang.org/doc/tutorial-tasks.html#basics
+[16:05:44] <rovar> 2.1
+[16:05:49] <maik> I am already using streams
+[16:05:58] <maik> but the only way to get messages is to poll them
+[16:06:16] <maik> but I can share memory with arc
+[16:08:47] <maik> I figure something out eventually
+[16:10:10] <rovar> if you spawned a worker at each "filter" that just blocked on port.recv(), you could apply the function and then put it into the next chan
+[16:10:27] <rovar> at that point you could rely on the scheduler to parallelize where possible
+[16:10:54] <Thiez> hmmn, got a new debian install with clang, but no gcc. Running configure after downloading rust tells me 'either clang or gcc is required'
+[16:11:00] <Thiez> but clang is present
+[16:11:28] <Thiez> any reason for this?
+[16:11:33] *** Joins: youknowone (youknowone@A826BD81.8A0DEF81.38747683.IP)
+[16:11:34] *** Quits: youknowone (youknowone@A826BD81.8A0DEF81.38747683.IP) (Z:lined (Open Proxy found on your host. Please visit www.blitzed.org/proxy?ip=115.68.131.49 for more information.))
+[16:12:23] <rovar> it's probably looking for the clang gcc bindings
+[16:13:46] <rovar> or.. *maybe* you can set CC=clang and CXX=clang++
+[16:13:53] <rovar> it might be okay with that. 
+[16:13:55] <rovar> dunno
+[16:14:23] <Thiez> oh, passing it --enable-clang works :)
+[16:15:04] <rovar> or that :)
+[16:21:41] *** Quits: mark_edward (quassel@21027BAA.520D6B7D.BF46A673.IP) (Ping timeout)
+[16:22:55] *** Joins: mark_edward (quassel@21027BAA.520D6B7D.BF46A673.IP)
+[16:25:50] *** Joins: ski (md9slj@moz-4BB5E0FF.studat.chalmers.se)
+[16:25:56] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Client exited)
+[16:26:02] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[16:27:06] <Thiez> and it stubbornly refuses because it can't find c++ headers or something like that, installing g++ it is... :(
+[16:27:22] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[16:28:06] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[16:28:12] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[16:28:52] <SiegeLord> Hmm... why is the "unnecessary visibility" an error and not a warning?
+[16:29:33] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[16:29:45] <Thiez> SiegeLord: that is about enum variants, yes?
+[16:30:00] <SiegeLord> No, methods in an impl
+[16:30:08] <Thiez> oh, then I don't know.
+[16:30:38] <SiegeLord> It's very confusing to me... if I put a priv fn it gives me an error ("private by default")
+[16:30:49] <SiegeLord> If I put in a pub fn it says that it's unnecessary
+[16:30:55] <SiegeLord> So which is it... public or private
+[16:31:43] *** Quits: rfw (rfw@moz-C65A114.rfw.name) (Input/output error)
+[16:31:51] *** Joins: fabiand (fabiand@moz-156A17D5.static.qsc.de)
+[16:32:00] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[16:32:00] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/5Sv3ew
+[16:32:00] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[16:34:02] <strcat> SiegeLord: where are you putting it?
+[16:34:14] <strcat> trait impl? visibility is determined by the trait
+[16:34:25] <SiegeLord> impl A for B { fn foo() {} }
+[16:34:30] <SiegeLord> In front of that fn
+[16:34:31] <strcat> ok so it's a no-op there
+[16:34:35] <strcat> so it's not allowed
+[16:35:02] <strcat> if you implement a trait, you now satisfy that trait bound so you can't choose to make some things priv
+[16:35:07] <strcat> the trait decides
+[16:35:10] <SiegeLord> Those two error messages are contradictory
+[16:36:00] <Thiez> the "private by default" error should probably say that no visibility modifier is allowed there?
+[16:36:17] <Thiez> rather than implying the option of pub
+[16:36:22] <dwrensha> Anyone know of a way to borrow a ~[@mut [u8]] as a &[&[u8]] ?
+[16:36:24] <SiegeLord> It should probably say what strcat just said
+[16:36:41] <strcat> dwrensha: you can't
+[16:36:46] <SiegeLord> They inherit visibility from the trait
+[16:36:46] <strcat> they aren't represented the same way
+[16:37:06] *** zz_kimundi is now known as kimundi
+[16:37:12] <strcat> @mut has a 4-word header before the object
+[16:37:30] <Thiez> dwrensha: what are you trying to do?
+[16:37:34] <strcat> and &[] points to some existing memory, but there's no existing memory to point to with that layout
+[16:37:41] <strcat> you probably want to use an iterator
+[16:37:42] <dwrensha> Sure, but I can call as_slice() on each element
+[16:37:47] <dwrensha>     v.iter().map(|x| x.as_slice());
+[16:37:49] <SiegeLord> And then if you try "pub impl" it gives "obsolete syntax: visibility-qualified implementation" "note: `pub` or `priv` goes on individual functions; remove the `pub` or `priv`"
+[16:37:54] <strcat> dwrensha: so the outer part can't be &[]
+[16:38:01] <SiegeLord> Which is just wrong XD
+[16:38:02] <strcat> &[] has to point to existing memory
+[16:38:19] <strcat> you could make ~[&[u8]], but you probably just want to use an iterator instead of &[]
+[16:38:39] <strcat> (and from ~[] you could get a &[], but you're not going to be able to do it without allocating the unique vec)
+[16:38:54] <SiegeLord> This visibility thing is more confusing than borrowed pointers...
+[16:38:54] <dwrensha> I don't mind allocating the unique vec
+[16:39:00] <dwrensha> If I do what I wrote above
+[16:39:06] <dwrensha> I get rooting errors
+[16:39:13] <strcat> SiegeLord: implementations of traits don't get to control visibility
+[16:39:23] <dwrensha> "cannot root managed value long enough"
+[16:39:36] <strcat> if you implement a trait, you are making your type meet that trait bound
+[16:39:44] <strcat> so you can't implement anything short of what it requires
+[16:39:46] <strcat> it wouldn't make sense
+[16:40:13] <strcat> it *requires* that your methods be public if they are public in the trait, because you are now satisfying that bound and anything using the bound can call the methods
+[16:40:16] *** Quits: valenting (Thunderbir@moz-7BACEE12.residential.rdsnet.ro) (Ping timeout)
+[16:40:19] <SiegeLord> It's a complicated rule nonetheless
+[16:40:25] <strcat> not really complicated
+[16:40:44] <strcat> the trait determines the signatures/visiblity
+[16:40:46] <strcat> that's all
+[16:40:47] <SiegeLord> The visibility of "fn foo" changes in a very context dependent manner
+[16:40:58] <SiegeLord> If it's global, inside an impl, inside a trait
+[16:41:16] <strcat> everything about a trait impl is determined by the trait
+[16:41:31] <strcat> non-trait impls work the same way as free functions
+[16:41:59] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[16:41:59] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/A_eOKw
+[16:41:59] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[16:42:00] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[16:42:00] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/34um1w
+[16:42:00] <ghrust> 13rust/06auto 1453c43b3 15Steven Fackler: quote_*! macros take an ExtCtx...
+[16:42:00] <ghrust> 13rust/06auto 1420ef516 15bors: auto merge of #8556 : sfackler/rust/quote, r=graydon...
+[16:42:01] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[16:42:04] <SiegeLord> Oh, so that's yet another exception :P
+[16:42:18] <strcat> no
+[16:42:34] <SiegeLord> That means I can stick a visibility modifier on a method inside a bare impl, but can't in a trait impl
+[16:42:44] <SiegeLord> If I understand it correctly
+[16:42:50] <strcat> here is the one rule you need to remember: trait implementations have their visibility determined by the trait
+[16:43:06] <strcat> and it makes sense why, if you understand traits
+[16:43:15] <dwrensha> strcat: how would I make the ~[&[u8]] ?
+[16:43:18] <strcat> you also can't make a fn in a trait impl unsafe
+[16:43:19] <engla> disallowing priv/pub where it makes no difference is a good thing. The compiler being strict can guide you a bit
+[16:43:21] <strcat> if the trait fn isn't unsafe
+[16:43:49] *** Quits: ysuzuki (ysuzuki@moz-FEE44B6.net220148245.t-com.ne.jp) (Ping timeout)
+[16:43:52] <strcat> trait Foo { fn foo() } impl Foo for X { fn foo() {} /* can't be pub/priv/unsafe */ }
+[16:44:04] <SiegeLord> engla: Makes the code hard to reason about :P
+[16:44:17] <strcat> why is it hard to reason about?
+[16:44:19] <SiegeLord> Until a few minutes ago, I had no idea what was private or private
+[16:44:27] <SiegeLord> *or public
+[16:44:31] <strcat> that's just how traits work -> the methods are associated with the trait
+[16:44:40] <strcat> if the trait isn't in scope, the methods aren't visible
+[16:44:43] <SiegeLord> That's not the point
+[16:44:47] <strcat> if the trait is in scope, the methods are visible
+[16:44:50] <strcat> that is the point
+[16:44:52] <strcat> that's how traits work
+[16:44:53] <SiegeLord> The point is what "fn foo" is
+[16:45:06] <strcat> I don't know what you mean by that
+[16:46:09] <strcat> if traits had associated statics, you wouldn't be able to put pub/priv on them in the impl
+[16:46:25] <strcat> or if they had associated types
+[16:46:54] *** Joins: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com)
+[16:47:40] <SiegeLord> Anyway, the errors need to say this
+[16:47:49] <SiegeLord> They say something completely different atm
+[16:48:48] *** Joins: ysuzuki (ysuzuki@moz-FEE44B6.net220148245.t-com.ne.jp)
+[16:49:05] *** Joins: bytewise (bytewise@moz-4A801D04.unitymediagroup.de)
+[16:49:06] *** Quits: fabiand (fabiand@moz-156A17D5.static.qsc.de) (Ping timeout)
+[16:50:06] *** Joins: fabiand (fabiand@moz-156A17D5.static.qsc.de)
+[16:52:34] *** Joins: lmandel (lmandel@moz-F5C5AA7C.dsl.bell.ca)
+[16:53:04] <SiegeLord> Probably hard to do, as these are syntax errors, hah
+[16:54:15] <SiegeLord> You'd have to do: "obsolete syntax: visibility-qualified implementation" "note: pub or priv goes on individual functions if this is not a trait impl, or it is inherited from the implemented trait"
+[16:55:22] *** Quits: MrFahrenheit (RageOfThou@3FEF494C.29C984D5.783DEDCA.IP) (Connection reset by peer)
+[16:55:44] <SiegeLord> I kind of wish you could still put them in for documentation properties... I'll be displeased if this line of thinking ends up disallowing let a: int = 1;
+[16:56:11] <kimundi> what has let do do with visibility?
+[16:56:31] *** Joins: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[16:56:33] *** Quits: maik (maik___@moz-9E1D04D0.dip0.t-ipconnect.de) (Ping timeout)
+[16:56:35] <SiegeLord> It has to do with unnecessary annotations
+[16:57:16] <erickt1> dbaupp: ping
+[16:57:52] <kimundi> in the let case it is and optional annotation that is sometimes necessarry. In case of a trait impl visibilty annotation simply don't belong there
+[16:58:53] <kimundi> It's like you can't put a public on a interface in java
+[16:59:26] <Thiez> you can't put public on an interface in java?
+[16:59:35] <Thiez> you mean private?
+[16:59:35] <kimundi> not on the methods in it
+[16:59:54] <kimundi> both
+[17:00:18] <kimundi> a trait/interface defines an API, it's one unit
+[17:00:29] <kimundi> all functions in it are allways public
+[17:00:47] *** Joins: MrFahrenheit (RageOfThou@3FEF494C.29C984D5.783DEDCA.IP)
+[17:01:08] <kimundi> wait, one moment
+[17:01:11] *** Quits: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[17:01:12] <kimundi> I'm confused
+[17:01:15] <Thiez> they could be protected, right?
+[17:01:27] *** Joins: rovar_ (rovar@moz-203658CB.nycmny.fios.verizon.net)
+[17:01:30] <kimundi> rusti: trait Foo { priv fn foo(); }
+[17:01:34] -rusti- pastebinned 6 lines of output: http://ix.io/7nS
+[17:01:57] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[17:01:58] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1420ef516 to 140a23828: 02http://git.io/N3iJvQ
+[17:01:58] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[17:02:00] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[17:02:00] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/dRaYAw
+[17:02:00] <ghrust> 13rust/06auto 14e7b8524 15Kevin Ballard: Give XorShiftRng::new() a random seed...
+[17:02:00] <ghrust> 13rust/06auto 1488bd215 15bors: auto merge of #8558 : kballard/rust/xorshift-seed, r=cmr...
+[17:02:01] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[17:02:07] <kimundi> rusti: trait Foo { pub fn foo(); }
+[17:02:08] -rusti- pastebinned 6 lines of output: http://ix.io/7nT
+[17:02:22] <kimundi> no, I'm right
+[17:03:13] <kimundi> Thiez: Either the trait/interface with all its functions is visible, or not. vsisbility modifers for the functions inside it don't exist
+[17:05:34] <Thiez> it seems you are correct
+[17:05:47] <Thiez> I think I've always specified 'public' redundancly.
+[17:05:48] *** Quits: Ms2ger (Ms2ger@moz-8B089F06.ugent.be) (Connection reset by peer)
+[17:06:45] *** Joins: huseby (huseby@moz-4E8C421A.husebyhome.com)
+[17:06:49] <kimundi> I also still confuse it if I'm not thinking about it :)
+[17:07:38] <Thiez> rusti: trait Foo{fn foo(self)->~Foo;} impl<T> Foo for T { fn foo(self)->~Foo{ ~() as ~Foo } } 5.foo().foo(); // <- known bug?
+[17:07:38] -rusti- application terminated abnormally with signal 11 (Segmentation fault)
+[17:08:20] *** Quits: StarLight (StarLight@moz-95901BC7.dynamic.avangarddsl.ru) (Ping timeout)
+[17:08:22] <vmx> i try to implemente "from_float" for Ratio. it would be cool if someone could have a look at whether i'm on the right track or not. i haven't managed to get it working within the rational module, but this code works at least: https://www.friendpaste.com/45aGuzvVBQIQUR0VW1xO9G
+[17:08:33] *** Quits: mark_edward (quassel@21027BAA.520D6B7D.BF46A673.IP) (Ping timeout)
+[17:10:22] *** Quits: Azdle (patrick@moz-8C723B60.hsd1.mn.comcast.net) (Ping timeout)
+[17:10:59] <SiegeLord> Heh, D allows modifiers on the interface and inside the interface... I bet they are all ignored
+[17:12:04] *** Joins: Ms2ger (Ms2ger@59A8FC80.80FA5708.187A1082.IP)
+[17:12:08] <kimundi> vmx: You can't implement a trait for a type if neither of both is defined in your crate
+[17:12:19] *** Joins: StarLight (StarLight@moz-744D4E3D.dynamic.avangarddsl.ru)
+[17:12:26] <kimundi> ah, you've already defined a trait there, sorry
+[17:13:17] <vmx> kimundi: this code works (luckily). though when i paste it into libextra/num/rational.rs it somehow isn't properly visible to the outside
+[17:14:02] <vmx> though it would probably be better to implement it as "from_float" directly into the Ratio type, rather than having it's own FromFloat trait
+[17:14:13] <vmx> but that's not as easy as i though :)
+[17:14:36] <kimundi> impl from_float directly should not be a problem
+[17:14:38] *** Joins: boredomist (user@moz-63CF9F31.res-cmts.sesp.ptd.net)
+[17:14:46] <kimundi> neither should defining it as trait
+[17:14:54] <kimundi> what exactly is your problem?
+[17:14:58] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Client exited)
+[17:15:27] *** Quits: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[17:16:29] <vmx> my problem are the num::cast()s. Ratio also works with BigInteger, but BigInteger doesn't implement NumCast
+[17:16:56] *** Joins: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[17:17:11] <kimundi> sounds like it shouldn't hinder your attempt at writing it for Ration though?
+[17:18:02] <vmx> it does. at the end of my function i num::cast() to the "T" of Ratio. i can't num::cast() to BigInteger
+[17:18:26] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[17:18:36] <vmx> is there another way? like implementing it for all types separately?
+[17:19:37] <kimundi> Sorry, where are casting to BigInt? In the paste you pasted I don't see it
+[17:19:43] <kimundi> where are you*
+[17:20:18] <Thiez> you could add an implementation for BigInt, separate from your generic one for <T: Float, U: Integer+Clone+NumCast> ?
+[17:20:50] <kimundi> yeah, that would solve that problem, I'm jsut trying to understand how it relates to vmx problem with the from_float
+[17:21:00] *** Joins: mark_edward (quassel@21027BAA.520D6B7D.BF46A673.IP)
+[17:21:41] <vmx> kimundi: in that paste there's nothing about BigInteger. it was a problem when i tried to implement directly in Ratio<T>
+[17:21:56] <dwrensha> I'm still struggling with borrowing a vector of managed boxes. Could anyone please help?
+[17:21:57] <dwrensha> https://gist.github.com/dwrensha/7bd9cd07151cbf43a1c4#file-test-rs
+[17:22:24] <kimundi> vmx: I'm not sure how the problem could appear with that
+[17:22:55] *** Quits: huseby (huseby@moz-4E8C421A.husebyhome.com) (Ping timeout)
+[17:22:55] <vmx> kimundi: let me quickly reactive the code i had and then i'll paste it. just a sec
+[17:22:56] <SiegeLord> rusti: trait A { fn foo(); } struct S; impl A for S { pub fn foo() {} }
+[17:22:57] -rusti- <anon>:5:56: 5:71 error: unnecessary visibility
+[17:22:57] -rusti- <anon>:5          trait A { fn foo(); } struct S; impl A for S { pub fn foo() {} }
+[17:22:57] -rusti-                                                                  ^~~~~~~~~~~~~~~
+[17:22:57] -rusti- error: aborting due to previous error
+[17:22:58] -rusti- application terminated with error code 101
+[17:23:00] <kimundi> vmx: For implemnting it directlöy, you'd just move the impl from for the trait into the impl block for Ratio directly, no?
+[17:23:18] <vmx> yes exactly
+[17:23:48] <vmx> kimundi: look at line 26
+[17:23:48] <SiegeLord> Heh, that code works in some spots and not in others...
+[17:24:08] <vmx> the problem is that the "U" can be a BigInteger
+[17:24:15] <vmx> so the num::cast() would fail
+[17:25:08] *** Quits: lmandel (lmandel@moz-F5C5AA7C.dsl.bell.ca) (Quit: lmandel)
+[17:26:14] <kimundi> vmx: Sure, but I don't understand why this is a problem now. It's the same situation like in the paste: A Ratio<i64> is constructible from float, a Ration<BigInteger> not
+[17:26:45] <kimundi> To make the latter work, you need a numcast impl on BigInteger, but that's unrelated for the from_float impl, no?
+[17:27:29] <vmx> kimundi: yes, agreed
+[17:27:52] <vmx> the problem is that i don't know how to make it work within Ratio :)
+[17:28:25] <vmx> and that i don't know if i'm close or the code that i produced completely sucks
+[17:28:50] <kimundi> impl<T: Float, U: Integer + Clone + NumCast> FromFloat<T> for Ratio<U> { ... }-> impl<T: Float, U: Integer + Clone + NumCast> Ratio<U> { ... }
+[17:29:43] <kimundi> If the code is good, I don't know either :)
+[17:29:44] *** Joins: carleastlund (cce@moz-C8071335.c3-0.smr-ubr1.sbo-smr.ma.cable.rcn.com)
+[17:31:46] *** Joins: wilmoore (wilmoore@moz-71431C3A.hsd1.co.comcast.net)
+[17:34:30] <vmx> kimundi: thanks. trying it out now. it takes a while, fighting some errors, but it looks promising
+[17:35:42] *** Joins: maik (maik___@moz-9E1D04D0.dip0.t-ipconnect.de)
+[17:36:48] <kimundi> In general, you can have as many impl blocks with as many different trait bounds for a type as you want right next to each other
+[17:37:21] <vmx> i think i understood that finally
+[17:41:53] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[17:42:35] <vmx> kimundi: should it also work if i put the implementation not into the rational.rs but into my own file?
+[17:42:56] <vmx> i.e. can i put implementations anywhere (i guess i should RTFM)
+[17:47:00] *** Quits: dim-an (ermolovd@moz-C6393EED.yandex.net) (Client exited)
+[17:47:08] *** Joins: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net)
+[17:48:06] <Thiez> is there any reason I cannot move out of the dereference of a '*mut ptr' in an unsafe block?
+[17:48:28] *** Quits: nielsle (nielsle@moz-5CE8ECCD.boa.fiberby.dk) (Client exited)
+[17:48:45] *** Joins: huseby (huseby@moz-4E8C421A.husebyhome.com)
+[17:49:28] <kimundi> vmx: The implementation has to be in the same crate as the type
+[17:50:03] <vmx> thanks. trying it again (somehow even if i define a new type, i can't import it in my own file)
+[17:50:17] *** Quits: dwrensha (chatzilla@moz-DE44EA45.hsd1.pa.comcast.net) (Client exited)
+[17:50:25] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[17:50:29] <kimundi> vmx: 'impl Foo': Foo has to be defined in the same crate. 'impl Foo for Baz': Foo OR Baz has to be defined in the same crate
+[17:50:33] *** Quits: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net) (Quit: kevincantu)
+[17:51:48] <mark_edward> sully: what happened to this commit of yours https://github.com/mozilla/rust/pull/8519 that caused tests to fail
+[17:52:13] *** Quits: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net) (Ping timeout)
+[17:54:04] *** Joins: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net)
+[18:00:03] <maik> https://github.com/mozilla/rust/pull/8535 what does he mean with bitrotted?
+[18:00:54] <kimundi> maik: bittrottet means that other changes to the code have rendered the pull request unmergable
+[18:01:03] <kimundi> so, it needs a rebase
+[18:01:41] <kimundi> it 'rottetd' because it was sitting there to long
+[18:02:26] <maik> kimundi, ah thanks
+[18:03:28] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Client exited)
+[18:04:05] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[18:04:51] *** Joins: jeaye (Jeaye@moz-FD505E54.hsd1.ca.comcast.net)
+[18:04:51] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Connection reset by peer)
+[18:04:54] *** Joins: lenstr_ (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[18:05:04] <vmx> i've pasted this code into rational.rs https://www.friendpaste.com/45aGuzvVBQIQUR0VW25tfJ but i still get "error: unresolved name `Ratio::from_float`" in my file
+[18:05:21] <vmx> do i miss something obvious?
+[18:06:09] <maik> does anyone know how I can close a task with 'success' http://seld.be/rustdoc/master/std/task/enum.TaskResult.html
+[18:06:31] *** Quits: spider-mario (spidermari@moz-81131DB6.fbx.proxad.net) (Ping timeout)
+[18:07:34] <carleastlund> Hey everyone.  The Rust manual mentions "kind bounds" on type parameters, but doesn't give syntax for specifying them.  Anyone know where there's an example in the source I can look at?
+[18:08:00] <kimundi> vmx: Is Ratio itsel visible?
+[18:08:18] <kimundi> vmx: And where are you trying oto access it?
+[18:08:35] <vmx> yes, i double check with calling Ratio::from_integer() (which works)
+[18:08:36] <kimundi> If it compiles, it should works just like Ratio::new works
+[18:08:39] <kimundi> hmm
+[18:09:18] <kimundi> are you sure you're using the library with the new function compiled in?
+[18:09:30] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.1)
+[18:09:36] <vmx> the script and the error: https://www.friendpaste.com/45aGuzvVBQIQUR0VW2EFV1
+[18:09:45] <kimundi> looking...
+[18:09:53] <vmx> yes, when i add some error, the compilation reports it
+[18:10:12] <vmx> but yes, it's a good point, let me double check that i now only compile, but also use it
+[18:10:22] <kimundi> you did 'make' and 'sudo make install' ?
+[18:11:34] <vmx> kimundi: sorry i don't use that file. i just compiled it
+[18:11:44] <vmx> but use the one i've installed previously
+[18:13:09] <Thiez> maik: I assume by running to completion without calling fail
+[18:13:48] <Thiez> not ever sure it is used in the new runtime
+[18:14:47] *** Joins: spider-mario (spidermari@moz-81131DB6.fbx.proxad.net)
+[18:17:42] <vmx> i wished the turnaround times for compilation would be faster. "make && make install" takes ages
+[18:18:59] <Thiez> for some reason 'make' just started building llvm again even though I built it an hour ago :p
+[18:19:27] *** Quits: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP) (Connection reset by peer)
+[18:19:28] *** Joins: maxli1 (maxli@B5559308.9C54E60.2FA4EA88.IP)
+[18:19:48] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[18:23:15] *** Quits: maxli1 (maxli@B5559308.9C54E60.2FA4EA88.IP) (Quit: Leaving.)
+[18:23:20] *** Quits: huseby (huseby@moz-4E8C421A.husebyhome.com) (Ping timeout)
+[18:23:42] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[18:24:41] *** Joins: mihneadb (mihneadb@moz-329F29A3.lightspeed.sntcca.sbcglobal.net)
+[18:24:42] <vmx> kimundi: i don't have the time to see the compilation finished. but i expect it to work after that. thanks for all your help
+[18:25:30] *** Joins: victorporof (victorporo@69BF4ADB.B434C58E.9B1E38F4.IP)
+[18:26:33] *** Joins: quasisphere (btw@DC685DC2.94302614.1D0D91FF.IP)
+[18:30:41] <clonejo> Thiez: try make -jn (where n is the number of cpus)
+[18:30:53] *** Joins: nielsle (nielsle@moz-5CE8ECCD.boa.fiberby.dk)
+[18:33:39] *** Quits: mark_edward (quassel@21027BAA.520D6B7D.BF46A673.IP) (Ping timeout)
+[18:33:47] <kimundi> vmx: No problem. :) Yeah, ithe compile time is annoying
+[18:35:39] *** Quits: BitPuffin (quassel@moz-8370D1B9.bredband.comhem.se) (Ping timeout)
+[18:36:19] *** Quits: mihneadb (mihneadb@moz-329F29A3.lightspeed.sntcca.sbcglobal.net) (Input/output error)
+[18:37:06] *** Joins: dave1629 (dave@moz-17578A1A.hsd1.va.comcast.net)
+[18:39:23] *** Joins: BitPuffin (quassel@moz-8370D1B9.bredband.comhem.se)
+[18:42:32] *** Quits: miloshadzic (miloshadzi@5E9C7FE4.FA4D0618.449B8A48.IP) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[18:45:01] <carleastlund> Getting the hang of Rust pointer types; seeing "error: value may contain borrowed pointers" from a toy program.  Anyone know how to fix the types here?  https://gist.github.com/carl-eastlund/6263245
+[18:47:07] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[18:47:24] *** Quits: lenstr_ (lenstr@AF8EB999.6049B16A.85938D85.IP) (Ping timeout)
+[18:47:38] *** Quits: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net) (Quit: kevincantu)
+[18:48:19] *** Joins: mihneadb (mihneadb@moz-329F29A3.lightspeed.sntcca.sbcglobal.net)
+[18:48:35] *** Joins: nano (nano@moz-74CAD1CA.superkabel.de)
+[18:48:35] <maik> carleastlund, in which line?
+[18:49:13] <carleastlund> Line 13, columns 31-33, the "ys" in "@ys".
+[18:50:13] *** Joins: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net)
+[18:51:17] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Connection reset by peer)
+[18:51:33] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[18:52:38] <kimundi> This is just a guess, but I think because that function is generic over any T, and T could also be some &U or so, it's forbidden to do opertaions with it that might result in unsafness
+[18:53:02] <kimundi> could you try reverse<T: 'static> ?
+[18:53:39] <engla> yes T: 'static is a new required bound for making @T
+[18:53:47] <kimundi> That restricts the function to types that contain no borrowed points, or borrowed pointers with the 'static lifetime
+[18:54:49] <carleastlund> Thanks, kimundi, that did it.  I tried several variations on the syntax for putting "'static" in there somewhere that didn't work.  :)
+[18:55:22] <maik> carleastlund, you could also have a look at http://www.reddit.com/r/rust/comments/1kf3n9/functional_list_in_rust/
+[18:55:31] <maik> not efficient
+[18:55:50] <maik> but probably "okay" as an example
+[18:56:21] <carleastlund> Thanks.  Also, what guides the choice of @ vs ~ in types like this?
+[18:56:35] <flaper87> hey guys, any suggestion for my second patch here? https://github.com/mozilla/rust/pull/8581
+[18:56:37] *** Quits: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[18:57:03] *** Quits: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net) (Quit: kevincantu)
+[18:57:03] <maik> carleastlund, @ is a shared pointer and ~unique pointer in c++
+[18:57:27] <flaper87> maik: If you're interested in co-working on Wyre, I'd be interested. Seems like a good first step towards other concurrency models
+[18:57:44] *** Joins: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net)
+[18:57:48] <maik> flaper87, ofc that would be nice
+[18:57:50] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Client exited)
+[18:58:32] <carleastlund> maik: That's not what the manual says.  At least according to what it says, @ and ~ are both heap-allocated; @ is in the task-local heap and ~ is in the shared heap.
+[18:58:45] <maik> I currently have a nasty bug in many_to_one. 
+[18:58:50] <flaper87> maik: awesome, do you have any short-term plans I could help you with?
+[18:58:56] <flaper87> maik: ah, great, shoot
+[18:59:42] *** Joins: maik_ (maik___@moz-85245553.dip0.t-ipconnect.de)
+[18:59:53] *** Joins: sigma-pc (sigma@moz-5022C87F.range109-151.btcentralplus.com)
+[19:00:11] <maik_> flaper87, I have no idea, but if you have one feel free to ask me or make a PR
+[19:00:32] <maik_> carleastlund, ~ can be shared across tasks 
+[19:00:39] *** Quits: maik (maik___@moz-9E1D04D0.dip0.t-ipconnect.de) (Ping timeout)
+[19:01:20] <maik_> carleastlund, while @ can not afaik. @ needs to be garbage collected.
+[19:01:37] *** Joins: rusti (rusti@moz-61B073BC.cpe.net.cable.rogers.com)
+[19:02:04] <maik_> carleastlund, when in doubt use ~ or just stack allocation and &
+[19:02:14] <flaper87> is it a convention to have tests in the same source files? Or is that true just for rust itself?
+[19:02:18] <carleastlund> maik_: Well, both need to be GC'd.  @ needs to be copied to share, which is one cost, but GC for ~ pointers can presumably block multiple tasks, which is another cost.
+[19:02:23] <flaper87> maik_: kk, will do! :)
+[19:02:53] <carleastlund> maik_, I would have thought for task parallelization, @ would be preferable in general so as to avoid whatever issues come up with inter-task GC.
+[19:03:39] <maik_> flaper87, I have often seen tests in the crate files 
+[19:04:04] *** Joins: tiffany (kawaii@moz-EB8B0C08.dhcp.embarqhsd.net)
+[19:04:17] <maik_> carleastlund, no ~ does not need to be gc'ed when it goes out of scope it's gone
+[19:04:45] <maik_> think of them as unique pointers in c++11
+[19:04:54] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[19:05:34] <carleastlund> maik_: Ah yes, thank you, I was thinking of ~ and @ as far too similar.
+[19:05:36] <flaper87> maik_: mmh, TBH, I'm not a fan of that, neither a fan of having test files in the same package (Go style)
+[19:06:07] <maik_> flaper87, external tests are fine with me
+[19:06:42] <maik_> carleastlund, only use @ if you want to have multiple pointers on the same object
+[19:06:43] <flaper87> maik_: :) 
+[19:06:57] <flaper87> I'm just curious to know what led the decision of having them in the crate itself
+[19:07:31] * maik_ checks how rust does its tests
+[19:08:08] <maik_> flaper87, right, rust also has external test cases
+[19:08:21] <carleastlund> maik_, Hmm, that's a bit odd.  Does that suggest lists with ~ can't have shared tails, as that would be two pointers to the same object?  Or am I thinking about it the wrong way?
+[19:08:35] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[19:08:58] <flaper87> maik_: yeah, IIUC, those tests are related to special cases (like issue's specific tests), but most of std's crates have tests in the crate itself
+[19:09:00] <engla> that's right carl
+[19:09:22] <maik_> carleastlund, I am assuming you are reading my version. yeah it totally stupid to use ~, because I have to copy all over the place
+[19:09:48] *** Joins: vk (chatzilla@moz-389FEE13.hsd1.ca.comcast.net)
+[19:09:58] <carleastlund> Aha, thanks engla and maik_.
+[19:10:48] <maik_> flaper87, the code base is still a complete mess :)
+[19:10:56] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[19:11:35] *** Quits: tumdum (tumdum@moz-5856E72B.neoplus.adsl.tpnet.pl) (Quit: Textual IRC Client: www.textualapp.com)
+[19:13:13] *** Joins: jfbk (textual@moz-EEA9CFB3.nyc.res.rr.com)
+[19:15:10] <kimundi> I need a short one-liner description for what a 'use' does. "Importing items", "Renaming paths", "Aliasing items" all don't seem right
+[19:16:38] <Ms2ger> "Using things"
+[19:17:36] <kimundi> hehe+
+[19:17:49] <engla> "A use declaration creates one or more local name bindings synonymous with some other path."
+[19:17:49] <myname> most excelent
+[19:17:52] <engla> it's binding things
+[19:17:56] <engla> in the darkness
+[19:18:29] *** Joins: SingingBoyo (brandon@4DF3381A.51F4D838.4F048BDC.IP)
+[19:18:33] <kimundi> Good, burt to long for a tutorial headline :)
+[19:18:39] *** Quits: dwhyte (dwhyte@1922756A.EDC594B0.7BF4A4B0.IP) (Client exited)
+[19:18:40] <maik_> Usually Self Explanatory ?
+[19:18:49] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[19:19:00] <Ms2ger> "Use declaration creates bindings synonymous paths"
+[19:19:08] <Ms2ger> (Shorter, you said? :)
+[19:19:14] *** Joins: dwhyte (dwhyte@1922756A.EDC594B0.7BF4A4B0.IP)
+[19:19:14] <kimundi> :P
+[19:19:16] <engla> importing into a namespace. but it sounds very foreign to rust
+[19:19:23] <kimundi> yeah
+[19:19:31] *** Joins: rfw (rfw@moz-C65A114.rfw.name)
+[19:19:44] <ion> Hi Luqman. Did i understand correctly that you contributed the final patch to get rust to target -gnueabi? Do you have any ideas about my -gnueabihf problem? https://github.com/mozilla/rust/issues/8536
+[19:19:50] <kimundi> Maybe I just make it 'use statements' - It's just a headline, description comes below it
+[19:21:03] *** Joins: mark_edward (quassel@21027BAA.520D6B7D.BF46A673.IP)
+[19:22:58] *** Joins: miloshadzic (miloshadzi@5E9C7FE4.FA4D0618.449B8A48.IP)
+[19:23:16] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[19:23:40] <engla> http://static.rust-lang.org/doc/rust.html#use-declarations
+[19:23:50] <maik_> kimundi, are you writing all the tutorials?
+[19:24:35] <kimundi> Ha, no:
+[19:24:46] <kimundi> Trying to rewrite the module part of it
+[19:26:28] *** Quits: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net) (Quit: kevincantu)
+[19:27:37] *** Joins: galaux (galaux@moz-D32D4D77.rev.sfr.net)
+[19:27:50] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[19:27:51] *** ChanServ sets mode: +o brson
+[19:29:09] <carleastlund> kimundi: what about "`use`: local names for external definitions"?
+[19:29:17] *** Joins: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net)
+[19:30:58] *** Joins: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com)
+[19:31:25] *** Joins: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com)
+[19:31:58] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[19:31:58] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/dRaYAw
+[19:31:58] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[19:32:04] <kimundi> carleastlund: Also an optione :)
+[19:32:17] *** Quits: maik_ (maik___@moz-85245553.dip0.t-ipconnect.de) (Connection reset by peer)
+[19:32:59] *** Joins: maik (maik___@moz-85245553.dip0.t-ipconnect.de)
+[19:34:33] *** Quits: Yurume (yurume@AC58A8CE.8A059B47.E313B915.IP) (Ping timeout)
+[19:34:44] <Thiez> The 'unused import' deny on libstd is nice.
+[19:35:15] <flaper87> bblum: around ?
+[19:37:22] <bblum> flaper87: yeah hey
+[19:40:44] <flaper87> bblum: hey :), thanks for those reviews! Do you have some mins to guide me into the changes required on the rt?
+[19:40:55] <flaper87> I'm looking here https://github.com/mozilla/rust/blob/master/src/libstd/rt/task.rs
+[19:41:09] <flaper87> which seems the ~right place to do the change
+[19:41:20] <flaper87> more precisely here: https://github.com/mozilla/rust/blob/master/src/libstd/rt/task.rs#L256
+[19:41:41] <bblum> let me see
+[19:41:59] <flaper87> bblum: sorry, I'm still very new to Rust :)
+[19:42:01] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[19:42:01] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/7WfLPA
+[19:42:01] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[19:42:02] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[19:42:03] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/MLM1Zw
+[19:42:03] <ghrust> 13rust/06auto 146066118 15blake2-ppc: std::to_bytes: Delimit sequences &[A] and ~str when hashing...
+[19:42:03] <ghrust> 13rust/06auto 1473fdacb 15blake2-ppc: std::to_bytes: Implement IterBytes on 1- to 8-tuples
+[19:42:03] <ghrust> 13rust/06auto 14bfa1331 15blake2-ppc: std::hash: Add testcase for colliding hashes of tuples...
+[19:42:05] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[19:42:07] <bblum> flaper87: no prob, i'm happy to guide you
+[19:43:12] <SingingBoyo> so where would I look to find info on what needs to be done to submit a  pull request?
+[19:43:25] <bblum> flaper87: ok, so that function in task.rs is actually sort of the "main" function that a task runs at the start/end of its lifetime
+[19:43:33] <flaper87> SingingBoyo: https://github.com/mozilla/rust/wiki/Note-git-workflow
+[19:44:54] <bblum> flaper87: so if you were to put any code at line 256 there, it would only ever get run when a task has already finished running all of its user code
+[19:45:33] <SingingBoyo> great, thanks.
+[19:45:49] <bblum> flaper87: instead, try looking at the place in kill.rs that i pointed out on your pull request, in the function "allow_kill"
+[19:47:24] <flaper87> bblum: On it, the one defined in Death
+[19:48:14] <bblum> yep
+[19:54:04] *** Quits: bytbox (s@moz-DC83764A.washdc.fios.verizon.net) (Ping timeout)
+[19:55:54] <carleastlund> Another type error, "cannot move out of dereference of @ pointer" at Cons( z, zs ) on line 12 of: https://gist.github.com/carl-eastlund/6263659
+[19:56:01] <carleastlund> Anyone know what's up with that?
+[19:57:37] <carleastlund> (well, I say "type error", it may be a something-else error)
+[19:58:21] <maik> try Cons( z, ref zs )
+[19:58:38] <kimundi> that won't work I think
+[19:58:41] <bblum> that won't help
+[19:58:45] <flaper87> bblum: where does the runtime abort happen? I see the allow_kill in the kill_handle is being called as well, but all that happens before the rekillable body is executed (IIUC)
+[19:58:56] <kimundi> the problem is the match *ys I think
+[19:59:01] <kimundi> *xs
+[19:59:07] <bblum> carleastlund: so, your generic type E is non-copyable, so it has to be moved around, never copied
+[19:59:30] *** Joins: bytbox (s@moz-DC83764A.washdc.fios.verizon.net)
+[19:59:34] <carleastlund> bblum: okay, how do I make a copyable type?  Or are generic types just stuck in this regard?
+[19:59:40] <bblum> carleastlund: the problem is that since you're using @-pointers, once you put a noncopyable item inside an @-pointer, you can never get it back out again, because the garbage collector owns it
+[20:00:06] <bblum> carleastlund: you can write <E:Clone + 'static>, and then call x.clone() wherever it's saying you're moving
+[20:00:21] <bblum> however then you won't be able to use your list type on noncopyables
+[20:00:35] <carleastlund> Well, I won't be able to use these operations, anyway.
+[20:00:45] <bblum> flaper87: see the rtassert!() at the top of allow_kill? if that fails, it aborts the runtiem
+[20:01:00] <carleastlund> bblum: is there a better option that would work on noncopyables?
+[20:01:38] <bblum> carleastlund: there are several ways to do it (all of which involve changing the data structure definition in some way or another)... it depends what you want the characteristics of the list to be
+[20:02:10] <bblum> if you don't care about aliasing the list, you can use ~ pointers instead of ~ pointers
+[20:02:11] <carleastlund> bblum: This is just a toy program to get a feel for Rust types, so I can change anything, however.
+[20:02:13] <bblum> er instead of @
+[20:02:13] <flaper87> aahh, thought so! 
+[20:03:06] <bblum> carleastlund: a different thing you could do is use @mut pointers, and "consume" the list nodes something like this:
+[20:03:08] <carleastlund> Okay, so I can have ~ and give up aliasing or @ and give up noncopyables.  Gotcha so far, bblum.
+[20:03:09] <flaper87> mmh, why is that assert there in first place? THere's an if verifying unkillable==0
+[20:03:25] <bblum> flaper87: one sec
+[20:03:31] <flaper87> bblum: take your time
+[20:03:48] *** Joins: doomrobo (doomrobo@A01051A9.6F669779.3D1CA460.IP)
+[20:04:02] <bblum> carleastlund: match util::replace(&mut *xs, Null) { Cons(z, zs) => /* can now move out of 'z' */ } ... }
+[20:04:59] <bblum> flaper87: the if occurs after the subtraction
+[20:05:15] <flaper87> bblum: yeah, saw that, same happens for inhibit_kill, though
+[20:05:20] *** Joins: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP)
+[20:05:24] <flaper87> The addition happens before and there's no asserition
+[20:05:42] <bblum> there's no assertion because inhibit_kill can be called with the unkillable counter being any value
+[20:05:55] <bblum> whereas allow_kill can only undo an inhibit_kill that occurred previously
+[20:06:32] <carleastlund> bblum: Okay, that's a very interesting line.  Gonna have to investigate that, though I think in this case I'd like to avoid mut pointers if I can.
+[20:07:27] <bblum> flaper87: the calls to the kill_handle.allow_kill()/inhibit_kill() functions (which are confusingly named the same thing...) are meant to happen only when the counter changes from 0 to 1 or from 1 to 0
+[20:09:13] *** Joins: erickt1 (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[20:09:28] <flaper87> bblum: mmh, but them something like this could happen: http://pastebin.mozilla.org/2880225
+[20:09:35] <doomrobo> Could someone please help me with some problems? I don't know what I'm doing wrong. The code is here and the errors are at the bottom. http://goo.gl/03bAsQ
+[20:09:58] <bblum> flaper87: that would be legal
+[20:10:31] <bblum> flaper87: oh yeah, so i forgot to mention this, which is that if you are doubly unkillable, it takes the same number of rekillables to actually become rekillable
+[20:10:42] <flaper87> but, does that mean the first rekillable wont be actually killable? 
+[20:10:45] <flaper87> bblum: :)
+[20:10:45] <bblum> right
+[20:10:58] <mark_edward> bblum: i just saw your talk on Types of Types in Rust! it was great! do you know of any plans to continue work in this area?
+[20:11:02] <bblum> the reason for this is so that, for example
+[20:11:07] <bblum> mark_edward: one sec
+[20:11:24] <kimundi> doomrobo: All three errors are about moving an value out of somewhere where you're not allowed to
+[20:11:39] <bblum> flaper87: a bunch of concurrency primitives do the pattern where they do unkillable { ... stuff ... do rekillable { quick killable operation } ... }
+[20:12:11] <bblum> flaper87: but if you,  the user of that primitive, call the primitive inside an unkillable block of your own, you mean you want to be unkillable for the whole thing
+[20:12:13] <kimundi> doomrobo: In th second error, your trying to move out of a & ptr. But that would mean taking ownership of the thing it points at, which would go against the borrowing principle
+[20:12:29] <bblum> flaper87: and it will "cancel out" the rekillable inside
+[20:12:32] <doomrobo> kimundi would you have any idea of how I would fix that?
+[20:13:35] <bblum> mark_edward: thank you :) i know of no specific plans, although there are some enhancements to the system that niko is planning on adding, for example, using lifetime bounds in the same way (e.g., "~Trait:'a")
+[20:14:34] <kimundi> doomrobo: The problem is that you're using map() on the 'input' vector
+[20:14:56] *** Quits: nsf (nsf@moz-EEF3238A.convex.ru) (Quit: WeeChat 0.4.1)
+[20:15:01] <doomrobo> isn't that a normal thing to do?
+[20:15:10] <flaper87> bblum: mmh, makes sense, but does that mean we're leaving out a case as the one in that pastebin? Both rekillable blocks should be killable
+[20:15:12] <orshem> why are struct and enum fields/discriminants by default public and everything else private?
+[20:15:15] <kimundi> doomrobo: map applies a function to refernces of 'input'
+[20:15:46] <doomrobo> oh does it mutate the underlying vector?
+[20:16:02] <kimundi> doomrobo: It would keep input in tact, so to pass those to interpret it would have to be interpret(special, i.clone(), context)
+[20:16:29] <kimundi> however, in your case you don't need 'input' afterwards
+[20:16:43] <mark_edward> bblum: another question: are you PhD student? If so what are you studying? do you have any recommendations in courses and stuff for a young compsci undergrad hoping to do work similar to yours?
+[20:16:45] <kimundi> so you need a map function that consumes the vector
+[20:16:45] <bblum> flaper87: only the innermost one should actually be killable
+[20:17:16] <doomrobo> kimundi so how do I do a mutation map?
+[20:17:25] *** Quits: fabiand (fabiand@moz-156A17D5.static.qsc.de) (Client exited)
+[20:17:26] <doomrobo> would it just be a for loop?
+[20:17:27] <carleastlund> bblum (& anyone else): I tried adding the Clone constraint to the reverse program, still getting a similar error.  Did I do something wrong here?  https://gist.github.com/carl-eastlund/6263659
+[20:17:33] <kimundi> rusti: let mut x = ~[1u, 2, 3]; x.map_consume(|_| 9u)
+[20:17:37] -rusti- <anon>:5:34: 6:5 error: type `~[uint]` does not implement any method in scope named `map_consume`
+[20:17:37] -rusti- <anon>:5          let mut x = ~[1u, 2, 3]; x.map_consume(|_| 9u)
+[20:17:37] -rusti- <anon>:6     };
+[20:17:37] -rusti- error: aborting due to previous error
+[20:17:37] -rusti- application terminated with error code 101
+[20:17:42] <bblum> carleastlund: you hafta use z.clone()
+[20:17:46] <bblum> to actually get a copy
+[20:17:58] <kimundi> doomrobo: wait, better idea. what version of rust are you using?
+[20:18:05] <doomrobo> 8-pre
+[20:18:33] <kimundi> rusti: let mut x = ~[1u, 2, 3]; x.move_iter().map(|x| x + 1).to_owned_vec()
+[20:18:35] -rusti- <anon>:5:17: 5:18 warning: variable does not need to be mutable [-W unused-mut (default)]
+[20:18:35] -rusti- <anon>:5          let mut x = ~[1u, 2, 3]; x.move_iter().map(|x| x + 1).to_owned_vec()
+[20:18:35] -rusti-                           ^
+[20:18:35] -rusti- ~[2, 3, 4]
+[20:18:52] *** Joins: obk (Mibbit@F07E1300.C88E081E.27150B55.IP)
+[20:19:00] <doomrobo> kimundi that seems like it would work but I have to implement clone for LispPtrType
+[20:19:09] <carleastlund> bblum: thanks.  It was (*xs).clone() that I needed, but same idea.  :)
+[20:19:14] <bblum> np
+[20:19:24] <doomrobo> Rust can figure out out to clone it even though it's only made up of subtypes
+[20:19:27] <doomrobo> *can't
+[20:19:44] <obk> Is there any way to get a stack trace on failed assertions in 0.8-pre?
+[20:19:50] *** Quits: doomrobo (doomrobo@A01051A9.6F669779.3D1CA460.IP) (Quit: Leaving)
+[20:19:54] <kimundi> doomrobo: You don't need to if you use a map function that consumes the vector. I'm just not sure which functions are avialbe to you in your version of rust
+[20:20:41] <flaper87> bblum: right, although that paste would be legal, it wouldn't make any sense to have that, I guess.
+[20:20:47] <enix> Is there a way to create a trait bound that requires the type to be implicitly copyable?
+[20:21:48] <maik> how do I sleep a task with the new runtime?
+[20:21:55] *** Joins: doomrobo (Mibbit@A01051A9.6F669779.3D1CA460.IP)
+[20:22:06] <doomrobo> kimundi I'm very sorry about that, did you say anything?
+[20:22:14] <kimundi> doomrobo: You don't need to if you use a map function that consumes the vector. I'm just not sure which functions are avialbe to you in your version of rust
+[20:22:22] <kimundi> (is what I said :P)
+[20:22:52] <bblum> flaper87: yeah, i'm not sure why you would want a rekillable inside a rekillable without having another unkillable in between them
+[20:23:11] <doomrobo> mhm. So let me see if I can mutate `input` with a for loop
+[20:23:14] <kimundi> doomrobo: the is no such function on vectors directly, but we use iterators for this anyway
+[20:23:14] <bblum> every place i've needed to use rekillable, it always has an unkillable immediately surrounding it
+[20:23:21] <flaper87> bblum: yeah, or an unkillable inside an unkillable. Completely redundant 
+[20:23:35] <bblum> flaper87: well unkillable inside of unkillable can happen across library boundaries
+[20:24:30] <flaper87> bblum: it could, but that's something the user should take care of, I mean, if the code is already running from within an unkillable block, it doesn't make sense to add another one
+[20:24:40] <kimundi> doomrobo: No need to do it manually. How recent is your rust build?
+[20:24:57] <doomrobo> a week or two I think
+[20:25:11] <bblum> flaper87: one sec, let me throw together an example
+[20:25:38] <flaper87> bblum: thanks a lot for that!
+[20:25:53] *** Joins: vosen (vosen@moz-266BA656.icpnet.pl)
+[20:26:32] <kimundi> doomrobo: try let new_list = input.consume_iter().transform(|i| interpret(special, i, context))
+[20:27:41] <kimundi> wait
+[20:27:53] <kimundi> doomrobo: try let new_list = input.consume_iter().transform(|i| interpret(special, i, context)).to_owned_vec()
+[20:28:22] *** Quits: dave1629 (dave@moz-17578A1A.hsd1.va.comcast.net) (Quit: dave1629)
+[20:28:53] <doomrobo> kimundi says "cannot move out of captured variable" only on `special` and `context` now
+[20:29:09] <kimundi> good
+[20:29:22] * kimundi takes a look at those now
+[20:29:34] <Thiez> doomrobo: what are you writing?
+[20:29:50] <bblum> flaper87: http://pastebin.mozilla.org/2880249
+[20:29:53] <doomrobo> Thiez trying to write LISP in Rust just to get a hang of the language. It's taking a lot longer than I had thought
+[20:30:02] <Thiez> that is awesome.
+[20:30:16] *** Parts: galaux (galaux@moz-D32D4D77.rev.sfr.net) (WeeChat 0.4.1)
+[20:30:47] <kimundi> doomrobo: Okay in those two cases you either need to .clone() both, or restruture your functions to not take ownership everywhere
+[20:30:51] <doomrobo> I think once Rust settles into an official release we can expect so much more usage. I like it a lot, there's just a lot changing *all* the time
+[20:31:35] <kimundi> doomrobo: Or change the ~ to something like @ or Rc
+[20:32:11] <flaper87> bblum: that makes sense. There unkillably_access_some_state will be executed inside the rekillable block
+[20:32:44] <bblum> right.
+[20:33:10] *** Quits: Ms2ger (Ms2ger@59A8FC80.80FA5708.187A1082.IP) (Quit: nn)
+[20:34:14] <maik> bblum, do you know how to sleep in a task?
+[20:34:51] <obk> maik: For a fixed period of time?
+[20:35:00] <maik> obk, yes
+[20:35:07] <flaper87> bblum: there's something I quite don't get about the test example you pasted in the PR, there's an rekillable block inside an unkillable block - which is legal - but the asserition still fails, but the counter shouldn't be 0 there
+[20:35:18] *** Quits: doomrobo (Mibbit@A01051A9.6F669779.3D1CA460.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[20:35:20] *** Joins: _doomrobo (Mibbit@A01051A9.6F669779.3D1CA460.IP)
+[20:35:32] <_doomrobo> DAMN YOU AIRPORT WIFI
+[20:35:40] <_doomrobo> sorry again kimundi
+[20:35:44] <obk> https://github.com/mozilla/rust/issues/3455 isn't closed, so...
+[20:36:09] <_doomrobo> I meant to ask, why can't I just pass ownership to a function once I call it and then take it back once it returns?
+[20:36:40] <obk> fn foo(bar: ~T) -> ~T ?
+[20:37:59] <bblum> flaper87: why would the assertion fail?
+[20:38:20] <bblum> flaper87: the assertion is only checking that the unkillable counter is nonzero; in the example case, the counter will be 2
+[20:38:24] *** Joins: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com)
+[20:39:05] <flaper87> bblum: sorry, I'm talking about the test case you posted in the PR: https://github.com/mozilla/rust/pull/8581#issuecomment-22836722
+[20:39:15] <_doomrobo> kimundi thank you for your help. I have to go right now but I'll try to work on this on my own. Later!
+[20:39:25] *** Quits: _doomrobo (Mibbit@A01051A9.6F669779.3D1CA460.IP) (Quit: see ya)
+[20:39:35] <bblum> flaper87: oh, sorry
+[20:39:58] <carleastlund> Hmm, is there a shorthand for (*obj).method() like C/C++ have obj->method()?
+[20:40:01] <bblum> flaper87: ok, why would the assertion fail in that case?
+[20:41:53] *** Quits: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl) (Ping timeout)
+[20:42:38] *** Quits: obk (Mibbit@F07E1300.C88E081E.27150B55.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[20:43:09] *** Joins: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl)
+[20:43:42] <flaper87> bblum: mmh, not sure, rekillable is inside an unkillable block, so, that shouldn't be the reason.
+[20:44:23] <flaper87> unless the unkillable block is not being run in a green task context 
+[20:44:33] <bblum> it would be
+[20:44:37] <bblum> are you running it and it's failing?
+[20:44:48] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[20:45:02] <flaper87> bblum: yes, just ran it and failed "fatal runtime error: assertion failed: self.unkillable != 0"
+[20:45:21] <flaper87> bblum: at this line "do task::spawn { chan.send(()); fail!(); }"
+[20:45:39] <bblum> that is unexpected
+[20:45:47] *** Quits: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net) (Client exited)
+[20:45:50] <bblum> can you get a backtrace?
+[20:45:51] *** Quits: FrozenCow (FrozenCow@moz-B2DF4929.chello.nl) (Ping timeout)
+[20:49:07] *** Quits: maik (maik___@moz-85245553.dip0.t-ipconnect.de) (Ping timeout)
+[20:49:28] <flaper87> It doesn't show useful information and the log in tmp/ is empty. Is there a flag I should use for that?
+[20:49:48] <Thiez> carleastlund: that actually happens automagically most of the time
+[20:50:00] <Thiez> rusti: struct S{ x: int } impl S { fn foo(&self){println(fmt!("%d",self.x))} } let x = ~S{x:5}; x.foo() // For example
+[20:50:01] -rusti- 5
+[20:50:01] -rusti- ()
+[20:50:04] *** Quits: Blub\w (wry@7E3BB9D.71150E1A.237AE2BA.IP) (Quit: night)
+[20:50:17] <Thiez> we have autoderef.
+[20:50:23] <bblum> flaper87: run it in gdb
+[20:50:40] <carleastlund> Thiez, oh, so presumably the problem here is that clone() works on both the pointer and the object.
+[20:52:35] <flaper87> bblum: kk, will get the backtrace 
+[20:52:59] *** Quits: josh (josh@moz-348C4790.hsd1.mn.comcast.net) (Quit: josh)
+[20:55:48] <flaper87> bblum: besides this unexpected behavior, what is the failer you expected to see?
+[20:56:28] <kimundi> carleastlund: yeah that's a bit confusing
+[20:56:39] <kimundi> carleastlund: we have both auto deref and auto borrow
+[20:57:14] <kimundi> to force the one or the other you sometimes have to do (*foo).clone() or (&foo).clone()
+[20:57:48] <Thiez> you also have to explicitly deref unsafe pointers, even in unsafe blocks :(
+[20:58:28] <bblum> flaper87: i expect it to say "task failed at 'explicit failure'", "task failed at 'killed by linked failure'"
+[21:00:55] <carleastlund> Are Rust installations relocatable?  Or do I have to rebuild the world if I move it?
+[21:02:07] *** Joins: james4k (james@moz-E7990244.consolidated.net)
+[21:03:27] *** Quits: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net) (Ping timeout)
+[21:04:03] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[21:06:58] *** Quits: sigma-pc (sigma@moz-5022C87F.range109-151.btcentralplus.com) (Connection reset by peer)
+[21:07:19] <sam113101> would rust be suited for an init dæmon?
+[21:07:40] *** Joins: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net)
+[21:08:03] *** Joins: tikue (tkuehn@moz-F4812C6E.hsd1.fl.comcast.net)
+[21:12:16] *** Joins: aatch (aatch@moz-B437F499.pocketrent.com)
+[21:12:50] *** Quits: jaen (jaen@moz-E0979827.copit.pl) (Ping timeout)
+[21:14:01] *** Quits: hjr3 (hradtke@moz-E87BDF1F.socal.res.rr.com) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[21:16:08] <tikue> engla: ping
+[21:16:28] <tikue> nvm found what i was looking for
+[21:17:33] <engla> hi
+[21:17:39] <brson> carleastlund: it should more-or-less be relocatable
+[21:20:18] <carleastlund> brson: seemed less when I tried it, so I'm just rebuilding.  Not expecting to have to move it again, so not going to worry about what I may have done wrong.
+[21:20:36] *** Quits: vmx (vmx@moz-B23D5E9F.pools.arcor-ip.net) (Quit: Leaving)
+[21:21:24] <tikue> engla: i tried to do something similar to what you were showing me yesterday, using the @mut vector to pass it repeatedly
+[21:22:01] *** Joins: vadimcn (chatzilla@A2267643.76F9E272.DA40C4B3.IP)
+[21:22:35] *** Quits: vadimcn (chatzilla@A2267643.76F9E272.DA40C4B3.IP) (Quit: ChatZilla 0.9.90.1 [Firefox 23.0.1/20130814063812])
+[21:22:44] <tikue> it compiles and prints the correct result
+[21:22:51] <tikue> and then gets a weird freed pointer error
+[21:23:12] <engla> oh, so a real bug
+[21:23:15] <tikue> yes
+[21:24:00] <tikue> https://gist.github.com/tikue/39fa2dc272ab433490a5
+[21:24:01] <tikue> engla: ^
+[21:24:50] *** Joins: richard|s (mindginati@moz-9C555AF3.spmconsultants.co.nz)
+[21:25:11] *** Quits: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net) (Ping timeout)
+[21:26:10] <tikue> it doesn't happen if i change the line to ```let cur_primes = @mut ~[];```
+[21:26:53] <engla> and if you change it to let mut v = ~[]; let cur_primes = &mut v
+[21:26:57] <engla> ?
+[21:27:04] <tikue> or if i change it to ```let mut cur_primes = ~[];``` and then pass &mut cur_primes
+[21:27:12] <engla> ok
+[21:27:28] <tikue> i don't know why it let me compile the first one, as it seems like it'd be freed immediately
+[21:27:40] <engla> it should be fine
+[21:27:45] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[21:27:46] <tikue> hm
+[21:27:48] <engla> or, I don't know
+[21:28:12] <sfackler> std::rt::io is preferrable over std::io for network stuff now, right?
+[21:29:34] <Luqman> sfackler: std::io doesn't have any network stuff
+[21:30:04] <sfackler> ah
+[21:30:22] *** Quits: igl (igl@moz-2C89A932.adsl.alicedsl.de) (Ping timeout)
+[21:30:56] *** Joins: igl (igl@moz-A5E03FDE.adsl.alicedsl.de)
+[21:31:16] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[21:32:29] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[21:33:33] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Client exited)
+[21:33:41] <engla> tikue: do you want to report an issue?
+[21:35:01] <tikue> engla: the thing is i don't have a minimal test case
+[21:36:09] <engla> I'm working on it
+[21:36:43] <tikue> i suspect it has to do with passing it to the a closure
+[21:39:34] *** Quits: Florob (Florob@moz-39532932.de) (Client exited)
+[21:40:51] <tikue> is there any way to construct a struct that has a field which references another field?
+[21:41:08] <engla> tikue: not so much more minimal https://gist.github.com/blake2-ppc/90dc05a98ab13701dc67
+[21:41:47] <tikue> huh, 
+[21:42:38] <tikue> engla: do you want to submit the issue since you took the time to find a minimal(ish) example? i don't care either way
+[21:43:00] <engla> here it is https://github.com/mozilla/rust/issues/7972
+[21:43:26] <engla> it's probably the same
+[21:43:28] <tikue> rusti: struct Foo { a: uint, b: uint } let foo = Foo { a: 1, b: self.a * 2 }
+[21:43:29] -rusti- <anon>:6:4: 6:5 error: expected `;` but found `}`
+[21:43:30] -rusti- <anon>:6     };
+[21:43:30] -rusti-              ^
+[21:43:31] -rusti- application terminated with error code 101
+[21:43:31] <tikue> engla: ah ok
+[21:43:44] <tikue> rusti: struct Foo { a: uint, b: uint } let foo = Foo { a: 1, b: self.a * 2 };
+[21:43:45] -rusti- <anon>:5:66: 5:71 error: `self` is not allowed in this context
+[21:43:47] -rusti- <anon>:5          struct Foo { a: uint, b: uint } let foo = Foo { a: 1, b: self.a * 2 };
+[21:43:47] -rusti-                                                                            ^~~~~
+[21:43:47] -rusti- error: aborting due to previous error
+[21:43:47] -rusti- application terminated with error code 101
+[21:47:19] <carleastlund> What have I done wrong with an installation if I get "error: can't find crate for `std`"?
+[21:48:12] <sfackler> is this after relocating?
+[21:48:34] *** Quits: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP) (Quit: Leaving.)
+[21:49:01] *** Quits: richard|s (mindginati@moz-9C555AF3.spmconsultants.co.nz) (Quit: brb)
+[21:49:36] <carleastlund> sfackler: I relocated, but then I blew everything away (git clean -fxd) and restarted from ./configure with a --prefix option.
+[21:49:54] <carleastlund> So it should be a completely clean build, unless I somehow missed something.
+[21:51:06] <tikue> rusti: struct Foo { use std::iterator::count; foo: uint, }
+[21:51:08] -rusti- pastebinned 7 lines of output: http://ix.io/7oo
+[21:51:46] *** Joins: maxli (maxli@B5559308.9C54E60.2FA4EA88.IP)
+[21:52:27] <Thiez> how disappointing, one cannot meaningfully create a struct that contains a borrowed pointer to one of its own members as the pointer would be invalidated at the very first move
+[21:52:28] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[21:52:28] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/MLM1Zw
+[21:52:28] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[21:56:59] <engla> right, borrowed pointers are basically tied to a particular scope, not to a value
+[21:58:59] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[21:59:00] *** Joins: Liothen (liothen@moz-80EF0CD7.spkn.qwest.net)
+[21:59:16] *** Quits: mihneadb (mihneadb@moz-329F29A3.lightspeed.sntcca.sbcglobal.net) (Input/output error)
+[21:59:52] *** Quits: nano (nano@moz-74CAD1CA.superkabel.de) (Connection reset by peer)
+[22:02:06] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[22:02:06] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/n20fFw
+[22:02:06] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[22:02:07] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[22:02:07] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/zlVKlw
+[22:02:07] <ghrust> 13rust/06auto 14418e1eb 15Kevin Ballard: Reserve 'yield' keyword...
+[22:02:07] <ghrust> 13rust/06auto 14b26e11d 15bors: auto merge of #8560 : kballard/rust/reserve-yield, r=pcwalton...
+[22:02:08] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[22:02:30] *** Quits: spider-mario (spidermari@moz-81131DB6.fbx.proxad.net) (Input/output error)
+[22:03:05] *** Joins: kevincantu (kevincantu@moz-244ED9FD.hsd1.ca.comcast.net)
+[22:07:17] *** Joins: strcat (strcat@moz-61B073BC.cpe.net.cable.rogers.com)
+[22:07:34] *** Quits: strcat (strcat@moz-61B073BC.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.1)
+[22:08:00] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[22:08:22] <brson> bblum: is this load required for correctess https://github.com/brson/rust/commit/d01eb1252938aeb5d6d9573a9689b0d1be5cc288#L0L344
+[22:08:40] <brson> probably
+[22:09:50] *** Quits: sebcrozet (sebcrozet@moz-F96421F3.w80-13.abo.wanadoo.fr) (Ping timeout)
+[22:10:27] <bblum> brson: the assertion? no
+[22:10:31] <brson> the load
+[22:10:35] <brson> inside the assert
+[22:10:41] <brson> i'm going to compile out rtasserts
+[22:10:53] <bblum> ok and you're auditing them all?
+[22:11:00] <brson> yes
+[22:11:01] *** Quits: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com) (Quit: lmandel)
+[22:11:06] <bblum> yeah, see the comment above that one; it can just be in a cfg!(test)
+[22:11:09] <bblum> or compiled out
+[22:11:12] <sully> mark_edward: I'm not really sure, I will look into it tomorrow
+[22:11:21] <bblum> sounds good
+[22:12:02] <brson> so the load is never required?
+[22:12:07] <brson> it's just an assertion?
+[22:12:13] <bblum> right
+[22:12:17] <brson> ok thanks
+[22:12:30] <bblum> it can't even have any side effects because there's no barrier :P
+[22:13:08] *** Quits: tikue (tkuehn@moz-F4812C6E.hsd1.fl.comcast.net) (Quit: tikue)
+[22:13:38] *** Quits: sigma (sigma@51C589B3.EF2694B5.DFAC6AA7.IP) (Ping timeout)
+[22:15:27] *** Joins: sigma (sigma@51C589B3.EF2694B5.DFAC6AA7.IP)
+[22:19:32] <flaper87> bblum: back, sorry
+[22:19:55] <flaper87> I just compiled and run the same code I have in the test, it fails with linked failure
+[22:20:28] *** Quits: cdidd (cdidd@moz-61ECBB0E.broadband.corbina.ru) (Ping timeout)
+[22:24:43] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Client exited)
+[22:28:34] <bblum> flaper87: sounds correct
+[22:28:40] *** Quits: samx (sami@moz-48EC0983.dyn.optonline.net) (Quit: This computer has gone to sleep)
+[22:29:46] <flaper87> bblum: yup, but the test case fails at the asserition line
+[22:30:10] <bblum> shouldn't the assertion have been removed?
+[22:30:25] <bblum> and replaced with a "fail!("illegal call of rekillable")" ?
+[22:31:44] *** Quits: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net) (Client exited)
+[22:32:16] <flaper87> yes, but before doing that, I wanted to understand why it is failing there. I mean, there's a rekillable blcok insde an unkillable one. that's fine, but then it fails when task:spawn is called
+[22:32:53] <bblum> hm.
+[22:32:58] <bblum> got a backtrace?
+[22:35:40] *** Joins: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net)
+[22:37:21] *** Quits: int3_ (int3_@moz-ABE52D50.hsd1.ca.comcast.net) (Ping timeout)
+[22:37:37] <carleastlund> *facepalm* Ohh, rust doesn't work from symlinks.  It can't find the `std` crate if you call it from something that isn't in the right place relative to the build.  :(
+[22:38:12] *** Quits: miloshadzic (miloshadzi@5E9C7FE4.FA4D0618.449B8A48.IP) (Quit: My MacBook has gone to sleep. ZZZzzz…)
+[22:41:45] *** Joins: maik (maik___@moz-85245553.dip0.t-ipconnect.de)
+[22:44:54] *** Joins: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP)
+[22:45:12] *** Quits: lenstr (lenstr@AF8EB999.6049B16A.85938D85.IP) (Client exited)
+[22:45:14] <dbaupp> erickt1, erickt: pong
+[22:45:21] <flaper87> bblum: I just removed the asserition and I'm now running the test.
+[22:52:31] <maik> I have a nasty task bug :( when I have a infinite loop running in a task it causes unexpected behaviour
+[22:52:38] *** Joins: tikue (tkuehn@moz-F4812C6E.hsd1.fl.comcast.net)
+[22:53:23] <maik> sometimes it just get stuck in this line https://gist.github.com/MaikKlein/6264465#file-task-rs-L8
+[22:53:42] <maik> it happens around 5% of the time
+[22:54:04] <tikue> i want to add a side effect to an iter().filter(), such that every element that is left after the filter is pushed to a vector before the next element is filtered
+[22:54:11] <tikue> what is the best way to do this?
+[22:54:11] <maik> I guess it fails to spawn the task and gets stuck in an infinite loop or sth
+[22:54:37] <tikue> inspect, right?
+[22:55:43] <maik> whats the best way to debug rust?
+[22:55:45] <maik> gdm?
+[22:55:47] <Eridius> tikue: you want to partition something into elements matching, and elements non-matching?
+[22:56:02] <tikue> Eridius: no the filter test depends on previous filtered elements
+[22:56:37] <tikue> Eridius: so I want to do soemthing like filter(```do something with vec```).inspect(|el| vec.push(el)
+[22:56:41] <tikue> right?
+[22:57:08] <Eridius> tikue: use .scan()
+[22:57:27] <tikue> oh wow, that's wonderful, i never knew about scan thank you
+[22:57:28] <erickt1> cmr: ping
+[22:57:39] <cmr> erickt1: pong
+[22:57:48] <erickt1> just updated https://github.com/erickt/rust-elasticsearch to HEAD
+[22:57:54] <erickt1> for TWiR
+[22:57:57] <tikue> wait i have no idea how to use scan Eridius :P can you explain it to me please?
+[22:58:01] <cmr> cool, writing it now!
+[22:58:08] <cmr> Anyone else have something they'd like in TWiR?
+[22:58:10] <erickt1> cmr: I also did some work on https://github.com/erickt/rust-zmq too
+[22:58:27] <Eridius> tikue: actually wait, scan won't work quite right for you
+[22:58:34] <tikue> Eridius: this is what it looks like now
+[22:58:35] <Eridius> it can't be used as a filter because it has to return something every time
+[22:58:38] <tikue>     let mut cur_primes = ~[];
+[22:58:38] <tikue>     let mut primes = divs.filter(|i| prime(cur_primes, i)).inspect(|&p| cur_primes.push(p));
+[22:58:42] <dbaupp> cmr: https://github.com/huonw/spellck I guess
+[22:59:04] <dbaupp> cmr: (I used it for https://github.com/mozilla/rust/pull/8551 if you want an example :P )
+[22:59:27] <Eridius> tikue: you'll need to build your own iterator. You can either do a full-fledged one, or use Unfoldr
+[22:59:37] <tikue> Eridius: what's wrong with what I'm doing there?
+[22:59:42] <tikue> it seems to work
+[22:59:44] <Eridius> rusti: I meant to do what you originally asked
+[22:59:46] -rusti- <anon>:5:11: 5:16 error: expected one of `; }` but found `meant`
+[22:59:46] -rusti- <anon>:5          I meant to do what you originally asked
+[22:59:46] -rusti-                     ^~~~~
+[22:59:46] -rusti- application terminated with error code 101
+[23:00:04] *** Quits: dwhyte (dwhyte@1922756A.EDC594B0.7BF4A4B0.IP) (Client exited)
+[23:00:10] <tikue> that is what I originally asked, no?
+[23:00:22] * dbaupp is pretty sure : and ( would be valid characters there too
+[23:00:44] <Eridius> tikue: sure, if the element is clonable
+[23:00:48] <erickt1> dbaupp: thought up another useful case for a state machine / yield. I experimented this weekend with rewriting the serializers to use iterators. It turned out to be about 25% faster than the method based approach when unoptimized, but equivalent when optimized. To do it though I had to write a state machine by hand it was a bit of a royal pain
+[23:00:55] <tikue> mhm
+[23:00:59] <Eridius> which I guess it has to be based on your original statement
+[23:01:03] <tikue> :P
+[23:01:03] <Eridius> which apparently I misread ;)
+[23:02:01] <dbaupp> erickt1: ah, neat!
+[23:02:11] <erickt1> dbaupp: I gave up though when I tried to implement a recursive iterator across multiple types. It was getting… ugly
+[23:02:27] <tikue> Eridius: do you think filter().inspect() is clearer than simply having a side-effect in the filter closure?
+[23:02:39] <Eridius> tikue: probably
+[23:02:42] <erickt1> would have been much easier to use yield and let the compiler generate the code for the state machine
+[23:02:53] <tikue> erickt1: someday
+[23:02:56] <tikue> hopefully
+[23:04:29] <dbaupp> erickt1: yeah, it's really head-bending trying to work out what you need to keep track of, and how to actually keep track of it in a clean way.
+[23:05:22] <erickt1> yeah, once I got to the point of writing my own stack to track the in-scope variables for state X I gave up
+[23:08:52] *** Quits: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se) (Ping timeout)
+[23:08:54] *** Joins: engla (engla@moz-DBD1D96E.cust.bredbandsbolaget.se)
+[23:09:04] <ChrisMorgan> dbaupp: re. augmented-assignment and whether it works yet: no, I haven't added any more to it. I mostly wanted to see if it was stale and keep it up to date in the hope that someone could look at it. It was stale, but only just.
+[23:09:30] <dbaupp> ChrisMorgan: I see
+[23:09:48] <dbaupp> ChrisMorgan: you could send an email to the mailing list to attract some attention :)
+[23:09:58] <ChrisMorgan> Probably a good plan.
+[23:10:43] *** Quits: mark_edward (quassel@21027BAA.520D6B7D.BF46A673.IP) (Ping timeout)
+[23:11:28] <ChrisMorgan> OK, so this is what happens when Git is left to detect renames itself, rather than having them as data as in svn or hg: "rename src/{rt/rust_upcall.h => test/compile-fail/issue-6610.rs} (73%)"
+[23:11:50] <maik> is this a bug? https://gist.github.com/MaikKlein/6264549
+[23:12:44] <maik> seems like a deadlock
+[23:13:22] <ChrisMorgan> maik: running with a single thread, or multiple?
+[23:13:43] <maik> ChrisMorgan, multiple
+[23:14:03] <dbaupp> maik: it'll possibly work if you put `task::yield()` in the loop?
+[23:14:22] <maik> afaik it should spawn the task , print after kill the main task which then kills the child task
+[23:14:36] <maik> dbaupp, what is task::yield doing?
+[23:14:45] <maik> i know it is something for the scheduler
+[23:15:19] <maik> yeah it works with task yield
+[23:15:27] <dbaupp> it is handing control back to the scheduler so it can decide to run other tasks:
+[23:16:55] <dbaupp> rust's tasks are cooperatively scheduled, not preemptively; so they don't/can't steal timeslices from another task without that task manually "giving up the cpu" (in theory things like io will cause a task to yield also.)
+[23:18:17] *** Joins: mark_edward (quassel@21027BAA.520D6B7D.BF46A673.IP)
+[23:19:18] *** Joins: mihneadb (mihneadb@moz-329F29A3.lightspeed.sntcca.sbcglobal.net)
+[23:19:35] <engla> looking at WorkQueue, why is it using vec::shift/vec::unshift for its pop/push methods and   using vec::pop for steal? it sounds like steal should be uncommon
+[23:19:48] <engla> I mean vec::pop is cheap and vec::unshift is very expensive
+[23:20:29] <dbaupp> (we possibly need ringbuf in std... it'd help for fewer-allocation streams too.)
+[23:20:50] <engla> we probably want a ringbuf that doesn't use ~[Option<T>]
+[23:20:54] <maik> dbaupp, okay thanks, but this means that I only have to yield one time right?
+[23:21:46] <tikue> maik: you could try putting the yield above the loop { } but i don't think yield is guaranteed to yield
+[23:21:55] <engla> brson: if improving unshift increases performance, can you just swap the ends of that vector? or we work on a deque
+[23:22:15] <dbaupp> engla: why not Option<T>?
+[23:22:32] <engla> it's part of the overhead
+[23:22:39] <engla> compared to ~[]
+[23:22:47] <engla> comparing ringbuf to ~[]
+[23:23:36] <dbaupp> it looks like sched uses WorkQueue<~Task> so it'd get represented as a single word pointer anyway
+[23:23:45] <maik> tikue, yeah right :( I just tested it, if it is not in the loop it will dead lock sometimes
+[23:24:04] <engla> dbaupp: yeah, so that's not so bad
+[23:24:53] <tikue> maik: if the loop isn't doing anything anyway, the yield shouldn't hurt performance :P
+[23:25:04] *** Joins: dave1629 (dave@moz-17578A1A.hsd1.va.comcast.net)
+[23:25:31] <brson> engla: good point about shift/unshift in WorkQueue
+[23:25:59] <engla> dbaupp: it's not just one pointer I think
+[23:26:03] <engla> rusti: trait Any {} impl Any for int; std::sys::size_of::<Option<~Any>>()
+[23:26:04] -rusti- 24
+[23:26:14] <engla> rusti: trait Any {} impl Any for int; std::sys::size_of::<~Any>()
+[23:26:15] -rusti- 16
+[23:26:35] <dbaupp> engla: oh, Task is a trait?
+[23:27:04] <olsonjeffery> anyone know where the consts for posix88 in libc:: come from?
+[23:27:10] <olsonjeffery> there's some consts missing that id like to add
+[23:27:14] <engla> no idea, assumptions making trouble for me again :)
+[23:27:59] <brson> olsonjeffery: They were originally generated from etc/libc.c but I don't know if that file is still maintained
+[23:28:17] <olsonjeffery> hm.
+[23:28:47] <olsonjeffery> yeah.. i have helper fns in rust_uv.cpp calling down to get the vals for S_IRGRP, etc for the calls to uv_fs_open
+[23:28:56] <olsonjeffery> then i stumbled upon them in libc::, which is awesome
+[23:28:59] <olsonjeffery> but not all of them are there
+[23:29:07] <olsonjeffery> S_IROTH and S_IRGRP aren't present
+[23:29:18] <olsonjeffery> you so can't create a file 0644
+[23:29:28] *** Quits: orshem (orshem@C5E06B1E.A5B6B765.E3D28531.IP) (Quit: Leaving)
+[23:29:29] <dbaupp> engla: nope, appears to be a struct in rt::task
+[23:30:03] <engla> aha
+[23:30:22] <olsonjeffery> brson: graydon is the maintainer of that module, i believe?
+[23:30:25] <olsonjeffery> ill ping him on monday, i guess.
+[23:32:09] <cmr> olsonjeffery: did you look at the posix standard?
+[23:32:16] <cmr> I don't know if it ships headers or enumerates the values of the constants.
+[23:32:28] <olsonjeffery> i couldn't find the header in ubuntu
+[23:32:45] <brson> olsonjeffery: yeah graydon knows the most about how it should be organized
+[23:32:49] <olsonjeffery> its stashed away somewhere.. the main fcntl.h in /usr/includes gets them from some other header of the same name
+[23:32:50] <engla> brson: can I benchmark the difference? is there a benchmark somewhere
+[23:33:08] <cmr> yeah, welcome to glibc :)
+[23:33:13] <olsonjeffery> <bits/fcntl.h>
+[23:33:30] <olsonjeffery> anyways, i ran out of patience at about that time and just wrote helper functions
+[23:34:25] <olsonjeffery> i think ill just let what i have stand and we can hash it out in the PR
+[23:36:32] *** Quits: SingingBoyo (brandon@4DF3381A.51F4D838.4F048BDC.IP) (Ping timeout)
+[23:37:14] *** Joins: SingingBoyo (brandon@4DF3381A.51F4D838.4F048BDC.IP)
+[23:39:19] *** Quits: maik (maik___@moz-85245553.dip0.t-ipconnect.de) (Ping timeout)
+[23:43:00] *** Quits: donri (dag@moz-9BB61102.tbcn.telia.com) (Client exited)
+[23:43:17] *** Quits: tikue (tkuehn@moz-F4812C6E.hsd1.fl.comcast.net) (Quit: tikue)
+[23:44:40] *** Quits: heftig (heftig@moz-C32EAC78.dip0.t-ipconnect.de) (Ping timeout)
+[23:47:24] <brson> engla: the one i've been using is test/bench/rt-message-passing-ping-pong.rs using arguments like 1000000 16. there are a few others there that might be interesting too
+[23:47:33] *** Joins: samx (sami@moz-48EC0983.dyn.optonline.net)
+[23:48:34] <brson> engla: though if you are changing the MessageQueue and want to test stealing you might want to use low number for the second parameter which is - i think - the number of ping-pong pairs, leaving some cores unoccupied
+[23:48:36] *** Joins: heftig (heftig@moz-93D37E6F.dip0.t-ipconnect.de)
+[23:48:52] <brson> *WorkQueue
+[23:49:22] <brson> though having unloaded cores will stress all three queues
+[23:50:12] <brson> engla: you may want to test on top of my pr and or toddaaro's. there are a lot of major optimizations in the pr queu
+[23:51:39] <brson> any more opinions about Times https://github.com/mozilla/rust/pull/8371
+[23:51:40] <brson> ?
+[23:52:13] <engla> ok I'll look at this now
+[23:53:34] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[23:53:34] *** ChanServ sets mode: +o dherman
+[23:56:50] <acrichto> brson: we're using a fork of libuv on your account on github, would there be a reason to not take what looks to be our custom patches and rebase them on master libuv right now?
+[23:57:08] <acrichto> I was going to try to add a patch to fix processes on unix and I figured while I was at it I could attempt to upgrade libuv as a whole
+[23:57:09] <bjz> aatch: https://github.com/mozilla/rust/issues/8588
+[23:57:54] <brson> acrichto: no, there's no reason not to
+[23:58:15] <acrichto> brson: cool, I'll look into doing that

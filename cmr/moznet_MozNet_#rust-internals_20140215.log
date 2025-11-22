@@ -1,0 +1,1403 @@
+[00:00:25] <cmr> backtrace: https://gist.github.com/anonymous/c2d8f18021fcda80606e
+[00:00:29] <cmr> that's pretty confounding.
+[00:01:00] <Eridius> Clearly you're tryingt o clone an $$UP$$VEC$Aaklsdgjklajsdg
+[00:01:19] <cmr> it's pretty confusing I think..
+[00:01:57] *** Joins: cgaebel (clark@ADA4DDE2.290DF317.EE6E63A5.IP)
+[00:04:04] *** Quits: cgaebel (clark@ADA4DDE2.290DF317.EE6E63A5.IP) (Ping timeout)
+[00:06:01] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[00:06:01] <ghrust> [13rust] 15kballard 04force-pushed 06try from 1423c9050 to 14ba4f739: 02http://git.io/k471pw
+[00:06:01] <ghrust> 13rust/06try 146416d11 15Kevin Ballard: Add c_str::CString.as_bytes_no_nul()
+[00:06:01] <ghrust> 13rust/06try 140d43070 15Kevin Ballard: Use str::from_utf8_lossy() in os::args(), add os::args_as_bytes()...
+[00:06:01] <ghrust> 13rust/06try 14ba4f739 15Kevin Ballard: Use str::from_utf8_lossy() for os::env() and friends...
+[00:06:03] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[00:06:16] <cmr> hahah
+[00:06:21] <Eridius> hahah?
+[00:06:21] <cmr> oh that's try
+[00:06:24] <cmr> damn
+[00:06:25] <Eridius> :P
+[00:06:54] <Eridius> stupid platform-specific code in args/env
+[00:07:01] *** Joins: cgaebel (clark@ADA4DDE2.290DF317.EE6E63A5.IP)
+[00:08:07] *** Quits: eibwen (kvirc@moz-DBA0490C.dip0.t-ipconnect.de) (Ping timeout)
+[00:08:40] <cmr> vadimcn: acrichto: clean cleans compiler-rt and morestack?
+[00:09:01] <strcat> compiler-rt <3
+[00:11:17] *** Quits: cgaebel (clark@ADA4DDE2.290DF317.EE6E63A5.IP) (Ping timeout)
+[00:13:08] *** Joins: cgaebel (clark@ADA4DDE2.290DF317.EE6E63A5.IP)
+[00:13:36] *** Quits: lkuper (lkuper@moz-AD4C50F5.dhcp-bl.indiana.edu) (Ping timeout)
+[00:15:11] *** Quits: cgaebel (clark@ADA4DDE2.290DF317.EE6E63A5.IP) (Quit: ChatZilla 0.9.90.1 [Firefox 27.0/20140130123732])
+[00:16:30] <cmr> wut
+[00:16:39] <huon> acrichto: ping
+[00:16:51] <cmr> it's segfaulting on `let _ = fmt::writeln(&mut w as &mut io::Writer, args);`
+[00:18:10] <cmr> hm this isn't right.
+[00:21:38] <acrichto> cmr: yeah clean should get both compiler-rt and morestack, they're just a bunch of .o files
+[00:21:40] <acrichto> huon: ping
+[00:21:42] <acrichto> pong*
+[00:22:04] <cmr> acrichto: I'm asking *why* they get cleaned. It's a bit annoying
+[00:22:09] <cmr> or, wondering.
+[00:23:12] <huon> acrichto: for this RAII mutex business, I'm currently thinking of renaming unstable::mutex::Mutex to StaticNativeMutex and adding a NativeMutex type to that module that has a destructor; does that sound too horrible?
+[00:24:00] <acrichto> cmr: thankfully they build fast!
+[00:24:28] <acrichto> huon: sounds good to me
+[00:24:32] <acrichto> NativeMutex is a bit wordy
+[00:24:34] <acrichto> but that's what it is
+[00:24:37] <acrichto> and you shouldn't use it anyway
+[00:24:54] <strcat> should it be exposed at all?
+[00:25:03] <huon> it's in std::unstable
+[00:25:48] <huon> (but that still doesn't mean that it should exposed...)
+[00:25:56] <sfackler> it's useful for interfacing with bad C libraries
+[00:26:02] <sfackler> (looking at you, OpenSSL)
+[00:26:54] <acrichto> sfackler: sync::mutex::StaticMutex should work for generically interfacing with C libraries
+[00:27:12] <acrichto> it'd be awesome to not expose it, but I think it's inevitable, there's always one use case or another
+[00:27:13] <sfackler> oh, cool
+[00:27:19] <sfackler> I didn't know that existed
+[00:27:19] <acrichto> i.e. libsync's mutex is built on top of the os muetx
+[00:27:37] <acrichto> sfackler: yeah it needs to be integrated with the rest of libsync still
+[00:28:24] <sfackler> acrichto: actually, I don't think StaticMutex will work as is
+[00:28:38] <sfackler> I need non-raii lock and unlock
+[00:29:20] <sfackler> It's also probably important to make sure to block the whole OS thread, not just the rust task in case the library is using thread locals
+[00:29:49] <acrichto> shouldn't it suffice in both cases?
+[00:30:01] <acrichto> if you don't reschedule during the mutex you should essentially lock the thread
+[00:30:09] <acrichto> other green threads will just appropriately block instead of locking their threads up
+[00:30:42] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[00:31:42] <sfackler> uh, 1 sec
+[00:33:47] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[00:36:19] <sfackler> but if you're running on libgreen and the libraries doing stuff, has some state in thread locals, then tries to take a lock and block, you have to be sure you're not going to run any stuff from this library in that same thread
+[00:36:25] <sfackler> or the thread local state will get stomped
+[00:36:58] <cmr> Ok, this is really weird.
+[00:36:59] <sfackler> the RAII thing is definitely a problem due to the way locking is setup
+[00:37:03] <sfackler> in openssl
+[00:37:26] <sfackler> you specify a callback that gets called with "lock/unlock mutex #whatever"
+[00:37:44] <strcat> I don't think you'll ever make openssl/nss play well with M:N, can you use another library?
+[00:38:09] <strcat> i.e. something like http://nacl.cr.yp.to/
+[00:38:46] <kmc> nacl is cool but it doesn't implement the most widely-used crypto stuff
+[00:38:54] <strcat> (you'd have to pin the task to an OS thread or something which isn't doable with the I/O homing still in place)
+[00:40:13] <sfackler> strcat: last time I checked NaCl doesn't do SSL/TLS
+[00:40:29] <sfackler> it seems to be focused on AES/RSA/etc
+[00:40:39] <acrichto> sfackler: hm perhaps we should do the same {lock,unlock}_noguard for libsync's mutex as well as for libstd's native mutex
+[00:40:42] <sfackler> I would love to dump OpenSSL
+[00:40:42] * strcat thought it did TLS... guess not
+[00:40:45] <acrichto> sfackler: they'd be unsafe methods for now though
+[00:40:50] <sfackler> that's fine
+[00:40:57] <sfackler> the callback's already wildly unsafe :D
+[00:46:54] <Eridius> the windows rust-try bot seems to have a problem configuring
+[00:47:04] <Eridius> seems to think there's a local change
+[00:47:11] <Eridius> when trying to update llvm
+[00:47:20] <Eridius> acrichto: do you know how to fix that?
+[01:01:29] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[01:01:29] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/Hv3L9g
+[01:01:29] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[01:02:03] *** kimundi is now known as zz_kimundi
+[01:05:45] <sfackler> acrichto: there's an impl<R: Reader> Reader for IoResult<R>?!
+[01:06:30] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[01:06:30] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/TRl8Tw
+[01:06:30] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[01:06:59] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[01:06:59] <ghrust> [13rust] 15kballard 04force-pushed 06try from 14ba4f739 to 141ad052d: 02http://git.io/k471pw
+[01:06:59] <ghrust> 13rust/06try 14c97675e 15Kevin Ballard: Use str::from_utf8_lossy() in os::args(), add os::args_as_bytes()...
+[01:06:59] <ghrust> 13rust/06try 141ad052d 15Kevin Ballard: Use str::from_utf8_lossy() for os::env() and friends...
+[01:06:59] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[01:08:00] <acrichto> Eridius: I'd just retry it 
+[01:08:05] <acrichto> sfackler: indeed
+[01:08:15] <Eridius> acrichto: doing that now (well, with try-linux hopefully fixed)
+[01:08:19] <sfackler> D:
+[01:11:28] *** Joins: ghrust (ghrust@7BEB6F9D.6A2AE50.F3114085.IP)
+[01:11:28] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/pOFq1g
+[01:11:28] <ghrust> 13rust/06auto 14c8141f2 15Alex Crichton: Enable 64-bit checked multiplication on 32-bit...
+[01:11:28] <ghrust> 13rust/06auto 14a99e3a0 15bors: auto merge of #12276 : alexcrichton/rust/issue-8449, r=kballard...
+[01:11:29] *** Parts: ghrust (ghrust@7BEB6F9D.6A2AE50.F3114085.IP) ()
+[01:11:30] *** Joins: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP)
+[01:11:31] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/TRl8Tw
+[01:11:31] *** Parts: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP) ()
+[01:11:38] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Client exited)
+[01:12:10] *** Joins: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[01:12:23] <Eridius> is there any way to cancel the existing try builds?
+[01:13:38] * Eridius is also rather surprised try-linux hasn't failed yet
+[01:13:39] <sfackler> if you log into bors and goto the build you can cancel it
+[01:13:54] <Eridius> sfackler: I don't have credentials to log into bors
+[01:13:55] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Ping timeout)
+[01:19:42] *** Joins: ghrust (ghrust@94BD74B8.6A2AE50.F3114085.IP)
+[01:19:42] <ghrust> [13rust] 15kballard 04force-pushed 06try from 141ad052d to 14fb80c4f: 02http://git.io/k471pw
+[01:19:43] <ghrust> 13rust/06try 147bbc2f2 15Kevin Ballard: Use str::from_utf8_lossy() in os::args(), add os::args_as_bytes()...
+[01:19:43] <ghrust> 13rust/06try 14fb80c4f 15Kevin Ballard: Use str::from_utf8_lossy() for os::env() and friends...
+[01:19:43] *** Parts: ghrust (ghrust@94BD74B8.6A2AE50.F3114085.IP) ()
+[01:19:48] <brson> Eridius: buildbot, not bors. credentials are rust/rust
+[01:20:01] <Eridius> brson: thanks, sfackler told me already
+[01:20:05] <Eridius> but now everybody knows!
+[01:20:41] *** Joins: jdm (jdm@E595D12E.1196002C.7DBB297B.IP)
+[01:23:08] * ChrisMorgan has never logged in to http://buildbot.rust-lang.org/ but is reported as being logged in as rust, and the log out link does nothing
+[01:23:30] <ChrisMorgan> And I get the "Stop This Build" et al. controls.
+[01:24:05] <Eridius> ChrisMorgan: when I tried to log in I got authentication failed a bunch of times, then sfackler went and killed the build for me, at which point reloading the page showed me as logged in
+[01:24:36] <ChrisMorgan> Eridius: if I go to /login and actually *try* to log in, it goes all /authfail, but I'm logged in all the time already.
+[01:25:24] <ChrisMorgan> If I open it in private browsing mode it shows me as logged in too.
+[01:26:06] <brson> awesome
+[01:26:07] <Eridius> I just opened Chrome, which has never visited the site before, and it's showing me as logged out
+[01:28:13] <ChrisMorgan> Weird. All weird.
+[01:28:27] <ChrisMorgan> Chrome is clearly an inferior browser ;-)
+[01:28:37] <huon> servo for everyone \o/
+[01:29:05] <ChrisMorgan> Hmm, Chromium shows me as logged out also.
+[01:29:33] <ChrisMorgan> And… now a Firefox private browsing session *doesn't* show me as logged in.
+[01:29:43] <ChrisMorgan> Nor does Firefox.
+[01:29:50] <ChrisMorgan> Uh oh, that sounds like a serious security hole.
+[01:31:49] *** Joins: gimpf (gimpf@moz-3797637E.adsl.highway.telekom.at)
+[01:40:13] <Eridius> aww crud. "error: Unrecognized option: 'cfg'.". With no filename/line number
+[01:40:35] <cmr> r? https://github.com/mozilla/rust/pull/12282
+[01:41:17] <cmr> please review that very, very carefully.
+[01:43:13] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[01:43:23] <Eridius> actually, that error message sounds to me like an error with command-line arguments, e.g. --cfg, not with #[cfg]
+[01:43:25] <huon> cmr: is there anything of particular danger?
+[01:43:30] <cmr> huon: it causes a segfault!
+[01:43:47] <cmr> why? I do not know.
+[01:43:54] <huon> o_O
+[01:44:02] <huon> ... why did you submit it then? :P
+[01:44:07] <cmr> for review :P
+[01:44:24] <sfackler> c.c
+[01:44:34] <huon> sounds like you're trying to get someone else to fix your bugs... pathetic! :P
+[01:44:37] <cmr> yup!
+[01:44:40] <cmr> no but seriously
+[01:44:51] <cmr> is there anything there besides a shuffling around of RawPtr and renames?
+[01:45:01] <cmr> I see nothing.
+[01:45:03] <huon> just found the problem!
+[01:45:11] <huon> line 167 of io/test.rs is not indented correctly
+[01:45:28] * cmr does a clean build and rebases
+[01:45:36] <Eridius> ah yes, indentation, clearly that's the segfault
+[01:47:53] <brson> acrichto: in this 'make help' pr the configure script ends by saying 'type `make help`'. Do you think it's ok to keep doing that but have make help just say 'make tips'?
+[01:48:07] *** Joins: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[01:50:43] <Eridius> cmr: I think I found it
+[01:50:44] <Eridius> about to comment
+[01:50:57] <cmr> \o/
+[01:51:25] <Eridius> commented
+[01:51:32] *** Joins: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP)
+[01:51:32] <ghrust> [13rust] 15bors 04force-pushed 06auto from 14a99e3a0 to 14d365c3a: 02http://git.io/N3iJvQ
+[01:51:32] *** Parts: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP) ()
+[01:51:34] *** Joins: ghrust (ghrust@4089EBDC.6A2AE50.F3114085.IP)
+[01:51:34] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/-N9Mkw
+[01:51:34] <ghrust> 13rust/06auto 141bf1eea 15Alex Crichton: Update restrictions on rustdoc source rendering...
+[01:51:34] <ghrust> 13rust/06auto 149b173ed 15bors: auto merge of #12277 : alexcrichton/rust/fix-rustdoc-render, r=huonw...
+[01:51:35] *** Parts: ghrust (ghrust@4089EBDC.6A2AE50.F3114085.IP) ()
+[01:51:43] <cmr> ahhh damn.
+[01:51:53] * Eridius continues reading
+[01:52:31] <Eridius> ok, I see nothing else
+[01:52:36] <cmr> thank you <3
+[01:52:43] <Eridius> so that, and line 167 of io/test.rs for indentation ;)
+[01:52:43] * cmr was going crazy
+[01:53:34] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Client exited)
+[01:53:55] *** Joins: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[01:54:00] <cmr> rusti: let x = ~[123i]; let y: *~[int] = &x; let z = *y; x
+[01:54:01] -rusti- <anon>:10:55: 10:57 error: dereference of unsafe pointer requires unsafe function or block
+[01:54:02] -rusti- <anon>:10         let x = ~[123i]; let y: *~[int] = &x; let z = *y; x
+[01:54:02] -rusti-                                                                 ^~
+[01:54:02] -rusti- error: aborting due to previous error
+[01:54:03] -rusti- application terminated with error code 101
+[01:54:07] <cmr> rusti: let x = ~[123i]; let y: *~[int] = &x; let z = unsafe { *y }; x
+[01:54:09] -rusti- <anon>:10:64: 10:66 error: cannot move out of dereference of * pointer
+[01:54:09] -rusti- <anon>:10         let x = ~[123i]; let y: *~[int] = &x; let z = unsafe { *y }; x
+[01:54:10] -rusti-                                                                          ^~
+[01:54:12] <cmr> ah
+[01:54:13] -rusti- error: aborting due to previous error
+[01:54:15] -rusti- application terminated with error code 101
+[01:54:50] <cmr> rusti: let x = 123i; let y: *int = &x; let z = unsafe { *y }; x
+[01:54:52] -rusti- <anon>:10:45: 10:46 warning: unused variable: `z`, #[warn(unused_variable)] on by default
+[01:54:52] -rusti- <anon>:10         let x = 123i; let y: *int = &x; let z = unsafe { *y }; x
+[01:54:52] -rusti-                                                       ^
+[01:54:52] -rusti- 123
+[01:55:14] <cmr> rusti: let x = ~[123i]; let y: *~[int] = &x; let z = unsafe { std::ptr::read_ptr(*y) }; x
+[01:55:17] -rusti- pastebinned 8 lines of output: http://ix.io/avE
+[01:55:34] <cmr> rusti: let x = ~[123i]; let y: *~[int] = &x; let z: ~[int] = unsafe { std::ptr::read_ptr(*y) }; x
+[01:55:34] -rusti- <anon>:10:91: 10:93 error: mismatched types: expected `*<generic #13>` but found `~[int]` (expected *-ptr but found vector)
+[01:55:35] -rusti- <anon>:10         let x = ~[123i]; let y: *~[int] = &x; let z: ~[int] = unsafe { std::ptr::read_ptr(*y) }; x
+[01:55:35] -rusti-                                                                                                     ^~
+[01:55:35] -rusti- error: aborting due to previous error
+[01:55:36] -rusti- application terminated with error code 101
+[01:55:41] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Ping timeout)
+[01:55:54] <cmr> rusti: let x = ~[123i]; let y: *~[int] = &x; let z: ~[int] = unsafe { std::ptr::read_ptr(y) }; x
+[01:55:58] -rusti- pastebinned 7 lines of output: http://ix.io/avF
+[01:56:14] <cmr> wut
+[01:56:51] *** Joins: ghrust (ghrust@49477F7E.6A2AE50.F3114085.IP)
+[01:56:51] <ghrust> [13rust] 15kballard 04force-pushed 06try from 14fb80c4f to 143c63bcc: 02http://git.io/k471pw
+[01:56:51] <ghrust> 13rust/06try 142b31b9d 15Kevin Ballard: Use str::from_utf8_lossy() in os::args(), add os::args_as_bytes()...
+[01:56:51] <ghrust> 13rust/06try 143c63bcc 15Kevin Ballard: Use str::from_utf8_lossy() for os::env() and friends...
+[01:56:52] *** Parts: ghrust (ghrust@49477F7E.6A2AE50.F3114085.IP) ()
+[01:56:56] <cmr> very wut
+[01:57:05] <cmr> that's an assertion in Thread::join
+[01:57:51] <Eridius> o_O
+[01:57:53] <Eridius> file it!
+[01:58:35] <huon> why? it's invalid unsafe code
+[01:58:56] <Eridius> brson: I think win2 is broken. Both builds I've run on it failed in configure due to dirty working tree
+[01:58:59] <cmr> well yes it is.
+[01:59:14] <cmr> but that is not where I expected the failure to happen...
+[01:59:21] <Eridius> at least, for try-win
+[01:59:28] <huon> undefined behaviour...
+[01:59:34] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Quit: leaving)
+[02:00:09] <Eridius> if I force a build, does it re-use the same buildslave or will it pick a new one?
+[02:00:27] * Eridius tries it
+[02:01:05] <Eridius> bah, it used win2 again
+[02:02:05] <brson> Eridius: i can rm the try directory on it
+[02:02:31] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[02:02:49] <Eridius> brson: I don't know how they're set up, so I don't know exactly what to suggest, but it appears to be erroring out trying to update a submodule because lib/Support/Windows/Path.inc has local changes
+[02:03:35] <Eridius> brson: `git submodule foreach 'git reset --hard HEAD'` might do it
+[02:03:57] <brson> too late; i'm already deleting the entire workspace
+[02:04:00] <Eridius> hah ok
+[02:04:11] <Eridius> it re-clones automatically if the workspace is gone?
+[02:04:18] <brson> yes
+[02:04:21] <Eridius> nice
+[02:04:33] <huon> acrichto: https://github.com/mozilla/rust/pull/12235 r?
+[02:04:53] <Eridius> brson: is it safe to kick off another build now?
+[02:05:08] <brson> Eridius: not yet
+[02:05:16] <brson> Eridius: ok, yes
+[02:05:20] <Eridius> thanks
+[02:05:26] * Eridius forces a rebuild
+[02:06:39] <Eridius> brson: nope, failed again
+[02:06:43] <Eridius> see http://buildbot.rust-lang.org/builders/try-win/builds/892/steps/configure/logs/stdio
+[02:13:25] <brson> oh, i think i deleted the wrong directory
+[02:13:49] <Eridius> heh
+[02:13:58] <brson> yeah, I deleted stuff from the old retired bots
+[02:17:49] <Eridius> brson: please let me know when it's safe to kick off the build again
+[02:19:55] *** Quits: andrew-d (andrew-d@6C6C9B53.23518FA3.CE794808.IP) (Ping timeout)
+[02:20:36] *** Joins: andrew-d (andrew-d@6C6C9B53.23518FA3.CE794808.IP)
+[02:22:28] <brson> Eridius: oops. it's safe
+[02:22:29] <brson> sorry
+[02:22:49] <Eridius> thanks
+[02:24:04] *** Quits: sunfish (chatzilla@moz-C06D9702.mtv1.mozilla.com) (Ping timeout)
+[02:29:47] *** Quits: gimpf (gimpf@moz-3797637E.adsl.highway.telekom.at) (Connection reset by peer)
+[02:29:48] <Eridius> oh good, it made it past configure
+[02:32:00] *** Parts: aepsil0n (eduard@moz-15CB80F2.hsi8.kabel-badenwuerttemberg.de) ()
+[02:45:18] *** Quits: b (b@moz-55CA322E.org) (Ping timeout)
+[02:45:36] *** Joins: b (b@moz-55CA322E.org)
+[02:46:01] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[02:56:27] *** Joins: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP)
+[02:56:27] <ghrust> [13rust] 15kballard 04force-pushed 06try from 143c63bcc to 1450abfcb: 02http://git.io/k471pw
+[02:56:27] <ghrust> 13rust/06try 1469702f3 15Kevin Ballard: Use str::from_utf8_lossy() in os::args(), add os::args_as_bytes()...
+[02:56:27] <ghrust> 13rust/06try 1450abfcb 15Kevin Ballard: Use str::from_utf8_lossy() for os::env() and friends...
+[02:56:27] *** Parts: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP) ()
+[03:05:15] <acrichto> brson: I'm ok with either way, if we have a verb you may want to change it to "run", type seems non cs-y to me for some reason...
+[03:11:30] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[03:11:30] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/-N9Mkw
+[03:11:30] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[03:15:42] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[03:16:05] <brson> r? https://github.com/mozilla/rust/pull/12274
+[03:29:01] <Eridius> r? https://github.com/mozilla/rust/pull/12283
+[03:29:17] *** Quits: andrew-d (andrew-d@6C6C9B53.23518FA3.CE794808.IP) (Ping timeout)
+[03:31:30] *** Joins: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP)
+[03:31:30] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/l8Fmxw
+[03:31:30] <ghrust> 13rust/06auto 1490311fc 15Alex Crichton: Enable 64-bit checked multiplication on 32-bit...
+[03:31:30] <ghrust> 13rust/06auto 14f0bad90 15bors: auto merge of #12276 : alexcrichton/rust/issue-8449, r=kballard...
+[03:31:30] *** Parts: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP) ()
+[03:31:31] *** Joins: ghrust (ghrust@B750D19A.6A2AE50.F3114085.IP)
+[03:31:31] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/vX1jDQ
+[03:31:31] *** Parts: ghrust (ghrust@B750D19A.6A2AE50.F3114085.IP) ()
+[03:32:43] *** Joins: andrew-d (andrew-d@6C6C9B53.23518FA3.CE794808.IP)
+[03:33:36] *** Quits: zz_kimundi (kimundi@moz-B28844C0.dip0.t-ipconnect.de) (Ping timeout)
+[03:36:05] *** Quits: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[03:37:31] *** Joins: zz_kimundi (kimundi@moz-DFC27528.dip0.t-ipconnect.de)
+[03:37:32] *** zz_kimundi is now known as kimundi
+[03:42:27] *** Joins: tjc_ (tjc@moz-7EE2AFFC.hfc.comcastbusiness.net)
+[03:42:27] *** Quits: tjc (tjc@moz-7EE2AFFC.hfc.comcastbusiness.net) (Connection reset by peer)
+[03:43:03] <brson> acrichto: anything you need reviewed tonight?
+[03:43:17] *** Quits: jdm (jdm@E595D12E.1196002C.7DBB297B.IP) (Quit: Lost terminal)
+[03:43:43] *** Joins: lkuper (lkuper@moz-C0CD33ED.hsd1.in.comcast.net)
+[03:45:50] <cmr> brson: cute pull request :)
+[03:46:46] <brson> thanks
+[03:47:53] <cmr> Replying to github PR emails is always a guess as to where the comment will actually end up...
+[03:51:14] <cmr> r? https://github.com/mozilla/rust/pull/12282
+[03:51:16] <cmr> ready for merging.
+[03:51:26] <cmr> no it isn't
+[03:54:05] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: leaving)
+[03:55:15] *** Quits: pcwalton (pcwalton@moz-7B0110AD.mv.mozilla.com) (Quit: pcwalton)
+[03:57:49] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse)
+[03:58:43] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[04:01:25] <cmr> now it is.
+[04:01:29] <cmr> huon: ^
+[04:02:02] <huon> acrichto: https://github.com/mozilla/rust/pull/12235 double check the last two commits please :)
+[04:03:29] <cmr> gah no it isn't.
+[04:03:37] *** Joins: lpy (lpy@3481A86.D40F0E75.E99F7FDB.IP)
+[04:03:57] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Ping timeout)
+[04:05:25] <huon> cmr: make up your mind :P
+[04:05:31] <cmr> run-pass failures :(
+[04:06:27] <acrichto> huon: r=me with some squashings
+[04:06:59] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[04:07:09] <huon> acrichto: which commits?
+[04:08:07] <acrichto> huon: eh actually it's not that bad
+[04:12:53] <cmr> https://github.com/mozilla/rust/blob/master/src/test/run-pass/cap-clause-move.rs
+[04:12:55] <cmr> curious test.
+[04:15:47] <cmr> https://github.com/mozilla/rust/blob/55a2fd18ec8f2e9aeee699296b7a500b49ff0c5e/src/test/run-pass/cap-clause-move.rs
+[04:15:51] <cmr> it used to do useful tests.
+[04:15:56] <cmr> now, it's just a sad shell of its former glory.
+[04:16:13] <huon> capture clauses!
+[04:16:21] <huon> such history
+[04:16:38] <cmr> I find it amusing that that test was obsoleted almost as soon as it was written.
+[04:16:41] <cmr> and still remains.
+[04:17:18] <cmr> good bye, cap-clause-move.rs
+[04:17:20] <cmr> you served us well.
+[04:17:53] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[04:20:22] *** Joins: jdm (jdm@DFC6E2EA.EDD2F557.D938BA7F.IP)
+[04:22:27] <cmr> https://github.com/mozilla/rust/issues/2040
+[04:22:30] <cmr> more good history.
+[04:22:46] <cmr> let foo = 1; assert_eq!(&foo as *int, &foo as *int);
+[04:22:52] <cmr> weird to think that that used to *fail*
+[04:25:06] <cmr> "This is the current behavior. addr_of<T>(t: T) will pass by reference because type variables (T) are passed by reference by default (as are scalars and non-unique pointers)."
+[04:26:01] <cmr> whooooooooaaaaa marijnh wrote eloquent js?
+[04:26:12] * cmr enjoyed that book
+[04:29:34] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[04:33:04] <cmr> huon: https://github.com/mozilla/rust/pull/12282/files#diff-ecb0cc9881d32f07a65e70f6161fe341L27 happy?
+[04:33:06] <cmr> :P
+[04:34:16] <huon> cmr: much better
+[04:34:30] <huon> maybe we should `sort` the whole codebase
+[04:36:17] <cmr> personally I sort by increasing line length.
+[04:36:50] <huon> the entire source file?
+[04:36:59] <cmr> of course
+[04:37:11] <huon> good; I expect nothing less
+[04:38:17] <jdm> haha
+[04:41:32] *** Joins: ghrust (ghrust@99CAE845.6A2AE50.F3114085.IP)
+[04:41:32] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/l8Fmxw
+[04:41:32] *** Parts: ghrust (ghrust@99CAE845.6A2AE50.F3114085.IP) ()
+[04:46:31] *** Joins: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP)
+[04:46:31] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/nuqEJQ
+[04:46:31] *** Parts: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP) ()
+[04:51:27] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[04:51:27] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/nuqEJQ
+[04:51:27] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[04:51:28] *** Joins: ghrust (ghrust@5AC7F92B.6A2AE50.F3114085.IP)
+[04:51:28] <ghrust> [13rust] 15bors pushed 8 new commits to 06auto: 02http://git.io/mUvIWg
+[04:51:28] <ghrust> 13rust/06auto 14b11e73d 15Brian Anderson: mk: Add some serious documentation and 'make help'...
+[04:51:28] <ghrust> 13rust/06auto 1494d2c8a 15Brian Anderson: mk: Remove the concept of 'snapshot transitions'...
+[04:51:29] <ghrust> 13rust/06auto 142852fea 15Brian Anderson: mk: Move most of Makefile.in to .mk files...
+[04:51:31] *** Parts: ghrust (ghrust@5AC7F92B.6A2AE50.F3114085.IP) ()
+[04:53:15] <cmr> Anyone opposed to a fmt::Pointer impl for &T/&mut T and &[T]/&mut [T]?
+[04:53:22] <cmr> or perhaps just the first two...
+[04:53:26] <cmr> definitely just the first two.
+[04:55:49] <huon> do they have Show impls?
+[04:56:14] <cmr> no
+[04:56:18] <cmr> ... afaict.
+[04:56:51] <cmr> not in fmt/mod.rs
+[04:59:44] <cmr> rusti: println!("{}", &42)
+[05:00:28] -rusti- pastebinned 8 lines of output: http://ix.io/avN
+[05:07:04] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Connection reset by peer)
+[05:09:46] *** Quits: tjc_ (tjc@moz-7EE2AFFC.hfc.comcastbusiness.net) (Quit: Textual IRC Client: www.textualapp.com)
+[05:13:18] *** Quits: jdm (jdm@DFC6E2EA.EDD2F557.D938BA7F.IP) (Quit: Lost terminal)
+[05:23:13] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Connection reset by peer)
+[05:24:43] <erickt> good evening folks. Has anyone ever seen a "can't find crate for `syntax`"? https://gist.github.com/erickt/9014886
+[05:24:57] <erickt> error? I can't tell if it's my fault or not
+[05:25:14] <cmr> erickt: did you perhaps leave off the #0.10-pre in the version?
+[05:25:33] <cmr> you might need `extern mod syntax = "syntax#0.10-pre"`
+[05:25:37] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[05:25:37] *** ChanServ sets mode: +qo brson brson
+[05:25:43] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: brson)
+[05:25:54] <erickt> cmr: this is from running "make check"
+[05:26:17] <erickt> lemme check if the file doesn't have a version specified
+[05:27:13] <erickt> cmr: none of the tests specify a version
+[05:27:17] <cmr> hm
+[05:27:26] <cmr> weird
+[05:27:29] *** Joins: edwardw (Mibbit@F05B6D4C.C21F5114.1D660E71.IP)
+[05:28:03] <erickt> hrm. I did do a "make -j4 check", maybe there's a race on creating libsyntax?
+[05:28:10] <cmr> potentially.
+[05:28:15] <Eridius> r? https://github.com/mozilla/rust/pull/12283
+[05:28:28] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[05:29:59] <erickt> Eridius: why "as_bytes_no_nul" instead of "as_bytes_no_null"?
+[05:30:55] *** Joins: brson (brson@C91C7F36.70518F41.9D18269F.IP)
+[05:30:55] *** ChanServ sets mode: +qo brson brson
+[05:31:20] <erickt> Eridius: and how do you think this would interact with that "MaybeStr" type we talked about earlier in the week?
+[05:51:19] *** Joins: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[05:51:35] *** Parts: edwardw (Mibbit@F05B6D4C.C21F5114.1D660E71.IP) ()
+[05:51:54] <erickt> Eridius: commented on your PR
+[05:52:40] <Eridius> erickt: it's no_nul because '\0' is called NUL
+[05:54:08] <Eridius> erickt: MaybeStr is meant for accepting inputs, it's not meant for returning values. So I don't think this interacts with MaybeStr
+[05:54:33] <erickt> Eridius: yeah thats why I left it off on my comment
+[05:55:46] <erickt> cmr: doing a plain old "make check" worked fine
+[05:56:36] <erickt> Eridius: odd, I've always seen it referred to as NULL. I'll see if I can find the c standard and see what they call it there :)
+[05:56:40] <Eridius> `man ascii`
+[05:56:44] <cmr> in ascii, it's nul
+[05:56:49] <Eridius> all the control characters have 3-letter names
+[05:57:04] <Eridius> which makes it either "nul" or "NUL", but the control characters are also often uppercased, which is why I say NUL
+[05:57:57] <Eridius> calling '\0' "null" is like calling "\x02" "start of heading" instead of STX
+[05:58:42] <Eridius> I mean "start of text"
+[05:58:46] <Eridius> \x01 is start of heading
+[05:58:46] <erickt> learn something new every day
+[05:58:47] <erickt> heh
+[06:01:32] *** Joins: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP)
+[06:01:32] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/mUvIWg
+[06:01:32] *** Parts: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP) ()
+[06:04:13] *** Joins: edwardw (Mibbit@EC9BDC8E.354F6412.B9C6B12A.IP)
+[06:07:54] <erickt> Eridius: r+ed
+[06:10:36] <Eridius> erickt: thanks, but that's the wrong commit (blame github)
+[06:10:47] <erickt> ha
+[06:10:49] <Eridius> https://github.com/kballard/rust/commit/d22b1646aafd51ffc85fcd24492a6211c2c0dfab
+[06:11:03] <erickt> re-r+ed
+[06:11:06] <Eridius> many thanks
+[06:11:20] <Eridius> I wish I knew some way to write tests for this :/ but I didn't see any obvious way to test arguments/environment (or any pre-existing tests)
+[06:11:27] <Eridius> that said, the fact that compilation works is a decent-enough test ;)
+[06:11:47] <cmr> the good-ole "can't compile if it don't work!" argument
+[06:12:08] <Eridius> yeah, before I had .as_bytes_no_nul() I got a funny error building stage1/libstd "error: Unrecognized option 'cfg'"
+[06:12:16] <Eridius> because of course it had a NUL that wasn't showing up
+[06:12:28] <huon> Eridius: a test that invoke itself after setting the environment?
+[06:12:44] <huon> or just set and get the environment?
+[06:12:46] <Eridius> theoretically environment could be tested by modifying it first, except I didn't add any way to set non-utf8 environment values
+[06:12:53] <Eridius> (with a comment explaining why; can't make it windows-portable)
+[06:13:38] <Eridius> still, if os::args() and os::env() works, then args_as_bytes/env_as_bytes has to work
+[06:14:46] <huon> you could write a run-make test to be able to set it externally (and possibly restrict it to running on only the appropriate platforms
+[06:14:46] <huon> )
+[06:16:29] *** Joins: ghrust (ghrust@23EC81EC.6A2AE50.F3114085.IP)
+[06:16:29] <ghrust> [13rust] 15bors pushed 4 new commits to 06auto: 02http://git.io/i3T-GA
+[06:16:29] <ghrust> 13rust/06auto 148cc8eb7 15Kevin Ballard: Add c_str::CString.as_bytes_no_nul()
+[06:16:29] <ghrust> 13rust/06auto 14c73d5ce 15Kevin Ballard: Use str::from_utf8_lossy() in os::args(), add os::args_as_bytes()...
+[06:16:29] <ghrust> 13rust/06auto 14d22b164 15Kevin Ballard: Use str::from_utf8_lossy() for os::env() and friends...
+[06:16:31] *** Parts: ghrust (ghrust@23EC81EC.6A2AE50.F3114085.IP) ()
+[06:17:34] <cmr> make -j8 && make && make check
+[06:17:36] <cmr> the defensive option
+[06:18:58] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Quit: Leaving...)
+[06:19:30] *** Joins: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[06:20:16] * ChrisMorgan is disappointed that `make all check install` doesn't work as it should—it should be functionally equivalent to `make all && make check && make install`, but it doesn't work safely for us, or didn't some time ago
+[06:24:05] <huon> does fortran have a standardised calling convention of any sort?
+[06:29:49] <cmr> that is an incredibly odd question.
+[06:30:15] <cmr> seems it's stdcall.
+[06:31:20] <cmr> but
+[06:31:23] <cmr> http://gcc.gnu.org/onlinedocs/gfortran/ISO_005fC_005fBINDING.html
+[06:31:25] <cmr> who knows
+[06:32:18] *** Quits: madmoose (Hat@73F3A637.B23483B.7BA20D97.IP) (Ping timeout)
+[06:35:30] <huon> cmr: I was thinking about us having a top-notch Fortran FFI along with our C one
+[06:35:35] <cmr> heh
+[06:35:43] <huon> but if it's stdcall, then we already win \o/
+[06:35:45] <cmr> that's actually not a bad idea at all.
+[06:37:50] <brson> strcat: do we have an issue for doing something about TotalOrd/TotalEq?
+[06:37:55] <strcat> yes
+[06:38:04] *** Joins: madmoose (Hat@moz-E1973371.nerp.net)
+[06:38:14] <strcat> https://github.com/mozilla/rust/issues/10320
+[06:38:17] <brson> thanks
+[06:38:33] <strcat> you actually nominated it :P
+[06:40:11] <brson> lol yeah
+[06:40:31] <cmr> I feel like there's an issue somewhere with a much longer discussion
+[06:42:09] <cmr> maybe not
+[06:42:11] * cmr not finding it.
+[06:42:43] <brson> that we be great. there must be a lot more background to this huge issue
+[06:42:58] <brson> i put it on the spreadsheet
+[06:43:19] <brson> i'm not sure about the specifics but it does seem like we should do something about it
+[06:44:32] <strcat> cmr: well I'm sure we talked about it a lot
+[06:44:35] <strcat> maybe the mailing list
+[06:47:47] <enix> Does rust no longer have a min() function? It used to be in std::num, but it appears to be gone
+[06:48:06] <cmr> there's one in std::cmp::min
+[06:48:14] <Eridius> rusti: 3i.min(&4i)
+[06:48:17] -rusti- 3
+[06:48:23] <Eridius> rusti: std::cmp::min(3i,4i)
+[06:48:26] -rusti- 3
+[06:48:33] <enix> ah, cool, thanks! Sorry for asking in the wrong room.
+[06:51:04] <brson> ChrisMorgan: that 'make all check install' problem is pretty lame
+[06:52:02] * ChrisMorgan hasn't tried it since the makefile refactoring, truth to tell
+[06:52:42] <erickt> r? https://github.com/mozilla/rust/pull/11863
+[06:53:07] <erickt> Hashing: The Next Generation is ready for reviewing and merging!
+[06:53:23] <huon> erickt: 4000 additions?? o_O
+[06:53:37] <huon> oh, a lot of stage0 stuff
+[06:53:44] <brson> erickt: \o/
+[06:53:46] <erickt> yeah
+[06:53:51] <brson> congrats
+[06:54:41] <Eridius> oh boy. Adding NO_MKFILE_DEPS... +# * `NO_MKFILE_DEPS=1` - Don rebuild for modified .mk files
+[06:54:41] <brson> erickt: is there a doc i can read?
+[06:54:45] <Eridius> nice typo
+[06:56:19] <Eridius> erickt: you have a commit in there named "wip: temporarily remove ..."
+[06:56:23] <erickt> brson: I could probably do with better documentation. I mention some of my approach in https://github.com/mozilla/rust/pull/11863/files#diff-9e428a5cf51eac3927c751434d4d16eeR12
+[06:56:46] *** flaper87 is now known as flaper87|afk
+[06:56:57] <erickt> Eridius: oops, I forgot to squash that one. I'll get it along with huon's suggestion
+[06:57:37] <Eridius> erickt: whoa, the description of https://github.com/erickt/rust/commit/8e807916464cf7861d70aa8547de93aaf54cd3cb looks busted
+[06:57:45] <Eridius> partially because of the emoticon
+[06:57:48] <Eridius> but also, "simplinto"?
+[06:57:55] <huon> heh :hash:
+[06:58:16] <erickt> hehe
+[06:58:16] <Eridius> I feel like you also stretched a 3-line commit message into 4 lines
+[06:58:36] <cmr> (such crime!)
+[06:58:45] <ChrisMorgan> Almost as bad as Pidgin, which takes the `:P` part of std::path::Path and turns it into an emoticon.
+[06:59:10] <Eridius> #[allow(default_type_param_usage)] ?? I thought that was feature-gated, not linted
+[06:59:15] <ChrisMorgan> (Actually, the :p part as well!)
+[06:59:37] <acrichto> brson: r? https://github.com/mozilla/rust/pull/12070
+[06:59:46] <erickt> Eridius: hah, yeah I totally didn't finish writing that commit message
+[07:00:04] <Eridius> hash_old? awesome ;)
+[07:00:34] <huon> Eridius: it has to be linted because it's not apparent just looking at the AST
+[07:00:37] <erickt> yeah, it's a #[cfg(stage0)] hack
+[07:00:49] <huon> (i.e. needs all the resolution and type checking info)
+[07:00:52] <Eridius> I see
+[07:00:59] <Eridius> speaking of, I want to be able to write pluggable lints
+[07:01:06] * huon does too
+[07:01:16] <Eridius> I think that's the only way I can get rust-lua to actually be safe
+[07:01:17] <huon> is there an issue?
+[07:01:23] <Eridius> I haven't gotten around to writing it yet
+[07:01:38] <Eridius> although I also need the ability to have a custom attribute as well (to mark things for my lint to process)
+[07:01:45] <huon> nope, no issue... file one Eridius!
+[07:02:05] <Eridius> whoa auto-linux-64-opt core-dumped when testing my utf8 stuff
+[07:02:10] <Eridius> err segfaulted
+[07:02:10] <Eridius> wtf
+[07:02:24] <Eridius> it passed the full try set
+[07:02:52] *** Quits: canhtak (canhtak@moz-843B48BB.wl.t.ulaval.ca) (Quit: canhtak)
+[07:05:11] <erickt> Eridius: irc://irc.mozilla.org:6697/#%5Ballow(default_type_param_usage)]  is both feature gated *and* linted
+[07:05:39] <Eridius> erickt: I don't know what Purple IRC is but apparently it expanded your #allow into the text of a hyperlink for an irc:// URL
+[07:05:48] <erickt> heh, silly adium. #[allow(default_type_param_usuage)] is feature gated and linted
+[07:06:29] *** Joins: ghrust (ghrust@99CAE845.6A2AE50.F3114085.IP)
+[07:06:29] <ghrust> [13rust] 15bors 04force-pushed 06auto from 144c3cde6 to 143496e93: 02http://git.io/N3iJvQ
+[07:06:29] *** Parts: ghrust (ghrust@99CAE845.6A2AE50.F3114085.IP) ()
+[07:06:30] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[07:06:30] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/N201-Q
+[07:06:30] <ghrust> 13rust/06auto 14b12836a 15Alex Crichton: Allow configuration of uid/gid/detach on processes...
+[07:06:30] <ghrust> 13rust/06auto 140f4ffb2 15bors: auto merge of #12085 : alexcrichton/rust/issue-12082, r=brson...
+[07:06:30] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[07:07:16] <huon> erickt: I assume all the stage0 stuff is just copy-paste and so doesn't need (much) review?
+[07:08:05] <erickt> huon: yeah. I'll do another pass before a r+ to make sure I didn't miss anything
+[07:09:12] *** Quits: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com) (Ping timeout)
+[07:13:52] <Eridius> I don't see anything unsafe with my PR. I don't get why auto-linux-64-opt segfaulted
+[07:14:53] * Eridius rebases and runs try again
+[07:14:56] *** Joins: ghrust (ghrust@4BC7FFDD.6A2AE50.F3114085.IP)
+[07:14:56] <ghrust> [13rust] 15kballard 04force-pushed 06try from 1450abfcb to 14f2ab314: 02http://git.io/k471pw
+[07:14:56] <ghrust> 13rust/06try 1414a46db 15Kevin Ballard: Add c_str::CString.as_bytes_no_nul()
+[07:14:56] <ghrust> 13rust/06try 1420f114c 15Kevin Ballard: Use str::from_utf8_lossy() in os::args(), add os::args_as_bytes()...
+[07:14:56] <ghrust> 13rust/06try 14f2ab314 15Kevin Ballard: Use str::from_utf8_lossy() for os::env() and friends...
+[07:14:58] *** Parts: ghrust (ghrust@4BC7FFDD.6A2AE50.F3114085.IP) ()
+[07:16:21] <cmr> huon: r? https://github.com/mozilla/rust/pull/12282 added fmt::Pointer impl
+[07:16:58] <huon> cmr: how do you know about secret_pointer? it's meant to be a secret!
+[07:17:03] <cmr> gasp!
+[07:17:06] <cmr> don't shoot me!
+[07:17:27] <huon> you've left us no choice
+[07:17:38] * cmr dodges bullet by going to sleep
+[07:22:03] *** Quits: lkuper (lkuper@moz-C0CD33ED.hsd1.in.comcast.net) (Quit: lkuper)
+[07:23:31] <erickt> huon: I'm off to bed, thanks for the great comments! I got most of them addressed now, I'll do the rest in the morning
+[07:24:58] *** Parts: edwardw (Mibbit@EC9BDC8E.354F6412.B9C6B12A.IP) ()
+[07:27:52] *** Joins: gwty (gwtypc@AEA3CAEF.713BC850.137C914F.IP)
+[07:32:46] *** Quits: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[07:39:20] *** Quits: gwty (gwtypc@AEA3CAEF.713BC850.137C914F.IP) (Ping timeout)
+[07:43:23] <brson> acrichto: I am reviewing this backtrace patch
+[07:45:15] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[07:45:16] *** ChanServ sets mode: +ao pcwalton pcwalton
+[07:45:21] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[07:45:30] <sfackler> r? https://github.com/mozilla/rust/pull/12286
+[07:45:35] <sfackler> super complex commit :P
+[07:46:31] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[07:46:31] <ghrust> [13rust] 15bors 04force-pushed 06auto from 140f4ffb2 to 143496e93: 02http://git.io/N3iJvQ
+[07:46:31] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[07:50:25] <acrichto> brson: cool, I should go to bed now, so I'll just get it in the morning :)
+[08:00:52] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Client exited)
+[08:01:13] *** Joins: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[08:02:55] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Ping timeout)
+[08:14:16] * Eridius retries the os::args thing, hoping that the segfault is some transient issue
+[08:14:20] <Eridius> because I have no idea what caused it
+[08:17:49] <sfackler> Eridius: I think core dumps are enabled on the bots. you could ask a mozilla-er to pull it for you
+[08:19:41] <Eridius> if this build fails I will
+[08:28:36] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Connection reset by peer)
+[08:28:38] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Connection reset by peer)
+[08:28:39] *** Quits: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[08:32:42] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[08:35:23] <Yurume> https://github.com/snrs/sonorous/blob/master/src/sonorous.rs#L38 haha, that was a great found for me.
+[08:35:41] <Yurume> that'd be a side effect of using compiler-rt :S
+[08:36:56] <brson> Yurume: i think we should still be linking to libc via std
+[08:37:22] <Yurume> brson, yes, but the external libraries may not see libc due to the argument order.
+[08:37:44] <brson> oh
+[08:38:07] <brson> maybe rust is just not putting the arguments in the right order then?
+[08:38:22] <Yurume> not sure.
+[08:38:57] <Yurume> but I'm sure that currently rustc orders the linker arguments (especially, -l* args) in the random order
+[08:39:13] <Yurume> so that the builds randomly failed :)
+[08:39:26] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[08:57:37] *** Joins: eddyb (eddy@688E9026.F7C96DA2.FCAAE698.IP)
+[09:06:34] *** Joins: ghrust (ghrust@2E45E35D.6A2AE50.F3114085.IP)
+[09:06:34] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/MQ21-Q
+[09:06:34] *** Parts: ghrust (ghrust@2E45E35D.6A2AE50.F3114085.IP) ()
+[09:10:07] <Yurume> brson, I've summarized this issue to #12287.
+[09:11:31] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[09:11:31] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/5ExjVQ
+[09:11:31] <ghrust> 13rust/06auto 1439fdf39 15Alex Crichton: Allow configuration of uid/gid/detach on processes...
+[09:11:31] <ghrust> 13rust/06auto 1404abebf 15bors: auto merge of #12085 : alexcrichton/rust/issue-12082, r=brson...
+[09:11:31] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[09:18:11] <brson> Yurume: thanks
+[09:20:57] *** Quits: Kxepal (Miranda@moz-F04ED80E.pppoe.mtu-net.ru) (Quit: Kxepal)
+[09:21:14] *** Joins: Kxepal (Miranda@moz-F04ED80E.pppoe.mtu-net.ru)
+[09:24:55] *** Joins: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com)
+[09:38:21] *** Joins: doomlord_ (servitor@moz-9B2006BF.range109-151.btcentralplus.com)
+[09:51:29] *** Joins: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP)
+[09:51:29] <ghrust> [13rust] 15bors pushed 8 new commits to 06auto: 02http://git.io/0IazGQ
+[09:51:29] <ghrust> 13rust/06auto 1477d51af 15Huon Wilson: std: add an RAII unlocker to Mutex....
+[09:51:29] <ghrust> 13rust/06auto 14157d124 15Huon Wilson: std: add tests for the _noguard lock/signal/wait methods on Mutex.
+[09:51:29] <ghrust> 13rust/06auto 14a50c73b 15Huon Wilson: std: Rename unstable::mutex::Mutex to StaticNativeMutex....
+[09:51:31] *** Parts: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP) ()
+[09:51:32] *** Joins: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP)
+[09:51:32] <ghrust> [13rust] 15bors 04force-pushed 06auto from 1404abebf to 14c9f13b4: 02http://git.io/N3iJvQ
+[09:51:32] *** Parts: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP) ()
+[09:58:46] *** Quits: brson (brson@C91C7F36.70518F41.9D18269F.IP) (Ping timeout)
+[10:04:33] <eddyb> #21st contributor by deletions: soon
+[10:06:45] *** Quits: eddyb (eddy@688E9026.F7C96DA2.FCAAE698.IP) (Ping timeout)
+[10:07:54] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse)
+[10:20:30] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[10:26:31] *** Joins: ghrust (ghrust@23EC81EC.6A2AE50.F3114085.IP)
+[10:26:31] <ghrust> [13rust] 15bors 04force-pushed 06auto from 14e620677 to 14c9f13b4: 02http://git.io/N3iJvQ
+[10:26:31] *** Parts: ghrust (ghrust@23EC81EC.6A2AE50.F3114085.IP) ()
+[10:26:32] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[10:26:32] <ghrust> [13rust] 15bors pushed 3 new commits to 06auto: 02http://git.io/UZDctQ
+[10:26:32] <ghrust> 13rust/06auto 144f8dbab 15Corey Richardson: std: clean up ptr a bit
+[10:26:32] <ghrust> 13rust/06auto 14335b3a9 15Corey Richardson: impl fmt::Pointer for &T and &mut T
+[10:26:32] <ghrust> 13rust/06auto 14870b089 15bors: auto merge of #12282 : cmr/rust/cleanup-ptr, r=huonw
+[10:26:34] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[10:26:45] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[10:36:29] *** Joins: ghrust (ghrust@94BD74B8.6A2AE50.F3114085.IP)
+[10:36:29] <ghrust> [13rust] 15bors pushed 4 new commits to 06auto: 02http://git.io/YYp92w
+[10:36:29] <ghrust> 13rust/06auto 148cc8eb7 15Kevin Ballard: Add c_str::CString.as_bytes_no_nul()
+[10:36:29] <ghrust> 13rust/06auto 14c73d5ce 15Kevin Ballard: Use str::from_utf8_lossy() in os::args(), add os::args_as_bytes()...
+[10:36:29] <ghrust> 13rust/06auto 14d22b164 15Kevin Ballard: Use str::from_utf8_lossy() for os::env() and friends...
+[10:36:31] *** Parts: ghrust (ghrust@94BD74B8.6A2AE50.F3114085.IP) ()
+[10:38:16] *** Joins: Hildar (Mibbit@moz-7F4621B6.cable.virginm.net)
+[10:39:52] *** Joins: doener (doener@moz-C68F600D.unity-media.net)
+[10:54:30] *** Joins: jensnockert (jensnocker@moz-8B2AE444.mobileonline.telia.com)
+[10:59:57] <huon> Edwards: btw, did you update rustdoc for default type parameters?
+[11:00:03] <huon> *eddyb
+[11:00:11] <huon> bleh, he's not here
+[11:13:21] *** Quits: jensnockert (jensnocker@moz-8B2AE444.mobileonline.telia.com) (Connection reset by peer)
+[11:13:35] <Hildar> librustc takes so long to recompile... urgh (just the first stage).
+[11:18:31] <huon> Hildar: are you making library modifications or compiler modifications?
+[11:19:00] <Hildar> huon: Compiler.
+[11:20:37] <huon> ah, no shortcuts :)
+[11:20:43] *** Quits: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[11:20:56] *** Joins: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com)
+[11:20:58] <huon> (other than the rustc-stage1 one... <3 stage1 rustc.)
+[11:21:26] <doener> huon: if only that would expose all the interesting errors one can make :-p
+[11:22:08] <huon> doener: if the problems don't turn up in stage1 then it's not important ;P
+[11:22:40] *** Quits: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[11:22:57] *** Joins: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com)
+[11:23:04] <doener> in that case, we should drop stages 2 and 3 :-D
+[11:23:27] <huon> sounds good to me
+[11:23:27] <Hildar> doener: stage2 adds any new optimizations to rustc though! stage 3 can get dropped :P
+[11:23:36] <huon> 2x faster compiles just like that \o/
+[11:24:40] *** Quits: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[11:24:43] <doener> Hildar: you'll get them anyone, snapshots would be made from stage1, so with the next snapshot the optz will be made by stage0
+[11:24:50] <doener> s/anyone/anyway/
+[11:24:55] * doener goes to grab another coffee
+[11:24:58] *** Joins: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com)
+[11:25:51] <Hildar> What does take so long to make librustc though? Is it just Just llvm chocking on so much code?
+[11:26:10] <doener> mostly, yup
+[11:26:28] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[11:26:43] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[11:26:48] <doener> will hopefully get a bit better once we can use the mergefunc pass
+[11:27:05] * huon wishes upstream would just fix it already
+[11:27:11] *** Joins: jensnockert (jensnocker@moz-8B2AE444.mobileonline.telia.com)
+[11:27:38] <doener> talking about upstream, I wonder if I messed up my revised patch again, or if just nobody care or whatever
+[11:27:49] <doener> s/care/\0s/
+[11:28:26] <huon> patching?
+[11:28:35] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[11:28:44] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[11:29:02] <doener> huon: http://lists.cs.uiuc.edu/pipermail/llvm-commits/Week-of-Mon-20140210/204421.html
+[11:29:10] <doener> huon: the thing that eddyb and I debugged
+[11:29:36] * ChrisMorgan has a regular expression engine that uses & rather than \0 and so reads "or if just nobody ␀s or whatever"
+[11:30:09] <doener> ChrisMorgan: at least you handled that NUL byte just fine :-)
+[11:30:38] <huon> doener: do you need to ping it in #llvm?
+[11:30:59] <Hildar> Can anyone explain to me how a 'visitor' works? Or at least where to look to see an example. I was suggested to implement one by nmatsakis, but I don't really understand how to.
+[11:31:55] <doener> huon: guess that won't hurt
+[11:31:58] <huon> Hildar: sec
+[11:32:07] *** Joins: eddyb (eddy@688E9026.F7C96DA2.FCAAE698.IP)
+[11:32:29] * ChrisMorgan has https://github.com/teepee \o/
+[11:32:31] <huon> Hildar: look in rustc/front/show_span.rs
+[11:33:01] <huon> Hildar: the trait impl there basically says "on every expression in the AST, run this piece of code"
+[11:33:31] <huon> Hildar: and front/feature_gate.rs has a more extensive piece of code
+[11:33:37] <eddyb> acrichto, huon, cmr: hang on, do we actually ever drop TLD? the TokenInterner may be responsible for some of the memory left after trans (even with an allocator that gives up small allocation space)
+[11:33:48] <eddyb> *IdentInterner
+[11:33:55] <huon> (it's running on every ident, macro invocation, expression...)
+[11:34:15] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Ping timeout)
+[11:34:32] <huon> eddyb: hook some instrumentation into the compiler to print the total size of the interner for an appropriate RUST_LOG setting
+[11:34:40] <huon> (but no, we don't drop TLD)
+[11:35:05] <huon> Hildar: at a higher level, the visitor walks the AST calling functions on each piece of it as it goes
+[11:35:22] <huon> Hildar: and the Visitor trait is how one can specify what those functions are
+[11:36:27] <eddyb> feature_gate is very bad perf-wise btw
+[11:36:31] <eddyb> it should use an EnumSet
+[11:37:02] <eddyb> and we should intern cfg names
+[11:37:04] <huon> eddyb: "very bad"
+[11:37:20] <eddyb> huon: read the code. eww
+[11:37:39] <huon> yeah... so? it's O(n), but n=10 or so
+[11:37:54] <eddyb> comparing a string against an array of strings, it's O(n*m)
+[11:38:00] <huon> time: 0.033 s   gated feature checking
+[11:38:09] <huon> for all of librustc
+[11:38:15] <huon> it's *really* not a concern
+[11:38:34] <eddyb> it's theoretically annoying. I guess lints are more important and that's why they're doing it right
+[11:38:42] <huon> yes
+[11:38:47] <Hildar> huon: Hmm, I want to convert middle::ty::type_contents to be a visitor (so it walks over a type, not the whole ast), so I can't use that trait I assume?
+[11:39:03] <eddyb> the Visitor trait? no
+[11:39:05] <huon> it's theoretically annoying, but pratically perfectly ok
+[11:39:08] <huon> Hildar: oh, yes
+[11:39:28] <huon> Hildar: but you can be inspired by the AST Visitor :)
+[11:39:34] <eddyb> you can use the same pattern (do you need an environment? I somehow doubt it)
+[11:39:56] <huon> Hildar: there's a "walk_ty" function in middle/ty.rs
+[11:40:04] <eddyb> visit_* methods and walk_* functions outside the trait
+[11:40:05] <huon> which is essentially the visitor pattern in closure form
+[11:40:24] <eddyb> huon: and we have a type folder... a visitor might be a nice addition :)
+[11:40:31] <huon> (and maybe_walk_ty for short-circuiting)
+[11:40:46] <huon> eddyb: we do have a visitor, just not as a trait :P
+[11:41:01] <eddyb> but I cba to look at the thousands of lines that may implement the pattern themselves
+[11:45:02] *** Joins: gimpf (gimpf@moz-5FCD9CCC.adsl.highway.telekom.at)
+[11:46:31] *** Joins: ghrust (ghrust@4089EBDC.6A2AE50.F3114085.IP)
+[11:46:31] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/YYp92w
+[11:46:31] *** Parts: ghrust (ghrust@4089EBDC.6A2AE50.F3114085.IP) ()
+[11:50:18] *** kimundi is now known as zz_kimundi
+[11:50:34] *** Quits: acrichto (acrichto@moz-B63D64BD.res.cmu.edu) (Ping timeout)
+[11:51:05] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[11:51:28] *** Joins: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP)
+[11:51:28] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/p444xg
+[11:51:28] *** Parts: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP) ()
+[11:54:39] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[11:56:29] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[11:56:29] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/p5VoXw
+[11:56:29] <ghrust> 13rust/06auto 14e7147ce 15Steven Fackler: Remove broken link to old conditions tutorial
+[11:56:29] <ghrust> 13rust/06auto 14a7aa4c4 15bors: auto merge of #12286 : sfackler/rust/no-conditions, r=alexcrichton
+[11:56:30] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[12:01:07] *** Joins: NiccosSystem (NiccosSyst@AB1AFDE.FC7B0C35.A7597CB6.IP)
+[12:15:15] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: rcirc on GNU Emacs 24.3.50.1)
+[12:29:46] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[12:39:34] *** Joins: canhtak (canhtak@moz-843B48BB.wl.t.ulaval.ca)
+[12:40:23] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[12:49:37] <eddyb> cmr, huon: http://golo-lang.org/documentation/next/ their collection literals remind me of my idea to abuse a variadic Index
+[12:50:44] <ChrisMorgan> eddyb: as in request.headers[CONTENT_TYPE] being MediaType, request.headers[CONTENT_LENGTH] being uint, &c.?
+[12:51:20] <eddyb> that would be possible today, if we improve coherence
+[12:51:21] <ChrisMorgan> (I mean merely that aspect of variadic Index.)
+[12:51:39] <eddyb> but it's not variadic, at least not in the terminogy that I use
+[12:51:52] <eddyb> a variadic Index would allow you to do mat[x, y]
+[12:51:53] <ChrisMorgan> Oh yeah. Tangled terms.
+[12:52:27] <eddyb> or Map[(a, b), (b, c), (c, d)]
+[12:53:10] <eddyb> in theory, those can be all different types, but I've just figured how to constrain a tuple to have only the same type (and use it as a slice)
+[12:56:36] <eddyb> impl<Head, ..Tail: FixedVecTuple<Head>> FixedVecTuple<Head> for (Head, ..Tail) {} impl<T> FixedVecTuple<T> for () {}
+[12:57:54] <eddyb> nmatsakis: ^^ that would allow us to restrict a variadic function to have all arguments the same type. if we don't want HashSet[a, b, c] we could still have HashSet::new(a, b, c) :)
+[13:05:08] <eddyb> we can also have an Index implementation on tuples that returns &Any (which should be getting even easier to devirtualize in the future)
+[13:06:10] <eddyb> which is kinda like D, but doesn't require language features
+[13:06:29] *** Joins: ghrust (ghrust@2E45E35D.6A2AE50.F3114085.IP)
+[13:06:29] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/p5VoXw
+[13:06:29] *** Parts: ghrust (ghrust@2E45E35D.6A2AE50.F3114085.IP) ()
+[13:06:59] <eddyb> (apart from variadic generics)
+[13:08:13] <eddyb> I guess I'm not getting flamed because strcat isn't here :P
+[13:09:58] <eddyb> can we make a:b in an expression mean (a, b)?
+[13:10:30] <eddyb> slice[a:b] and Map::new(k: v, k2: v2)
+[13:10:32] <ChrisMorgan> eddyb: what, for x[a:b]? x[a..b] is much more likely to happen.
+[13:11:00] <ChrisMorgan> eddyb: https://github.com/mozilla/rust/issues/4160
+[13:11:08] <eddyb> just fiddling with ideas
+[13:11:28] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[13:11:28] <ghrust> [13rust] 15bors pushed 8 new commits to 06auto: 02http://git.io/UUYvRA
+[13:11:28] <ghrust> 13rust/06auto 1401a94c4 15Huon Wilson: std: add an RAII unlocker to Mutex....
+[13:11:28] <ghrust> 13rust/06auto 14b9f8165 15Huon Wilson: std: add tests for the _noguard lock/signal/wait methods on Mutex.
+[13:11:29] <ghrust> 13rust/06auto 1470a5d04 15Huon Wilson: std: Rename unstable::mutex::Mutex to StaticNativeMutex....
+[13:11:31] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[13:12:40] <huon> eddyb: https://github.com/mozilla/rust/issues/12291
+[13:12:45] * huon scolds eddyb
+[13:12:49] <huon> ;P
+[13:13:23] <eddyb> didn't realize docs needed special support, sorry
+[13:14:26] <eddyb> ChrisMorgan: I kind of preferred a general meaning for a..b, which combined with Index would allow you to use it for slices
+[13:14:48] <eddyb> mat[x1..x2, y1..y2]
+[13:27:44] *** Joins: edwardw (edwardw@17C4C11E.3A7E5B9F.CBB0B5C2.IP)
+[13:35:25] *** Joins: jensnock_ (jensnocker@moz-8B2AE444.mobileonline.telia.com)
+[13:35:25] *** Quits: jensnockert (jensnocker@moz-8B2AE444.mobileonline.telia.com) (Connection reset by peer)
+[13:35:54] <eddyb> huon: I wonder whether we can easily do differential parsing, resolution and type checking
+[13:36:56] <eddyb> that is, in an IDE, if you change only the code *within* a function, only that function has to be parsed, resolved and type checked
+[13:37:23] <eddyb> which should be much faster than starting all over again
+[13:39:17] <eddyb> cmr: whoa, this is weird http://huonw.github.io/isrustfastyet/mem/#2fe7bfe,8d6fef6
+[13:39:45] <eddyb> and then the next one is even shorter http://huonw.github.io/isrustfastyet/mem/#2fe7bfe,8d6fef6,03b324f
+[13:42:11] <eddyb> why do we have lifetime resolution and region resolution (the latter taking longer)?
+[13:51:09] *** Quits: eddyb (eddy@688E9026.F7C96DA2.FCAAE698.IP) (Ping timeout)
+[13:53:40] <doener> hm, that's new... "Bad machine code: Using an undefined physical register"
+[13:54:50] <Hildar> Can anyone look at my "type visitor" function and tell me how horrible and flame-worthy it is? (Hopefully it isn't and I can attempt to use it) https://github.com/HildarTheDorf/rust/blob/kinderrors/src/librustc/middle/ty.rs#L2042
+[13:57:45] *** Quits: jensnock_ (jensnocker@moz-8B2AE444.mobileonline.telia.com) (Connection reset by peer)
+[13:58:02] <doener> Hildar: no idea about the visitor itself (looks sane though), but you could use a HashSet instead of a HashMap, and use contains() instead of the match on find(), just to make the intent clear (internally, HashSet<T> is a HashMap<T, ()>)
+[13:58:29] *** Joins: jensnockert (jensnocker@moz-8B2AE444.mobileonline.telia.com)
+[13:59:26] <doener> Hildar: maybe even just "if cache.insert(...) { ... }". insert() returns false if the value was already in the set.
+[13:59:39] <Hildar> doener: Yeah I knew there was something better, but I didn't know what it was.
+[13:59:56] <doener> no problem
+[14:02:10] *** Joins: acrichto (acrichto@moz-B63D64BD.res.cmu.edu)
+[14:02:10] *** ChanServ sets mode: +o acrichto
+[14:15:54] <doener> Hildar: I think you have the check backwards now. You should return if insert() returns false, AFAICT. My snippet had the intention to wrap the other code and drop the "return" (your approach of using a guard clause if fine though)
+[14:16:26] <Hildar> doener: thanks.
+[14:17:02] <Hildar> Oh screw you git. Somehow I've ended up 33 commits behind and 44 ahead of master. I only made 2 commits.
+[14:19:39] <Hildar> There we go, rebase is my friend. Next time go mozila/master->hildar/master->hildar->branch. Don't go directly from mozzila.
+[14:21:05] *** Joins: larsberg (larsberg@moz-5D8E4B14.lightspeed.cicril.sbcglobal.net)
+[14:38:59] <doener> haha, telling LLVM that the pointer passed in the return slot for a function only becomes valid after the function returns wasn't that smart
+[14:40:00] <Hildar> doener: Error, stop asking the impossible you fool?
+[14:40:50] *** Quits: zz_kimundi (kimundi@moz-DFC27528.dip0.t-ipconnect.de) (Ping timeout)
+[14:41:01] <doener> Hildar: nah, LLVM is a bit closer to a "real man"-compiler and gave me the error I pasted earlier, about using an undefined physical register
+[14:50:11] *** Joins: zz_kimundi (kimundi@moz-DFC27528.dip0.t-ipconnect.de)
+[14:50:11] *** zz_kimundi is now known as kimundi
+[15:01:22] *** Quits: kimundi (kimundi@moz-DFC27528.dip0.t-ipconnect.de) (Ping timeout)
+[15:01:32] *** Joins: kimundi (kimundi@moz-39AAC267.dip0.t-ipconnect.de)
+[15:03:46] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[15:06:46] *** flaper87|afk is now known as flaper87
+[15:08:18] *** kimundi is now known as zz_kimundi
+[15:12:46] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Ping timeout)
+[15:15:47] *** Quits: Hildar (Mibbit@moz-7F4621B6.cable.virginm.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:15:55] *** zz_kimundi is now known as kimundi
+[15:29:11] *** Quits: japaric (japaric@8465B6C3.31BF4ADA.BFC118EE.IP) (Quit: WeeChat 0.4.2)
+[15:32:59] *** Quits: Kxepal (Miranda@moz-F04ED80E.pppoe.mtu-net.ru) (Ping timeout)
+[15:36:41] *** Joins: Kxepal (Miranda@moz-C53A0561.pppoe.mtu-net.ru)
+[15:39:35] *** Joins: mib_axmivy (Mibbit@moz-C46DA772.boa.fiberby.dk)
+[15:39:57] *** Joins: eddyb (eddy@688E9026.F7C96DA2.FCAAE698.IP)
+[15:39:59] *** Joins: aepsil0n (eduard@moz-15CB80F2.hsi8.kabel-badenwuerttemberg.de)
+[15:40:07] *** Quits: mib_axmivy (Mibbit@moz-C46DA772.boa.fiberby.dk) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:44:34] <aepsil0n> in what locations does rustc look for external crates, i.e. where do i have to put my dependency .rlib files?
+[15:45:45] *** Joins: japaric (japaric@8465B6C3.31BF4ADA.BFC118EE.IP)
+[15:46:43] *** Quits: edwardw (edwardw@17C4C11E.3A7E5B9F.CBB0B5C2.IP) (Ping timeout)
+[15:49:06] *** Joins: edwardw_ (edwardw@ECB36E22.A26CCAD9.99A56FDE.IP)
+[15:59:21] *** Quits: Kxepal (Miranda@moz-C53A0561.pppoe.mtu-net.ru) (Quit: Kxepal)
+[15:59:33] *** Joins: Kxepal (Miranda@moz-C53A0561.pppoe.mtu-net.ru)
+[16:04:47] <doener> argh, I can't remember which use case for lifetimes I meant add support for
+[16:04:56] <doener> s/meant/meant to/
+[16:08:30] *** Quits: mawuli (mawuli@moz-5ADAB167.com.gh) (Ping timeout)
+[16:38:45] *** Joins: mawuli (mawuli@moz-5ADAB167.com.gh)
+[16:38:58] *** Quits: wycats (sid79@moz-5F4AA75A.irccloud.com) (Ping timeout)
+[16:41:45] *** Joins: wycats (sid79@moz-5F4AA75A.irccloud.com)
+[16:51:59] *** Joins: SiegeLordEx (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[16:51:59] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[16:58:05] *** Joins: cgaebel (clark@ADA4DDE2.290DF317.EE6E63A5.IP)
+[17:09:59] <cmr> aepsil0n: it doesn't check anywhere.
+[17:10:12] <cmr> aepsil0n: the linker acts normally, using /etc/ld.so.conf (on Linux)
+[17:10:18] <cmr> aepsil0n: you can add search paths with -L
+[17:10:43] <cmr> http://buildbot.rust-lang.org/builders/auto-mac-32-nopt-t/builds/2091/steps/compile/logs/stdio
+[17:10:47] <cmr> what a pain :|
+[17:12:28] <eddyb> this is a thought I've had before https://github.com/mozilla/rust/pull/12238/files#r9773493
+[17:12:41] *** Quits: cgaebel (clark@ADA4DDE2.290DF317.EE6E63A5.IP) (Ping timeout)
+[17:14:07] *** Joins: cgaebel (clark@ADA4DDE2.290DF317.EE6E63A5.IP)
+[17:17:15] <eddyb> great, I am supposed to be relaxing... i.e. waste time that I could spend doing great things
+[17:17:45] <cmr> eddyb: may I recommend exercise or video games? Is much relax, such calming.
+[17:18:04] <eddyb> cmr: I still have a few episodes from Elementary
+[17:19:30] <eddyb> acrichto: do you happen to know whether storing the ~Runtime's vtable separately in TLS helps LLVM devirtualize it in simple usecases (just native::start, no libgreen scheduling)?
+[17:19:42] *** Quits: lpy (lpy@3481A86.D40F0E75.E99F7FDB.IP) (Client exited)
+[17:20:37] *** Quits: cgaebel (clark@ADA4DDE2.290DF317.EE6E63A5.IP) (Ping timeout)
+[17:24:27] <eddyb> ahh, I know why I wanted to cast &T to &[T]: SmallVec from libsyntax
+[17:24:48] *** Quits: jensnockert (jensnocker@moz-8B2AE444.mobileonline.telia.com) (Input/output error)
+[17:28:10] <eddyb> rusti: struct S; match Some(&S) {Some(&S) => true, None => false}
+[17:28:12] -rusti- true
+[17:28:35] <eddyb> rusti: struct S; let s = &S; let opt_s = Some(s); match opt_s {Some(&S) => true, None => false}
+[17:28:37] -rusti- true
+[17:29:03] <eddyb> rusti: struct S; let s = &S; let opt_s = Some(s); match opt_s {Some(&S) => println!("{:?}", S), _ => {}}; 0
+[17:29:04] -rusti- error: internal compiler error: only scalars and strings supported in compare_values
+[17:29:04] -rusti- This message reflects a bug in the Rust compiler. 
+[17:29:04] -rusti- We would appreciate a bug report: http://static.rust-lang.org/doc/master/complement-bugreport.html
+[17:29:04] -rusti- application terminated with error code 101
+[17:29:24] <eddyb> hang on... doesn't seem to be *that* related to matching
+[17:29:36] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[17:29:50] <eddyb> rusti: struct S; match Some(&S) {Some(&S) => println!("{:?}", S), _ => {}}; 0
+[17:29:51] -rusti- error: internal compiler error: only scalars and strings supported in compare_values
+[17:29:51] -rusti- This message reflects a bug in the Rust compiler. 
+[17:29:51] -rusti- We would appreciate a bug report: http://static.rust-lang.org/doc/master/complement-bugreport.html
+[17:29:51] -rusti- application terminated with error code 101
+[17:30:04] <eddyb> rusti: struct S; match Some(&S) {Some(&S) => println!("{:?}", 1), _ => {}}; 0
+[17:30:04] -rusti- error: internal compiler error: only scalars and strings supported in compare_values
+[17:30:04] -rusti- This message reflects a bug in the Rust compiler. 
+[17:30:04] -rusti- We would appreciate a bug report: http://static.rust-lang.org/doc/master/complement-bugreport.html
+[17:30:05] -rusti- application terminated with error code 101
+[17:30:10] <eddyb> rusti: struct S; match Some(&S) {Some(&S) => {}, _ => {}}; 0
+[17:30:10] -rusti- error: internal compiler error: only scalars and strings supported in compare_values
+[17:30:10] -rusti- This message reflects a bug in the Rust compiler. 
+[17:30:10] -rusti- We would appreciate a bug report: http://static.rust-lang.org/doc/master/complement-bugreport.html
+[17:30:12] -rusti- application terminated with error code 101
+[17:30:27] <eddyb> rusti: match Some(&()) {Some(&()) => {}, x => {}}
+[17:30:31] -rusti- pastebinned 10 lines of output: http://ix.io/awa
+[17:30:55] <eddyb> rusti: match Some(&()) {Some(&()) => {}, x => {}}; 0
+[17:30:56] -rusti- <anon>:10:43: 10:44 warning: unused variable: `x`, #[warn(unused_variable)] on by default
+[17:30:57] -rusti- <anon>:10         match Some(&()) {Some(&()) => {}, x => {}}; 0
+[17:30:57] -rusti-                                                     ^
+[17:30:57] -rusti- 0
+[17:31:05] <eddyb> rusti: match Some(&()) {Some(&()) => {}, _ => {}}; 0
+[17:31:06] -rusti- 0
+[17:31:22] <eddyb> rusti: struct S; match Some(&S) {Some(&S) => {}, _x => {}}; 0
+[17:31:23] -rusti- error: internal compiler error: only scalars and strings supported in compare_values
+[17:31:23] -rusti- This message reflects a bug in the Rust compiler. 
+[17:31:23] -rusti- We would appreciate a bug report: http://static.rust-lang.org/doc/master/complement-bugreport.html
+[17:31:23] -rusti- application terminated with error code 101
+[17:31:36] <eddyb> rusti: struct S; match Some(&S) {Some(&S) => {}, None => {}}; 0
+[17:31:38] -rusti- 0
+[17:32:43] <eddyb> rusti: struct S; match Some(&S) {Some(_) => {}, _x => {}}; 0
+[17:32:45] -rusti- 0
+[17:33:49] <eddyb> rusti: struct S; match Some(&S) {Some(&_) => {}, _x => {}}; 0
+[17:33:50] -rusti- 0
+[17:36:26] *** Joins: ghrust (ghrust@4BC7FFDD.6A2AE50.F3114085.IP)
+[17:36:27] <ghrust> [13rust] 15bors 04force-pushed 06auto from 14c97a91a to 14a7aa4c4: 02http://git.io/N3iJvQ
+[17:36:27] *** Parts: ghrust (ghrust@4BC7FFDD.6A2AE50.F3114085.IP) ()
+[17:36:27] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[17:36:27] <ghrust> [13rust] 15bors pushed 3 new commits to 06auto: 02http://git.io/CBNAlQ
+[17:36:27] <ghrust> 13rust/06auto 1449e1163 15Corey Richardson: std: clean up ptr a bit
+[17:36:27] <ghrust> 13rust/06auto 14254c155 15Corey Richardson: impl fmt::Pointer for &T and &mut T
+[17:36:28] <ghrust> 13rust/06auto 147762baa 15bors: auto merge of #12282 : cmr/rust/cleanup-ptr, r=huonw
+[17:36:30] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[17:50:25] *** Joins: lpy (lpy@3481A86.D40F0E75.E99F7FDB.IP)
+[17:51:14] <doener> damn... wasted quite some time because I didn't realize that repr defines its own if_ok macro :-/
+[17:52:26] *** Quits: lpy (lpy@3481A86.D40F0E75.E99F7FDB.IP) (Ping timeout)
+[17:52:50] *** Joins: jdm (jdm@E595D12E.1196002C.7DBB297B.IP)
+[18:04:49] *** Quits: canhtak (canhtak@moz-843B48BB.wl.t.ulaval.ca) (Quit: canhtak)
+[18:14:08] <bstrie_vanished> how do I tell bors that someone else has approved a PR?
+[18:14:17] <bstrie_vanished> do I comment with r=whoever?
+[18:14:20] <cmr> yes.
+[18:14:58] <cmr> bstrie_vanished: did you benchmark the mut_iter change? was it a win?
+[18:15:12] *** Joins: Hildar (Mibbit@moz-FCD14146.range86-149.btcentralplus.com)
+[18:17:01] <bstrie_vanished> cmr: no measureable difference, since that's not a hotspot. in the end I just thought the iterator solution looked more idiomatic, even if it is a bit longer :)
+[18:17:40] <bstrie_vanished> changing the BufferedWriter to just print! had a *slight* difference
+[18:17:57] <bstrie_vanished> print! is about 0.01 seconds slower on my test machine
+[18:18:06] <bstrie_vanished> but the final program is still 0.01 seconds faster than the old version
+[18:18:14] <bstrie_vanished> and print!, again, just looks more idiomatic :)
+[18:18:33] <eddyb> LineBufferedWriter is different from BufferedWriter
+[18:18:49] <bstrie_vanished> I didn't even see LineBufferedWriter in the libs
+[18:18:54] <bstrie_vanished> maybe I just had tunnel vision
+[18:19:04] <bstrie_vanished> anyway, it's not really set up to print a line at a time
+[18:19:06] <eddyb> and all the formatting-based macros have virtual overhead
+[18:19:07] <cmr> bstrie_vanished: you should work with percent differences, not absolute times.
+[18:19:15] <bstrie_vanished> cmr: lazy :)
+[18:19:28] <cmr> optimizing wrong :P
+[18:19:41] <bstrie_vanished> cmr: I wasn't optimizing! I was just making the code more idiomatic *without* making it slower
+[18:19:43] <eddyb> bstrie_vanished: did you run it through perf?
+[18:19:52] <eddyb> ahh you were just having fun
+[18:19:57] <cmr> ok
+[18:19:59] <bstrie_vanished> yeah it wasn't a serious optimizing thing
+[18:20:20] <bstrie_vanished> eddyb: in any case, I had the person who owns the repo with the other benchmark programs run the code and we're still the fastest
+[18:20:31] <eddyb> oh ok
+[18:20:43] <bstrie_vanished> so it's just my ancient centOS 6 virtual server that we're slower than C on, which is fine
+[18:27:55] *** Joins: gwty (gwtypc@7A9AC705.AAB7877D.137C914F.IP)
+[18:38:35] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[18:42:52] *** Quits: Hildar (Mibbit@moz-FCD14146.range86-149.btcentralplus.com) (Quit: http://www.mibbit.com ajax IRC Client)
+[18:43:23] <eddyb> flaper87: wha, you're a mentor now?
+[18:46:31] *** Joins: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP)
+[18:46:31] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/CBNAlQ
+[18:46:31] *** Parts: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP) ()
+[18:49:46] <edwardw_> did break or continue ever work hygienically? https://github.com/mozilla/rust/issues/12262
+[18:50:14] *** edwardw_ is now known as edwardw
+[18:51:10] *** Joins: lpy (lpy@3481A86.D40F0E75.E99F7FDB.IP)
+[18:51:27] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[18:51:27] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/IP5YTA
+[18:51:27] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[18:51:27] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[18:51:27] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/Ft1zOQ
+[18:51:27] <ghrust> 13rust/06auto 14bfa3e60 15Ben Striegel: Clean up the Perlin noise benchmark
+[18:51:27] <ghrust> 13rust/06auto 14adea48a 15bors: auto merge of #12270 : bstrie/rust/pnoise, r=huonw...
+[18:51:28] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[18:53:16] *** Quits: lpy (lpy@3481A86.D40F0E75.E99F7FDB.IP) (Ping timeout)
+[18:53:20] <eddyb> erickt: look at the description https://github.com/mozilla/rust/pull/11863
+[18:53:32] <eddyb> "It makes use of @eddyb's in order to ..."
+[18:53:43] * cmr slaps some more eddyb onto his code
+[18:53:55] <cmr> there, all better
+[18:54:23] <edwardw> did break or continue ever work hygienically? https://github.com/mozilla/rust/issues/12262
+[18:54:34] <cmr> very unlikely.
+[18:54:39] <cmr> hygiene wasn't added all that long ago
+[18:54:51] <cmr> only let was ever hygenic.
+[18:55:01] <eddyb> "Get @cmr to benchmark the before/after of this PR." ah, that's what I was looking for
+[18:55:01] <edwardw> cmr: no wonder. so this is not a easy issue at all :P
+[18:55:04] <cmr> and that was 0.7 I think
+[18:55:30] <eddyb> our current hygiene has pretty nasty cases, as I've experienced
+[18:56:09] <eddyb> (performance-wise, there's an exponential cost, IIRC, even without using macros at all)
+[18:56:21] <edwardw> eddyb: seems to be the case although I only spent last several hours on it
+[18:56:55] <edwardw> so it is not a regression duo to #9103
+[18:58:18] *** Quits: wycats (sid79@moz-5F4AA75A.irccloud.com) (Ping timeout)
+[18:59:49] *** Joins: wycats (sid79@moz-5F4AA75A.irccloud.com)
+[19:00:46] <erickt> eddyb: well I did make use of you to get this PR done :)
+[19:01:06] <eddyb> :P
+[19:05:42] * flaper87 is back
+[19:06:09] <flaper87> eddyb: ah yeah, I raised my hand for that bug
+[19:07:29] <cmr> eddyb: anyone can mentor a bug
+[19:08:06] <edwardw> flaper87: seems it is not a regression after all
+[19:08:17] <flaper87> eddyb: it's not that you can't. If you know that part of the code, raise your hand
+[19:08:40] <flaper87> edwardw: yeah, but we do need to revert that change, though
+[19:09:01] <eddyb> cmr: right. I should be actually be surprised if flaper87 becomes a reviewer :)
+[19:09:04] <edwardw> flaper87: for what purpose?
+[19:09:04] <flaper87> edwardw: relying on the name won't help with bringing back the hygienic behavior
+[19:09:16] <edwardw> flaper87: I suppose so
+[19:09:37] <eddyb> I should go to bed, that sentence was too hard to construct :/
+[19:09:37] <edwardw> flaper87: but I suspect NodeId play a more important role now
+[19:09:45] *** Joins: cgaebel (clark@ADA4DDE2.290DF317.EE6E63A5.IP)
+[19:09:57] <edwardw> s/play/plays/
+[19:10:09] <eddyb> edwardw: not until resolve, though
+[19:10:19] <eddyb> and you can't insert values into the AST
+[19:11:26] <edwardw> eddyb: so where hygiene comes in? before resolve or after?
+[19:12:09] <eddyb> I think resolve uses the renamings generated by hygiene happening somewhere in expansion
+[19:12:10] <edwardw> eddyb: if that question makes sense
+[19:12:33] <edwardw> okay
+[19:13:52] *** Quits: cgaebel (clark@ADA4DDE2.290DF317.EE6E63A5.IP) (Ping timeout)
+[19:14:25] *** Joins: cgaebel (clark@ADA4DDE2.290DF317.EE6E63A5.IP)
+[19:20:52] <erickt> huon: ping
+[19:21:09] <erickt> assuming huon == github.com/huonw == dbaupp
+[19:21:33] <eddyb> dbaupp is dead, long live huon :P
+[19:22:00] <erickt> aww, I missed the coronation!
+[19:23:22] <kimundi> wait, dbaupp is huon?
+[19:23:37] <eddyb> haha
+[19:23:38] * kimundi will need months to mentally adjust that one
+[19:38:46] <olsonjeffery> i changed my nick probably a year or so back, because if i was going to invest a lot of energy in rust, that i should at least have it associated with my professional identity ;P
+[19:39:58] <flaper87> olsonjeffery: otherwise people start calling you with your nick in emails and everywhere :D
+[19:40:43] <olsonjeffery> this is my username on github
+[19:40:48] <olsonjeffery> so, yeah.
+[19:40:49] *** Quits: gimpf (gimpf@moz-5FCD9CCC.adsl.highway.telekom.at) (Connection reset by peer)
+[19:40:57] *** Joins: new_one (new_one@338D8DF9.4C461BEC.59A381B9.IP)
+[19:41:50] <eddyb> olsonjeffery: why not oljeffery?
+[19:41:55] <eddyb> or some other contraction
+[19:42:13] <olsonjeffery> i lack imagination, i guess
+[19:42:45] <flaper87> I think pretty much everyone calls me flaper now... even my family :P 
+[19:43:32] <eddyb> my expanded one is worse, 14 characters, and the full legal name has an extra -Mihai to it
+[19:43:36] *** Joins: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com)
+[19:44:07] <eddyb> it's not a second given name, it's linked with a hyphen so I need to remember to use the full thing everywhere official
+[19:44:48] <flaper87> edwardw: re hygienic, yeah, that is going to require quite some extra work also, trans_break doesn't seem to use the Name at all
+[19:45:18] *** Joins: gimpf (gimpf@moz-5FCD9CCC.adsl.highway.telekom.at)
+[19:45:29] <flaper87> edwardw: at this point, I'm not even sure it's worth reverting that patch, instead I'd first try to fix the issue and then revert it if it still makes sense
+[19:45:44] <edwardw> flaper87: sounds like a plan
+[19:45:47] <flaper87> edwardw: as you mentioned, NodeId plays a more important role now
+[19:45:50] <eddyb> flaper87: resolve already resolved the break's target, I would think
+[19:46:27] <eddyb> adding hygienic support in libsyntax for anything other than "let" is going to be the pain point AFAIK
+[19:46:35] <edwardw> eddyb: without rename though
+[19:46:42] <eddyb> hmm?
+[19:46:56] <eddyb> resolve? that should be easy to fix
+[19:47:04] <edwardw> it is to your resolve comment
+[19:47:10] <eddyb> we also want hygienic support for function arguments and even items
+[19:47:35] <eddyb> keep in mind you may be ruining performance if you expand the current algorithm to more Ident sources
+[19:47:35] <edwardw> the only hygienic one now is just var?
+[19:47:40] <eddyb> let, yeah
+[19:47:42] <new_one> hi all, I'm looking for what in the AST represents parameters for the traits being implemented by an impl
+[19:47:54] <eddyb> maybe also pattern bindings in match?
+[19:47:54] <new_one> that might not be clear, so here's an example: http://54.200.139.70/target/trees/code/main.rs.html#57
+[19:48:26] <eddyb> new_one: IIRC, TraitRef handles that
+[19:48:29] <flaper87> edwardw: you should take a look at how let was made hygienic, I think the fix for break won't require a huge change
+[19:48:49] <eddyb> hang on, what is that UI?
+[19:48:59] <edwardw> flaper87: https://github.com/mozilla/rust/pull/9026 I'm looking at it :P
+[19:49:27] <cmr> eddyb: dxr
+[19:49:40] <eddyb> do we already have support?
+[19:49:55] <cmr> nrc was working on it yeah
+[19:49:58] * eddyb is again oblivious about awesome things
+[19:51:55] *** Joins: lpy (lpy@3481A86.D40F0E75.E99F7FDB.IP)
+[19:52:23] <new_one> eddyb: thanks, I notice TraitRef contains a path and a ref_id. ref_id's probably not what I'm looking for; do you think it might be in path segments?
+[19:53:20] <eddyb> new_one: yupp
+[19:53:22] <new_one> speaking of dxr, this is what the question's for -- type param support
+[19:54:03] *** Quits: lpy (lpy@3481A86.D40F0E75.E99F7FDB.IP) (Ping timeout)
+[19:57:29] *** Quits: edwardw (edwardw@ECB36E22.A26CCAD9.99A56FDE.IP) (Quit: Leaving...)
+[20:01:13] *** Quits: gwty (gwtypc@7A9AC705.AAB7877D.137C914F.IP) (Ping timeout)
+[20:01:29] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[20:01:29] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/Ft1zOQ
+[20:01:29] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[20:03:07] *** Joins: gwty (gwtypc@9D5369FE.3032B930.49FF672.IP)
+[20:27:52] *** Quits: gwty (gwtypc@9D5369FE.3032B930.49FF672.IP) (Connection reset by peer)
+[20:28:00] *** Joins: gwty (gwtypc@9D5369FE.3032B930.49FF672.IP)
+[20:28:01] *** Quits: gwty (gwtypc@9D5369FE.3032B930.49FF672.IP) (Client exited)
+[20:39:50] <flaper87> eddyb: did the patch that cleans up CallSugar land ?
+[20:40:12] <doener> r? https://github.com/mozilla/rust/pull/12296
+[20:40:15] <flaper87> ah, I'll check that myself :D
+[20:40:32] <eddyb> flaper87: maybe
+[20:40:54] <flaper87> eddyb: it did
+[20:44:17] <doener> cmr: thanks!
+[20:44:30] <cmr> np
+[20:44:38] <eddyb> bah, someone should remind me to add Rust support to valabind at some point
+[20:44:55] <eddyb> free high-levle bindings for maybe a hundred C libraries
+[20:44:56] <eddyb> *level
+[20:45:16] <eddyb> I just realized I've forgotten about it and that would be very sad to happen again
+[20:45:22] <cmr> open an issue for it
+[20:45:57] <eddyb> *derp* I'm actually an owner for radare/valabind for some reason, though it doesn't matter in this case
+[20:46:26] *** Joins: ghrust (ghrust@2E45E35D.6A2AE50.F3114085.IP)
+[20:46:26] <flaper87> I wish we had a way to test things like doener's patch
+[20:46:26] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/5WBa-w
+[20:46:26] *** Parts: ghrust (ghrust@2E45E35D.6A2AE50.F3114085.IP) ()
+[20:46:28] *** Joins: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP)
+[20:46:29] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/bXF8Zg
+[20:46:29] <ghrust> 13rust/06auto 14500d29b 15Björn Steinbrink: Declare by-value on-stack parameters to be noalias...
+[20:46:29] <ghrust> 13rust/06auto 144af28c9 15bors: auto merge of #12296 : dotdash/rust/byval_noalias, r=cmr...
+[20:46:29] *** Parts: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP) ()
+[20:46:39] <flaper87> I mean, to avoid regressions 
+[20:46:42] * doener gets a bit scared everytime he sees "failed; 306", only to realize that it's only a semi-colon
+[20:46:59] <eddyb> is that byval_noalias thing for values passed with indirection?
+[20:47:45] <doener> eddyb: yeah, for by-value args that are larger than a register
+[20:47:52] <cmr> flaper87: we have some codegen tests.
+[20:48:11] <eddyb> doener: ahh, your PR. sorry for forgetting your real name :P
+[20:49:37] <doener> eddyb: no worries ;-) Also, I'm making it extra hard by having a different nick on GH as well
+[20:50:27] <flaper87> cmr: yeah, we should probably have more of those and more specific tests for llvm's fixes like doener's. I don't have a good idea as to how we could do it now, just throwing some thoughts out there
+[20:50:38] <doener> stumbled upon that thing by chance, while looking through the code that my lifetime-intrinsics patch generated.
+[20:50:59] <flaper87> doener: good catch, +1
+[20:51:20] <doener> unfortunately, the original case (involving IoError) isn't fixed by that yet, but we're getting there
+[20:51:34] <eddyb> doener: there's a bunch more things to fix
+[20:51:51] <cmr> flaper87: I agree, we're going to need lots more codegen tests moving forward.
+[20:52:03] <cmr> in fact...
+[20:52:11] <cmr> doener: can you write one for that?
+[20:52:13] <cmr> src/test/codegen
+[20:52:17] <doener> flaper87: I had the same problem as you, I wouldn't know how to write a test for that
+[20:52:36] <cmr> the way it works right now is it takes two files
+[20:52:39] <cmr> one in rust and one in c++
+[20:52:40] *** Joins: lpy (lpy@3481A86.D40F0E75.E99F7FDB.IP)
+[20:52:43] <cmr> compiles the latter with clang
+[20:52:52] <eddyb> if you're passing a structure by value but with indirection, if it gets moved (isn't used anywhere else in the function), you shouldn't have to copy it to a temporary
+[20:52:54] <cmr> and then compares the ratio of IR size.
+[20:53:01] <doener> cmr: that just check for code-size differences, doesn't it?
+[20:53:07] <cmr> yeah
+[20:53:16] <cmr> but even so, I think it should catch regressions?
+[20:53:20] <cmr> (in this specific case)
+[20:53:36] <eddyb> doener: I think we need to start using the data generated by "compute moves" (which isn't just "check moves") in trans
+[20:53:45] <doener> eddyb: yeah, we talked about that before (and I completely failed to get your idea back then ;-))
+[20:53:52] <doener> (about avoiding the copy that is)
+[20:54:08] <eddyb> LLVM can't do it because we can't give it enough information
+[20:54:46] *** Quits: lpy (lpy@3481A86.D40F0E75.E99F7FDB.IP) (Ping timeout)
+[20:54:46] <doener> eddyb: there's also "byval", which has its up- and downsides (which I should really write down in the corresponding issue on GH...)
+[20:54:48] <eddyb> I've heard a core LLVM dev tried implementing such an optimization and then there was no case where it would get triggered, with all the right checks
+[20:55:47] <doener> eddyb: and strcat suggested that we should probably just stop doing the copy at all, and let LLVM decide what to do (i.e. just use @foo(%Foo) instead of @foo(%Foo*) even for large '%Foo')
+[20:56:06] <cmr> benchmarks of that would be interesting.
+[20:56:23] <doener> eddyb: not sure how well the latter would work for types that need drop glue though
+[20:57:55] <flaper87> cmr: if doener is going to add a test, shouldn't you probably remove the r+ or stop the job if it already started?
+[20:58:06] <doener> cmr: hm, yeah, the code ratio check might do, but it feels wrong (to me at least). I'd prefer something akin to what LLVM does. Can we just use llvm's lit(?) tool?
+[20:58:22] <doener> ... for some definition of "just use"
+[20:58:37] <eddyb> who knows about rustbind and its incapacity to deal with macros?
+[20:58:45] <cmr> flaper87: nothing wrong with it being after-the-fact.
+[20:58:53] <eddyb> I actually solved that problem in valabind :P
+[20:58:58] <cmr> I'm comfortable accepting it without test
+[20:59:29] <eddyb> it involves generating a C program printing the values of all the #define'd macros that I needed, and running said program
+[20:59:53] <cmr> eddyb: rustbind can deal with macros.
+[20:59:54] <flaper87> cmr: yeah, but it's always nice to keep changes isolated in single PR's and perhaps even commits
+[21:00:08] <eddyb> cmr: hah, since when? I've heard complaints at one point
+[21:00:11] <cmr> it does constants, just not procedural macros.
+[21:00:26] <cmr> procedural macros should be pretty easy though, if they don't use ##x etc.
+[21:00:27] <kimundi> Hm, something occurred to me. There is the proposal for yieldable functions/generator syntax, and the future plans for unboxed closures. Both involve writing the body of a function, and letting the compile rewrite that code to a method that accesses local variables in a struct. I wonder if those both concepts could get unified
+[21:00:39] <eddyb> cmr: concat_idents! :P
+[21:01:49] <eddyb> kimundi: yupp. I wanted to make a loadable syntax extension for generators, but never gotten around to it
+[21:02:03] <eddyb> and it would be bad without the anonymous return type magic
+[21:02:10] <cmr> eddyb: the bigger problem is translating do-while etc etc into rust, but still not impossible.
+[21:02:15] <cmr> in fact
+[21:02:24] <cmr> at that point you basically just have a C translator.
+[21:02:40] <eddyb> heh
+[21:02:51] <eddyb> C -> unsafe Rust is quite doable
+[21:02:59] <cmr> yes.
+[21:03:37] <eddyb> unsafe Rust -> safe Rust requires a PhD in applied mathematics, wormhole physics and a life-long experience of working on AIs
+[21:04:05] <eddyb> (and before you point out any errors in that statement, please remember that I am sick and tired)
+[21:04:59] <eddyb> cmr: whoa, I can add labels and assign myself to the issue :P https://github.com/radare/valabind/issues/20
+[21:07:21] <cmr> eddyb: so what is valabind exactly?
+[21:07:37] <cmr> vala -> other langs?
+[21:07:51] <eddyb> VAPI -> bindings for other languages, yeah
+[21:08:22] <cmr> I haven't looked at vala in a long time
+[21:08:26] <eddyb> used for radare2 bindings, mostly. but it should support almost every VAPI provided by Vala
+[21:08:31] <cmr> but I thought it was just a simple language for GIR -> non-nasty C
+[21:08:40] <kimundi> Couldn't you just normalize all loop constructs to "loop" loops, isolate all state between "break", "continue", "return" etc, and then rewrite all variables that escape those segments to be struct fields in a enum consisting of all possible states?
+[21:09:08] <eddyb> the language itself is terrible, a mix of Java, C# and C, but it's VAPIs are pretty good for abstracting high-level bindings for C libs
+[21:09:28] <cmr> cool
+[21:09:52] <eddyb> cmr: I wrote the generator for node-ffi, that's how I know so much about it :P
+[21:10:07] <eddyb> wiREd uses that binding to get information about a binary
+[21:10:11] <eddyb> kimundi: problem is inference, we've discussed it before :)
+[21:10:32] <eddyb> I can actually deal with it, but then I don't have a concrete return type
+[21:11:02] *** Joins: jensnockert (jensnocker@moz-498B475.mobileonline.telia.com)
+[21:13:02] <doener> ah, with the alias fix, I found an easy victim for lifetimes! :-D
+[21:13:36] <eddyb> doener: kill them all >:)
+[21:13:45] <doener> heh
+[21:14:23] <kimundi> yeah, it needs proper compiler support to implement it that way. The function body needs to to be expanded/resolved/typechecked/inferred, _and then_ needs to have that transformation applied and get reinjected as a method+struct in the compilation process.
+[21:14:39] <doener> eddyb: specifically, I can tell LLVM that the lifetime of the by-value argument ends at the end of the function. And then LLVM can omit the zero-ing
+[21:15:26] <eddyb> neat tricks :D
+[21:16:04] <eddyb> kimundi: nah you just need the same anon return type contract-by-trait thing as you'd do with returning unboxed closures
+[21:16:36] * doener wishes he had more time to spend on rustc :-/
+[21:18:42] *** Quits: cgaebel (clark@ADA4DDE2.290DF317.EE6E63A5.IP) (Ping timeout)
+[21:19:21] <kimundi> eddyb: Well thats the alternative. I'm working with a mental model where all types are known, just not necessarily typed out anywhere in the source, and if exposed either with a user given name or in form of a trait object.
+[21:22:33] <flaper87> doener: +1
+[21:23:47] <eddyb> kimundi: I did even consider something like struct {a: Some(a), b: Some(b)} impl Iterator<T> {fn next(&self) -> Option<T> {match self.a.take() {Some(a) => Some(a), None => match self.b.take() {Some(b) => Some(b), None => None}}}}
+[21:24:02] <eddyb> as an explicit syntax for anonymous types
+[21:25:34] <eddyb> (that example became more contrived because I wanted to make it actually work :P)
+[21:25:37] <bstrie_vanished> hahahaha yesss!!!
+[21:25:43] <eddyb> s/&self/&mut self/
+[21:25:50] <bstrie_vanished> I just realized that you can use @ patterns to bring back the old `let x, y, z = 0;` form
+[21:26:07] <cmr> wait how?
+[21:26:13] <bstrie_vanished> rusti: let x @ y @ z = 0; (x, y, z)
+[21:26:14] -rusti- (0, 0, 0)
+[21:26:17] <bstrie_vanished> tadaaaa
+[21:26:18] <cmr> hah
+[21:26:23] <eddyb> can you actually have more than one?
+[21:26:29] <cmr> who knew.
+[21:26:37] <eddyb> cmr: only bstrie, it seems
+[21:26:42] <eddyb> and only recently
+[21:26:49] <bstrie_vanished> I choose to share my knowledge for the betterment of us all
+[21:26:49] <eddyb> @ looks like a rolling stone in that context
+[21:27:02] <eddyb> or "@nd"
+[21:27:23] <eddyb> rusti: let x @ y @ z = ~0; (x, y, z)
+[21:27:25] -rusti- pastebinned 8 lines of output: http://ix.io/aws
+[21:27:28] <sfackler> bstrie_vanished: for some definition of "betterment" :P
+[21:27:46] <bstrie_vanished> wow, that's a new error message
+[21:27:56] <cmr> I've seen it before
+[21:28:09] <bstrie_vanished> I guess it requires one to actually use sub-bindings
+[21:28:21] <cmr> yup
+[21:30:07] <eddyb> doener: I wonder what other people could do with my free time
+[21:30:23] <bstrie_vanished> I've been learning guitar on eddyb's free time
+[21:30:48] <cmr> eddyb is giving out free time!?
+[21:31:04] <eddyb> there are contributors with a job and a family and they manage to do more than me
+[21:31:13] <eddyb> cmr: it doesn't work that way :/
+[21:31:39] <doener> eddyb: maybe their job is contributing to rustc ;-)
+[21:31:41] <eddyb> I work pretty much full time and I barely get anything done
+[21:31:51] <bstrie_vanished> eddyb: hahaha, are you seriously down on yourself for not doing *more*
+[21:31:57] <bstrie_vanished> you're like a superhero
+[21:31:59] <eddyb> doener: I am not talking about the core team
+[21:32:29] <doener> eddyb: but seriously, I've been hugely impressen with the amount of stuff you put out after I heard about the time it takes to compile rustc on your box
+[21:32:35] <eddyb> hehe
+[21:32:38] <doener> s/impressen/impressed/
+[21:35:14] <kimundi> eddyb: Seriously, you just appeared here one day and started doing a lot of impressive compiler hackery every since. ;)
+[21:36:01] <eddyb> I was going to make two PRs yesterday before I fell down with this sickness. and I don't really want to sleep again, being doing a lot of that
+[21:40:37] <bstrie_vanished> eddyb: I'm always fascinated to watch you and strcat talk, even if it is always over my head :P
+[21:41:07] *** Joins: cgaebel (clark@moz-16538C2A.nycmny.east.verizon.net)
+[21:42:15] <acrichto> eddyb: we drop task local data when the task exits
+[21:42:43] <acrichto> eddyb: also I dunno much about LLVM devirtualization, I think it would have to prove that the vtable is a constant from where it's written to where it's used and only then can it devirtualize
+[21:45:15] <eddyb> I know one of those PRs was the fix for #4252 but I'm not sure what the other one is... probably putting immutable primitives in SSA variables instead of allocas
+[21:53:25] *** Joins: lpy (lpy@3481A86.D40F0E75.E99F7FDB.IP)
+[21:54:01] *** Joins: eibwen (kvirc@moz-99F62443.dip0.t-ipconnect.de)
+[21:55:30] *** Quits: lpy (lpy@3481A86.D40F0E75.E99F7FDB.IP) (Ping timeout)
+[21:56:41] <sfackler> acrichto: r? https://github.com/mozilla/rust/pull/12299
+[21:59:35] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[22:01:30] *** Joins: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP)
+[22:01:30] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/bXF8Zg
+[22:01:30] *** Parts: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP) ()
+[22:01:57] *** Quits: NiccosSystem (NiccosSyst@AB1AFDE.FC7B0C35.A7597CB6.IP) (Ping timeout)
+[22:02:19] <acrichto> sfackler: I'll trade you, r? https://github.com/mozilla/rust/pull/12298
+[22:02:57] <flaper87> acrichto: thanks for the snapshot and s/extern mod/extern crate/
+[22:03:04] <acrichto> flaper87: np
+[22:06:29] *** Joins: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP)
+[22:06:29] <ghrust> [13rust] 15bors pushed 3 new commits to 06auto: 02http://git.io/W51jlA
+[22:06:29] <ghrust> 13rust/06auto 14359ac36 15Alex Crichton: Register new snapshots...
+[22:06:29] <ghrust> 13rust/06auto 14a41b0c2 15Alex Crichton: extern mod => extern crate...
+[22:06:29] <ghrust> 13rust/06auto 146b025c8 15bors: auto merge of #12272 : alexcrichton/rust/snapshot, r=kballard...
+[22:06:31] *** Parts: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP) ()
+[22:07:13] *** Joins: rcxdude (rcxdude@moz-394D851.nat.csx.cam.ac.uk)
+[22:08:42] *** Quits: eddyb (eddy@688E9026.F7C96DA2.FCAAE698.IP) (Ping timeout)
+[22:09:39] *** Quits: limeburst (me@247D1419.D73964AC.27A8748.IP) (Client exited)
+[22:14:51] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[22:14:51] *** ChanServ sets mode: +qo brson brson
+[22:16:37] <bstrie_vanished> in match arms, is there any difference between `a @ 0..20` and `a if a > 0 && a < 20` ?
+[22:16:48] <bstrie_vanished> <=, w/e
+[22:17:24] *** Joins: NiccosSystem (NiccosSyst@AB1AFDE.FC7B0C35.A7597CB6.IP)
+[22:17:52] *** Quits: NiccosSystem (NiccosSyst@AB1AFDE.FC7B0C35.A7597CB6.IP) (Quit: Leaving)
+[22:18:21] <cmr> bstrie_vanished: there shouldn't be.
+[22:26:16] <huon> excitement on #rust-internals: huon changes his name
+[22:26:21] * huon is late to the party
+[22:26:43] <huon> erickt: pong
+[22:27:04] <bstrie_vanished> huon: when I changed my name I was "bstrie|Wensley" for about a month so that I didn't have to keep reminding people :P
+[22:27:28] <huon> bstrie_vanished: that's far too sensible
+[22:27:41] * huon doesn't do sense
+[22:28:28] <doener> huon: when you were dbaupp I knew that I was talking to Huon. But now? I feel helpless :-p
+[22:28:44] * huon hugs doener
+[22:28:56] <doener> *sobs*
+[22:30:07] <bstrie_vanished> rusti: let (x @ y @ z, a) = (0, 1); (x, y, z, a)
+[22:30:08] -rusti- (0, 0, 0, 1)
+[22:30:31] *** bstrie_vanished is now known as bstrie_dbaupp
+[22:30:47] <bstrie_dbaupp> huon: now there will be no confusion
+[22:30:50] <huon> bstrie_dbaupp: that's a rust-www-front-page example
+[22:31:06] *** huon is now known as bstrie
+[22:31:10] <bstrie_dbaupp> nooooo
+[22:31:14] *** bstrie_dbaupp is now known as huon
+[22:31:17] <huon> anyway
+[22:31:23] <huon> bstrie: what is rust-www-front-page
+[22:31:37] *** kimundi is now known as dbaupp
+[22:31:41] <huon> hahaha
+[22:31:50] <bstrie> http://www.rust-lang.org/
+[22:31:55] *** cmr is now known as kimundi
+[22:32:12] <erickt> huon: assuming you're the real huon, I wanted to ask you about https://github.com/mozilla/rust/pull/11863/files#r9772545. Was that in regards to all of the `.input_*` methods, or just `.input_ref`?
+[22:32:17] <bstrie> if the wind changes direction we'll be stuck like this
+[22:32:29] <kimundi> that would be incredibly unfortunate
+[22:32:37] <huon> erickt: maybe ask bstrie, I hear he's a smart guy
+[22:32:38] *** flaper87 is now known as cmr
+[22:32:49] <bstrie> erickt: just input_ref
+[22:33:01] <erickt> now you too are just being silly
+[22:33:11] *** bstrie is now known as huon1
+[22:33:13] <huon> bstrie: I was actually going to make a post on the subreddit about x @ y @ z, and then I realized that making this widely known would only be bad for PR :P
+[22:33:22] <huon> "too many sigils", they will cry
+[22:33:23] <huon1> dammit
+[22:33:29] *** kimundi is now known as cmr_
+[22:33:37] *** huon is now known as flaper87
+[22:33:42] *** dbaupp is now known as kimundi
+[22:33:47] *** erickt is now known as huon
+[22:33:47] <cmr_> ok *now* I'm lost
+[22:33:51] *** cmr is now known as bstrie
+[22:33:54] <cmr_> I had it down for a minute or so there
+[22:33:55] <flaper87> I've forgotten who I even am
+[22:33:56] *** cmr_ is now known as cmr
+[22:33:56] *** Quits: huon (Adium@49C4075F.3AC15C18.2321E71E.IP) (NickServ (GHOST command used by huon1))
+[22:34:01] <cmr> hahah
+[22:34:03] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[22:34:18] <huon1> \o/
+[22:34:23] *** huon1 is now known as huon
+[22:34:30] <erickt> ha. I tried to huon-myself and the nickserv booted me
+[22:34:34] *** Quits: cgaebel (clark@moz-16538C2A.nycmny.east.verizon.net) (Ping timeout)
+[22:34:49] <huon> erickt: I NICKSERV GHOST'd :P
+[22:34:51] <flaper87> haha
+[22:34:58] <flaper87> why didn't I think of that!
+[22:35:00] <bstrie> LOOOL
+[22:35:15] *** Quits: bstrie (flaper87@moz-107AD163.redhat.com) (NickServ (GHOST command used by flaper87))
+[22:35:25] *** flaper87 is now known as bstrie
+[22:35:29] <bstrie> LOLOL
+[22:35:41] <bstrie> hooray registered nicks!
+[22:35:43] *** Joins: flaper87 (flaper87@moz-107AD163.redhat.com)
+[22:35:54] <flaper87> stupid server :D
+[22:36:23] <bstrie> flaper87: what is it that you hadn't thought of?
+[22:36:43] <erickt> to whomever is the real huon, I made `.input_ref` in case someone wanted to do something special with reference types. Like just hash the pointer. But I can remove that because I suppose we shouldn't encourage that sort of bad behavior
+[22:36:50] <flaper87> bstrie: that was my other self, ask him
+[22:37:13] <huon> erickt: yeah, I'd assume that someone would either just cast to *T, or have a wrapper type
+[22:37:40] <huon> given it doesn't seem very common to want custom behaviour for references specifically
+[22:40:39] *** Joins: cgaebel (clark@moz-DAC9CC8.nycmny.east.verizon.net)
+[22:40:42] <huon> heh, #rust has a long chain of people changing names
+[22:44:11] * doener isn't going to follow all the name changing and will pretend that everybody is strcat
+[22:44:21] <flaper87> https://twitter.com/flaper87/status/434820274257539072 <- swapping nicks
+[22:45:35] <huon> flaper87: hahaha
+[22:46:07] <flaper87> :D
+[22:49:23] <acrichto> huon: https://github.com/mozilla/rust/pull/12241#issuecomment-35170519
+[22:49:26] <acrichto> interesting results...
+[22:50:21] <huon> acrichto: https://github.com/mozilla/rust/issues/11751
+[22:50:26] <huon> try it with ~[]
+[22:50:53] <acrichto> oh interesting
+[22:51:00] <huon> but yeah, I agree with you
+[22:52:00] <huon> if you look at the IR you'll see a cmp eq ..., null
+[22:52:02] <acrichto> huon: ah indeed
+[22:52:10] <acrichto> ~[u8] has the exact same timings
+[22:52:32] *** Joins: lkuper (lkuper@moz-C0CD33ED.hsd1.in.comcast.net)
+[22:52:32] <huon> for my vector iterators with the proper utf8 validation the null check actually only occurs on the `first` check
+[22:53:05] <huon> so that's why I think we won't get *huge* additional speed up in the non-ascii case
+[22:53:18] *** Quits: larsberg (larsberg@moz-5D8E4B14.lightspeed.cicril.sbcglobal.net) (Quit: Leaving.)
+[22:53:25] <huon> (assuming I was reading the IR correctly)
+[22:53:33] <strcat> this is a fixable bug
+[22:53:43] <huon> yep
+[22:54:00] <acrichto> huon: what do you think of not merging unsafe until the iterators have been fixed?
+[22:54:09] *** Joins: lpy (lpy@3481A86.D40F0E75.E99F7FDB.IP)
+[22:54:16] <strcat> it's not iterators that are the problem
+[22:54:26] <acrichto> well, whatever the bug is
+[22:54:38] <strcat> it's the same bug as
+[22:54:41] <huon> acrichto: fine by that; although the fix for iterators requires being able to tell LLVM about non-null pointers in a sane way
+[22:54:45] <strcat> fn foo(x: &int) -> bool { Some(x) == None }
+[22:54:47] <huon> *with that
+[22:54:51] <acrichto> true
+[22:54:57] <strcat> will be a null check with full optimizations
+[22:56:20] *** Quits: lpy (lpy@3481A86.D40F0E75.E99F7FDB.IP) (Ping timeout)
+[22:58:13] <erickt> huon: are you aware of any examples that does your impl_input_tuple!(A B C D E F) trick that generates impls for A, (A, B), (A, B, C), etc?
+[22:58:47] *** Quits: eibwen (kvirc@moz-99F62443.dip0.t-ipconnect.de) (Ping timeout)
+[22:59:33] <huon> erickt: I used it somewhere, but can't find it now
+[22:59:35] <huon> I'll write one
+[22:59:43] <erickt> thanks
+[23:01:28] <flaper87> r? https://github.com/mozilla/rust/pull/12301
+[23:01:55] *** Quits: doomlord_ (servitor@moz-9B2006BF.range109-151.btcentralplus.com) (Quit: Leaving)
+[23:03:58] <huon> erickt: https://gist.github.com/huonw/f46a1ff86524a5f03766
+[23:10:39] *** Joins: canhtak (canhtak@moz-843B48BB.wl.t.ulaval.ca)
+[23:12:35] *** Quits: cgaebel (clark@moz-DAC9CC8.nycmny.east.verizon.net) (Ping timeout)
+[23:15:34] *** Joins: cgaebel (clark@moz-C3552556.nycmny.east.verizon.net)
+[23:16:34] *** Joins: ghrust (ghrust@94BD74B8.6A2AE50.F3114085.IP)
+[23:16:34] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/W51jlA
+[23:16:34] *** Parts: ghrust (ghrust@94BD74B8.6A2AE50.F3114085.IP) ()
+[23:19:55] *** Quits: jdm (jdm@E595D12E.1196002C.7DBB297B.IP) (Ping timeout)
+[23:20:05] <brson> how many acrichtos are there really?
+[23:20:33] <cmr> certainly at least 4
+[23:21:31] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[23:21:31] <ghrust> [13rust] 15bors pushed 8 new commits to 06auto: 02http://git.io/epTFlg
+[23:21:31] <ghrust> 13rust/06auto 1476a59fd 15Huon Wilson: std: add an RAII unlocker to Mutex....
+[23:21:31] <ghrust> 13rust/06auto 1475d92db 15Huon Wilson: std: add tests for the _noguard lock/signal/wait methods on Mutex.
+[23:21:31] <ghrust> 13rust/06auto 14b87ed60 15Huon Wilson: std: Rename unstable::mutex::Mutex to StaticNativeMutex....
+[23:21:33] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[23:22:32] <bstrie> cmr: I wouldn't be surprised, that would explain his productivity
+[23:32:18] *** Quits: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com) (Ping timeout)
+[23:34:27] <sfackler> acrichto: have you seen this? Something seems very broken in Chan: https://github.com/mozilla/rust/issues/12295
+[23:34:43] <acrichto> sfackler: I have indeed
+[23:34:52] <acrichto> still processing the email backlog, haven't quite gotten to it yet :P
+[23:35:09] <acrichto> it's not a huge problem
+[23:35:18] <acrichto> I think there's just an off by ne somewhere
+[23:42:20] *** flaper87 is now known as flaper87|afk
+[23:42:53] *** Quits: jensnockert (jensnocker@moz-498B475.mobileonline.telia.com) (Connection reset by peer)
+[23:43:15] <brson> acrichto: could we put rlibs in our dylibs and just have one type of library?
+[23:43:34] <acrichto> brson: not without slowing down linking I think
+[23:43:44] <acrichto> having to modify a file before we link against it takes a bit of time
+[23:43:52] <acrichto> on the order of a hundred ms depending how big it is
+[23:44:00] *** Quits: SiegeLordEx (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: Leaving)
+[23:44:08] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[23:44:36] <cmr> it'd be nice if metadata weren't duplicated between them.
+[23:45:01] <acrichto> it would be sad to add another file though
+[23:48:45] *** Quits: lkuper (lkuper@moz-C0CD33ED.hsd1.in.comcast.net) (Quit: lkuper)
+[23:48:49] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Client exited)
+[23:48:52] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[23:49:12] <brson> acrichto: does rustc generate both rlibs and dylibs by default?
+[23:49:53] <cmr> no, but any package manager is going to want to I think.
+[23:50:13] <brson> i think so too
+[23:50:19] *** Quits: aepsil0n (eduard@moz-15CB80F2.hsi8.kabel-badenwuerttemberg.de) (Ping timeout)
+[23:50:20] <cmr> (cargo-lite emits rlib,dylib,staticlib)
+[23:50:26] <brson> staticlib?!
+[23:50:34] <cmr> yeah, rlib sans metadata.
+[23:50:36] <acrichto> brson: no
+[23:50:44] <acrichto> staticlib == integarte this into an existinga pplication
+[23:50:49] <cmr> yup
+[23:50:50] <acrichto> it basically bundles all rlibs together
+[23:51:00] <acrichto> I wish we had a better name...
+[23:51:07] <brson> embeddablelib
+[23:51:28] <sfackler> brson: merging rlibs into dylibs would also make them pretty enormous
+[23:51:38] <brson> sfackler: yeah
+[23:51:44] <kimundi> everything-but-the-kitchen-sinklib
+[23:52:00] <brson> cmr: we do need to make sure staticlib works well for embedders
+[23:52:24] <brson> though most libs aren't designed for embedding
+[23:54:54] *** Joins: lpy (lpy@3481A86.D40F0E75.E99F7FDB.IP)
+[23:57:01] *** Quits: lpy (lpy@3481A86.D40F0E75.E99F7FDB.IP) (Ping timeout)
+[23:57:18] <acrichto> sfackler: https://github.com/mozilla/rust/pull/12302

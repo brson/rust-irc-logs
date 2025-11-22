@@ -1,0 +1,1071 @@
+[00:00:27] <pnkfelix> tjc: yes, I think so.
+[00:01:09] <tjc> pnkfelix: what's your OS X version?
+[00:01:23] <pnkfelix> tjc: Is there some more direct way to detect the rebuild attempt besides changing the file to be read-only?
+[00:01:42] <tjc> pnkfelix: Yeah, there is, but it's not totally straightforward...
+[00:01:43] <pnkfelix> tjc: Or better still, is there a way to get rustpkg to recompute the hash it uses after we make the file readonly ?
+[00:01:53] <tjc> oh, hmm, interesting
+[00:01:57] <pnkfelix> tjc: I'm on OS X 10.8.5
+[00:02:13] <tjc> Well, the "right way" would be to get rid of the read-only hack and change rustpkg internally so that when it spawns off a task, it checks the failure message and returns a corresponding exit code
+[00:02:21] <tjc> Then the tests could just check the exit codes and not set stuff to be read-only
+[00:02:32] <tjc> I don't think that would be a super-quick change, though (as in, I think it would take a few hours)
+[00:02:34] <pnkfelix> tjc: That's more work than I think you or I want to embark on right now
+[00:02:36] <tjc> Right
+[00:02:47] <tjc> I'm not sure how recomputing the hash would work, hmm
+[00:03:24] <tjc> well, you're working on something unrelated to this, right? Since we know what the problem is now, I think it would be ok to mark the test as #[ignore] so you can check your work in
+[00:03:31] <tjc> and file a bug to fix the actual problem
+[00:03:41] <pnkfelix> tjc: what if the pkg.rs file itself made the output file readonly ?
+[00:03:54] <pnkfelix> tjc: (instead of having the test do it)
+[00:04:13] <pnkfelix> tjc: would it then just happen naturally before the workcache calculates the timestamp ?
+[00:04:22] <tjc> pnkfelix: that would almost work...
+[00:04:33] <pnkfelix> tjc: I'm not working on anything that I need to check in
+[00:04:33] <tjc> you would have to change rustpkg::api::build_library_in_workspace and not the test itself
+[00:04:47] <pnkfelix> tjc: I just didn't like the fact that this test was failing on me during the day today, and I wanted to understand it
+[00:04:53] <tjc> ok, fair enough!
+[00:05:05] <tjc> the cheapest way to make that change, I guess, would be to add a closure argument to build_library_in_workspace...
+[00:05:14] <tjc> Then, the test pkg.rs that calls it can pass in a closure that makes the file read-only
+[00:05:15] <pnkfelix> tjc: Ah, because pkg.rs doesn't know about the libraries it creates?
+[00:05:20] <tjc> so that that happens before discover_output
+[00:05:33] <tjc> because the call to discover_output in build_library_in_workspace is what stores the hash for the output file in the database
+[00:06:12] <tjc> pnkfelix: Not because it doesn't know about the libraries it creates, but because build_library_in_workspace both runs the command that creates the call, and calls discover_output
+[00:06:26] *** Quits: icarot (yaaic@moz-C92E6072.wavecable.com) (Ping timeout)
+[00:09:09] <pnkfelix> tjc: I see now, pkg.rs is calling into build_library_in_workspace, so it cannot get the effect we want.  Hmm.
+[00:09:59] <pnkfelix> tjc: (because it needs to inject the code to `chmod -w`, like you were suggesting via a closure)
+[00:11:36] <pnkfelix> maybe there's a better answer for this, let me double check the web for info on `chmod`, esp. on OS X
+[00:12:33] <tjc> pnkfelix: Sure, I would be curious. I don't know whether there's any important difference between 10.8.3 and 10.8.5 that would affect things
+[00:14:50] <pnkfelix> tjc: Do you know whether the workcache uses ctime vs mtime ?
+[00:15:33] <pnkfelix> tjc: (I'm honestly not sure which of the two is "right" for the workcache, it might depend on each client of the workcache...)
+[00:16:57] <tjc> pnkfelix: mtime -- ctime isn't right, would it be? I thought ctime was the creation time
+[00:16:57] <pnkfelix> tjc: Or wait, does the client of the workcache get to define their own notion of "freshness" ?  Funky ...
+[00:17:06] <pnkfelix> tjc: http://www.linux-faqs.info/general/difference-between-mtime-ctime-and-atime
+[00:17:09] <pnkfelix> tjc: Not quite
+[00:17:14] <tjc> pnkfelix: Yes, each client defines their own freshness functions. But I thought this was what made sense for rustpkg
+[00:17:42] <pnkfelix> tjc: So maybe OS X Is buggy and is updating the mtime in response to `chmod -w`… lets fine out
+[00:18:28] <tjc> oh, I see, change time
+[00:19:39] <sfackler> modification time vs change time is not the greatest naming scheme in the world
+[00:19:59] <pcmattman> 'change' attributes, 'modify' data (bleh.)
+[00:22:21] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[00:23:14] <pnkfelix> tjc: chmod -w seems to do the right thing on this platform according to my invocations of `stat -x` at the command line
+[00:24:08] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[00:24:22] <tjc> pnkfelix: Same here -- it bumps the "change" time but doesn't bump the access time or modify time
+[00:24:28] <tjc> so this is weird
+[00:24:35] <pnkfelix> tjc: But that doesn't mean that rust isn't buggy on this front
+[00:24:42] <pnkfelix> tjc: e.g. maybe we are filling in the FileStat wrong
+[00:24:49] <tjc> pnkfelix: i thought Rust just called into those functions pretty directly, though...
+[00:24:52] <tjc> but I haven't looked lately
+[00:25:01] <pnkfelix> tjc: I'm double checking now
+[00:30:15] *** Joins: lkuper (lkuper@moz-C0CD33ED.hsd1.in.comcast.net)
+[00:30:39] <pnkfelix> interesting, the uv_stat_t's st_ctim filed isn't even exposed to the FileStat struct, AFAICT
+[00:36:21] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[00:36:21] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/SJxxNg
+[00:36:21] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[00:38:12] <strcat> tjc: we use libuv for almost all of this now
+[00:39:31] <strcat> where is stat now? std::path?
+[00:40:28] *** Joins: pcwalton (pcwalton@5AB4884B.FCC4549.14D5B978.IP)
+[00:40:28] *** ChanServ sets mode: +ao pcwalton pcwalton
+[00:40:42] <pnkfelix> strcat: Yes we're using libuv for this
+[00:40:46] *** Joins: jdm (jdm@5AB4884B.FCC4549.14D5B978.IP)
+[00:40:54] <pnkfelix> strcat: stat is in std::io::fs
+[00:41:14] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[00:41:14] <pnkfelix> strcat: I'm seeing data that I did not expect from it though.  Am still looking.
+[00:41:14] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/dZKwQA
+[00:41:14] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[00:41:19] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[00:41:19] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/gPVTIQ
+[00:41:19] <ghrust> 13rust/06auto 1465aacd0 15Tim Chevalier: rustpkg: Eliminate the spurious `os::path_exists(&pkg_src.start_dir.join(p))` assertion failure...
+[00:41:19] <ghrust> 13rust/06auto 141bfa45c 15bors: auto merge of #10342 : catamorphism/rust/rustpkg-dir-checking-and-monitor, r=erickt...
+[00:41:19] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[00:44:28] <pnkfelix> hmm.  yikes.
+[00:45:38] <pnkfelix> https://gist.github.com/pnkfelix/7441596
+[00:46:23] <pnkfelix> oh wait, maybe that's fine
+[00:46:39] <pnkfelix> (forgot that my earlier point that the ctime is not reflected in our own FileStat)
+[00:47:45] <pnkfelix> ((need to use something other than `stat -x` so I can include the true creation time in the output))
+[00:52:12] *** Joins: tikue (tikue_star@CFD7FEA6.E6CB677E.689607DE.IP)
+[00:53:07] <tjc> pnkfelix: Sorry, was distracted. I have to go for now in a few minutes, but let me know what you find out
+[00:57:47] <strcat> libuv's stat is really slow :\
+[00:57:48] <strcat> ./foo  0.86s user 0.59s system 120% cpu 1.199 total
+[00:57:49] <strcat> rust
+[00:57:49] <strcat> ./a.out  0.00s user 0.00s system 67% cpu 0.005 total
+[00:57:49] <strcat> C
+[00:58:08] <cmr> woo
+[00:58:54] *** zz_kimundi is now known as kimundi
+[00:58:55] <pcmattman> strcat: is that actually that libuv's stat is slow, or that rust is slow? :)
+[00:59:07] <tikue> libuv definitely
+[00:59:10] <strcat> pcmattman: rust-core gets the same numbers as C
+[00:59:19] <strcat> I could benchmark libuv from C
+[00:59:23] * strcat shrugs
+[00:59:28] <pcmattman> cool, cool
+[00:59:33] * pcmattman just making sure
+[01:00:15] <strcat> imo rust is going to miss the boat on where concurrency is headed, though
+[01:00:25] <tikue> strcat: where is that?
+[01:01:46] <strcat> 1:1 threading and no async I/O (linux already doesn't have async I/O, just non-blocking sockets)
+[01:01:46] <strcat> which is probably why fstat is so slow, it's spinning up threads, doing message passing and futex calls
+[01:02:04] *** Quits: tjc (tjc@moz-BBE3ABD.mv.mozilla.com) (Quit: Places to go, people to annoy)
+[01:02:57] <tikue> but that isn't mutually exclusive to tasks
+[01:05:44] *** Quits: tedh (tedh@moz-F0B37C08.hsd1.il.comcast.net) (Ping timeout)
+[01:06:30] <strcat> for every stat call, there's a write, 5 futex calls (which are blocking) and an epoll_wait (which is blocking)
+[01:07:34] *** Joins: tedh (tedh@moz-F0B37C08.hsd1.il.comcast.net)
+[01:08:20] <strcat> keeping in mind stat isn't really blocking, because file metadata cache just needs to be warmed up and doesn't churn like page cache
+[01:08:44] <strcat> tikue: rust is already using large stacks
+[01:08:57] <strcat> linux pthread is no heavier than a rust task
+[01:09:24] <strcat> tasks don't have pre-emptive scheduling so you save on context switches, that's the only optimization
+[01:10:00] <strcat> but you end up working in a lower-level environment where you have to watch your CPU usage, because you'll block a scheduler thread and make the I/O waiting on it time out
+[01:10:37] <tikue> what does go do about that?
+[01:11:19] <strcat> it accepts being slower than java, especially for file I/O
+[01:11:27] <tikue> hm.
+[01:11:40] <cmr> Should see how servo fares with 1:1
+[01:11:42] <strcat> anyway, they aren't heavily invested in M:N scheduling, they're Google
+[01:11:52] <cmr> Can one change the default scheduling mode?
+[01:12:50] *** Quits: tikue (tikue_star@CFD7FEA6.E6CB677E.689607DE.IP) (Client exited)
+[01:13:58] <strcat> cmr: hm?
+[01:14:07] <strcat> in rust? it will still be slow, it's still using libuv
+[01:14:16] <strcat> either way it's still behind event loop abstractions
+[01:16:14] <cmr> strcat: where is your rust-git pkgbuild?
+[01:16:57] <strcat> https://github.com/thestinger/packages/tree/master/rust-git https://projects.archlinux.org/svntogit/community.git/tree/trunk?h=packages/rust
+[01:17:08] <cmr> thanks
+[01:22:32] *** Quits: jdm (jdm@5AB4884B.FCC4549.14D5B978.IP) (Quit: Lost terminal)
+[01:23:28] *** Quits: pcwalton (pcwalton@5AB4884B.FCC4549.14D5B978.IP) (Quit: pcwalton)
+[01:23:58] *** Quits: geoffhill (geoffhill@moz-738DC0DB.org) (Ping timeout)
+[01:39:24] <klutzy> on windows we only do `make check-fast` due to time, but in theory `make check` should work?
+[01:40:04] <dbaupp> klutzy: in theory, yes.
+[01:40:35] <strcat> we should just start running make check on windows
+[01:40:47] <strcat> bors is never very clogged anymore
+[01:41:08] <dbaupp> how much longer will it take?
+[01:41:23] <strcat> doesn't matter, we need to do it if we want good windows support
+[01:41:36] <strcat> ;p
+[01:41:52] <klutzy> dbaupp: since in practice it seems not https://github.com/mozilla/rust/issues/8598#issuecomment-28317764
+[01:41:55] <dbaupp> I know that we need it (not saying we shouldn't); I was just wondering how much slower it is.
+[01:42:16] <klutzy> some are known to fail, but `tempfile.rs` is new to me
+[01:42:33] <dbaupp> klutzy: that means we're broken... in theory, they shouldn't be failing.
+[01:42:37] *** Joins: tikue (tikue_star@CFD7FEA6.E6CB677E.689607DE.IP)
+[01:45:56] *** Quits: tikue (tikue_star@CFD7FEA6.E6CB677E.689607DE.IP) (Client exited)
+[01:46:15] *** Joins: tikue (tikue_star@CFD7FEA6.E6CB677E.689607DE.IP)
+[01:46:19] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[01:46:19] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/gPVTIQ
+[01:46:19] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[01:47:45] <klutzy> dbaupp: issued here https://github.com/mozilla/rust/issues/10452
+[01:49:08] <klutzy> I also have memory of test failure on mingw-w64, but not sure if it was check-fast or check
+[01:50:59] <dbaupp> it wouldn't be surprising to have failures on mingw-w64, since we're running literally zero tests there.
+[01:51:28] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[01:51:28] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/BT296Q
+[01:51:28] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[01:51:35] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[01:51:35] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/P3Nwfw
+[01:51:35] <ghrust> 13rust/06auto 143e16922 15Corey Richardson: io: benchmarks for creation of the various Buffered objects
+[01:51:35] <ghrust> 13rust/06auto 14bb980c4 15bors: auto merge of #10441 : cmr/rust/bench_bufferedstream, r=alexcrichton...
+[01:51:35] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[02:05:38] *** Joins: brson (brson@5AB4884B.FCC4549.14D5B978.IP)
+[02:05:38] *** ChanServ sets mode: +qo brson brson
+[02:06:13] *** Quits: brson (brson@5AB4884B.FCC4549.14D5B978.IP) (Quit: leaving)
+[02:08:28] *** Joins: pcwalton (pcwalton@5AB4884B.FCC4549.14D5B978.IP)
+[02:08:28] *** ChanServ sets mode: +ao pcwalton pcwalton
+[02:10:20] <dbaupp> does ty::ctxt.items represent only the items (i.e. mod, fn, etc.) in the AST, or does it include other things?
+[02:11:02] *** Joins: ktt3ja (Mibbit@moz-6B6EE8C0.hsd1.va.comcast.net)
+[02:13:07] <acrichto> dbaupp: it's lots of other things as well
+[02:13:35] <acrichto> it's the ast_map type from sytnax::ast_Map
+[02:13:45] <acrichto> which has exprs/stmts/locals/args/etc
+[02:14:36] <dbaupp> acrichto: cool, thanks, that's ktt3ja's problem then.
+[02:15:18] * dbaupp thinks it could have a better name... :/
+[02:16:18] *** Joins: brson (brson@5AB4884B.FCC4549.14D5B978.IP)
+[02:16:18] *** ChanServ sets mode: +qo brson brson
+[02:21:10] <cmr> acrichto: https://gist.github.com/cmr/3df699e0dafce1ce2dc8
+[02:21:19] <cmr> acrichto: that prints three address for every address it actually resolves
+[02:21:50] <cmr> (try 127.0.0.1 for example)
+[02:21:51] <acrichto> hmm... I wonder if it's some getaddrinfo funkiness
+[02:23:04] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[02:24:51] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[02:25:25] <cmr> fack I always forget to run make tidy after moving lines of code around :(
+[02:35:05] <Luqman> cmr: it's probably different socket types/protocols
+[02:35:17] <Luqman> so like stream, datagram and raw
+[02:43:57] *** Quits: Axord (xord@moz-1B228827.lsanca.dsl-w.verizon.net) (Quit: I'm sure it's perfectly safe)
+[02:56:02] *** Quits: tikue (tikue_star@CFD7FEA6.E6CB677E.689607DE.IP) (Client exited)
+[02:56:13] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[02:56:13] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14bb980c4 to 141bfa45c: 02http://git.io/N3iJvQ
+[02:56:13] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[02:56:18] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[02:56:18] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/Clxlvw
+[02:56:18] <ghrust> 13rust/06auto 1467692b2 15Corey Richardson: io: benchmarks for creation of the various Buffered objects
+[02:56:18] <ghrust> 13rust/06auto 14825b127 15bors: auto merge of #10441 : cmr/rust/bench_bufferedstream, r=alexcrichton...
+[02:56:19] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[02:57:19] *** Joins: tikue (tkuehn@CFD7FEA6.E6CB677E.689607DE.IP)
+[03:06:45] *** Quits: tedh (tedh@moz-F0B37C08.hsd1.il.comcast.net) (Ping timeout)
+[03:08:41] *** Joins: tedh (tedh@moz-F0B37C08.hsd1.il.comcast.net)
+[03:09:30] <strcat> acrichto: has there been any talk about #[thread_local]?
+[03:10:21] <acrichto> strcat: sadly no, brson's been in korea
+[03:10:34] <strcat> can we add it behind a feature flag?
+[03:11:22] <acrichto> let's wait for some more discussion on it
+[03:16:56] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[03:20:33] <klutzy> whoa, this is ridiculus
+[03:20:52] *** Quits: pcwalton (pcwalton@5AB4884B.FCC4549.14D5B978.IP) (Quit: pcwalton)
+[03:20:53] <klutzy> win 8.1pre UAC blocked any executable whose filename is long
+[03:21:16] <klutzy> this caused `make check` failure on my machine
+[03:21:24] <pcmattman> define... long?
+[03:21:26] <strcat> isn't security theater great?
+[03:21:33] <klutzy> struct-update-moves-and-copies.stage2-i686-pc-mingw32.exe :(
+[03:21:41] <strcat> meanwhile, snowden revealed that they put NSA backdoors in their software like skype ;p
+[03:21:51] <klutzy> or maybe since it contains some bad? words
+[03:22:14] <strcat> mingw? ;p
+[03:22:46] *** Quits: brson (brson@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[03:23:27] <klutzy> no, explorer shows UAC icon
+[03:23:43] <klutzy> oh found
+[03:23:55] <klutzy> UAC thinks "update" is dangerous word
+[03:24:05] <cmr> hah
+[03:24:28] <strcat> klutzy: we can rename all the executables to this-is-a-virus-####.exe
+[03:25:01] <strcat> where #### is an SHA1 hash of the real name
+[03:25:07] <cmr> That is a ridiculous restriction and if we work around it I'm going to be incredibly sad
+[03:25:18] <klutzy> strcat: it would work since UAC doesn't think "virus" is bad word :p
+[03:25:22] <dbaupp> cmr: can we do anything other than work around it?
+[03:25:47] <cmr> dbaupp: "run_build ./configure ~[] failed with exit code: 0" oops
+[03:25:54] <cmr> dbaupp: we can pretend 8.1 doesn't exist :\
+[03:25:58] <tikue> solution: disable uac
+[03:27:04] <dbaupp> cmr: did I get a boolean the wrong way around?
+[03:27:08] * dbaupp thought he checked them all
+[03:27:17] <cmr> dbaupp: both of us did, since both of our changes to those were the same :P
+[03:27:26] * dbaupp shouldn't be coding so late
+[03:27:34] * dbaupp feels slightly better
+[03:28:55] <cmr> Hm, this looks right to me...
+[03:29:24] <andrew-d> klutzy: FWIW, the reason is to support older installers/updaters that don't know about UAC.  kinda silly, but it makes sense in context :)
+[03:30:06] <cmr> andrew-d: so they do it by *filename*?
+[03:30:11] <andrew-d> Yep!
+[03:30:17] <strcat> cmr: they special-case tons of workarounds by filename
+[03:30:23] <strcat> you can change application performance by changing the name
+[03:30:35] <andrew-d> Rename an older version of notepad to "install.exe", and it magically requires UAC
+[03:30:39] <strcat> or get workarounds for specific applications applied by naming the executable the same way
+[03:30:55] <strcat> cmr: this is basically how it works
+[03:31:02] <strcat> application breaks going from windows X to windows Y
+[03:31:16] <strcat> because it was always broken, but before it worked by chance
+[03:31:24] <strcat> so, microsoft adds a workaround based on the process name
+[03:31:33] <klutzy> we may use hebrew to workaround uac :p https://github.com/sanxiyn/rust/commit/2337d88339c10b485d4e121ffabc8d9a89431a82
+[03:32:54] <dbaupp> hahahaha
+[03:32:58] <cmr> upd8
+[03:33:24] <dbaupp> ↑d8
+[03:33:24] <cmr> strcat: Our applications broke from going to windows Y, will they special case mingw32.exe for us? :P
+[03:33:45] <strcat> cmr: you could probably get them to special-case our test names
+[03:33:54] <strcat> if mozilla contacted them, they'd do it, and I'm serious
+[03:33:57] <strcat> but it's pointless
+[03:33:58] <strcat> ;p
+[03:35:35] <vadimcn> FWIW, file name heuristics are used only if executable does not contain manifest
+[03:37:19] <cmr> vadimcn: how hard is it to crate/include one with mingw?
+[03:37:53] <andrew-d> cmr: It's not hard - a manifest is more or less a standard PE resource
+[03:38:04] <andrew-d> You should be able to do it with windres
+[03:38:17] <vadimcn> no idea if ld supports it, but yes, it can be done post-link
+[03:38:48] <andrew-d> This seems to say it's easy: http://cournape.wordpress.com/2008/09/02/how-to-embed-a-manifest-into-a-dll-with-mingw-tools-only/
+[03:40:10] *** Joins: kimundi_ (kimundi@moz-A21FC351.dip0.t-ipconnect.de)
+[03:41:19] *** Quits: kimundi (kimundi@moz-93826068.dip0.t-ipconnect.de) (Ping timeout)
+[03:41:19] *** kimundi_ is now known as kimundi
+[03:43:58] <vadimcn> hmm, looks like one just needs to pass a .res file to gcc along with .o files
+[03:49:18] *** kimundi is now known as zz_kimundi
+[03:49:23] <ktt3ja> I added a dead_code lint and inside syntax::ext::expand::std_macros, I also put #[allow(dead_code)], but when I try to compile rustc, I still get
+[03:49:52] <ktt3ja> "/home/ktt3ja/rust/src/libstd/lib.rs:101:32: 101:47 error: dead code: `155`, #[deny(dead_code)] on by default"
+[03:50:57] <ktt3ja> here's my diff: http://ix.io/90Z/diff
+[03:51:08] <ktt3ja> how do I fix that?
+[03:52:36] <cmr> ktt3ja: that doesn't look like an error in the macros
+[03:53:25] <cmr> That... is erroring on the `mod` line?
+[03:54:06] <ktt3ja> hmm, looks like I gotta fix my code
+[03:57:09] *** zz_kimundi is now known as kimundi
+[03:57:26] <ktt3ja> what are ast::item_foreign_mod and ast::item_ty?
+[03:57:51] <cmr> ktt3ja: foreign_mod is `extern mod`
+[03:58:23] <cmr> Or actually now
+[03:58:26] <cmr> *no
+[03:58:33] <cmr> extern "ABI" { ... } looks like
+[03:58:59] <cmr> item_ty is `type name<...> = ..." iirc
+[03:59:14] <ktt3ja> ah
+[04:01:25] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[04:01:25] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/Clxlvw
+[04:01:25] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[04:24:10] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[04:26:01] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[04:29:54] <ktt3ja> how do I check that an item node refers to the main function?
+[04:30:58] <cmr> ktt3ja: which main function?
+[04:31:14] <cmr> There's either `fn main`, or #[start], or #[lang="start"]
+[04:31:19] <ktt3ja> fn main() { }
+[04:31:36] <ktt3ja> I don't even know what the other two are :p
+[04:31:38] <cmr> ktt3ja: check what reachability does I guess
+[04:31:48] <klutzy> also #[main]
+[04:32:01] <cmr> klutzy: what does #[main] do?
+[04:32:07] <cmr> Unless I confused #[start] with #[main]
+[04:32:15] <Luqman> cmr: no, it's different
+[04:32:30] <Luqman> #[main] fn foo() {}  === fn main() {}
+[04:32:34] <klutzy> cmr: if you want to change name of main
+[04:32:48] <cmr> ah
+[04:32:54] <ktt3ja> I don't think reachable.rs checks for `fn main`
+[04:32:58] <klutzy> rustc firstly checks if #[main] exists, then use `fn main` if not
+[04:34:15] <cmr> acrichto: do you know about ^ ?
+[04:34:37] <acrichto> that sounds right
+[04:34:43] <acrichto> it's so you can have 'fn main' deep in some random modle
+[04:34:44] <ktt3ja> currently my code mark `fn main` as dead since you don't exactly call main() from anywhere else...
+[04:34:44] <cmr> No, how to find the entry point
+[04:34:48] <acrichto> instead of having it required to be the top
+[04:34:54] <acrichto> from where?
+[04:35:09] <cmr> ktt3ja is writing a dead code lint.
+[04:35:24] <aatch> ktt3ja, one of the steps in compilation is finding the entry point.
+[04:35:30] <klutzy> this part https://github.com/mozilla/rust/blob/3851f908d16b55dfe69d5a423ecbef4cd224fae2/src/librustc/middle/entry.rs#L127
+[04:35:55] <klutzy> and this https://github.com/mozilla/rust/blob/c0b7972f7d63e4b55098797cb48949b00d3ffee7/src/librustc/middle/trans/base.rs#L2353
+[04:39:40] *** Joins: pcwalton (pcwalton@5AB4884B.FCC4549.14D5B978.IP)
+[04:39:41] *** ChanServ sets mode: +ao pcwalton pcwalton
+[04:40:37] <ktt3ja> hmm, so it's in the Session type
+[04:40:44] <ktt3ja> https://github.com/mozilla/rust/blob/master/src/librustc/driver/session.rs#L192-L196
+[04:40:52] <ktt3ja> what's the difference between EntryMain and EntryStart?
+[04:41:09] <ktt3ja> (and I guess EntryNone is when there's no main function?)
+[04:41:10] <cmr> ktt3ja: the main function is passed as a ~fn() to EntryStart
+[04:41:16] <cmr> ...iirc
+[04:41:23] *** Joins: brson (brson@5AB4884B.FCC4549.14D5B978.IP)
+[04:41:24] *** ChanServ sets mode: +qo brson brson
+[04:43:02] <dbaupp> ktt3ja: I guess you just need to add the NodeId from Session_.entry_fn to the set of used things
+[04:44:23] <ktt3ja> will try
+[04:46:02] *** Quits: yuriks (yuriks@21CAA321.88B480FC.748B6D8D.IP) (Connection reset by peer)
+[04:51:04] *** Joins: yuriks (yuriks@21CAA321.88B480FC.748B6D8D.IP)
+[04:53:53] *** Joins: eddyb (eddy@336E3A7F.D51DAF03.FB866788.IP)
+[04:56:33] <ktt3ja> I did a `match tcx.sess.entry_fn {         Some((id, _)) => reachable_context.worklist.push(id),         None => ()     }`, but got this error: http://pastebin.com/ZeGfUYsU 
+[04:57:15] <dbaupp> it's a @mut Optoin(...)
+[04:57:23] <dbaupp> so you need to dereference the pointer
+[04:57:41] <ktt3ja> right :p
+[04:58:15] <ktt3ja> I'm bad with pointers---keep forgetting them
+[05:06:33] *** Quits: yuriks (yuriks@21CAA321.88B480FC.748B6D8D.IP) (Ping timeout)
+[05:11:28] *** Quits: pcwalton (pcwalton@5AB4884B.FCC4549.14D5B978.IP) (Quit: pcwalton)
+[05:12:08] *** Quits: brson (brson@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[05:29:04] <cmr> dbaupp: weird. I added a debug print to the thing that was failing, and it started working :S
+[05:30:08] <dbaupp> cmr: :S
+[05:32:19] <ktt3ja> should I be handling type, struct, and enum in dead-code warning?
+[05:32:21] <ktt3ja> https://gist.github.com/ktt3ja/c321c56c0df6714761b2
+[05:32:35] <ktt3ja> I think I got other things working
+[05:32:46] <cmr> ktt3ja: is it dead if it's never used?
+[05:33:05] <ktt3ja> hmm :p
+[05:33:14] <ktt3ja> right
+[05:33:17] <cmr> Or, is it *supposed* to be?
+[05:33:21] <cmr> Becaused UsedStruct isn't :p
+[05:33:50] * dbaupp had problems with those structs too
+[05:34:04] <dbaupp> they appear to have two NodeIds associated with them
+[05:34:16] <dbaupp> ktt3ja: also, used_enum is marked
+[05:34:22] <dbaupp> (as unused)
+[05:34:41] <ktt3ja> yea, I haven't gotten type, struct, and enum working
+[05:34:54] <ktt3ja> the thing is
+[05:35:04] <ktt3ja> used_static is assigned to a variable that's never used
+[05:35:09] <ktt3ja> so should used_static be warned, too?
+[05:35:15] <dbaupp> no
+[05:38:32] <ktt3ja> which is better: `live_symbols` or `undead_symbols`?
+[05:41:34] <cmr> undead implies it was once dead
+[05:41:52] <cmr> if everything starts dead and you bring it back to life as you go through the AST... undead_symbols for sure :P
+[05:42:54] <ktt3ja> undead sounds cooler, but I'm afraid it won't be accepted :p
+[05:44:01] * dbaupp would accept undead
+[05:44:27] <dbaupp> (but live might be a slightly more accurate name)
+[05:51:26] *** Quits: notmatt (notmatt@118CCA77.D1B89392.602E4FC1.IP) (Client exited)
+[05:55:53] *** Quits: tikue (tkuehn@CFD7FEA6.E6CB677E.689607DE.IP) (Quit: tikue)
+[05:58:28] *** Joins: tikue (tkuehn@CFD7FEA6.E6CB677E.689607DE.IP)
+[06:01:45] <cmr> mmap'd stacks compiled, testing now..
+[06:04:55] <cmr> /home/cmr/hacking/rust/src/libstd/libc.rs:3384:28: 3384:29 error: illegal ABI: expected one of [cdecl, stdcall, fastcall, aapcs, Rust, C, rust-intrinsic], found `system`
+[06:04:57] <cmr> /home/cmr/hacking/rust/src/libstd/libc.rs:3384             extern "system" {
+[06:04:59] <cmr>                                                                            ^
+[06:05:01] <cmr> What did I do wrong? D:
+[06:05:07] <cmr> (make NO_REBUILD=1 check-stage1-std)
+[06:05:58] <cmr> Maybe it tried to build with an old built rustc?
+[06:06:27] <dbaupp> has there been a snap since "system"?
+[06:06:35] <dbaupp> oh, yes
+[06:06:42] <dbaupp> I think I even approved it.
+[06:06:56] <strcat> cmr: run configure again?
+[06:10:49] <cmr> not using NO_REBUILD seems to have worked
+[06:15:01] <cmr> And it bootstraps
+[06:15:05] <cmr> well
+[06:15:07] <cmr> no
+[06:15:09] <cmr> stdtest passes
+[06:18:26] <strcat> acrichto: so, I made a silly test
+[06:18:50] <strcat> acrichto: http://ix.io/910 spawning and immediately killing 100k pthreads
+[06:19:03] <strcat> http://ix.io/911 spawning 100k rust tasks
+[06:19:35] <strcat> and also, spawning and detaching 100k pthreads (so it context switches to each one)
+[06:20:10] <strcat> and I get 0.9s, 2s, 2s (but the third result varies wildly between 1.5s and 5s due to the context switches)
+[06:20:23] <strcat> so it's not really the case that rust tasks are any lighter than pthreads
+[06:20:37] <acrichto> sounds like we have some work to do!
+[06:20:39] <strcat> they just don't have preemption so they're spared that overhead
+[06:21:02] <strcat> acrichto: the cost of spawning a thread is basically a system call
+[06:21:18] <strcat> I can do a mmap loop too
+[06:21:41] *** Quits: lkuper (lkuper@moz-C0CD33ED.hsd1.in.comcast.net) (Quit: lkuper)
+[06:22:01] <dbaupp> couldn't we just use pthreads on linux? (would that make libuv unhappy?)
+[06:22:25] <cmr> Well we do. spawn_sched
+[06:22:53] <dbaupp> that does a pile of libuv initialisation, doesn't it?
+[06:23:37] <cmr> probably, dunno
+[06:23:41] <cmr> it at least spawns an event loop
+[06:24:10] <strcat> dbaupp: no, we can't
+[06:24:57] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[06:26:56] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[06:27:46] <ktt3ja> if I call `let used_struct = UsedStruct;`, then `UsedStruct` is an expression, right?
+[06:27:51] <cmr> ktt3ja: yes.
+[06:28:12] <ktt3ja> hmm, I don't understand why my code still marks UsedStruct as dead :/
+[06:28:17] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[06:28:31] <dbaupp> ktt3ja: the problem with that struct is the definition and the used-item have different NodeId
+[06:29:13] <dbaupp> well, I mean, there doesn't appear to be an obvious way to connect `Foo` with `struct Foo;` via NodeIds
+[06:29:36] <ktt3ja> I thought DefMap would do it
+[06:29:58] <dbaupp> ktt3ja: have you tried `struct UsedStruct { x: int }` and `struct UsedStruct(int);` too?
+[06:30:01] <dbaupp> yeah, it doesn't
+[06:30:11] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[06:30:54] * cmr is glad he never delved into the non-item part of the AST
+[06:31:13] <dbaupp> cmr: this is an item :P
+[06:31:22] <cmr> But it's also an expression!
+[06:31:34] <dbaupp> the item-expression duality
+[06:31:51] <cmr> heh
+[06:32:46] <dbaupp> I think the problem is basically: literal uses of `struct UsedStruct;` ends up basically being the same as using static, rather than a struct construction.
+[06:32:53] <dbaupp> or something like that.
+[06:33:06] <ktt3ja> my code does handle static, though
+[06:33:13] <dbaupp> yeah, but this is a struct, not a static
+[06:33:22] * dbaupp doesn't really understand this at all
+[06:33:32] <ktt3ja> anyway
+[06:33:50] <ktt3ja> it handles UsedStruct { x: int } correctly, but not UsedStruct(int)
+[06:33:51] <ktt3ja> lol
+[06:34:13] <dbaupp> ah :(
+[06:35:03] <dbaupp> if you don't get an answer here, it might be worth an email to the mailing list asking how one goes from NodeId of `UsedStruct` or `UsedStruct(1)` to the actual struct definition.
+[06:36:58] <cmr> the scary answer is that it doesn't, and resolve does magic
+[06:37:18] <dbaupp> really? :(
+[06:37:20] <strcat> acrichto: mmap + mprotect + touch first page of 100k 8MiB allocations is already 0.4s
+[06:37:22] <cmr> no
+[06:37:28] <cmr> that would be the scary answer
+[06:37:31] <cmr> I don't know if it is
+[06:37:56] <strcat> acrichto: so 0.9s to spawn/kill 100k pthreads is really not bad - considering that they set up TLS, the thread id, etc.
+[06:38:03] <ktt3ja> https://github.com/mozilla/rust/blob/master/src/libsyntax/ast.rs#L528-L579
+[06:38:08] <ktt3ja> which one would be enum?
+[06:38:30] <dbaupp> ktt3ja: btw, for enum variants `node_variant` contains an `item` which (iirc) points is the enum definition, so you should be able to mark enums that have used variants as used easily
+[06:38:39] *** kimundi is now known as zz_kimundi
+[06:38:40] <cmr> ktt3ja: ExprCall
+[06:38:52] <cmr> ktt3ja: enum variant constructors are treated as functions.
+[06:38:59] <dbaupp> ktt3ja: or ExprStruct
+[06:39:07] <cmr> Ah right
+[06:39:10] <cmr> Because of struct vartiants
+[06:39:16] <ktt3ja> what's going on?
+[06:39:30] <strcat> acrichto: oh and I guess pthread_cancel does context switch...
+[06:39:32] <strcat> hm
+[06:40:07] <dbaupp> ktt3ja: you should have a match that handles `node_variant` somewhere
+[06:40:08] <dbaupp> ?
+[06:40:14] <ktt3ja> currently I do lookup with DefMap on ExprPath and ExprStruct; I guess I'll do the same with ExprCall and see how it goes
+[06:40:17] <strcat> acrichto: anyway the point is that spawning a pthread isn't very expensive
+[06:40:22] <ktt3ja> dbaupp: err let me check
+[06:40:23] <strcat> (on linux)
+[06:40:26] <dbaupp> ktt3ja: that's what's handling the enum code
+[06:40:39] <dbaupp> ktt3ja: (well, if you don't have such a match, add it in.)
+[06:41:33] <ktt3ja> there's already such a match, but it points to an empty block
+[06:41:34] <ktt3ja> :p
+[06:41:52] <dbaupp> fix that :P
+[06:42:16] <dbaupp> https://github.com/mozilla/rust/blob/master/src/libsyntax/ast_map.rs#L114 the @item is the enum definition itself, fwiw.
+[06:46:10] <ktt3ja> I'm a little bit confused about how ast and ast_map kinda define the same things, but different
+[06:46:35] <dbaupp> ast_map is basically just a proxy for ast
+[06:48:01] <dbaupp> i.e. the map associates NodeIds with ast "things", but NodeIds are polymorphic (that is, many different things have NodeIds: items, expressions, blocks), so there needs to be an intermediate enum categorising the various things that can be looked-up via NodeId
+[06:48:10] <dbaupp> (which is what the ast_node enum does)
+[06:48:50] <dbaupp> (i.e. each variant of ast_node is just a pointer to the relevant part of the AST.)
+[06:50:09] <dbaupp> ... tl;dr, ast_map doesn't actually store any information about the ast, it just allows the information to be found via NodeIds.
+[06:55:05] <ktt3ja> I get it now
+[07:08:05] *** flaper87|afk is now known as flaper87
+[07:14:11] <ktt3ja> hmm, still the same thing
+[07:14:16] <ktt3ja> I must have put the wrong thing on the worklist
+[07:15:55] <dbaupp> ktt3ja: for enum variants you'll want to put two things into the work list, the variant and the enum definition
+[07:16:44] <dbaupp> (also, you may need to expand the DeadVisitor to handle enum variants, if you want to check each individual variant (which would be cool).)
+[07:17:21] <ktt3ja> so node_variant holds variant, item, and path
+[07:17:31] <ktt3ja> can you give me code sample and tell me which is which?
+[07:18:40] <dbaupp> variant == the actual variant definition; item == the enum definition; and I don't know about path (you might be able to infer it from the place that node_variant's are constructed... find it with grep)
+[07:18:57] <dbaupp> i.e. `enum ThisIsTheItem { ThisIsTheVariant }`
+[07:19:16] <ktt3ja> ohh
+[07:19:38] <dbaupp> (gtg for a while)
+[07:20:11] <ktt3ja> okay
+[07:22:41] *** zz_kimundi is now known as kimundi
+[07:25:51] *** Joins: notmatt (notmatt@moz-3C7AF18C.lightspeed.sntcca.sbcglobal.net)
+[07:31:57] *** Quits: ktt3ja (Mibbit@moz-6B6EE8C0.hsd1.va.comcast.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[07:35:52] *** Joins: brson (brson@5AB4884B.FCC4549.14D5B978.IP)
+[07:35:52] *** ChanServ sets mode: +qo brson brson
+[07:37:12] *** Quits: notmatt (notmatt@moz-3C7AF18C.lightspeed.sntcca.sbcglobal.net) (Connection reset by peer)
+[07:37:36] *** Joins: pcwalton (pcwalton@5AB4884B.FCC4549.14D5B978.IP)
+[07:37:36] *** ChanServ sets mode: +ao pcwalton pcwalton
+[07:37:44] *** Joins: notmatt (notmatt@moz-3C7AF18C.lightspeed.sntcca.sbcglobal.net)
+[07:40:48] *** kimundi is now known as zz_kimundi
+[07:45:17] *** Joins: jdm (jdm@5AB4884B.FCC4549.14D5B978.IP)
+[07:50:29] <cmr> strcat: do you know if using Windows' built-in page guard mechanism, which throws an exception in the process, is usable for Rust?
+[07:50:45] <strcat> does it actually throw an exception you can catch?
+[07:50:52] <cmr> seems so
+[07:51:22] *** Quits: brson (brson@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[07:54:46] *** zz_kimundi is now known as kimundi
+[08:02:22] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse)
+[08:03:03] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[08:11:25] <cmr> sfackler: so the rust-postgres docs are broken beause it depends on rust-ssl and it doesn't get built with rustpkg..
+[08:11:41] <strcat> aspell thinks 'proven' isn't a word
+[08:11:44] <strcat> huh?
+[08:15:16] *** Quits: tikue (tkuehn@CFD7FEA6.E6CB677E.689607DE.IP) (Quit: tikue)
+[08:17:00] <cmr> Cheap autocompletion: basic text-based autocomplete and have the relevant modules open in another buffer ;p
+[08:17:45] *** Joins: brson (brson@5AB4884B.FCC4549.14D5B978.IP)
+[08:17:45] *** ChanServ sets mode: +qo brson brson
+[08:22:05] <dbaupp> strcat: what dictionary?
+[08:22:13] <strcat> en_ca and en_us
+[08:22:17] <strcat> well
+[08:22:21] <strcat> I guess it's marked as 'rare'
+[08:22:42] * dbaupp doesn't think 'proven' is rare
+[08:22:54] <strcat> aspell and hunspell english dictionaries are built from SCOWL
+[08:23:07] <strcat> and it has words ranked by how common they are
+[08:23:21] <strcat> they only *include* common words, but they mark any that aren't extremely common as rare
+[08:23:27] <strcat> so it's a relative meaning of rare
+[08:23:59] <strcat> it has 670k entries.
+[08:24:01] <strcat> (SCOWL)
+[08:24:11] * strcat is sorry for going way off-topic ;p
+[08:24:47] <cmr> I don't think I've heard 670K unique words in my life!
+[08:25:31] <strcat> it has some of the vulgar words partitioned off into a vulgar wordlist which is a great source of material
+[08:25:45] <dbaupp> haha
+[08:26:14] <strcat> since I think they want to mark them as spelled correctly but not suggest them
+[08:26:30] <strcat> (people are weird)
+[08:28:55] <dbaupp> cmr: the words aren't stemmed
+[08:29:22] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[08:29:23] <dbaupp> so rust, rusting, rusted, etc are all there
+[08:29:25] <cmr> ahh
+[08:29:27] <cmr> yeah
+[08:29:45] <strcat> yeah
+[08:29:47] <strcat> aspell/hunspell stem them
+[08:29:54] <strcat> to compress the ones they pick
+[08:30:13] <strcat> (and I guess... hunspell might use it in the algorithm? who knows)
+[08:30:24] <strcat> aspell doesn't actually stem them, only hunspell does
+[08:30:25] *** Quits: notmatt (notmatt@moz-3C7AF18C.lightspeed.sntcca.sbcglobal.net) (Client exited)
+[08:31:18] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[08:37:44] *** Joins: lbergstrom (Adium@5AB4884B.FCC4549.14D5B978.IP)
+[08:45:38] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[08:48:17] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[08:56:12] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[09:02:28] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[09:12:00] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[09:17:01] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[09:23:30] *** Quits: lbergstrom (Adium@5AB4884B.FCC4549.14D5B978.IP) (Quit: Leaving.)
+[09:27:46] *** jdm is now known as jdm|f00d
+[09:38:34] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[09:40:52] *** Joins: notmatt (notmatt@moz-3C7AF18C.lightspeed.sntcca.sbcglobal.net)
+[09:42:41] *** Quits: notmatt (notmatt@moz-3C7AF18C.lightspeed.sntcca.sbcglobal.net) (Ping timeout)
+[10:07:45] *** jdm|f00d is now known as jdm
+[10:09:30] *** Joins: lbergstrom (Adium@5AB4884B.FCC4549.14D5B978.IP)
+[10:27:59] <cmr> strcat: so mmap'ing is 18x slower than our old vector code with task-perf-spawnalot 200. A simple perf shows that it's spending 33% of its time clearing pages, and then a lot of time doing other things in the kernel (https://gist.github.com/cmr/9204146f07f0e5f2957b)
+[10:28:31] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[10:28:31] *** ChanServ sets mode: +o pnkfelix
+[10:28:39] <strcat> cmr: you're just using MAP_PRIVATE|MAP_ANONYMOUS right?
+[10:29:01] <cmr> MAP_STACK | MAP_PRIVATE | MAP_ANON
+[10:29:12] <strcat> don't use MAP_STACK
+[10:29:15] <cmr> (exactly what glibc nptl uses)
+[10:30:51] <strcat> cmr: ah I guess it's fine
+[10:31:05] <cmr> according to mmap(2) it's a noop :p
+[10:33:02] <strcat> cmr: how much are you mmaping?
+[10:33:15] <strcat> compare with RUST_MIN_STACK=8000000
+[10:33:17] <cmr> strcat: should be 2M, the default
+[10:33:19] <cmr> ok
+[10:33:34] <strcat> pthread allocates the rlimit setting by default on linux
+[10:33:38] <strcat> and the default is 8MiB
+[10:33:46] <strcat> 2MiB is often too small.
+[10:34:24] <cmr> 2.987s, went up. same general profile, more time in clear_page though
+[10:34:54] * cmr compares with the silly test from before
+[10:37:07] <cmr> 1.781s with mmap, 0.899s with the old code, 0.863s with the pthread C example
+[10:37:22] <strcat> and pthread uses mmap + mprotect
+[10:37:42] <cmr> I wonder what awful thing I'm doing wrong
+[10:37:47] <strcat> maybe nothing
+[10:38:08] <strcat> cmr: I have a big write up about M:N scheduling I'm about to send off to the mailing list...
+[10:38:45] <cmr> strcat: well there's certainly no reason for it to be *slower* than the old "make a big vector" code, is there?
+[10:38:52] <strcat> cmr: malloc caches
+[10:39:15] <strcat> using mmap is likely better
+[10:39:19] <strcat> real programs don't just spawn tasks
+[10:39:54] <strcat> cmr: jemalloc caches up to 4MiB, I don't comprehend what glibc does at all though
+[10:39:59] <cmr> heh
+[10:40:06] <strcat> it.... randomly interleaves brk and mmap/munmap
+[10:40:08] <cmr> doesn't glibc still use sbrk?
+[10:40:11] <strcat> cmr: no
+[10:40:13] <strcat> well
+[10:40:17] <strcat> yes *and* no
+[10:40:23] <cmr> yay glibc!
+[10:40:36] <strcat> cmr: also it tries to tune at runtime
+[10:40:42] <strcat> it starts off not using arenas
+[10:40:51] <strcat> then decides there is contention (how?) and switches to them
+[10:41:13] <strcat> and has absolutely horrific worst cases and huge metadata overhead + basically unbounded fragmentation...
+[10:41:27] <strcat> it's good at naive micro-benchmarks
+[10:41:36] <cmr> Yeah, this mmap/mprotect is exactly what nptl is doing, so it's not me
+[10:41:50] <strcat> cmr: pin them to a thread
+[10:41:53] <strcat> taskset -c 0 ./foo
+[10:41:58] <strcat> just curious.
+[10:42:19] <strcat> (multi-threading usually hurts performance for microbenchmarks like these...)
+[10:42:25] <strcat> s/multi-threading/SMP/
+[10:42:37] <strcat> especially for a pthread example.
+[10:42:52] <strcat> spawn thread -> likely spawns a thread on another CPU, without descheduling the current one
+[10:43:07] <strcat> makes pthreads look bad compared to rust threads even though it's usually the right decision
+[10:43:31] <strcat> (but not right for pure throughput)
+[10:44:01] <cmr> pthread: 0.944s, old: 0.768s, new: 1.006s
+[10:44:48] <strcat> what is it without pinning?
+[10:45:10] <cmr> pthread: 0.863, old: 1.781, new: 0.899
+[10:45:56] <strcat> heh
+[10:46:07] <strcat> cmr: ah right taskset probably adds overhead
+[10:46:09] <strcat> dammit
+[10:46:37] <strcat> cmr: http://ix.io/918 try it like this in C
+[10:46:45] <strcat> ofc, the initial CPU may not be 0
+[10:46:46] <strcat> and it will suck
+[10:46:50] <strcat> not sure how to deal with this
+[10:47:09] <strcat> I guess you can fetch the current CPU and hope you aren't moved to another
+[10:47:18] <strcat> or setaffinity on the main thread
+[10:47:21] <strcat> via pthread_self
+[10:48:44] <cmr> 1.035s without taskset, 1.890s with
+[10:48:58] * strcat doesn't understand computers
+[10:49:54] <strcat> cmr: ah I guess parallelism does help with detached threads
+[10:50:06] <strcat> because they start/finish as it's still spawning
+[10:50:48] <dbaupp> strcat: interesting email
+[10:52:44] <cmr> strcat: fwiw, we *do* have the infrastructure in place to cache stacks.. I'll play with it a bit.
+[10:53:49] <dbaupp> cmr: in std::rt, or in C++ rt?
+[10:53:53] <cmr> dbaupp: std::rt
+[10:54:00] <cmr> StackPool in stack.rs
+[10:54:14] <dbaupp> ah, cool. wasn't sure if it had been ported over.
+[10:55:55] <strcat> cmr: did you see my email?
+[10:55:58] <cmr> strcat: yes
+[10:56:07] <strcat> the video is really good ;p
+[10:57:00] <friggle> strcat: watching it now, very interesing so far
+[10:59:12] *** kimundi is now known as zz_kimundi
+[11:01:38] <cmr> "the suck increases"
+[11:01:40] <cmr> QOTW
+[11:04:41] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[11:14:34] <strcat> google needs to hurry up and get that upstream
+[11:14:35] <cmr> "kernel threadular" heh
+[11:14:57] * strcat wants M:N threading and even most thread pools to become obsolete >:)
+[11:15:08] <friggle> strcat: definitely, "show me the code". Surprising this hasn't been done before
+[11:15:33] <strcat> friggle: well microsoft shipped it 4 years ago ;p
+[11:16:06] <strcat> they have fibers, to user-mode threading just fixes all of the issues with having fake threads at the expense of needing a lot of address space
+[11:16:09] <strcat> so*
+[11:16:41] <strcat> and afaik google is using it in production ;)
+[11:26:18] <friggle> strcat: have you asked Paul when Google might be throwing patches over the wall?
+[11:28:03] <strcat> friggle: no clue, there is bound to be huge resistance to it though
+[11:28:11] *** zz_kimundi is now known as kimundi
+[11:30:26] <friggle> strcat: certainly, needs some patches to get the discussion moving though
+[11:31:03] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[11:31:32] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[11:33:20] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[11:34:43] *** Quits: lbergstrom (Adium@5AB4884B.FCC4549.14D5B978.IP) (Quit: Leaving.)
+[11:35:23] *** Quits: jdm (jdm@5AB4884B.FCC4549.14D5B978.IP) (Quit: Lost terminal)
+[11:37:15] *** Quits: pcwalton (pcwalton@5AB4884B.FCC4549.14D5B978.IP) (Quit: pcwalton)
+[11:37:31] *** Joins: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net)
+[11:40:17] *** Quits: brson (brson@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[11:51:49] *** Joins: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP)
+[11:55:44] *** Quits: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net) (Quit: tikue)
+[11:55:54] *** Joins: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net)
+[11:57:54] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[12:08:04] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[12:09:54] <cmr> Anyone know what the likely cause of "runtime tls key not initialized" would be?
+[12:09:56] <cmr> Oh I know what it is
+[12:10:01] <cmr> hashmap before runtime init, no rng
+[12:10:03] <cmr> hmmm
+[12:10:40] <dbaupp> cmr: there's HashMap::new_with_keys or something like that
+[12:16:23] <cmr> dbaupp: mm, thanks!
+[12:19:57] *** Joins: lbergstrom (Adium@9C2E78E6.8C982E60.292610BC.IP)
+[12:24:38] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[12:24:56] *** Joins: pcwalton (pcwalton@9C2E78E6.8C982E60.292610BC.IP)
+[12:24:56] *** ChanServ sets mode: +ao pcwalton pcwalton
+[12:25:12] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[12:29:16] *** Quits: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net) (Quit: tikue)
+[12:30:46] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[12:35:58] *** Joins: brson (brson@981AA104.E81F12CD.76F66111.IP)
+[12:35:59] *** ChanServ sets mode: +qo brson brson
+[12:53:11] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[12:53:38] <cmr> That's still discouragin.
+[12:54:02] <cmr> Using mmap is twice as slow as using malloc, in the task spawning microbenchmarks, even with stack caching.
+[12:54:34] <dbaupp> wouldn't malloc just be using mmap internally?
+[12:55:06] *** Quits: pcwalton (pcwalton@9C2E78E6.8C982E60.292610BC.IP) (Quit: pcwalton)
+[12:55:16] <cmr> I have no idea what glibc is doing
+[12:55:32] <cmr> ...with jemalloc, our mmap is faster.
+[12:55:41] <cmr> whatever glibc is doing, this benchmark *really* likes it.
+[12:55:56] *** Joins: jdm (jdm@9C2E78E6.8C982E60.292610BC.IP)
+[12:55:57] <cmr> (and we're as fast as pthreads, at least)
+[12:56:08] <cmr> At the same time...
+[12:56:42] <cmr> brson: How much does servo actually stress the scheduler in terms of spawnrate?
+[13:04:49] <cmr> Is anyone around on OS X or Windows that could time https://github.com/mozilla/rust/pull/10460 with `task-perf-spawnalot 200` (it's in src/test/bench)?
+[13:07:19] <dbaupp> cmr: you've done the pcwalton thing of having short commit messages and no PR description...
+[13:07:33] <cmr> dbaupp: And including random unrelated changes!
+[13:07:37] <pnkfelix> acrichto: since you are the one who also mentioned observing these rustpkg failures
+[13:07:41] <cmr> I'm making a big comment now
+[13:07:48] <pnkfelix> acrichto: do you actually know much about its testsuite ?
+[13:08:08] <pnkfelix> acrichto: (I'm trying to understand some oddities I'm seeing in its use of the workcache)
+[13:08:36] <cmr> rustpkg bus factor: 1
+[13:09:39] <dbaupp> rustpkg bus arrival date: end of the week
+[13:10:37] *** Quits: brson (brson@981AA104.E81F12CD.76F66111.IP) (Ping timeout)
+[13:10:54] *** Joins: brson (brson@981AA104.E81F12CD.76F66111.IP)
+[13:10:54] *** ChanServ sets mode: +qo brson brson
+[13:14:05] *** Quits: brson (brson@981AA104.E81F12CD.76F66111.IP) (Ping timeout)
+[13:17:28] *** Joins: brson (brson@981AA104.E81F12CD.76F66111.IP)
+[13:17:29] *** ChanServ sets mode: +qo brson brson
+[13:19:20] <brson> cmr: servo does not have a particularly high spawn rate
+[13:19:33] <brson> are you trying to improve spawning? what have you tried?
+[13:19:42] <cmr> brson: I'm trying to add guard pages
+[13:19:55] <cmr> Spawn rate is just a casualty
+[13:20:02] <brson> oh
+[13:20:41] *** kimundi is now known as zz_kimundi
+[13:21:24] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[13:21:24] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/OFqlYQ
+[13:21:24] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[13:21:24] *** Quits: lbergstrom (Adium@9C2E78E6.8C982E60.292610BC.IP) (Connection reset by peer)
+[13:21:25] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[13:21:25] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/7uDj5A
+[13:21:25] <ghrust> 13rust/06auto 1484cd6d4 15Alex Crichton: Implement native::IoFactory...
+[13:21:25] <ghrust> 13rust/06auto 14f766c64 15bors: auto merge of #10457 : alexcrichton/rust/native-io, r=brson...
+[13:21:26] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[13:28:12] *** Quits: Kxepal (Miranda@moz-64407EE.pppoe.mtu-net.ru) (Quit: Kxepal)
+[13:28:39] *** Joins: Kxepal (Miranda@moz-64407EE.pppoe.mtu-net.ru)
+[13:30:42] *** Quits: aatch (James@moz-B437F499.pocketrent.com) (Ping timeout)
+[13:31:49] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[13:38:54] <cmr> Too many rust channels!
+[13:38:56] <cmr> One was plenty!
+[13:39:10] <cmr> My poor tired brain can't remember to look at the channel name :(
+[13:39:20] <cmr> (Especially when the same set of people is in ~all of them..)
+[13:40:00] <dbaupp> warning: unnecessary allocation
+[13:40:06] <dbaupp> in ~all of
+[13:40:12] <dbaupp>    ^~~~
+[13:41:23] <eddyb> ~~~~ hehe ~~~~
+[13:41:27] *** Joins: aatch (James@moz-B437F499.pocketrent.com)
+[13:42:45] <dbaupp> expected one of `; }` but found `~`
+[13:43:00] <benh> I'm pretty sure it's `;`, `}` now
+[13:43:09] <dbaupp> cmr: is there a reason for two .offsets rather than an addition? https://github.com/mozilla/rust/pull/10460/files#diff-bc54c246b0939c0255a0e97041b1f26dR63
+[13:43:18] * dbaupp isn't an up-to-date rust compiler
+[13:43:25] <cmr> dbaupp: addition is slow, makes LLVM not optimize
+[13:43:34] <cmr> (it does the ptrtoint/inttoptr dance)
+[13:43:56] <eddyb> hmpf, that sounds interesting
+[13:43:58] <dbaupp> cmr: I mean `self.buf.len.to_int().unwrap() + size_of::<uint>() as int`
+[13:44:02] <eddyb> cmr: because of UB?
+[13:44:08] <cmr> eddyb: yep
+[13:44:23] <eddyb> I can fix this!
+[13:44:30] <eddyb> someone give me holy water
+[13:44:30] <dbaupp> cmr: (i.e. one offset with thar argument)
+[13:44:50] <cmr> eddyb: ah, that is because it was too long to fit on one line
+[13:45:02] <cmr> erm, @dbaupp
+[13:45:25] <cmr> that is a poor excuse :P
+[13:45:26] <dbaupp> cmr: also, fwiw, calling .unwrap() so much (and using {:?}) will be a source of code bloat
+[13:45:28] <eddyb> (hitting just tab? I don't think I've ever used that)
+[13:45:41] <dbaupp> ... I don't understand why .to_int().unwrap() rather than just `as int`?
+[13:46:06] <dbaupp> (and similarly for page_size().to_u64())
+[13:46:07] <cmr> dbaupp: len is a c_int
+[13:46:15] <dbaupp> cmr: so?
+[13:46:38] <dbaupp> cmr: `as` still works on c_int
+[13:46:38] <cmr> dbaupp: there is no so!
+[13:46:40] * cmr fixes
+[13:46:46] <cmr> dbaupp: I know, but who knows what size c_int is?
+[13:47:26] <cmr> I am changing it, that was just the thought process I went through as I was writing it
+[13:48:55] <dbaupp> cmr: (the comment about being a string was because I don't think that line type-checked, just to be clear...)
+[13:49:11] <cmr> dbaupp: (it didn't)
+[13:50:59] <dbaupp> cmr: string.to_uint()?
+[13:51:05] <cmr> sssh I haven't slept yet
+[13:51:15] <cmr> (already fixed locally)
+[13:51:29] <dbaupp> speaking of sleep...
+[13:51:36] * dbaupp -> bed
+[13:51:46] <dbaupp> (maybe you should too, cmr...)
+[13:51:57] <cmr> You know it's bad when you go to bed the same time as the person on the other side of the world :P
+[13:54:24] <eddyb> cmr: hmmm, DoSing a stack cache? it should be impossible, for a small number of possible min_sizes
+[13:57:08] <cmr> eddyb: yes, it should be.
+[13:57:10] <cmr> Thus the salute.
+[13:57:24] <cmr> it'd be a highly impressive attack
+[13:57:33] <cmr> you'd need to not only control the map, but also stack sizes!
+[13:57:56] <eddyb> once you get that control, wasting it for a DoS seems stupid
+[13:59:59] <pnkfelix> acrichto: I think this rustpkg test is creating two workcaches with the same backing file for the database.
+[14:00:47] <pnkfelix> acrichto: (and when the second database is dropped, it overwrites the results from the run of the first)
+[14:06:24] *** zz_kimundi is now known as kimundi
+[14:13:28] *** Quits: brson (brson@981AA104.E81F12CD.76F66111.IP) (Ping timeout)
+[14:15:41] *** Quits: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP) (Quit: Leaving.)
+[14:15:56] *** Joins: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP)
+[14:33:10] <klutzy> is this legal? fs::chdir(path); fs::rmdir(path); // remove dir where I'm inside
+[14:33:47] <benh> If path is absolute, probably
+[14:33:48] <cmr> klutzy: that'd be up to the OS
+[14:34:08] <cmr> I do it in the shell accidentally all the time
+[14:35:51] <klutzy> cmr: yeah, but it is implictly used in some dir tests so caused error on windows
+[14:37:26] <klutzy> extra::tempfile::TempDir creates some random dir, and removes it at Drop
+[14:37:42] <klutzy> and some test created TempDir and chdired..
+[14:38:19] <klutzy> it passes buildbot maybe because there is other chdir tests during check-fast :(
+[14:39:12] *** Joins: jaeholee (uid4856@moz-31ABA2C0.irccloud.com)
+[14:39:16] <klutzy> but when I run the test only, it fails at TempDir::drop().
+[14:43:45] <klutzy> ah sorry. the test is just xfail-fasted
+[14:44:15] <pnkfelix> acrichto: filed as #10461
+[14:47:02] *** Quits: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP) (Quit: Leaving.)
+[14:49:58] *** Joins: hack (chatzilla@moz-87E1666F.rev.onenet.an)
+[14:50:15] <hack> hello everyone
+[14:50:43] <hack> the following bug: https://github.com/mozilla/rust/issues/2683
+[14:50:44] <kimundi> hello hack
+[14:51:15] <hack> Im trying to clarify
+[14:51:53] <benh> klutzy: oh no :(
+[14:52:09] <klutzy> benh: issued here: https://github.com/mozilla/rust/issues/10462
+[14:52:15] <benh> klutzy: I added the TempDir/rmdir-on-drop things because I noticed that /tmp grew bigger and bigger every time I ran make check
+[14:52:19] <klutzy> but I don't know if this is really a bug or not
+[14:52:32] <benh> I didn't realize it would be an issue with cd'ing into the directory.
+[14:52:43] <klutzy> benh: yeah, rmdir is cool I think. just windows is not cool :p
+[14:53:18] <benh> A crude way to fix it would be to check at the time of the drop whether we're in a subdirectory of the to-be-deleted directory and chdir upwards if we are...
+[14:53:23] <hack> issue says "This is not a portable way of specifying an invalid pthread_
+[14:53:32] <benh> but that might confuse calling code too
+[14:53:54] <benh> the current working directory is such a terrible notion :D
+[14:54:26] <hack> if we want to use pthreads, why is  pthread.h not included? 
+[14:55:06] <cmr> hack: that file is long gone
+[14:55:17] <benh> no it's not
+[14:55:25] <hack> cmr:? what do you mean?
+[14:55:39] <cmr> it isn't?
+[14:55:41] * cmr checks
+[14:55:45] <benh> src/rt/sync/lock_and_signal.cpp:#define INVALID_THREAD 0
+[14:55:55] <hack> cmr:you mean is not in used anymore
+[14:56:32] <cmr> hack: nvm, ignore me
+[14:56:38] <benh> The tendency is to remove c++ code and rewrite it in rust, but I guess that file hasn't been gotten to yet
+[14:57:18] <hack> been: so you mean that it should be re-written in Rust?
+[14:57:28] <benh> (pthread.h is apparently included via rust_globals.h)
+[14:57:40] <hack> benh: ah inetresting...
+[14:57:42] <benh> hack: No, i don't know what the best way forward here is, sorry
+[14:58:32] <klutzy> benh: how is "current dir" information maintained? I'm curious if it is per-task or per-... something
+[14:58:36] <hack> benh: ok thanx, I'm going to suggest something and I'll see if that matches the way it should be fixed
+[14:59:05] <benh> klutzy: It's an operating-system-level per-process notion afaik
+[14:59:13] <benh> ...but maybe it's not on windows... hm
+[15:00:05] *** Joins: Axord (xord@moz-1B228827.lsanca.dsl-w.verizon.net)
+[15:00:17] <benh> "[...] the current directory is a process-wide setting, you can't be sure that some other thread hasn't called SetCurrentDirectory out from under you."
+[15:01:02] <klutzy> uh, sounds like we have to run away from them
+[15:01:56] <klutzy> msdn: "Multithreaded applications and shared library code should not use the SetCurrentDirectory function and should avoid using relative path names."
+[15:02:39] <klutzy> libc::chdir() may be in similar status
+[15:04:58] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[15:09:43] *** Quits: tedh (tedh@moz-F0B37C08.hsd1.il.comcast.net) (Ping timeout)
+[15:10:34] *** Joins: tedh (tedh@moz-F0B37C08.hsd1.il.comcast.net)
+[15:22:37] <klutzy> benh: https://gist.github.com/klutzy/7450792 cur dir race!
+[15:23:44] <klutzy> we should implement curdir notion using task-local storage
+[15:32:25] <benh> hmm
+[15:41:24] *** Quits: Kxepal (Miranda@moz-64407EE.pppoe.mtu-net.ru) (Ping timeout)
+[15:44:43] *** Joins: Kxepal (Miranda@moz-876F9B77.pppoe.mtu-net.ru)
+[15:51:35] <zokier`> whats the difference between extern-pass-TwoU64s-ref.rs and extern-pass-TwoU64s.rs? they seem identical to me
+[15:53:48] *** Joins: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net)
+[15:54:46] <klutzy> zokier`: it was different in old days, but not currently.
+[15:54:55] <klutzy> I have a local branch of removing one of them
+[15:55:05] <klutzy> (as part of #10452)
+[15:57:49] <zokier`> okay
+[16:01:05] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[16:01:05] *** ChanServ sets mode: +o pnkfelix
+[16:02:27] <zokier`> the failure message of those on windows seems bit nonsensical, i guess that's just an effect of the calling convention bug?
+[16:03:01] <klutzy> you mean extern-pass-TwoU64s.rs?
+[16:03:25] <klutzy> you may get test failure if you use gcc 4.8 https://github.com/mozilla/rust/issues/9205
+[16:05:41] <zokier`> yeah, i mean https://gist.github.com/anonymous/7435374#file-failures-log-L36 here left and right seem equal, so i don't know why the assert fails
+[16:07:44] <klutzy> uh.. wait, it's curious that they looks same
+[16:08:40] <klutzy> I don't know why, anyway the failure itself is related to callconv I think
+[16:08:44] <zokier`> my guess would be that the callconv change causes some kind of stack corruption which makes all things suspect
+[16:09:46] <klutzy> the tests are ignored on `make check-fast`, but not on `make check` since they are not `xfail-win32`ed but `xfail-fast`ed
+[16:09:58] *** Quits: hack (chatzilla@moz-87E1666F.rev.onenet.an) (Ping timeout)
+[16:10:36] <klutzy> I'm looking each cases and trying to investigate what actually caused failure on windows
+[16:10:48] <zokier`> i don't think these failures should be ignored, they seem like real issues
+[16:12:26] <klutzy> agreed, but I feel that "fixing" the issue requires llvm patches
+[16:12:46] <klutzy> they are ignored since we are officially stuck in gcc 4.5
+[16:12:55] <klutzy> yes it's quite sad
+[16:14:38] <klutzy> well, I think the failure takes really small portion of rust since it is problematic only if you use ffi which returns large structs
+[16:15:28] <zokier`> but on 4.5 these tests do not fail because it is using the old callconv, right? so there should be no need to ignore on any gcc
+[16:16:18] *** Joins: lkuper (lkuper@moz-D862222C.dhcp-bl.indiana.edu)
+[16:18:46] <klutzy> I think the best we can do now is to admit "ffi does not work on win32 on large structs" and to hope it would be fixed later
+[16:23:06] *** Quits: tedh (tedh@moz-F0B37C08.hsd1.il.comcast.net) (Ping timeout)
+[16:26:25] *** Joins: tedh (tedh@moz-F0B37C08.hsd1.il.comcast.net)
+[16:37:20] <zokier`> does clang work on windows? don't they have the same issue?
+[16:41:14] <klutzy> clang works on windows, but I don't have answer for second question. hmm it's interesting
+[17:15:47] *** Quits: Sharp (Sharp@moz-7B61DF4.dsl.static.sonic.net) (Quit: Sharp)
+[17:20:51] *** Joins: notmatt (notmatt@118CCA77.D1B89392.602E4FC1.IP)
+[17:21:27] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[17:21:27] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14f766c64 to 14825b127: 02http://git.io/N3iJvQ
+[17:21:27] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[17:21:27] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[17:21:27] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/jRpKVQ
+[17:21:27] <ghrust> 13rust/06auto 14d328ab7 15Benjamin Peterson: be more robust when removing download artifacts and remove bogus raise statement
+[17:21:27] <ghrust> 13rust/06auto 1460af4f7 15bors: auto merge of #10464 : gutworth/rust/snap-err, r=pnkfelix...
+[17:21:28] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[17:33:24] *** Joins: notmatt_ (notmatt@118CCA77.D1B89392.602E4FC1.IP)
+[17:33:50] *** Quits: notmatt (notmatt@118CCA77.D1B89392.602E4FC1.IP) (Ping timeout)
+[17:36:44] *** Joins: notmatt (notmatt@moz-6071FD3.lightspeed.sntcca.sbcglobal.net)
+[17:36:55] *** Quits: notmatt_ (notmatt@118CCA77.D1B89392.602E4FC1.IP) (Ping timeout)
+[17:42:07] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Ping timeout)
+[17:42:29] <acrichto> pnkfelix: nice find on the workcache tests
+[17:43:14] <pnkfelix> acrichto: if you want to see the instrumentation, its at https://github.com/pnkfelix/rust/tree/fsk-hack-rustpkg-to-track-down-fail
+[17:43:37] <acrichto> that makes total sense
+[17:43:43] <acrichto> and it explains the weird behavior that I was seeing
+[17:44:03] <pnkfelix> acrichto: (I think I might extract a couple of those commits to be independently commits.  E.g. the warn! I added to the workcache drop fn.)
+[17:44:14] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[17:44:18] <acrichto> that seems very useful
+[17:44:59] <pnkfelix> I guess a good next step would be to try to determine if other rustpkg tests are making similar incorrect assumptions
+[17:45:18] <pnkfelix> and/or figure out if we can get them to allocate independent workcaches for the nested runs ...
+[17:58:27] *** Joins: Sharp (Sharp@moz-7B61DF4.dsl.static.sonic.net)
+[18:01:57] *** Quits: Sharp (Sharp@moz-7B61DF4.dsl.static.sonic.net) (Quit: Sharp)
+[18:07:57] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[18:10:48] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Ping timeout)
+[18:15:13] *** Quits: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net) (Quit: tikue)
+[18:15:54] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[18:16:30] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[18:16:30] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1460af4f7 to 14825b127: 02http://git.io/N3iJvQ
+[18:16:30] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[18:16:34] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[18:16:34] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/XH2fPA
+[18:16:34] <ghrust> 13rust/06auto 141f7eb4f 15David Creswick: make missing_doc lint respect the visibility rules...
+[18:16:34] <ghrust> 13rust/06auto 14314d6f6 15bors: auto merge of #10277 : dcrewi/rust/missing-doc-and-visibility-rules, r=alexcrichton...
+[18:16:34] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[18:17:08] *** Joins: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net)
+[18:21:57] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[18:21:57] *** ChanServ sets mode: +o pnkfelix
+[18:24:08] *** Quits: jdm (jdm@9C2E78E6.8C982E60.292610BC.IP) (Quit: Lost terminal)
+[18:26:04] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[18:37:01] *** Joins: jdm (jdm@9C2E78E6.8C982E60.292610BC.IP)
+[18:44:53] <olsonjeffery> acrichto: fwiw, i think the core issue, wrt scheduling, is that the actual threading stuff lives *outside* of the scheduler, correct?
+[18:45:15] <acrichto> olsonjeffery: by threading to you mean rust tasks or managmenet of the os thread pool?
+[18:45:17] <olsonjeffery> and you're sort of suggesting we abstract it within the schedule, so that individual eventloop impls specify the actual threading/concurrency model?
+[18:45:32] <olsonjeffery> i mean the OS thread creation that actually separates Schedulers
+[18:45:39] <acrichto> something like that yes
+[18:45:53] <acrichto> spawn should create a green task with librustuv in the picture, it should create an OS thread without librustuv
+[18:46:11] <acrichto> I feel like its absolutely crucial that you should write the exact same code in both cases
+[18:46:37] <acrichto> I need to give it more thought though to figure out what it would entail
+[18:46:51] *** Quits: jdm (jdm@9C2E78E6.8C982E60.292610BC.IP) (Quit: Lost terminal)
+[18:47:00] <olsonjeffery> hm. yeah. i dunno if id ever agree with creating a new thread per task
+[18:47:07] <olsonjeffery> per-scheduler, perhaps?
+[18:47:26] <acrichto> hm, well a scheduler isn't really needed if you don't have green threads
+[18:47:29] <acrichto> there's nothing to schedule
+[18:47:49] <olsonjeffery> true. i guess the point of it being up to implementors is what matters.
+[18:48:22] <acrichto> I don't think having a default of green threads is that bad
+[18:48:32] <acrichto> but not having an option of *not* green threads may be very bad
+[18:48:54] <acrichto> we have a good portion of the infrastructure to work with this
+[18:49:00] <olsonjeffery> people dont seem to talk, much, about reaching for spawn_sched more readily
+[18:49:07] <olsonjeffery> i think that's confusing for new users
+[18:49:19] <acrichto> it's a real big hammer for getting a new thread though
+[18:49:28] <acrichto> and as strcat points out you're still tied to libuv I/O
+[18:49:34] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[18:49:40] <acrichto> which perhaps you don't want to be
+[18:50:08] <olsonjeffery> well thats just an impl detail of the current system. we spoke calling spawn_sched with an EventLoopFactory or somesuch in the past
+[18:50:31] <olsonjeffery> the event loop factory langitem, as well
+[18:50:43] <acrichto> true
+[18:50:53] <acrichto> I really think that libstd is up to doing all this, it just needs some love
+[18:51:05] <acrichto> libstd doesn't do X isn't a reason to throw it away :(
+[18:51:08] <olsonjeffery> so you're doin the native impls of the std::io traits now, correct?
+[18:51:45] <olsonjeffery> how do you feel it's working, so far? i felt like a lot of libuv'isms (and hence mostly POSIX'isms) were leaking through the traits
+[18:52:01] <acrichto> I haven't hooked up much yet
+[18:52:08] <acrichto> right now it's just read/write on file descriptors basically
+[18:52:09] <olsonjeffery> i think proving those traits out would be the major barrier to sidestepping this whole thing.
+[18:52:48] <olsonjeffery> the whole homing-io thing is an impl detail for libuv, right? it doesn't leak outside?
+[18:52:54] <acrichto> correct
+[18:53:03] <acrichto> homing I/O is all contained in librustuv
+[18:53:20] <olsonjeffery> i wonder if it'd be "correct" to be put the green/OS-thread strategy into the eventloop, then.
+[18:53:30] <olsonjeffery> or maybe a separate trait alongside EventLoop that Scheduler requires
+[18:53:59] <olsonjeffery> but that seems wrong, since it wouldn't work in certain cases (like you could never use a libuv EventLoop with a thread-per-task model)
+[18:54:30] <acrichto> once you use libuv you should be forced to use green threads
+[18:54:36] <olsonjeffery> so that suggests the task/thread model is related to EventLoop, basically because of the coupling we accepted due to, pretty much, encoutering the worst case out of the gate?
+[18:55:26] <acrichto> good point
+[18:55:41] <olsonjeffery> i think "threading model is tightly coupled to your event loop/IO backend" is a fair constraint to accept
+[18:56:01] <acrichto> yeah that seems completely reasonable
+[18:56:28] <olsonjeffery> i would really be interested in seeing what a highly optimized, windows-specific scheduler would look like
+[18:56:29] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[18:56:44] <olsonjeffery> using IOCP, fibers/user-mode scheduling, etc
+[18:56:56] <olsonjeffery> since that is, for practical purposes, the "most alien" native API
+[18:57:01] <acrichto> I feel like if we design the event loop trait and possibly associated ones correctly, it should be very possible to build that
+[18:57:02] <olsonjeffery> although CF is pretty up there, as well
+[18:57:33] *** Joins: Sharp (Sharp@1710C26.8381A41.8725677B.IP)
+[18:59:03] <olsonjeffery> i kinda/sorta half-joking observed a while back that rust would eventually converge on libuv by writing highly optimized EventLoops on a per-OS basis
+[18:59:31] <olsonjeffery> so tl;dr std::io traits and EventLoop our our uv.h (or "our alamo", if you prefer. heh)
+[19:04:21] *** Quits: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net) (Quit: tikue)
+[19:05:38] *** Joins: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net)
+[19:15:53] *** Joins: bytewise (bytewise@moz-AB9A0CEA.eduroam.rwth-aachen.de)
+[19:17:39] *** Quits: Sharp (Sharp@1710C26.8381A41.8725677B.IP) (Quit: Sharp)
+[19:21:26] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[19:21:26] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/XH2fPA
+[19:21:26] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[19:22:36] *** Joins: Sharp (Sharp@1710C26.8381A41.8725677B.IP)
+[19:25:25] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[19:25:25] *** ChanServ sets mode: +o pnkfelix
+[19:26:48] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[19:26:48] <ghrust> 01[13rust01] 15bors pushed 5 new commits to 06auto: 02http://git.io/ndsSqg
+[19:26:48] <ghrust> 13rust/06auto 14123e0ce 15Adrien Tétar: doc: CSS: fix code fonts...
+[19:26:48] <ghrust> 13rust/06auto 145a01dbe 15Adrien Tétar: doc: disable parser error highlighting + a few fixes...
+[19:26:48] <ghrust> 13rust/06auto 1458aa18c 15Adrien Tétar: doc: add favicon to tutorial/manual...
+[19:26:50] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[19:27:46] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Ping timeout)
+[19:28:00] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[19:28:31] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[19:30:20] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[19:35:09] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[19:36:20] <andrew-d_w> cmr: You here?
+[19:45:15] *** Joins: hack (chatzilla@moz-87E1666F.rev.onenet.an)
+[19:47:13] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[19:50:03] *** Joins: tjc (tjc@moz-BBE3ABD.mv.mozilla.com)
+[19:50:03] *** ChanServ sets mode: +o tjc
+[19:54:41] *** Quits: tikue (tkuehn@moz-FEADCD38.hsd1.pa.comcast.net) (Quit: tikue)
+[20:00:57] *** Quits: lkuper (lkuper@moz-D862222C.dhcp-bl.indiana.edu) (Ping timeout)
+[20:07:57] *** Quits: Sharp (Sharp@1710C26.8381A41.8725677B.IP) (Quit: Sharp)
+[20:11:00] *** Quits: bytewise (bytewise@moz-AB9A0CEA.eduroam.rwth-aachen.de) (Ping timeout)
+[20:11:12] *** Joins: bytewise (bytewise@moz-AB9A0CEA.eduroam.rwth-aachen.de)
+[20:17:34] *** Quits: bytewise (bytewise@moz-AB9A0CEA.eduroam.rwth-aachen.de) (Ping timeout)
+[20:19:17] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[20:19:30] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[20:19:30] *** ChanServ sets mode: +o pnkfelix
+[20:21:29] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[20:21:29] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14e3ab3cf to 14314d6f6: 02http://git.io/N3iJvQ
+[20:21:29] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[20:21:33] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[20:21:33] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/z1XIkw
+[20:21:33] <ghrust> 13rust/06auto 14c2c7a24 15Zach Kamsler: Implemented BufWriter...
+[20:21:33] <ghrust> 13rust/06auto 14a79ed57 15bors: auto merge of #10451 : zkamsler/rust/buf_writer, r=alexcrichton...
+[20:21:34] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[20:24:12] *** Joins: Sharp (Sharp@1710C26.8381A41.8725677B.IP)
+[20:31:43] <acrichto> r? https://github.com/mozilla/rust/pull/10447 -- this is causing lots of spurious failures on the bots
+[20:35:08] *** Quits: Sharp (Sharp@1710C26.8381A41.8725677B.IP) (Quit: Sharp)
+[20:35:31] *** Joins: Sharp (Sharp@1710C26.8381A41.8725677B.IP)
+[20:42:37] <olsonjeffery> ah, nice. bnoordhuis chimed in on that thread.
+[20:43:16] <tjc> acrichto: on it
+[20:43:27] <tjc> ah, time comparisons strike again
+[20:43:44] <acrichto> although this time I think it was f64 -> u64 -> f64 conversions
+[20:45:30] *** Joins: pcwalton (pcwalton@9C2E78E6.8C982E60.292610BC.IP)
+[20:45:30] *** ChanServ sets mode: +ao pcwalton pcwalton
+[21:07:00] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[21:12:33] *** Quits: tjc (tjc@moz-BBE3ABD.mv.mozilla.com) (Quit: zzzzzzzzzz)
+[21:19:39] *** Joins: tjc (tjc@moz-BBE3ABD.mv.mozilla.com)
+[21:19:39] *** ChanServ sets mode: +o tjc
+[21:26:28] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[21:26:28] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/z1XIkw
+[21:26:28] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[21:31:26] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[21:31:26] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/9PQwNg
+[21:31:26] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[21:39:13] *** Joins: jensnockert (jensnocker@moz-5D53B643.cust.bredband2.com)
+[21:44:27] *** Quits: hack (chatzilla@moz-87E1666F.rev.onenet.an) (Quit: ChatZilla 0.9.90.1 [Firefox 25.0/20131025151332])
+[21:47:37] *** Quits: jensnockert (jensnocker@moz-5D53B643.cust.bredband2.com) (Input/output error)
+[21:57:39] *** kimundi is now known as zz_kimundi
+[22:00:51] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[22:01:08] *** Joins: geoffhill (geoffhill@moz-738DC0DB.org)
+[22:06:53] *** Joins: jensnockert (jensnocker@moz-5D53B643.cust.bredband2.com)
+[22:36:25] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[22:36:25] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/5xA-RA
+[22:36:25] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[22:38:35] *** Quits: geoffhill (geoffhill@moz-738DC0DB.org) (Input/output error)
+[22:41:23] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[22:41:23] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/38gBog
+[22:41:24] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[22:41:29] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[22:41:29] <ghrust> 01[13rust01] 15bors pushed 5 new commits to 06auto: 02http://git.io/DT_4nA
+[22:41:29] <ghrust> 13rust/06auto 14123e0ce 15Adrien Tétar: doc: CSS: fix code fonts...
+[22:41:29] <ghrust> 13rust/06auto 145a01dbe 15Adrien Tétar: doc: disable parser error highlighting + a few fixes...
+[22:41:30] <ghrust> 13rust/06auto 1458aa18c 15Adrien Tétar: doc: add favicon to tutorial/manual...
+[22:41:32] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[22:45:43] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[22:51:18] *** flaper87 is now known as flaper87|afk
+[22:52:22] *** Joins: lbergstrom (Adium@9C2E78E6.8C982E60.292610BC.IP)
+[22:54:35] <eddyb> I don't think I saw generators mentioned in the C# async discussion... one transformation mode is enough to make a lot of patterns work, including that one
+[23:01:12] *** Quits: tjc (tjc@moz-BBE3ABD.mv.mozilla.com) (Quit: zzzzzzzzzz)
+[23:04:06] *** Joins: tjc (tjc@moz-BBE3ABD.mv.mozilla.com)
+[23:04:06] *** ChanServ sets mode: +o tjc
+[23:09:12] *** Quits: pcwalton (pcwalton@9C2E78E6.8C982E60.292610BC.IP) (Quit: pcwalton)
+[23:18:36] *** Quits: jensnockert (jensnocker@moz-5D53B643.cust.bredband2.com) (Input/output error)
+[23:22:37] * acrichto shakes fist at dbaupp for properly seeding random number generators
+[23:23:18] <dbaupp> acrichto: the scheduler initialisation stuff?
+[23:23:33] <acrichto> nah just in general, without the runtime we can't do anything with randomness
+[23:23:36] <acrichto> (but that's changing!)
+[23:24:36] <dbaupp> you can seed them manually
+[23:24:57] <acrichto> oh yeah it's not actually a problem
+[23:25:00] <acrichto> I just find it amusing
+[23:26:09] <dbaupp> Using the pluggable event loop to get native IO working is very cool btw.
+[23:26:30] <dbaupp> I wonder if the 1:1 scheduling stuff can just be resolved by plugging in a new event loop...
+[23:26:51] <acrichto> kinda, the current pluggable trait isn't quite the right abstraction
+[23:27:00] <dbaupp> ah :(
+[23:27:00] <acrichto> it's pretty much the same idea though, we're real close!
+[23:31:00] *** Quits: lbergstrom (Adium@9C2E78E6.8C982E60.292610BC.IP) (Quit: Leaving.)
+[23:34:28] <olsonjeffery> dbaupp: that's what i want
+[23:35:12] <olsonjeffery> Scheduler needs to be generalized more though, i think.. and stuff like work stealing has to move out. strcat makes compelling points.
+[23:35:19] <olsonjeffery> simultaneously. c++++. heh.
+[23:36:38] <olsonjeffery> the threading calls that currently happen in code that *surrounds* scheduler have to move into the eventloop, i guess. i think that'd influence Scheduler's task semantics. acrichto pointed out that w/ 1:1 scheduler, there's really no need for the scheduler, period.
+[23:36:56] <olsonjeffery> so maybe the right track is to pursue how to make eventloop useful outside of the scheduler? (beyond sourcing an IoFactory)
+[23:37:24] <acrichto> this certainly requires some careful thought
+[23:37:59] *** Joins: tikue (tkuehn@561622AD.21C37D63.689607DE.IP)
+[23:38:20] <dbaupp> apparently Google's linux patched do provide facilities for user-space scheduling (assuming I understand it correctly), which is presumably being able to tune for things the operating system's scheduler can't infer.
+[23:38:21] <olsonjeffery> here, here.
+[23:38:56] <dbaupp> *linux patches
+[23:46:31] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[23:46:31] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/DT_4nA
+[23:46:31] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[23:51:13] *** Joins: pcwalton (pcwalton@9C2E78E6.8C982E60.292610BC.IP)
+[23:51:13] *** ChanServ sets mode: +ao pcwalton pcwalton
+[23:51:18] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[23:51:18] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/IJvOJQ
+[23:51:18] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[23:51:25] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[23:51:25] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/vMFJHQ
+[23:51:25] <ghrust> 13rust/06auto 143c50ae0 15Alex Crichton: Implement native::IoFactory...
+[23:51:25] <ghrust> 13rust/06auto 14aa7471d 15bors: auto merge of #10457 : alexcrichton/rust/native-io, r=brson...
+[23:51:26] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[23:56:14] *** Quits: pcwalton (pcwalton@9C2E78E6.8C982E60.292610BC.IP) (Quit: pcwalton)
+[23:56:39] *** Quits: eddyb (eddy@336E3A7F.D51DAF03.FB866788.IP) (Ping timeout)

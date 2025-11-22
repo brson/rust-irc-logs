@@ -1,0 +1,100 @@
+[00:06:22] *** Joins: aatch (james@moz-i1k1ks.tlms.2o1v.e006.2406.IP)
+[00:09:28] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[00:25:57] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[00:27:34] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[01:04:51] *** Quits: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se) (Ping timeout: 121 seconds)
+[02:26:09] *** Quits: madmalik (uid13697@moz-3s7k1j.kkpo.i718.8300.2604.IP) (Quit: Connection closed for inactivity)
+[02:30:41] *** Quits: kimundi (kimundi@moz-didlps.13u2.kfms.57bc.2002.IP) (Ping timeout: 121 seconds)
+[02:37:10] *** Joins: kimundi (kimundi@moz-1r1qk7.bv9k.pbdn.57bc.2002.IP)
+[03:27:19] <eddyb> tcx.populate_implementations_for_trait_if_necessary(trait_ref.def_id());
+[03:27:37] <eddyb> trans' fulfill_obligation does that and I'm not sure that's actually necessary
+[03:27:50] <eddyb> I thought trait selection already does it
+[04:06:06] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[04:45:44] *** Quits: aatch (james@moz-i1k1ks.tlms.2o1v.e006.2406.IP) (Connection closed)
+[05:44:31] *** Joins: madmalik (uid13697@moz-lfin5p.brockwell.irccloud.com)
+[05:53:29] <jroesch> eddyb: do you know of a way to ask if trait resolution has hit a fix point?
+[05:53:56] <eddyb> jroesch: that's what a fulfillment context is for AFAIK
+[05:55:31] <jroesch> eddyb: so in this algorithm I'm going to introduce some new unifications then try to select again, how do I know when nothing has changed between selection attempts 
+[05:55:47] <jroesch> or which method do I invoke is really my question 
+[05:55:51] <eddyb> I'm looking at trans::common::fulfill_obligation atm, which takes a PolyTraitRef and returns a Vtable representing the resolved <T as Trait>
+[05:56:20] <eddyb> jroesch: oh, are you trying to detect changes in trait selection due to changes in inference?
+[05:56:25] <jroesch> yeah
+[05:56:51] <jroesch> I've gotten the defaults attached to the FnCtxt and now I'm just trying to lay in the fallback loop that runs at the end of inference 
+[05:57:00] <eddyb> jroesch: FnCtxt?
+[05:57:15] <eddyb> jroesch: why not stash them in inference variables?
+[05:57:33] <eddyb> oh, you don't need to
+[05:57:51] <eddyb> (the previous code had to fall back from within InferCtxt)
+[05:57:57] <jroesch> what I did was just keep a map from inference variables to possible defaults
+[05:58:47] <eddyb> but don't you need to unify defaults when variables are unified?
+[06:00:01] <jroesch> it seems that integer fallback currently happens in check inside of `default_type_parameters`, the current description postpones the application of defaults until all other inference has been done
+[06:00:11] <jroesch> current description being the one in the RFC
+[06:00:37] <eddyb> yeah, I get that. but how are you going to tell if defaults conflict before applying them?
+[06:01:31] <eddyb> if $0 has default A and $1 has default B and $0 == $1, if you apply either the defaults, you won't be able to tell that the conflict when applying the second one is because your previous action was wrong
+[06:01:53] <eddyb> AFAIK only InferCtxt knows the connections between inference variables
+[06:01:54] <jroesch> applying them should cause a type error as per this paragraph in the RFC
+[06:01:56] <jroesch> "When defaults are to be applied, we first gather up the set of variables that have applicable defaults (step 2.2) and then later unconditionally apply those defaults (step 2.4). In particular, we do not loop over each type variable, check whether it is unbound, and apply the default only if it is unbound. The reason for this is that it can happen that there
+[06:01:57] <jroesch> are contradictory defaults and we want to ensure that this results in an error:"
+[06:02:16] <eddyb> guess I should read the RFC
+[06:02:22] <jroesch> eddyb: heh no worries
+[06:02:31] <jroesch> its good to have someone to talk to since Niko is on vacation 
+[06:02:57] <eddyb> I'm trying to think whether there's a case that this doesn't handle...
+[06:03:09] <eddyb> jroesch: but shouldn't the error be that there isn't any type information?
+[06:03:31] <eddyb> it would be confusing to get a type conflict between defaults instead of the defaults being ignored
+[06:04:05] <eddyb> jroesch: but if you're implementing the RFC, I guess what you have should work. why do you care about the selection thing?
+[06:04:07] <jroesch> I can see that, I've just been following the RFC's algorithm description
+[06:04:20] <jroesch> eddyb: the algorithm's first step is run in a fixpoint doing selection
+[06:04:28] <eddyb> ahh!
+[06:04:32] <jroesch> because you may solve a variable because of defaults
+[06:04:36] <eddyb> self.select_obligations_where_possible()
+[06:04:38] <jroesch> and then make progress doing resolution 
+[06:05:29] <eddyb> I thought you wanted to query for progress
+[06:05:45] <eddyb> jroesch: if you look at select_all_obligations_and_apply_defaults, that bit is already done for you
+[06:06:20] <jroesch> okay, I guess I was looking at the loop wrong
+[06:06:40] <jroesch> the fix point is when UB doesn't contain anything 
+[06:06:53] <jroesch> and at that point there should be type errors or we are all done
+[06:07:14] <eddyb> wait, is default_type_parameters iterating over node types? why would it do that
+[06:07:32] <jroesch> yes it is
+[06:07:36] <jroesch> I also found that strange 
+[06:07:46] <eddyb> the mutable iteration is definitely an issue
+[06:09:27] <eddyb> jroesch: IMO it would make more sense to iterate over inference variables
+[06:09:33] <jroesch> I agree
+[06:10:02] <eddyb> the loop looks like it used to modify types in place or something
+[06:10:23] <eddyb> and there's no lint to detect unused mutability
+[06:10:45] <eddyb> when you go through a pattern matching a mutable reference
+[06:11:18] <eddyb> (I actually don't think there's anything for "mutable reference used only immutably")
+[06:16:04] <jroesch> eddyb: hrm what is the right way to get a list of in scope inference variables, doesn't look like there is any easy way to iterate type variables from an InferCtxt since TypeVarTable doesn't impl Iterator 
+[06:17:12] <eddyb> jroesch: it's not exactly a table or vector
+[06:18:38] <jroesch> ah I see what you mean
+[06:21:15] <eddyb> jroesch: you'd have to iterate over the SnapshotVec and get only the values with a Bounded .value, not Known
+[07:03:47] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[07:13:34] *** Joins: laumann (thomas@moz-3m6.3kq.109.2.IP)
+[07:48:14] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Ping timeout: 121 seconds)
+[07:50:56] *** Joins: doener (doener@moz-fnh.n4j.147.5.IP)
+[07:58:36] *** Joins: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se)
+[08:14:14] *** Joins: barosl (barosl@moz-tmp.qma.67.220.IP)
+[09:11:03] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[09:16:04] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (Quit: Leaving.)
+[09:55:58] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[10:50:00] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (A TLS packet with unexpected length was received.)
+[11:07:25] *** Joins: arielb1 (Ariel@moz-fvk.j5m.66.109.IP)
+[12:07:30] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[12:55:49] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[15:34:12] *** Quits: laumann (thomas@moz-3m6.3kq.109.2.IP) (Ping timeout: 121 seconds)
+[16:14:34] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[16:32:22] <doener> eddyb: https://github.com/dotdash/rust/commit/fdbb1b6fb082c766f0e2bfe2d9ff626e88f0da8d -- heh
+[16:33:07] <Luqman> doener: lol that's great
+[16:35:44] <Luqman> also, &if is funny to read
+[16:35:55] <doener> FWIW, it's part of gh26738 -- another step on the way to passing small structs as immediates
+[16:37:07] <doener> Luqman: yeah, but moving the & into the if-else arms doesn't increase the lifetime enough, and my urge to avoid that copy got the better of me
+[16:48:10] *** Quits: doener (doener@moz-fnh.n4j.147.5.IP) (Quit: leaving)
+[16:55:40] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[18:34:50] *** Quits: arielb1 (Ariel@moz-fvk.j5m.66.109.IP) (Ping timeout: 121 seconds)
+[18:48:28] *** Joins: arielb1 (Ariel@moz-0pefkn.red.bezeqint.net)
+[19:11:32] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[19:39:25] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[20:43:15] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[20:49:55] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[21:00:40] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[22:12:42] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[22:42:18] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[23:07:24] *** Quits: arielb1 (Ariel@moz-0pefkn.red.bezeqint.net) (Quit: Ex-Chat)

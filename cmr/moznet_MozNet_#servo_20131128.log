@@ -1,0 +1,501 @@
+[00:02:13] <larsberg> nice!
+[00:02:28] *** Joins: dzbarsky (Adium@DB6E1F3D.1EBC2536.DA1C73DD.IP)
+[00:04:05] *** Quits: bholley (bholley@moz-24EDB000.hsd1.ca.comcast.net) (Quit: bholley)
+[00:05:06] <pcwalton> jack: larsberg: that's with 4 cores
+[00:05:07] <pcwalton> I posted to the ML
+[00:05:29] <pcwalton> adding 2 more threads to use hyper threading increases perf to 86% faster
+[00:06:09] <pcwalton> btw profiler says a ton of time spent in Cell junk
+[00:06:17] <pcwalton> so maybe this will be even faster with a rust upgrade
+[00:06:21] <pcwalton> although I'm not sure how much to trust that
+[00:08:35] <larsberg> great work! And yeah, I'm always skeptical about little functions that show up like that, especially if I'm using an instrumenting profiler.
+[00:09:10] <strcat> does callgrind still have incomprehensible output now that segmented stacks are gone?
+[00:09:18] <strcat> I haven't tried for a while
+[00:09:19] <pcwalton> strcat: I use Instruments.app :)
+[00:09:22] <pcwalton> and it works just fine
+[00:09:26] <pcwalton> instruction level too
+[00:09:37] <pcwalton> cell::Cell stuff keeps showing up high
+[00:09:39] <pcwalton> so I dunno
+[00:09:52] <pcwalton> also drop glue is like 40%?!
+[00:09:56] <pcwalton> I think that's probably lie
+[00:10:13] <pcwalton> well, the drop glue is calling Cell stuff
+[00:10:14] <pcwalton> I dunno
+[00:10:28] <pcwalton> I hope it's true because once I find it I can make it 40% faster :P
+[00:10:29] <pcwalton> but I think it's lies
+[00:10:34] <strcat> it's not a sampling profiler?
+[00:10:40] <pcwalton> it is
+[00:10:53] <pcwalton> it's just that due to superscalar whatevers instruction level profiling is always questionable
+[00:11:02] <pcwalton> at least in my experience
+[00:11:34] <strcat> well the hyperthreading gain somewhat proves that ;p
+[00:11:44] <pcwalton> 6 improves over 4
+[00:11:47] <pcwalton> 8 regresses over 6
+[00:11:50] <pcwalton> in terms of worker threads
+[00:11:52] <strcat> but callgrind/cachegrind does simulate stuff like branch prediction
+[00:12:17] <pcwalton> once I can land this I'd like to try assign-widths
+[00:12:20] <pcwalton> assign-widths may just fly
+[00:12:24] <pcwalton> because it's a top-down traversal
+[00:12:29] <pcwalton> which is much happier than bottom-up traversals
+[00:12:40] <pcwalton> bottom-up traversals suck because you have to wait on your siblings before you can enqueue your parent
+[00:13:07] <pcwalton> and you also have to start with the leaves which costs 6% of your performance right there
+[00:13:33] <pcwalton> sadly CSS is mostly bottom-up traversals :(
+[00:13:37] <pcwalton> but oh well
+[00:15:24] <pcwalton> does anyone have more than 4 real cores?
+[00:15:30] <pcwalton> I would love to try this on 8 or 16 or more
+[00:15:34] *** Quits: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP) (Quit: Lost terminal)
+[00:16:14] <jack> we need to order a 64-way machine or something and put it under a desk
+[00:16:33] <jack> lars mentioned intel having some kind of compute farm we could get research access to that had such machines?
+[00:16:42] <jack> larsberg: or was it someone else?
+[00:17:00] <pcwalton> maybe if gal sees these kinds of numbers :)
+[00:17:35] <larsberg> jack: yes
+[00:18:07] <larsberg> though I have a 48-way AMD, native dual-8 core Intel and a native dual-12 core (before hyperthreading for the 8/12) boxes I could test on
+[00:18:13] <larsberg> Only downside is they're linux and remote
+[00:18:28] <jack> i don't suppose we can get shell accounts can we?
+[00:18:42] <jack> i wonder if xiph has one of those too
+[00:19:00] <larsberg> Unfortunately, these are all NSF-funded machines from my previous life sitting in academic server farms :-)
+[00:19:15] <pcwalton> can we get the NSF interested in browsers
+[00:19:21] * pcwalton only half kidding
+[00:19:38] <larsberg> we need academic collaborators to act as PIs, but sure
+[00:19:53] <jack> i can ask around UNM and see if there is a many-core machine in teh HPC lab i can get an account on
+[00:19:57] <larsberg> grant proposals take a long time to go through, though (my advisor was at the NSF doing grant approval my last two years)
+[00:20:07] <jack> i used to have accounts on a beowulf cluster there, but i assuem they probably have some many-core machiens too
+[00:20:50] <jack> sweetie. i have rustc writing .d files now
+[00:20:58] <larsberg> in all seriousness, we could probably establish a "collaboration" thing with a university lab with lots of big machines
+[00:21:22] <larsberg> e.g., at the UofC they have a campus "resource computing center" that has even bigger machines and are available for faculty projects
+[00:21:26] <pcwalton> hmm
+[00:21:35] <jack> larsberg: can you ping dherman about that and see if he has ideas who to ask?
+[00:21:43] <larsberg> could probably get accounts for people on those if we apply and find a relevant faculty member
+[00:21:55] <pcwalton> is there some way to calculate what the theoretical ideal speedup is?
+[00:22:06] <pcwalton> for any given document
+[00:22:10] <pcwalton> we have a bottom up parallel traversal on a tree with a known shape
+[00:22:15] <pcwalton> so I don't think the ideal speedup will be linear
+[00:22:32] <pcwalton> because you have to compute your siblings before your parent
+[00:22:57] <pcwalton> but it would be nice if we could calculate "speedup over sequential was X out of an ideal Y"
+[00:23:05] <jack> that's an excellent question. we should find an answer or create such a thing.
+[00:23:50] <pcwalton> it's too late in the day for me to think seriously about such things :)
+[00:23:51] <larsberg> most of the stuff I've seen people do in papers is either 1) instrument the program to record the times of each task and the dependencies and then report the "ideal" time
+[00:24:02] <larsberg> 2) measure the parallel-only portion separately and report their speedup on that
+[00:24:03] <pcwalton> larsberg: but this should be computable mathematically
+[00:24:13] <larsberg> depends on the shape of the tree
+[00:24:19] <larsberg> full tree, leaves are half of the nodes
+[00:24:21] <pcwalton> because we have a bottom up traversal on a tree and we know the shape of the tree exactly
+[00:24:28] <pcwalton> for any given document
+[00:24:39] <larsberg> assuming identical work at each node?
+[00:24:46] <larsberg> (this is mainly for benchmarks where you can't assume that)
+[00:24:50] <pcwalton> yeah
+[00:24:56] <pcwalton> pretend we have identical work at each node
+[00:25:06] <pcwalton> this is basically true for my test case anyway
+[00:26:16] <larsberg> you're right - this should be computable for a given tree, and hopefully without doing something dumb. But my brain isn't working after eating dinner and working on getting glx 1.2 working with XMing all day :-)
+[00:26:22] <pcwalton> yeah
+[00:26:36] <larsberg> I'll think about it tonight as well
+[00:26:46] <pcwalton> heh, we ruin the google search results for "parallel tree traversal bottom up"
+[00:26:56] <pcwalton> and Leo
+[00:27:20] <pcwalton> I guess this isn't as common a problem as I thought
+[00:29:09] *** Quits: CaseyBecking (CaseyBecki@ED8170C4.82E507D6.C334098E.IP) (Ping timeout)
+[00:31:22] *** Quits: Jesse (jruderman@moz-5973C6FA.oc.oc.cox.net) (Quit: Jesse)
+[00:35:37] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: pcwalton)
+[00:36:08] <larsberg> you get a lot more hits if you search in a research-focused engine (e.g., scholar.google.com ), but it still gets flooded by people doing genome sequencing, etc.
+[00:39:59] *** Joins: Jesse (jruderman@moz-5973C6FA.oc.oc.cox.net)
+[00:47:19] <larsberg> hrm, is this as simple as that at T_\inf{}, the best achievable speedup is the longest linear chain through the tree - i.e., the height?
+[00:47:22] *** Quits: Jayflux (Jason@moz-3D294B97.as13285.net) (Quit: Leaving)
+[00:47:57] <larsberg> (sorry, notation: T_1 or T_{seq} are sequential; T_\inf{} is "time with infinity processors")
+[00:56:16] *** kimundi is now known as zz_kimundi
+[01:00:28] *** Joins: bholley (bholley@moz-24EDB000.hsd1.ca.comcast.net)
+[01:05:11] *** Quits: eholk (eholk@moz-EA69C7A5.wavecable.com) (Ping timeout)
+[01:12:02] *** Quits: bholley (bholley@moz-24EDB000.hsd1.ca.comcast.net) (Quit: bholley)
+[01:21:29] *** Quits: dbaupp (Thunderbir@898216D2.D5A1DCF.37681C44.IP) (Ping timeout)
+[01:24:03] *** Joins: dbaupp (Thunderbir@898216D2.D5A1DCF.37681C44.IP)
+[01:33:57] *** Joins: bholley (bholley@moz-24EDB000.hsd1.ca.comcast.net)
+[01:37:17] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[01:39:36] *** Quits: jaeman (Mibbit@1A45E17B.8CE257A9.268E2EF2.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[01:58:14] *** Joins: brson (brson@63DCD950.E4213B29.318DADF5.IP)
+[01:58:14] *** ChanServ sets mode: +o brson
+[02:03:11] *** Quits: bholley (bholley@moz-24EDB000.hsd1.ca.comcast.net) (Quit: bholley)
+[02:08:03] *** Quits: azakai (alon@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[02:16:20] <jack> i see in make -d that one of hte prereqs for a target is newer than the target
+[02:16:25] <jack> but it's not causing it to be rebuilt
+[02:16:28] <jack> wtf!
+[02:17:58] *** Quits: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[02:30:00] *** Joins: CaseyBecking (CaseyBecki@moz-29F30CC3.lsanca.fios.verizon.net)
+[02:42:17] <jack> ls
+[02:42:36] <dbaupp> . ..
+[02:42:58] <jack> oh man
+[02:43:07] <jack> i can't get the output filename because it's not passed out
+[02:43:24] <jack> phase_6_...() takes liblib.dylib as it's output filename
+[02:43:39] <jack> and creates libsomething-2342o3-0.1.dylib from that
+[02:43:52] <jack> i bet it just ignores the filename and takes the path.dirname()
+[02:44:01] <jack> but ugh. this is so complicated
+[02:44:59] *** Joins: jaeman (Mibbit@1A45E17B.8CE257A9.268E2EF2.IP)
+[02:49:51] <jaeman> When multi-threads share a mutable managed box and a thread is writing on the managed box, can the other threads only read the box, not write?
+[02:50:49] <cmr> Is servo sharing managed boxes!?
+[02:53:56] *** Joins: deokjinkim (Mibbit@1A45E17B.8CE257A9.268E2EF2.IP)
+[02:54:40] <jaeman> cmr: Sorry, my question was regarding to node object. After checking that now, it is implemented as Box<>.
+[02:55:14] *** Quits: dbaupp (Thunderbir@898216D2.D5A1DCF.37681C44.IP) (Ping timeout)
+[02:56:24] <jaeman> cmr: In the case of Box, can my question be replyed 'yes'?
+[02:57:16] <cmr> jaeman: I do not know, but if servo is maintaining any semblance of safety, the answer is no: it should block until the other task is finished.
+[02:57:20] <jack> jaeman: not even reading is safe.
+[02:57:25] <cmr> But I don't know the servo codebase.
+[02:57:50] <jack> it's the same as two threads in C accessing the same structure
+[02:57:51] *** Quits: jaeman (Mibbit@1A45E17B.8CE257A9.268E2EF2.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[02:58:08] <jack> the only thing special about boxes here is that they are garbage collected and the refcount is not threadsafe
+[02:58:38] *** Joins: jaeman (Mibbit@1A45E17B.8CE257A9.268E2EF2.IP)
+[02:58:44] <jaeman> Hi, Jack
+[02:59:24] *** Quits: deokjinkim (Mibbit@1A45E17B.8CE257A9.268E2EF2.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[02:59:26] <larsberg> cmr: pcwalton (and the rest) are trying to get rid of the madness we have with managed boxes being used by multiple tasks concurrently
+[02:59:56] <jack> cmr: the idea was that whiel layout was runnign script couldn't mess with the readable dat.
+[03:00:08] <jaeman> Now I am on business trip on Nanjing and am explain to them regarding to copy on write dom by using your material you used in suwon.
+[03:00:09] <larsberg> we have a few places (e.g., layout/script) where we've been shared managed boxes because there was some phase-y stuff we could exploit
+[03:00:33] <jack> jaeman: COW DOM works because the writes happen to a different non-overlapping part of the box
+[03:01:05] <jack> the clean pointers are never written to by script while layout is running.
+[03:02:09] <larsberg> jaeman: I thought you were just going to be teaching them an introduction to rust! The stuff we covered in Suwon was pretty advanced and only when you know a lot about how your data structures will be used across tasks and concurrently.
+[03:04:48] *** Joins: deokjinkim (Mibbit@1A45E17B.8CE257A9.268E2EF2.IP)
+[03:04:52] *** Joins: dbaupp (Thunderbir@898216D2.D5A1DCF.37681C44.IP)
+[03:05:02] <jaeman> larsberg: I agree with your opinion. :) However, they request for me to do seminar of servo architecture though I also don't know in detail and in depth. :)
+[03:05:23] <larsberg> jaeman: More seriously, it comes back to what I mentioned during my short talk. If you're using unsafe pointers to shared data in Rust, you need to have some other reason (based on your program) to believe that the data is safe to access through those unsafe pointers.
+[03:06:10] <larsberg> But fundamentally, unsafe pointers are unsafe. And as you may have noticed from brson and pcwalton's reactions during my talk, they would prefer that unsafe pointers only be used when there is no other option in Rust's type system. 
+[03:06:51] <larsberg> (for cmr, the talk was on the backwards pointer in a doubly-linked list and on the casts in existential types)
+[03:12:13] <jaeman> OK. If I summarize you comments, COW DOM is implemented as unsafe pointer Box<> which is actually not original factor of rust and is used only on servo, right? :)
+[03:14:48] <jack> yes. COW DOM uses low-level unsafe primitives of rust to build a safe abstraction for the DOM
+[03:22:02] *** Quits: zz_kimundi (kimundi@moz-BF21A096.dip0.t-ipconnect.de) (Ping timeout)
+[03:23:49] *** Quits: CaseyBecking (CaseyBecki@moz-29F30CC3.lsanca.fios.verizon.net) (Client exited)
+[03:24:14] *** Joins: CaseyBecking (CaseyBecki@moz-29F30CC3.lsanca.fios.verizon.net)
+[03:25:09] *** Quits: jaeman (Mibbit@1A45E17B.8CE257A9.268E2EF2.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[03:25:09] *** Quits: deokjinkim (Mibbit@1A45E17B.8CE257A9.268E2EF2.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[03:25:39] *** Joins: zz_kimundi (kimundi@moz-8CF1B152.dip0.t-ipconnect.de)
+[03:25:40] *** zz_kimundi is now known as kimundi
+[03:26:07] *** Quits: CaseyBecking (CaseyBecki@moz-29F30CC3.lsanca.fios.verizon.net) (Ping timeout)
+[03:54:40] *** Quits: brson (brson@63DCD950.E4213B29.318DADF5.IP) (Quit: leaving)
+[03:59:40] *** Quits: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com) (Quit: lmandel)
+[04:01:01] *** Joins: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com)
+[04:05:07] *** Joins: vodik (simon@moz-FD4ADBC6.cable.teksavvy.com)
+[04:18:17] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[04:18:54] *** Quits: Jesse (jruderman@moz-5973C6FA.oc.oc.cox.net) (Ping timeout)
+[04:24:25] *** Quits: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com) (Quit: lmandel)
+[04:56:27] *** Joins: recrack (Mibbit@5AB4884B.FCC4549.14D5B978.IP)
+[05:06:02] *** Quits: harth (heather@moz-C07D5168.p2p.sfo1.mozilla.com) (Client exited)
+[05:09:17] *** Joins: harth (heather@moz-C07D5168.p2p.sfo1.mozilla.com)
+[05:09:40] *** Quits: harth (heather@moz-C07D5168.p2p.sfo1.mozilla.com) (Client exited)
+[05:11:54] *** Quits: abinader (abinader@496D17B0.2513D022.AD91B79.IP) (Ping timeout)
+[05:12:43] *** Joins: abinader (abinader@496D17B0.2513D022.AD91B79.IP)
+[05:15:42] *** Quits: abinader (abinader@496D17B0.2513D022.AD91B79.IP) (Ping timeout)
+[05:18:05] *** Joins: abinader (abinader@496D17B0.2513D022.AD91B79.IP)
+[05:18:28] *** Joins: heather (heather@moz-C07D5168.p2p.sfo1.mozilla.com)
+[05:22:04] *** Quits: ibnc (ibnc@moz-7458E598.client.mchsi.com) (Client exited)
+[05:23:24] *** Quits: abinader (abinader@496D17B0.2513D022.AD91B79.IP) (Ping timeout)
+[05:25:43] *** Joins: abinader (abinader@496D17B0.2513D022.AD91B79.IP)
+[05:27:25] *** Joins: ibnc (ibnc@moz-7458E598.client.mchsi.com)
+[05:29:06] *** Quits: ibnc (ibnc@moz-7458E598.client.mchsi.com) (Ping timeout)
+[05:34:31] *** Joins: jdm (jdm@moz-78156D60.dsl.teksavvy.com)
+[05:34:31] *** ChanServ sets mode: +o jdm
+[05:34:32] *** Quits: recrack (Mibbit@5AB4884B.FCC4549.14D5B978.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[05:36:48] *** Quits: heather (heather@moz-C07D5168.p2p.sfo1.mozilla.com) (Client exited)
+[05:36:50] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[05:38:06] *** Quits: abinader (abinader@496D17B0.2513D022.AD91B79.IP) (Ping timeout)
+[05:39:59] *** Joins: eholk (eholk@moz-EA69C7A5.wavecable.com)
+[05:49:45] *** Joins: recrack (Mibbit@5AB4884B.FCC4549.14D5B978.IP)
+[05:52:56] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[05:52:56] <ghservo> [13rust-opengles] 15sstewartgallus opened pull request #61: Port to the latest Rust (06master...06port_to_latest) 02http://git.io/3zw9qw
+[05:52:56] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[05:57:24] *** Quits: dbaupp (Thunderbir@898216D2.D5A1DCF.37681C44.IP) (Ping timeout)
+[05:58:40] *** Quits: dzbarsky (Adium@DB6E1F3D.1EBC2536.DA1C73DD.IP) (Quit: Leaving.)
+[06:00:36] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Connection reset by peer)
+[06:01:01] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[06:03:35] *** Quits: cstipkovic (uid6805@moz-E77DEB21.irccloud.com) (Quit: Connection closed for inactivity)
+[06:08:30] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[06:08:30] <ghservo> 01[13rust-opengles01] 15pcwalton pushed 2 new commits to 06master: 02http://git.io/-4QUgQ
+[06:08:30] <ghservo> 13rust-opengles/06master 14f67a0f8 15Steven Stewart-Gallus: Port to the latest Rust...
+[06:08:30] <ghservo> 13rust-opengles/06master 14aa29971 15Patrick Walton: Merge pull request #61 from sstewartgallus/port_to_latest...
+[06:08:30] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[06:08:55] *** Quits: eholk (eholk@moz-EA69C7A5.wavecable.com) (Quit: eholk)
+[06:10:17] *** Joins: patrick-kim (Mibbit@B4104EBB.3CC170B1.1E14B209.IP)
+[06:17:52] <jdm> every time we talk about our current DOM setup, I become a little more ashamed
+[06:18:07] * jdm hacks some more on his replacement
+[06:18:16] <cmr> replacing the DOM already? :P
+[06:18:19] <jdm> so many duplicated methods :(
+[06:18:30] <jdm> cmr: replacing sharing shared boxes, at least!
+[06:20:23] <cmr> that's good!
+[06:20:48] <jdm> argh!
+[06:21:03] <jdm> if I have an type Foo<T>
+[06:21:39] <jdm> I can't have impls for Foo<Concrete1> and Foo<Concrete2> with identically-named methods :(
+[06:21:42] <jdm> why
+[06:22:10] <cmr> Because of silly coherence rules
+[06:22:15] <cmr> There's 0 reason that should be forbidden
+[06:22:33] <jdm> eff
+[06:22:38] * jdm files
+[06:23:43] *** Quits: canhtak (canhtak@moz-6F820ACE.wl.t.ulaval.ca) (Quit: canhtak)
+[06:24:58] <jdm> maybe I need to use traits and inheritence
+[06:25:00] <jdm> so sad
+[06:25:07] <Luqman> cmr: i'm pretty sure it's not coherence in that case
+[06:25:26] <cmr> Luqman: coherence ignores typarams afaik
+[06:25:51] <Luqman> no, the problem in this case would be how resolve handles multiple impls no?
+[06:26:11] <Luqman> er, nvm
+[06:26:14] <cmr> jdm: can you run it with -Z time-passes?
+[06:26:17] <Luqman> i'm thinking of static methods
+[06:26:21] <jdm> heh, clever
+[06:26:23] <cmr> (to get an idea of what is rejecting it)
+[06:26:40] <jdm> time: 0.076 s	external crate/lib resolution
+[06:26:41] <jdm> time: 0.000 s	language item collection
+[06:27:32] <Luqman> i was thinking of static methods, where impl A<T> would create a mod A and add static methods to it and any later impl's would just try adding into that mod
+[06:30:59] *** Quits: vodik (simon@moz-FD4ADBC6.cable.teksavvy.com) (Quit: WeeChat 0.4.3-dev)
+[06:31:14] *** Joins: vodik (simon@moz-FD4ADBC6.cable.teksavvy.com)
+[06:37:30] *** Joins: Jesse (jruderman@moz-5973C6FA.oc.oc.cox.net)
+[06:39:50] *** Quits: Jesse (jruderman@moz-5973C6FA.oc.oc.cox.net) (Quit: Jesse)
+[06:40:48] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[06:40:48] *** ChanServ sets mode: +qo dherman dherman
+[07:02:22] *** Joins: dbaupp (Thunderbir@moz-3BE4086E.lns20.syd6.internode.on.net)
+[07:02:46] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Connection reset by peer)
+[07:03:11] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[07:09:37] *** Joins: victorporof (victorporo@47B918E3.BCF05198.9B1E38F4.IP)
+[07:31:19] *** Quits: valenting (Thunderbir@95C905BA.4985FA88.FCAAE698.IP) (Quit: valenting)
+[07:31:26] *** Joins: valenting (Thunderbir@95C905BA.4985FA88.FCAAE698.IP)
+[07:32:22] *** Joins: deokjinkim (Mibbit@1A45E17B.8CE257A9.268E2EF2.IP)
+[07:33:05] *** Quits: valenting (Thunderbir@95C905BA.4985FA88.FCAAE698.IP) (Ping timeout)
+[07:40:08] *** Joins: vky (chatzilla@moz-4F2E17BF.dsl.dynamic.sonic.net)
+[07:44:52] *** Quits: deokjinkim (Mibbit@1A45E17B.8CE257A9.268E2EF2.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[08:25:58] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[08:32:08] <jdm> VICTORY
+[08:32:26] <jdm> it's not pretty, but I think I have a better replacement for AbstractNode and friends
+[08:32:38] <jdm> and it allows us to use JSManaged<Element> when we had to use AbstractNode before
+[08:33:03] <jdm> and the type system protects us from casting things to other managed types that don't make sense
+[08:33:22] <jdm> static dispatch dynamic checks for downcasting, free for upcasting
+[08:34:15] <jdm> let doc_node = Node::from(doc); // Ok!
+[08:34:25] <jdm> let doc_win = Window::from(doc); // Error!
+[08:35:20] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Leaving...)
+[08:35:22] <jdm> the question now is how much boilerplate could be generated from the webidl files
+[08:39:54] *** Joins: Ms2ger (Ms2ger@B7B2FF50.C60A97A6.F9FB0584.IP)
+[08:42:59] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[08:52:41] <jdm> Ms2ger: https://pastebin.mozilla.org/3684067
+[08:53:24] <Ms2ger> And a good morning to you too
+[08:54:10] <jdm> actually https://pastebin.mozilla.org/3684069 is a bit better annotated
+[08:59:43] <Ms2ger> (What does the first println print?)
+[09:00:33] <Ms2ger> And what does the code look like?
+[09:00:38] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[09:01:59] <jdm> Ms2ger: https://pastebin.mozilla.org/3684102
+[09:02:31] <jdm> it's a lot of boilerplate
+[09:02:42] <jdm> but possibly something we can generate from webidl
+[09:03:38] <Ms2ger> Hmm, JSManaged
+[09:03:50] <jdm> this totally does away with AbstractNode
+[09:03:57] <jdm> so we could actually use stuff like JSManaged<Element> now
+[09:05:00] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Connection reset by peer)
+[09:05:09] <jdm> the FooDerived definitions would need to be written for every root of an inheritance tree
+[09:05:25] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[09:05:28] *** Quits: vky (chatzilla@moz-4F2E17BF.dsl.dynamic.sonic.net) (Ping timeout)
+[09:05:29] <jdm> but I think all child derived types could be automatically generated, since they can just call the parent type's implementation
+[09:06:50] *** Quits: victorporof (victorporo@47B918E3.BCF05198.9B1E38F4.IP) (Ping timeout)
+[09:07:30] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[09:07:31] <ghservo> [13servo] 15ksh8281 opened pull request #1317: Fix for linux (06master...06fix_for_linux) 02http://git.io/YKWeww
+[09:07:31] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[09:12:22] *** Joins: victorporof (victorporo@47B918E3.BCF05198.9B1E38F4.IP)
+[09:14:28] *** Joins: nielsle (nielsle@moz-C46DA772.boa.fiberby.dk)
+[09:17:16] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[09:25:06] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[09:28:46] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Quit: Gone to save the world!)
+[09:33:43] *** Quits: jdm (jdm@moz-78156D60.dsl.teksavvy.com) (Quit: Lost terminal)
+[09:37:43] *** Quits: Cork (Cork@moz-352B7E7B.a370.priv.bahnhof.se) (Ping timeout)
+[09:39:33] *** Joins: Cork (Cork@moz-352B7E7B.a370.priv.bahnhof.se)
+[09:45:43] *** Quits: bjz (bjz@moz-DD4A2A91.lnse2.cha.bigpond.net.au) (Ping timeout)
+[09:55:03] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[09:59:46] *** Joins: deokjinkim (Mibbit@1A45E17B.8CE257A9.268E2EF2.IP)
+[10:07:07] *** Joins: glazou (glazou@D8B9C081.E820043D.D4C04133.IP)
+[10:10:23] *** Quits: victorporof (victorporo@47B918E3.BCF05198.9B1E38F4.IP) (Quit: victorporof)
+[10:19:50] *** Quits: six600110 (six600110@moz-C663577C.hsd1.il.comcast.net) (Ping timeout)
+[10:21:24] *** Joins: six600110 (six600110@moz-C663577C.hsd1.il.comcast.net)
+[10:24:31] *** Quits: deokjinkim (Mibbit@1A45E17B.8CE257A9.268E2EF2.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[10:24:54] *** Quits: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net) (Connection reset by peer)
+[10:25:14] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[10:41:38] *** Joins: bjz (bjz@moz-DD4A2A91.lnse2.cha.bigpond.net.au)
+[11:16:06] *** Joins: victorporof (victorporo@47B918E3.BCF05198.9B1E38F4.IP)
+[11:20:34] *** Quits: Ms2ger (Ms2ger@B7B2FF50.C60A97A6.F9FB0584.IP) (Quit: bbl)
+[11:20:38] *** Joins: bholley (bholley@moz-24EDB000.hsd1.ca.comcast.net)
+[11:22:34] *** Quits: bholley (bholley@moz-24EDB000.hsd1.ca.comcast.net) (Ping timeout)
+[11:30:19] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[11:50:07] *** Joins: Debloper (debloper@moz-88FF8AE8.redhat.com)
+[11:55:13] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[12:10:56] *** Quits: recrack (Mibbit@5AB4884B.FCC4549.14D5B978.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[12:30:26] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[12:37:45] *** Joins: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP)
+[12:39:28] *** Joins: Savago (Savago@D8B9C081.E820043D.D4C04133.IP)
+[13:04:43] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[13:15:57] *** Quits: bjz (bjz@moz-DD4A2A91.lnse2.cha.bigpond.net.au) (Ping timeout)
+[13:21:01] *** Joins: bjz (bjz@moz-DD4A2A91.lnse2.cha.bigpond.net.au)
+[13:25:12] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[13:34:15] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[13:48:21] *** bhearsum|afk is now known as bhearsum
+[13:49:35] *** Joins: Ms2ger (Ms2ger@moz-EED28559.ugent.be)
+[13:50:55] *** Joins: vky (chatzilla@moz-4F2E17BF.dsl.dynamic.sonic.net)
+[13:54:10] *** Quits: vky (chatzilla@moz-4F2E17BF.dsl.dynamic.sonic.net) (Ping timeout)
+[13:57:47] *** Quits: Ms2ger (Ms2ger@moz-EED28559.ugent.be) (Ping timeout)
+[13:58:50] *** Joins: Ms2ger (Ms2ger@moz-DEE14954.ugent.be)
+[14:10:35] *** Joins: canhtak (canhtak@moz-6F820ACE.wl.t.ulaval.ca)
+[14:20:36] *** Joins: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP)
+[14:20:36] *** ChanServ sets mode: +o jdm
+[14:24:11] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[14:24:11] <ghservo> [13servo] 15therealglazou opened pull request #1318: Implement :nth-*() and :*-of-type level 3 pseudo-classes (06master...06therealglazou/nth-pseudos) 02http://git.io/x_4CMw
+[14:24:12] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[14:32:23] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[14:34:08] *** Joins: miketaylrrrr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[14:34:21] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Connection reset by peer)
+[14:36:20] *** Quits: miketaylrrrr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Ping timeout)
+[14:44:10] <glazou> SimonSapin, ah, yes, years of gecko-itis… :-)
+[14:44:21] <SimonSapin> :)
+[14:44:33] <glazou> hard to move another coding style
+[14:44:49] <glazou> move to even
+[14:45:24] <glazou> so there is something fun going on with dpi computation
+[14:45:42] <glazou> my MBP retina is connected to an external display that is of course not retina
+[14:46:12] <glazou> if I launch servo there and move afterwards the window to the retina LCD panel, the aspect ratio wrt other windows is horked
+[14:47:11] <jdm> in general we don
+[14:47:12] <jdm> don
+[14:47:14] <jdm> argh
+[14:47:16] <Ms2ger> don
+[14:47:18] <Ms2ger> don
+[14:47:18] <Ms2ger> don
+[14:47:22] <jdm> don't support retina well right now
+[14:47:23] <glazou> ROFL
+[14:47:32] <glazou> jdm, I can see that :-)
+[14:48:01] * jdm is typing wearing gloves on a train
+[14:48:16] <Ms2ger> glazou, you're clearly starting to move already... In Gecko, I'd tell you to use aFoo ;)
+[14:48:37] <glazou> eheh
+[14:48:52] <glazou> I prefer aBar ;-)
+[14:53:15] <Ms2ger> (((index as f32) - (b as f32))  / (a as f32)) as i32; :/
+[14:53:56] <glazou> eh, I am a beginner here
+[14:54:23] <glazou> I still have to explore all the available libs
+[14:54:28] <glazou> and how things are correctly done
+[14:54:45] <glazou> total new territory to me
+[14:55:12] <glazou> and if only it was the only thing on my radar...
+[15:00:44] <SimonSapin>  / and % should work on integers and behave like in C
+[15:01:43] <SimonSapin> and looking through libstd/num/* shows a x.div_rem(y) method on numbers
+[15:07:06] *** Joins: ibnc (ibnc@moz-7458E598.client.mchsi.com)
+[15:07:25] *** Joins: abinader (abinader@D8B9C081.E820043D.D4C04133.IP)
+[15:15:31] *** Quits: victorporof (victorporo@47B918E3.BCF05198.9B1E38F4.IP) (Quit: victorporof)
+[15:20:07] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Quit: Gone to save the world!)
+[15:29:22] *** Quits: canhtak (canhtak@moz-6F820ACE.wl.t.ulaval.ca) (Quit: canhtak)
+[15:33:06] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[15:33:41] <jdm> woohoo
+[15:33:43] <jdm> https://gist.github.com/jdm/7693770
+[15:33:45] <jdm> full sketch
+[15:34:25] * jdm posts to the mailing list
+[15:35:25] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Ping timeout)
+[15:37:15] <jack> jdm: looks pretty clean. i'm still not totally clear on what reflector() is/does
+[15:37:22] <jack> that gives me the JS wrapper?
+[15:37:33] <jdm> jack: correct. it's exactly the same as our current implementation.
+[15:37:35] <jack> ie a JSObject in spidermonkey?
+[15:37:44] <Ms2ger> Yep
+[15:38:11] <jdm> what I like best about this setup is that we should be able to generate the inheritance boilerplate via a script
+[15:38:21] <jdm> so Type::from and Type::to will Just Work
+[15:38:42] <jdm> no need to write lots of as_foo methods
+[15:39:16] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[15:40:03] <Ms2ger> jdm, isn't Box<T> what @mut T looks like?
+[15:40:23] <jdm> Ms2ger: it's also what some ~T look like as well
+[15:40:30] <Ms2ger> Interesting
+[15:40:34] <jdm> if they contain a @
+[15:41:03] <jdm> I don't know if that will be the case or not
+[15:41:09] *** Joins: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com)
+[15:41:11] * jdm waves his hands
+[15:41:27] * Ms2ger is a little scared
+[15:42:34] *** Quits: ibnc (ibnc@moz-7458E598.client.mchsi.com) (Client exited)
+[15:49:37] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[15:49:55] * jgraham imagines jdm as Screamin' Jay Hawkins
+[15:57:34] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Leaving...)
+[16:03:04] *** Quits: alex_abreu (alex@moz-7421D6C9.mc.videotron.ca) (Client exited)
+[16:05:41] * jdm returns to fixing Gecko security bugs
+[16:05:43] *** Joins: alex-abreu (alex@moz-7421D6C9.mc.videotron.ca)
+[16:06:03] <Ms2ger> jdm, sounds like fun
+[16:06:08] <jdm> in imagelib, no less!
+[16:06:20] <Ms2ger> What is this? 2005?
+[16:11:34] *** Quits: Ms2ger (Ms2ger@moz-DEE14954.ugent.be) (Quit: bbl)
+[16:14:40] *** Joins: canhtak (canhtak@moz-6F820ACE.wl.t.ulaval.ca)
+[16:17:07] *** Quits: canhtak (canhtak@moz-6F820ACE.wl.t.ulaval.ca) (Quit: canhtak)
+[16:17:36] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Ping timeout)
+[16:18:06] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[16:18:53] *** Joins: ibnc (ibnc@1D1D1452.B77F6C4F.9A06DD32.IP)
+[16:19:56] *** Quits: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP) (Ping timeout)
+[16:21:34] *** Joins: canhtak (canhtak@moz-6F820ACE.wl.t.ulaval.ca)
+[16:22:04] *** Quits: glazou (glazou@D8B9C081.E820043D.D4C04133.IP) (Quit: bbl)
+[16:23:04] *** Joins: Jackneill (Jackneill@moz-DEC439B1.pool.digikabel.hu)
+[16:47:07] *** Joins: dbaron (dbaron@moz-A035068C.dsl.dynamic.sonic.net)
+[16:49:07] *** Joins: jdm (jdm@13F2CEC5.7672369.D8E68FF6.IP)
+[16:49:07] *** ChanServ sets mode: +o jdm
+[16:51:00] *** Joins: bholley (bholley@moz-24EDB000.hsd1.ca.comcast.net)
+[17:16:26] *** Quits: abinader (abinader@D8B9C081.E820043D.D4C04133.IP) (Ping timeout)
+[17:16:43] *** Joins: Ms2ger (Ms2ger@moz-D500AF6B.adsl-dyn.isp.belgacom.be)
+[17:20:15] *** Joins: abinader (abinader@496D17B0.2513D022.AD91B79.IP)
+[17:25:17] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[17:25:51] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[17:28:08] <Ms2ger> jdm, hmm, so if the JSManaged owns the object, why not make it have a ~T?
+[17:30:34] <jdm> Ms2ger: because there can be many JSManaged instances
+[17:30:45] <jdm> the JS finalizer will perform the final deallocation
+[17:30:53] <jdm> and we'll trace all fields that are JSManaged
+[17:32:08] <jdm> otherwise, anytime a JSManaged went out of scope, its contained object would be freed immediatley
+[17:45:41] *** Joins: victorporof (victorporo@47B918E3.BCF05198.9B1E38F4.IP)
+[17:55:09] *** jdm is now known as jdm|f00ding
+[18:09:49] *** Joins: CaseyBecking (CaseyBecki@moz-29F30CC3.lsanca.fios.verizon.net)
+[18:10:42] *** Joins: CaseyBec_ (CaseyBecki@moz-29F30CC3.lsanca.fios.verizon.net)
+[18:11:37] *** Quits: CaseyBecking (CaseyBecki@moz-29F30CC3.lsanca.fios.verizon.net) (Ping timeout)
+[18:15:56] *** Joins: Jesse (jruderman@moz-5973C6FA.oc.oc.cox.net)
+[18:18:38] *** Ms2ger is now known as Ms2ger|sheriffduty
+[18:20:38] *** Quits: ibnc (ibnc@1D1D1452.B77F6C4F.9A06DD32.IP) (Ping timeout)
+[18:42:15] *** jdm|f00ding is now known as jdm
+[18:46:08] *** Quits: canhtak (canhtak@moz-6F820ACE.wl.t.ulaval.ca) (Quit: canhtak)
+[18:53:59] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[18:54:19] *** Joins: canhtak (canhtak@moz-6F820ACE.wl.t.ulaval.ca)
+[19:04:04] *** Joins: eholk (eholk@moz-EA69C7A5.wavecable.com)
+[19:17:44] *** Quits: heather (heather@moz-A0276582.hsd1.ca.comcast.net) (Client exited)
+[19:22:09] *** Quits: CaseyBec_ (CaseyBecki@moz-29F30CC3.lsanca.fios.verizon.net) (Ping timeout)
+[19:23:13] *** Quits: victorporof (victorporo@47B918E3.BCF05198.9B1E38F4.IP) (Quit: victorporof)
+[19:30:24] *** Quits: eholk (eholk@moz-EA69C7A5.wavecable.com) (Quit: eholk)
+[19:33:18] *** Joins: eholk (eholk@moz-EA69C7A5.wavecable.com)
+[19:35:41] *** Joins: heather (heather@moz-A0276582.hsd1.ca.comcast.net)
+[19:40:59] *** Joins: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net)
+[19:46:45] *** Joins: victorporof (victorporo@47B918E3.BCF05198.9B1E38F4.IP)
+[19:49:22] *** Quits: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP) (Ping timeout)
+[19:50:30] *** Joins: twb (textual@moz-5DE8950B.hsd1.ga.comcast.net)
+[19:51:53] *** Ms2ger|sheriffduty is now known as Ms2ger
+[19:56:33] *** Quits: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net) (Client exited)
+[19:56:58] *** Joins: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net)
+[19:58:55] *** Quits: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net) (Ping timeout)
+[20:00:09] *** Quits: twb (textual@moz-5DE8950B.hsd1.ga.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[20:06:14] *** Quits: Savago (Savago@D8B9C081.E820043D.D4C04133.IP) (Quit: Savago)
+[20:13:12] *** Joins: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net)
+[20:19:49] *** Joins: vky (chatzilla@moz-4F2E17BF.dsl.dynamic.sonic.net)
+[20:22:38] *** Quits: victorporof (victorporo@47B918E3.BCF05198.9B1E38F4.IP) (Quit: victorporof)
+[20:27:43] *** Quits: vky (chatzilla@moz-4F2E17BF.dsl.dynamic.sonic.net) (Client exited)
+[20:30:02] *** Joins: Jayflux (Jason@moz-2706B3EB.as13285.net)
+[20:39:15] *** Ms2ger is now known as Ms2ger|Sheriffduty
+[20:49:11] *** Quits: abinader (abinader@496D17B0.2513D022.AD91B79.IP) (Quit: abinader)
+[20:51:07] *** Joins: victorporof (victorporo@47B918E3.BCF05198.9B1E38F4.IP)
+[20:53:36] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Quit: Gone to save the world!)
+[20:54:18] *** Joins: abinader (abinader@496D17B0.2513D022.AD91B79.IP)
+[20:55:43] *** Quits: abinader (abinader@496D17B0.2513D022.AD91B79.IP) (Quit: Fui!)
+[21:01:02] *** Quits: victorporof (victorporo@47B918E3.BCF05198.9B1E38F4.IP) (Quit: victorporof)
+[21:05:24] *** Ms2ger|Sheriffduty is now known as Ms2ger
+[21:06:26] *** Quits: Ms2ger (Ms2ger@moz-D500AF6B.adsl-dyn.isp.belgacom.be) (Quit: nn)
+[21:07:10] *** Joins: Kostic (marko@moz-85E2E8AB.mbb.telenor.rs)
+[21:19:14] *** Quits: eholk (eholk@moz-EA69C7A5.wavecable.com) (Quit: eholk)
+[21:27:38] *** Joins: valenting (Thunderbir@95C905BA.4985FA88.FCAAE698.IP)
+[21:45:42] *** Quits: valenting (Thunderbir@95C905BA.4985FA88.FCAAE698.IP) (Ping timeout)
+[21:46:32] *** Quits: dbaupp (Thunderbir@moz-3BE4086E.lns20.syd6.internode.on.net) (Ping timeout)
+[21:47:36] *** Quits: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net) (Client exited)
+[21:47:43] *** Joins: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net)
+[21:53:08] *** Joins: dzbarsky (Adium@DB6E1F3D.1EBC2536.DA1C73DD.IP)
+[21:54:38] *** Quits: dbaron (dbaron@moz-A035068C.dsl.dynamic.sonic.net) (Ping timeout)
+[21:58:48] *** Quits: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net) (Client exited)
+[22:02:37] *** bhearsum is now known as bhearsum|afk
+[22:13:02] *** Quits: Jackneill (Jackneill@moz-DEC439B1.pool.digikabel.hu) (Input/output error)
+[22:18:16] *** Joins: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net)
+[22:18:46] *** Quits: bholley (bholley@moz-24EDB000.hsd1.ca.comcast.net) (Quit: bholley)
+[22:27:56] *** Joins: valenting (Thunderbir@95C905BA.4985FA88.FCAAE698.IP)
+[22:31:12] *** Quits: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net) (Client exited)
+[22:32:19] *** Joins: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net)
+[22:32:20] *** Quits: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net) (Client exited)
+[22:32:44] *** Joins: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net)
+[22:38:00] *** Quits: jdm (jdm@13F2CEC5.7672369.D8E68FF6.IP) (Ping timeout)
+[22:39:52] *** Quits: canhtak (canhtak@moz-6F820ACE.wl.t.ulaval.ca) (Quit: canhtak)
+[22:40:19] *** Joins: canhtak (canhtak@moz-6F820ACE.wl.t.ulaval.ca)
+[22:43:39] *** Quits: Kostic (marko@moz-85E2E8AB.mbb.telenor.rs) (Client exited)
+[22:45:05] *** Quits: valenting (Thunderbir@95C905BA.4985FA88.FCAAE698.IP) (Ping timeout)
+[23:03:09] *** Quits: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net) (Client exited)
+[23:03:40] *** Joins: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net)
+[23:03:57] *** Quits: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net) (Client exited)
+[23:04:10] *** Joins: CaseyBecking (CaseyBecki@moz-F428FB81.lsanca.fios.verizon.net)
+[23:05:17] *** Joins: dbaupp (Thunderbir@A192CB9D.D5A1DCF.37681C44.IP)
+[23:08:53] *** Quits: dbaupp (Thunderbir@A192CB9D.D5A1DCF.37681C44.IP) (Ping timeout)
+[23:27:39] *** Joins: dbaupp (Thunderbir@A192CB9D.D5A1DCF.37681C44.IP)
+[23:50:41] *** Quits: dzbarsky (Adium@DB6E1F3D.1EBC2536.DA1C73DD.IP) (Quit: Leaving.)

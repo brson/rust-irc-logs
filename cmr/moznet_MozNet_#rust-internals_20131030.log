@@ -1,0 +1,768 @@
+[00:18:30] *** Joins: doomlord_ (servitor@moz-B44A6624.range86-160.btcentralplus.com)
+[00:26:51] <acrichto> nmatsakis: ping
+[00:56:30] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[00:56:31] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/AK1K2g
+[00:56:31] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[01:01:52] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[01:01:52] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/vZJwoQ
+[01:01:52] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[01:01:53] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[01:01:53] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/Mbincw
+[01:01:53] <ghrust> 13rust/06auto 14e203f30 15Alex Crichton: Register new snapshots
+[01:01:53] <ghrust> 13rust/06auto 1413e5ce3 15bors: auto merge of #10160 : alexcrichton/rust/snapshots, r=pcwalton...
+[01:01:53] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[01:02:08] *** Joins: yghannam (yghannam@moz-C5BCCF4E.lightspeed.austtx.sbcglobal.net)
+[01:05:16] *** Quits: tikue_ (tikue_star@9746E5A.EB08480C.689607DE.IP) (Ping timeout)
+[01:05:55] <pcmattman> acrichto: re-r (noticed the libuv changes went in) https://github.com/mozilla/rust/pull/9945?
+[01:13:01] <acrichto> pcmattman: I'm still uneasy with this, our dealing with linkage visibility for llvm globals is a complete mess and this is sadly just throwing more wrenches into the already heavily clogged system
+[01:14:00] <pcmattman> sure, that's true
+[01:14:25] <pcmattman> when you say llvm globals do you mean llvm internal globals or the llvm globals we create?
+[01:16:33] <strcat> acrichto: imo it fixes it fully for binaries
+[01:16:40] <strcat> crates are still hopelessly broken
+[01:18:54] *** Quits: yghannam (yghannam@moz-C5BCCF4E.lightspeed.austtx.sbcglobal.net) (Ping timeout)
+[01:23:22] <Luqman> brson: how do we create the inital stage0 for a new platform? does someone just package one up manually and add it to snapshots.txt?
+[01:23:33] <acrichto> pcmattman: can you explain what the use case for 9945 was again?
+[01:24:24] <Luqman> brson: or rather not a new platform but one which we can already target but haven't got snapshots for
+[01:24:57] <pcmattman> sure, the use case was linking the object against an assembly code stub which needed to call in to the function, without requiring the function to be written in C
+[01:25:54] <pcmattman> when the Rust function isn't externally visible it gets removed from the output (as it's dead code and only internally-visible), and if it doesn't get removed, it can't be linked against (as it's private to the object/binary)
+[01:26:06] <strcat> acrichto: this is blocking rust-core from implementing memcpy/memmove/memset for LLVM
+[01:26:27] <strcat> we can't mark everything as internal in a binary after all, an LTO pass works differently
+[01:26:54] <pcmattman> another use case is doing something like dlopen("someplugin.so") and having someplugin.so reference, say, register_plugin in the binary calling dlopen() (see for example: Python .so modules)
+[01:27:01] <pcmattman> for plugins
+[01:27:02] <acrichto> pcmattman: so you're not compiling with --lib ?
+[01:27:15] <pcmattman> no
+[01:27:30] <strcat> acrichto: you can't compile part with main using --lib
+[01:27:34] <brson> Luqman: yes, somebody creates the initial snapshot through whatever wizardry is necessary then we make another snapshot on the bots
+[01:28:19] <pcmattman> --lib loses all the cross-function optimisation too (eg, if you're calling X with constant A, B, and C, and that's the only call of X, special-case the output of X for those inputs, or inline it directly)
+[01:28:55] <strcat> that part doesn't matter
+[01:29:13] <strcat> rust's crate model doesn't work at all - but you can still compile everything to bytecode and compile with clang
+[01:29:19] <pcmattman> no, true
+[01:29:49] <strcat> but rust-core shouldn't have to define memcpy/memmove/memset in some weird other crate and require you to include both
+[01:29:56] <strcat> if we want LTO, we need to make an LTO pass
+[01:30:03] <strcat> marking everything as internal doesn't work
+[01:30:08] <Luqman> brson: ah ok, i was asking since i managed to make one for arm/linux but i guess we haven't got any bots that can build subsequent ones
+[01:30:36] <strcat> anyway rust-core is totally stuck atm
+[01:31:07] *** Joins: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP)
+[01:31:47] <pcwalton> how are we going to fix crates then
+[01:32:49] <strcat> pcwalton: we need to support static linking so you can actually split up a library into separate compilation units
+[01:32:57] <pcwalton> oh, sure
+[01:33:18] <strcat> + mark everything as internal, then do a search from the entry points to mark stuff as external
+[01:34:02] <strcat> but it doesn't really matter much
+[01:34:19] <strcat> if we supported LTO it wouldn't be a perf issue
+[01:37:06] * strcat really dislikes having to mark everything as #[inline]
+[01:37:46] <pcwalton> Debian packagers would really dislike having everything implicitly inlinable
+[01:39:49] <acrichto> pcmattman: I'm going to think about this a little more tonight. This is all a bit of a mess, but you're definitely not responsible for any of that. I want to try to think about what direction I want to see this go in and then figure out if we can start nudging it in that direction.
+[01:40:00] <acrichto> pcmattman: I'll r+ or comment with requested changes by the end of tonight though
+[01:40:23] <strcat> his changes don't alter crates at all, just building binaries
+[01:41:05] <pcmattman> acrichto: okay
+[01:41:25] <strcat> I made it mark everything but main internal, this changes it to being privacy-based (since that works now)
+[01:41:37] <strcat> crates should ideally work the same way too but #[inline] and generics throw a wrench in it
+[01:42:29] <acrichto> it still seems weird that now we're using both reachable and privacy and you have to select which one you'd prefer
+[01:42:46] <strcat> reachable isn't useful
+[01:43:15] <strcat> acrichto: there's no choice
+[01:43:21] <strcat> rustc foo.rs
+[01:43:28] <strcat> everything but main is internal right now
+[01:43:53] <strcat> the only reason crates can't be privacy-based is due to serialized stuff
+[01:44:09] <acrichto> reachability is used to not mark functions as internal if they could possibly be called from a monomorphized or inlined instance in another crate
+[01:44:32] <strcat> well, maybe that was the goal, but it doesn't work
+[01:45:09] <strcat> it marks everything that's not dead as external
+[01:46:16] <strcat> acrichto: http://ix.io/8NS marks bar as external too
+[01:46:57] <acrichto> I would imagine that's a bug in the reachability pass, but I'd have to make sure
+[01:47:16] <strcat> acrichto: it marks everything called by an external function as reachable
+[01:47:24] *** Joins: tjc (tjc@C6B2069.2D024FDB.284344F5.IP)
+[01:47:24] *** ChanServ sets mode: +o tjc
+[01:47:32] <strcat> it should only do that for generic/inline functions
+[01:48:05] <strcat> s/external/public/
+[01:48:18] <strcat> in a binary, there's no AST serialization
+[01:48:22] <strcat> so that rule isn't necessary
+[01:48:38] <strcat> but it *is* necessary to not mark everything as internal to support freestanding rust
+[01:49:26] <strcat> we also need to stop making ABI wrappers but that's a separate issue
+[01:51:05] * strcat shrugs
+[01:51:21] <strcat> I got very frustrated with it after trying to fix dtors
+[01:56:56] *** Quits: tjc (tjc@C6B2069.2D024FDB.284344F5.IP) (Ping timeout)
+[01:58:41] *** Joins: tikue_ (tikue_star@9746E5A.EB08480C.689607DE.IP)
+[02:00:28] *** Joins: tjc (tjc@C6B2069.2D024FDB.284344F5.IP)
+[02:00:28] *** ChanServ sets mode: +o tjc
+[02:03:50] *** Quits: tjc (tjc@C6B2069.2D024FDB.284344F5.IP) (Ping timeout)
+[02:06:33] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[02:06:33] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/Mbincw
+[02:06:33] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[02:07:56] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[02:07:56] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/rxZ_aA
+[02:07:56] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[02:07:58] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[02:07:58] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/AEcGMg
+[02:07:58] <ghrust> 13rust/06auto 14c20186b 15Chris Morgan: Update prelude items in Vim syntax file.
+[02:07:58] <ghrust> 13rust/06auto 141ad8dbe 15Chris Morgan: Fix Vim indent for wrapped function arguments.
+[02:07:58] <ghrust> 13rust/06auto 14e4938aa 15bors: auto merge of #10149 : chris-morgan/rust/2013-10-29-vim-updates, r=erickt...
+[02:08:00] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[02:11:58] *** Quits: tikue_ (tikue_star@9746E5A.EB08480C.689607DE.IP) (Ping timeout)
+[02:13:54] *** Joins: tikue_ (tikue_star@9746E5A.EB08480C.689607DE.IP)
+[02:15:00] *** Joins: tjc (tjc@C6B2069.2D024FDB.284344F5.IP)
+[02:15:00] *** ChanServ sets mode: +o tjc
+[02:24:09] <strcat> nmatsakis: maybe it would be better to have stack overflow block forever instead of aborting until we figure out an alternative - at least that way you only leak a bunch of resources instead of bringing down the process
+[02:24:17] <strcat> dunno
+[02:24:30] *** Quits: pcwalton (pcwalton@moz-7B0110AD.mv.mozilla.com) (Quit: pcwalton)
+[02:24:39] <strcat> unwinding would be hard to do because LLVM isn't going to put landing pads afaict
+[02:29:41] *** Quits: tjc (tjc@C6B2069.2D024FDB.284344F5.IP) (Ping timeout)
+[02:34:27] <cmr> strcat: I think it'd be possible? It seems like __morestack would need to throw, and we'd use `invoke` everywhere.
+[02:34:33] <cmr> I did look it into a bit
+[02:34:47] <cmr> I didn't figure out a good way to make it actually happen that didn't look like it'd kill perf.
+[02:34:57] <strcat> cmr: __morestack is inserted in codegen
+[02:35:01] <strcat> it doesn't exist in the LLVM IR
+[02:35:07] <strcat> LLVM won't know it's there
+[02:35:10] <strcat> it won't output a landing pad
+[02:35:34] <strcat> you can turn off prune-eh and get landing pads for every call *we generate*
+[02:35:48] <strcat> but not from morestack
+[03:04:08] *** Quits: bjz (brendanzab@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[03:07:39] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[03:07:39] *** ChanServ sets mode: +o pnkfelix
+[03:11:42] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[03:11:42] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/AEcGMg
+[03:11:42] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[03:16:32] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[03:16:32] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/qaN0eg
+[03:16:32] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[03:16:34] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[03:16:34] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/UzIDEA
+[03:16:34] <ghrust> 13rust/06auto 1424a69dd 15Brian Anderson: rt: Remove four unused upcalls
+[03:16:34] <ghrust> 13rust/06auto 14cd1661d 15bors: auto merge of #10161 : brson/rust/upcall, r=alexcrichton
+[03:16:34] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[03:26:57] *** Joins: salamiwiglet (Mibbit@moz-4B2DE764.hsd1.wa.comcast.net)
+[03:27:35] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[03:58:49] *** Quits: kimundi (kimundi@moz-1D7A8D6E.dip0.t-ipconnect.de) (Ping timeout)
+[04:00:25] *** Joins: yghannam (yghannam@moz-C5BCCF4E.lightspeed.austtx.sbcglobal.net)
+[04:02:13] *** Quits: yghannam (yghannam@moz-C5BCCF4E.lightspeed.austtx.sbcglobal.net) (Ping timeout)
+[04:02:27] *** Joins: kimundi (kimundi@moz-E3DE4244.dip0.t-ipconnect.de)
+[04:06:18] *** Quits: geoffhill (geoffhill@moz-79C8D45C.amazon.com) (Quit: geoffhill)
+[04:06:38] *** kimundi is now known as zz_kimundi
+[04:09:35] *** Joins: bjz (textual@B398BE78.F804C29E.D35A31DF.IP)
+[04:14:07] *** zz_kimundi is now known as kimundi
+[04:21:23] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[04:21:24] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/UzIDEA
+[04:21:24] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[04:26:21] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[04:26:21] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/TmGiCw
+[04:26:21] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[04:26:23] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[04:26:23] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/06ojVA
+[04:26:23] <ghrust> 13rust/06auto 144a318d6 15Brian Anderson: rt: Remove rust_thread::detach
+[04:26:23] <ghrust> 13rust/06auto 14fce9d7f 15Brian Anderson: rt: Remove array_list.h
+[04:26:23] <ghrust> 13rust/06auto 14e42e378 15bors: auto merge of #10163 : brson/rust/rtcxx, r=alexcrichton
+[04:26:25] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[04:38:01] *** Joins: eddyb (eddy@A93A03C9.9065A63B.FCAAE698.IP)
+[04:54:29] *** Parts: salamiwiglet (Mibbit@moz-4B2DE764.hsd1.wa.comcast.net) ()
+[04:56:08] *** Joins: onr99 (onur@DBB90BD8.70012127.53438D71.IP)
+[04:57:11] *** Quits: onr99 (onur@DBB90BD8.70012127.53438D71.IP) (Quit: Leaving)
+[05:26:33] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[05:26:33] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/06ojVA
+[05:26:33] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[05:31:44] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[05:31:44] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/mGUvsA
+[05:31:44] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[05:31:46] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[05:31:46] <ghrust> 01[13rust01] 15bors pushed 1 new commit to 06auto: 02http://git.io/hCZLRA
+[05:31:46] <ghrust> 13rust/06auto 14df632b6 15bors: auto merge of #10164 : brson/rust/configure, r=brson...
+[05:31:46] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[05:32:22] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[05:32:48] *** Joins: geoffhill (geoffhill@moz-2785B672.hsd1.wa.comcast.net)
+[05:37:14] *** Joins: yghannam (yghannam@moz-C5BCCF4E.lightspeed.austtx.sbcglobal.net)
+[05:39:08] *** Quits: yghannam (yghannam@moz-C5BCCF4E.lightspeed.austtx.sbcglobal.net) (Ping timeout)
+[05:41:19] *** Quits: geoffhill (geoffhill@moz-2785B672.hsd1.wa.comcast.net) (Quit: geoffhill)
+[05:55:18] *** Joins: tjc (tjc@moz-6EB4E533.dsl.tsoft.com)
+[05:55:18] *** ChanServ sets mode: +o tjc
+[06:21:20] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[06:21:20] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14df632b6 to 14e42e378: 02http://git.io/N3iJvQ
+[06:21:20] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[06:21:26] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[06:21:26] <ghrust> 01[13rust01] 15bors pushed 17 new commits to 06auto: 02http://git.io/CNiB9w
+[06:21:26] <ghrust> 13rust/06auto 14f1124a2 15Jed Davis: Add parser for `#[repr(...)]`; nothing uses it yet....
+[06:21:26] <ghrust> 13rust/06auto 1401740ac 15Jed Davis: Initial implementation of enum discrimnant sizing....
+[06:21:26] <ghrust> 13rust/06auto 1425f9534 15Jed Davis: Lint non-FFI-safe enums.
+[06:21:28] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[06:23:34] * dbaupp hopes this lands
+[07:01:29] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[07:01:30] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/VMpkmg
+[07:01:30] <ghrust> 13rust/06auto 147bab884 15Brian Anderson: syntax: Forbid non-string literals in meta items. #623
+[07:01:30] <ghrust> 13rust/06auto 14690a9d7 15bors: auto merge of #10166 : brson/rust/meta, r=alexcrichton...
+[07:01:30] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[07:01:33] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[07:01:33] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14d05fbf8 to 14e42e378: 02http://git.io/N3iJvQ
+[07:01:33] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[07:09:37] <jld> error: unresolved name `std::mem::size_of`.
+[07:09:41] <jld> http://buildbot.rust-lang.org/builders/auto-win-32-nopt-t/builds/1343/steps/test/logs/stdio
+[07:10:25] <strcat> jld: you need ::std
+[07:10:38] <strcat> jld: remember it combines all the windows tests into one big blob
+[07:10:54] <jld> ...and it doesn't use std inside those modules.
+[07:10:55] <strcat> jld: you can run make check-fast locally
+[07:11:00] <strcat> jld: yeah :(
+[07:11:11] <jld> strcat: Indeed I can.  And I just did.  And it fails the same way.
+[07:12:34] <jld> strcat: It doesn't object to `use std::mem::size_of`, apparently?
+[07:12:47] <strcat> jld: yeah that works
+[07:12:59] <strcat> jld: I think 'use' statements are always 'global'
+[07:13:08] <strcat> that's why there's self::
+[07:20:53] <dbaupp> https://github.com/mozilla/rust/issues/6330 fwiw.
+[07:21:51] <dbaupp> `use foo::bar` == `::foo::bar` in normal code, `use self::foo::bar` == `foo::bar` in normal code
+[07:25:21] <jld> So I pushed the two-character fix for the check-fast breakage.
+[07:26:41] <jld> dbaupp: How hard would it be for me to run the isrustslimyet automation to answer pcwalton's question on the PR?
+[07:27:06] <dbaupp> jld: you'd have to ask cmr, I just suck in his data.
+[07:27:11] <jld> Ah.
+[07:27:39] <jld> I mean, I can run it by hand and eyeball the memory consumption in top(1), but it'd be nice to be a little more scientific.
+[07:27:51] <dbaupp> if you're on linux you can use cgroups
+[07:27:56] <dbaupp> (that's what cmr is using)
+[07:28:06] <dbaupp> https://github.com/cmr/rust-bench is the code, but probably an old version
+[07:28:16] <dbaupp> ... and I have *no idea* how to invoke it
+[07:28:23] <strcat> well I can tell you how to use cgroups
+[07:28:25] <strcat> it's easy
+[07:28:56] <strcat> mkdir /sys/fs/cgroup/memory/foo && echo 0 > /sys/fs/cgroup/memory/foo/tasks && exec make
+[07:29:41] <strcat> and you can poll /sys/fs/cgroup/memory/foo/memory.usage_in_bytes or just check memory.max_usage_in_bytes
+[07:29:42] <jld> ...also my tree is CFG_ENABLE_DEBUG so may not be comparable to what's on IRFY, so I'd have to rebuild master.
+[07:30:09] <dbaupp> yeah, I think that's just built with a plain `./configure`
+[07:30:22] <jld> mkdir: cannot create directory '/sys/fs/cgroup/memory/foo': No such file or directory
+[07:31:24] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[07:31:24] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14690a9d7 to 14e42e378: 02http://git.io/N3iJvQ
+[07:31:24] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[07:31:28] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[07:31:28] <ghrust> 01[13rust01] 15bors pushed 18 new commits to 06auto: 02http://git.io/lG0ZNg
+[07:31:28] <ghrust> 13rust/06auto 14f1124a2 15Jed Davis: Add parser for `#[repr(...)]`; nothing uses it yet....
+[07:31:28] <ghrust> 13rust/06auto 1401740ac 15Jed Davis: Initial implementation of enum discrimnant sizing....
+[07:31:28] <ghrust> 13rust/06auto 1425f9534 15Jed Davis: Lint non-FFI-safe enums.
+[07:31:30] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[07:31:47] <strcat> jld: do you have a /sys/fs/cgroup/ mount?
+[07:31:55] <strcat> ubuntu/debian seem to disable the memory cgroup by default
+[07:32:07] <strcat> (also you need to do this as root)
+[07:32:19] <strcat> at least creating it and adding the task has to be done as root
+[07:32:21] <jld> But also, apparently it's now CFG_DISABLE_DEBUG so this is with the default config.
+[07:44:00] *** flaper87|afk is now known as flaper87
+[07:47:30] <jld> strcat: https://github.com/BlankOn/linux-debian/blob/master/debian/patches/features/all/cgroups-Allow-memory-cgroup-support-to-be-included-b.patch#L39
+[07:47:56] <strcat> jld: I have no idea why they do that...
+[07:48:53] <jld> strcat: Lines 6-7 have the rationale, such as it is.
+[07:50:29] <strcat> jld: I think that used to be true but I don't think it is anymore
+[07:52:07] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[07:52:23] *** Joins: pnkfelix (pnkfelix@DA4ABEAF.1DE10CA8.D8E68FF6.IP)
+[07:52:23] *** ChanServ sets mode: +o pnkfelix
+[07:52:26] *** Quits: pnkfelix (pnkfelix@DA4ABEAF.1DE10CA8.D8E68FF6.IP) (Client exited)
+[07:58:34] *** Quits: tjc (tjc@moz-6EB4E533.dsl.tsoft.com) (Quit: zzzzzzzzzz)
+[08:14:01] *** Joins: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP)
+[08:25:28] *** flaper87 is now known as flaper87|afk
+[08:33:17] *** flaper87|afk is now known as flaper87
+[08:36:28] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[08:36:28] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/lG0ZNg
+[08:36:28] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[08:36:58] <dbaupp> \o/ small enums
+[08:38:34] *** Quits: tikue_ (tikue_star@9746E5A.EB08480C.689607DE.IP) (Ping timeout)
+[08:40:07] <jld> \o/
+[08:41:15] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[08:41:15] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/WqMmUQ
+[08:41:15] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[08:41:16] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[08:41:16] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/xd3N_Q
+[08:41:16] <ghrust> 13rust/06auto 1447abdbd 15klutzy: rustc: Check LHS expression of assignment...
+[08:41:16] <ghrust> 13rust/06auto 14cab0045 15klutzy: test: Add test for LHS expression check
+[08:41:17] <ghrust> 13rust/06auto 14ab79909 15bors: auto merge of #10123 : klutzy/rust/fix-7507, r=alexcrichton...
+[08:41:19] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[08:42:40] *** kimundi is now known as zz_kimundi
+[08:44:05] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[08:53:42] *** Quits: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP) (Ping timeout)
+[09:03:27] *** Quits: Axord (xord@moz-1B228827.lsanca.dsl-w.verizon.net) (Quit: I'm sure it's perfectly safe)
+[09:07:10] *** Joins: tikue_ (tikue_star@9746E5A.EB08480C.689607DE.IP)
+[09:08:10] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[09:09:17] *** Quits: tikue_ (tikue_star@9746E5A.EB08480C.689607DE.IP) (Ping timeout)
+[09:09:48] *** Joins: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP)
+[09:11:22] *** Joins: gov (Mibbit@DB043839.B18C48BA.248E7B84.IP)
+[09:11:30] <gov> hello
+[09:12:11] *** Quits: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP) (Ping timeout)
+[09:12:20] *** Quits: gov (Mibbit@DB043839.B18C48BA.248E7B84.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[09:18:19] *** Joins: tikue_ (tikue_star@9746E5A.EB08480C.689607DE.IP)
+[09:21:14] *** Quits: tikue_ (tikue_star@9746E5A.EB08480C.689607DE.IP) (Client exited)
+[09:32:43] *** zz_kimundi is now known as kimundi
+[09:43:41] *** Joins: Axord (xord@moz-1B228827.lsanca.dsl-w.verizon.net)
+[10:03:53] *** Joins: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP)
+[10:06:15] *** Quits: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP) (Ping timeout)
+[10:11:49] *** Quits: bjz (textual@B398BE78.F804C29E.D35A31DF.IP) (Quit: Textual IRC Client: www.textualapp.com)
+[10:12:02] *** Joins: bjz (textual@B398BE78.F804C29E.D35A31DF.IP)
+[10:31:22] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[10:31:22] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14ab79909 to 145e1a691: 02http://git.io/N3iJvQ
+[10:31:22] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[10:31:23] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[10:31:23] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/yO-zXQ
+[10:31:23] <ghrust> 13rust/06auto 14d10106e 15reedlepee: changed all the impl<T> to impl<T: Send> in rt::comm.rs and libstd::comm.rs #8180
+[10:31:23] <ghrust> 13rust/06auto 14a0e6e0e 15bors: auto merge of #10168 : reedlepee123/rust/priv_fields, r=brson...
+[10:31:23] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[10:34:48] *** kimundi is now known as zz_kimundi
+[10:57:57] *** Joins: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP)
+[11:00:20] *** Quits: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP) (Ping timeout)
+[11:13:18] *** zz_kimundi is now known as kimundi
+[11:24:21] *** flaper87 is now known as flaper87|afk
+[11:26:45] *** Quits: dbaupp (Thunderbir@moz-B3C9E9E8.lns20.syd6.internode.on.net) (Ping timeout)
+[11:30:24] *** Joins: dbaupp (Thunderbir@moz-B3C9E9E8.lns20.syd6.internode.on.net)
+[11:31:31] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[11:31:31] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/yO-zXQ
+[11:31:31] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[11:36:26] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[11:36:26] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/IK59FQ
+[11:36:26] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[11:36:28] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[11:36:28] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/0FApmQ
+[11:36:28] <ghrust> 13rust/06auto 1447abdbd 15klutzy: rustc: Check LHS expression of assignment...
+[11:36:28] <ghrust> 13rust/06auto 14cab0045 15klutzy: test: Add test for LHS expression check
+[11:36:28] <ghrust> 13rust/06auto 14623daf6 15bors: auto merge of #10123 : klutzy/rust/fix-7507, r=alexcrichton...
+[11:36:30] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[11:52:03] *** Joins: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP)
+[11:54:24] *** Quits: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP) (Ping timeout)
+[11:55:18] *** Quits: doomlord_ (servitor@moz-B44A6624.range86-160.btcentralplus.com) (Connection reset by peer)
+[12:04:29] *** Joins: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP)
+[12:24:35] *** Quits: bjz (textual@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[12:24:57] *** Joins: bjz (textual@B398BE78.F804C29E.D35A31DF.IP)
+[12:41:34] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[12:41:34] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/0FApmQ
+[12:41:34] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[12:51:04] *** lbergstrom|away is now known as lbergstrom
+[12:53:10] *** flaper87|afk is now known as flaper87
+[12:58:27] *** Quits: dbaupp (Thunderbir@moz-B3C9E9E8.lns20.syd6.internode.on.net) (Input/output error)
+[13:02:36] <nmatsakis> acrichto: pong
+[13:04:49] *** Quits: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP) (Ping timeout)
+[13:35:18] *** Joins: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP)
+[13:40:25] *** Joins: _eddyb_ (eddy@FE23D96E.F33C1089.FB866788.IP)
+[13:40:29] *** Quits: eddyb (eddy@A93A03C9.9065A63B.FCAAE698.IP) (Ping timeout)
+[13:43:16] *** Quits: bjz (textual@B398BE78.F804C29E.D35A31DF.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[13:45:36] *** Quits: kaeso (kaeso@moz-F21FF626.unstable.it) (Quit: ZNC - http://znc.sourceforge.net)
+[13:46:07] *** Joins: kaeso (kaeso@moz-F21FF626.unstable.it)
+[13:49:39] *** Joins: bjz (textual@B398BE78.F804C29E.D35A31DF.IP)
+[13:54:54] *** Quits: bjz (textual@B398BE78.F804C29E.D35A31DF.IP) (Quit: Textual IRC Client: www.textualapp.com)
+[13:57:12] *** Joins: bjz (textual@B398BE78.F804C29E.D35A31DF.IP)
+[14:09:19] *** Quits: bjz (textual@B398BE78.F804C29E.D35A31DF.IP) (Quit: Textual IRC Client: www.textualapp.com)
+[14:09:26] *** Joins: bjz (textual@B398BE78.F804C29E.D35A31DF.IP)
+[14:20:28] *** _eddyb_ is now known as eddyb
+[14:36:29] *** Joins: sanxiyn (tinuviel@B4104EBB.3CC170B1.1E14B209.IP)
+[14:36:37] <sanxiyn> Re: http://smallcultfollowing.com/babysteps/blog/2013/10/29/intermingled-parameter-lists/
+[14:38:01] <sanxiyn> On the proposal
+[14:38:11] <sanxiyn> Should "fn f<'l, T>(v: &'l [T]) {}" warn (or even error)?
+[14:38:50] <sanxiyn> In the case 'l is early bound, but 'l is not used by later type parameters and doesn't need to be early bound, and is probably a mistake
+[14:39:14] <sanxiyn> Or is there a case this is desirable?
+[14:43:34] <eddyb> if it's not used inside the function, maybe it should warn, just like unused mutable
+[14:44:19] <sanxiyn> eddyb: No, I mean if it is not used inside parameter list
+[14:44:46] <sanxiyn> If it is unused, user probably intended "fn f<T, 'l>(v: &'l [T]) {}" instead
+[14:45:15] <eddyb> what is something within the function requires early bound lifetimes?
+[14:45:32] <eddyb> or that cannot be the case?
+[14:45:55] <nmatsakis> sanxiyn: I'd be fine with a lint
+[14:46:20] <sanxiyn> nmatsakis: I am interested in the case where this is desirable
+[14:46:24] *** Quits: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP) (Ping timeout)
+[14:46:51] <nmatsakis> sanxiyn: what I didn't want to do was to decide early or late bound based on whether it is used in the bounds, which is also an option -- but which makes it much harder (or impossible) to determine what value that is supplied for which parameter applies where etc
+[14:47:21] <nmatsakis> sanxiyn: well, one obvious case is when you want to reserve the option to make use of the lifetime in a bound late, otherwise I don't know that it ever matters to the fn itself
+[14:47:31] <nmatsakis> sanxiyn: *in a bound later
+[14:47:33] *** Quits: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP) (Quit: Leaving.)
+[14:47:49] <sanxiyn> Huh. I guess there is that.
+[14:47:58] <nmatsakis> sanxiyn: so I imagine that the default ought to be that one just writes lifetimes at the end of the list, absent a reason otherwise
+[14:48:06] <nmatsakis> sanxiyn: unfortunately the opposite of what we parse now, but oh well
+[14:48:27] <nmatsakis> sanxiyn: in practice this makes little difference I don't think (that is, it's rare that the distinction between early and late bound matters)
+[14:48:42] <nmatsakis> sanxiyn: only when using fns as values basically
+[14:48:55] <sanxiyn> Yeah. Is my understanding that zero existing Rust code is affected correct?
+[14:49:19] <nmatsakis> sanxiyn: well, I'm not sure *zero*, but I think relatively little -- of course if we added a lint, then there'd be many warnings
+[14:49:38] <nmatsakis> sanxiyn:  I imagine there might be one or two instances in the codebase that need to be changed to have lifetimes come at the end
+[14:50:05] <nmatsakis> sanxiyn: annoyingly it's going to require a new snapshot that permits that to be parsed. bootstrapping fun.
+[14:50:24] <sanxiyn> I meant in the sense that no existing code uses early bound lifetime in function
+[14:52:56] <sanxiyn> pub trait Iterator<A> {
+[14:53:28] <sanxiyn>     fn map<'r, B>(self, f: &'r fn(A) -> B) -> Map<'r, A, B, Self>
+[14:53:55] <nmatsakis> sanxiyn: we don't currently support lifetimes appearing in trait bounds, so that's correct
+[14:54:19] <sanxiyn> (That map is one such case)
+[14:54:19] <nmatsakis> sanxiyn: but it'd be good to do so, it comes up from time to time
+[14:54:26] <nmatsakis> sanxiyn: that map is a case of what?
+[14:54:42] <sanxiyn> nmatsakis: We'd want to move 'r to the end
+[14:55:21] <nmatsakis> sanxiyn: ah. yes, every function today that has explicit lifetimes would be better written with lifetimes at the end
+[14:55:44] <nmatsakis> sanxiyn: as it happens, since (today) you can't take value of methods, it doesn't matter at all there, but if/when we support the ability to extract a method as a fn, it will
+[14:56:06] <nmatsakis> sanxiyn: that is, in the code today, all lifetimes declared on fns are late bound -- even though they appear first in the argument list
+[14:56:08] *** Joins: jdm (jdm@moz-AC9499B2.cable.teksavvy.com)
+[15:07:33] <nmatsakis> anybody give any advice on debugging assertion failed: !mybox.type_desc.is_null()
+[15:07:36] <nmatsakis> acrichto: ^
+[15:07:45] <nmatsakis> I presume this means something is leaking
+[15:07:50] <nmatsakis> I'd like to know what it is :)
+[15:08:08] * nmatsakis reads the code in any case
+[15:08:35] <acrichto> nmatsakis: hmm that was a recent rewrite of C++ into rust, and I may have botched something
+[15:08:47] <acrichto> nmatsakis: otherwise it's corruption of an @ box
+[15:08:51] <nmatsakis> acrichto: no no, I botched something
+[15:09:04] <nmatsakis> acrichto: in my rewrite of TypeContents, just trying to figure out what. I also wrote the original C++ code, so it certainly looks familiar :)
+[15:09:26] <acrichto> I tried to keep it pretty similar except for the backtraces
+[15:09:41] <acrichto> although if you compiled with rtdebug I won't guarantee that it'll work (I should have tested that)
+[15:10:07] <nmatsakis> acrichto: I don't know what rtdebug is :)
+[15:10:12] <nmatsakis> acrichto: though I can guess 
+[15:10:30] <nmatsakis> seems like I *should* compile with that (your caveat not withstanding)
+[15:11:08] <nmatsakis> I was hoping there might be an easy way to track back a remaining allocation to a line num
+[15:11:09] <acrichto> you get a lot of scheduler output
+[15:11:12] <nmatsakis> but that doesn't seem to be enabled
+[15:11:19] <acrichto> :(
+[15:11:37] <nmatsakis> I seem to recall solving this in the past with dtrace, but I guess that's not avail on linux
+[15:11:57] <acrichto> doesn't it have some equivalent on dtrace?
+[15:12:01] <acrichto> on linux*
+[15:12:25] <nmatsakis> I don't know what it is, if there is one
+[15:12:29] <nmatsakis> but I can prob get by with gdb scripts :)
+[15:12:44] <nmatsakis> let me see if I can find a smaller test case, first :)
+[15:12:57] <nmatsakis> acrichto: anyway, thanks, I'll keep diging
+[15:13:02] <acrichto> np
+[15:13:41] <sanxiyn> acrichto: I am not aware of dtrace equivalent
+[15:13:43] <nmatsakis> not a rust day so I really have to hold myself back :)
+[15:14:04] *** Joins: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP)
+[15:14:22] <acrichto> osx has this weird thing called dtruss which may or may not be a close equivalent of dtrace
+[15:14:56] <nmatsakis> OS/X has dtrace itself
+[15:15:05] <sanxiyn> OSX has dtrace
+[15:15:21] <nmatsakis> one of the few cases where OS/X is a better dev env than linux
+[15:15:27] <acrichto> ah, nvmd
+[15:15:27] <sanxiyn> Yes, dtruss is written using dtrace
+[15:53:45] *** Quits: jdm (jdm@moz-AC9499B2.cable.teksavvy.com) (Quit: Lost terminal)
+[15:56:54] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[16:02:08] *** Quits: jyyou (jyyou@moz-47B052FA.cs.nctu.edu.tw) (Ping timeout)
+[16:13:48] *** Joins: andrew-__ (andrew-d_w@moz-5A92CAFF.dsl.static.sonic.net)
+[16:14:50] *** Quits: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Ping timeout)
+[16:19:28] *** Quits: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP) (Ping timeout)
+[16:19:30] *** Quits: andrew-__ (andrew-d_w@moz-5A92CAFF.dsl.static.sonic.net) (Input/output error)
+[16:19:51] *** Joins: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[16:20:26] *** Quits: sanxiyn (tinuviel@B4104EBB.3CC170B1.1E14B209.IP) (Quit: Leaving)
+[16:22:54] *** Joins: erickt (etryzelaar@93E94B80.D1E9439C.98A37E8C.IP)
+[16:24:53] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[16:31:33] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[16:31:33] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/KgUg4Q
+[16:31:33] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[16:31:34] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[16:31:34] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/FHWPWw
+[16:31:34] <ghrust> 13rust/06auto 14e783959 15Ziad Hatahet: Modifications to os::copy_file()...
+[16:31:34] <ghrust> 13rust/06auto 1459e5aae 15bors: auto merge of #10175 : hatahet/rust/master, r=alexcrichton...
+[16:31:35] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[16:33:25] *** Quits: erickt (etryzelaar@93E94B80.D1E9439C.98A37E8C.IP) (Ping timeout)
+[16:53:38] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[16:54:06] *** Quits: Sharp (Sharp@moz-7B61DF4.dsl.static.sonic.net) (Quit: Sharp)
+[16:57:24] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[16:57:24] *** ChanServ sets mode: +ao pcwalton pcwalton
+[16:58:22] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[16:59:38] *** Quits: Kxepal (Miranda@moz-A79FEB26.pppoe.mtu-net.ru) (Ping timeout)
+[17:02:38] *** Joins: Kxepal (Miranda@moz-18708274.pppoe.mtu-net.ru)
+[17:04:56] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[17:05:44] *** Quits: fredy (fredy@moz-E7647C0E.vm.okeanos.grnet.gr) (Ping timeout)
+[17:08:02] *** kimundi is now known as zz_kimundi
+[17:08:45] *** Joins: jyyou (jyyou@moz-47B052FA.cs.nctu.edu.tw)
+[17:11:45] *** Joins: fredy (fredy@moz-E7647C0E.vm.okeanos.grnet.gr)
+[17:14:06] *** Parts: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) ()
+[17:14:15] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[17:14:39] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[17:14:45] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[17:15:09] *** Quits: fredy (fredy@moz-E7647C0E.vm.okeanos.grnet.gr) (Max SendQ exceeded)
+[17:18:07] *** Joins: fredy (fredy@moz-E7647C0E.vm.okeanos.grnet.gr)
+[17:26:55] *** Joins: steveklabnik (steveklabn@moz-5EF6C37C.socal.res.rr.com)
+[17:52:03] *** Joins: jdm (jdm@FCCEA34F.7672369.D8E68FF6.IP)
+[17:53:19] *** Joins: jdm_ (jdm@13F2CEC5.7672369.D8E68FF6.IP)
+[17:53:43] *** Quits: jdm (jdm@FCCEA34F.7672369.D8E68FF6.IP) (Ping timeout)
+[17:56:59] *** Joins: erickt (etryzelaar@93E94B80.D1E9439C.98A37E8C.IP)
+[17:57:12] *** zz_kimundi is now known as kimundi
+[17:57:53] *** jdm_ is now known as jdm
+[18:08:34] *** Quits: erickt (etryzelaar@93E94B80.D1E9439C.98A37E8C.IP) (Ping timeout)
+[18:09:27] *** Joins: erickt (etryzelaar@93E94B80.D1E9439C.98A37E8C.IP)
+[18:09:54] *** Joins: tjc (tjc@moz-80F8D2BA.hsd1.ca.comcast.net)
+[18:09:54] *** ChanServ sets mode: +o tjc
+[18:12:41] *** Joins: Sharp (Sharp@1710C26.8381A41.8725677B.IP)
+[18:17:38] *** Quits: bjz (textual@B398BE78.F804C29E.D35A31DF.IP) (Connection reset by peer)
+[18:21:18] *** Joins: bjz (textual@B398BE78.F804C29E.D35A31DF.IP)
+[18:21:56] *** Quits: erickt (etryzelaar@93E94B80.D1E9439C.98A37E8C.IP) (Ping timeout)
+[18:24:09] *** Quits: tjc (tjc@moz-80F8D2BA.hsd1.ca.comcast.net) (Quit: zzzzzzzzzz)
+[18:24:15] *** Joins: geoffhill (geoffhill@moz-244CF33A.amazon.com)
+[18:33:33] *** Joins: tjc (tjc@820240F3.FD5C31A1.284344F5.IP)
+[18:33:33] *** ChanServ sets mode: +o tjc
+[18:36:01] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[18:42:08] *** Joins: StarLight (StarLight@moz-43B2932C.pppoe.avangarddsl.ru)
+[18:45:02] *** Quits: tjc (tjc@820240F3.FD5C31A1.284344F5.IP) (Ping timeout)
+[18:48:19] *** pnkfelix is now known as pnkfelix|dinner
+[18:48:21] *** Joins: onr99 (onur@DBB90BD8.70012127.53438D71.IP)
+[18:49:14] *** Joins: tjc (tjc@820240F3.FD5C31A1.284344F5.IP)
+[18:49:14] *** ChanServ sets mode: +o tjc
+[18:52:04] *** flaper87 is now known as flaper87|afk
+[18:53:36] *** Joins: doomlord_ (servitor@moz-B44A6624.range86-160.btcentralplus.com)
+[19:01:17] *** Joins: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP)
+[19:03:40] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[19:09:07] *** Joins: dbussink (dbussink@moz-E0A5568C.bussink.me)
+[19:11:38] *** Quits: Sharp (Sharp@1710C26.8381A41.8725677B.IP) (Quit: Sharp)
+[19:21:55] *** Quits: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP) (Ping timeout)
+[19:24:15] <Luqman> nmatsakis: was there any other issues you had with https://github.com/mozilla/rust/pull/10064 ?
+[19:26:00] <acrichto> Luqman: shouldn't we only allow ctypes in variadic argument lists?
+[19:26:31] <strcat> acrichto: you can pass a struct
+[19:26:55] <strcat> and all of the built-in integers are identical to certain C types
+[19:27:42] <acrichto> I don't even understand the calling convention for a varargs thing, but if we lint on 'int' in ffi function types why are we explicitly asking you to cast to an 'int' on a varargs function?
+[19:27:48] <nmatsakis> Luqman: that was my only objection at the time, I haven't looked at the new diff
+[19:28:04] <nmatsakis> acrichto is correct about that, it should def be c_int
+[19:29:19] <acrichto> tjc: ping
+[19:29:36] <Luqman> right, i'll fix that later and add one more test case
+[19:29:40] *** pnkfelix|dinner is now known as pnkfelix
+[19:29:56] <nmatsakis> I think I'd prefer to just replace all uses of `..` with `...`
+[19:31:01] <tjc> acrichto: pong, but I'm on a train, so might drop off at any point
+[19:31:25] <acrichto> tjc: is https://github.com/mozilla/rust/blob/master/src/librustpkg/path_util.rs#L82 intentional ?
+[19:32:05] <Luqman> nmatsakis: as things like [u8, ..2] => [u8, ...3] ?
+[19:32:07] <tjc> acrichto: what part?
+[19:32:14] <nmatsakis> Luqman: yes.
+[19:32:17] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[19:32:20] <acrichto> tjc: it looks like it should be '} else {'
+[19:32:31] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[19:35:47] <tjc> acrichto: let me look at that again
+[19:35:57] <Luqman> nmatsakis: acrichto oh, since c_int is defined in libstd it may not make sense to say to cast to it in #[no_std] code
+[19:36:17] <acrichto> Luqman: I'm not sure how the ctypes lint works at all in no_std code...
+[19:40:04] *** Joins: Sharp (Sharp@1710C26.8381A41.8725677B.IP)
+[19:40:29] *** Joins: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP)
+[19:41:40] *** Quits: tjc (tjc@820240F3.FD5C31A1.284344F5.IP) (Quit: zzzzzzzzzz)
+[19:42:34] <eddyb> nmatsakis: but... I've gotten used to the compact .. :(
+[19:43:27] <strcat> acrichto: it doesn't
+[19:43:45] <strcat> and I find the C type aliases for types we already have useless so rust-core doesn't use them ;p
+[19:44:02] <strcat> just needs ones for the stupid C types like short, int, long, long long
+[19:46:06] <strcat> unless we wanted to target something weird like real mode, size_t/ssize_t are the same as uintptr_t/intptr_t
+[19:46:59] <strcat> which are uint/int
+[19:48:06] <nmatsakis> strcat: I prefer to have the types mimic what appears in the C files to the extent possible, to make it easier to double check, but in any case c_int etc are the big ones
+[19:48:32] *** Joins: tjc (tjc@820240F3.FD5C31A1.284344F5.IP)
+[19:48:32] *** ChanServ sets mode: +o tjc
+[19:53:39] <Sharp> cmr: I was thinking of taking a look at https://github.com/mozilla/rust/issues/7435 since I think some of the AST code could use some refactoring.  But I'm not sure whether it's a tracking bug or whether you and I have the same thing in mind.   Are you talking strictly about the trans layer, or about the way it's carried around before that too?
+[19:55:34] <kimundi> acrichto: ping
+[19:55:55] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[19:55:55] *** ChanServ sets mode: +qo brson brson
+[19:56:25] <acrichto> kimundi: pong
+[19:57:49] <kimundi> acrichto: Re: Any bound on begin_unwind. brson Actually noted that it was strange that it would cast to Any without needing an Any bound in the PR that added Any, so now I'm confused which way I should write it :)
+[19:58:31] <acrichto> oh hm, I figured that "begin_unwind<T: Send>(t: T)" it just exactly what we want
+[19:58:36] <acrichto> removes all the extra cruft
+[19:58:47] <tjc>  acrichto : Sorry, had to change trains. The code is what I intended it to be. I don't think there should be an else there.
+[19:59:06] <acrichto> tjc: ok cool, just wanted to make sure
+[19:59:10] <kimundi> brson: Your opinion? "begin_unwind<T: Send>(t: T)" or "begin_unwind<T: Any + Send>(t: T)"? Both cast to an ~Any internal
+[20:00:09] *** Quits: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP) (Ping timeout)
+[20:02:42] *** Joins: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP)
+[20:03:29] *** Quits: tjc (tjc@820240F3.FD5C31A1.284344F5.IP) (Ping timeout)
+[20:03:54] *** Joins: tjc (tjc@820240F3.FD5C31A1.284344F5.IP)
+[20:03:54] *** ChanServ sets mode: +o tjc
+[20:04:42] <brson> kimundi: how confident are we that *all* sendable types should be castable to ~Any? it isn't obvious to me
+[20:05:35] <kimundi> Either is fine with, acrichto just had the opposite opinion of you, so I wanted to clarify :)
+[20:05:37] *** Quits: tjc (tjc@820240F3.FD5C31A1.284344F5.IP) (Ping timeout)
+[20:05:40] <kimundi> fine with me*
+[20:05:51] <acrichto> I thought the idea of Any was to be anything?
+[20:05:53] *** nrc is now known as nrc|afk
+[20:08:20] <benh> better rename it Some otherwise
+[20:08:26] <kimundi> Every type implements Any right now, and probably should. The question is can we keep using Any for task failure, or should it get replaced with a more specific AnyError or so. But if that changes, we need to change begin_unwind anyway for that, so we might as well just require T: Send as long as it works
+[20:09:24] *** Joins: tjc (tjc@820240F3.FD5C31A1.284344F5.IP)
+[20:09:24] *** ChanServ sets mode: +o tjc
+[20:10:58] <acrichto> kimundi: with the FIXME annotations I'd r+
+[20:12:02] *** Quits: tjc (tjc@820240F3.FD5C31A1.284344F5.IP) (Ping timeout)
+[20:12:17] <kimundi> acrichto: I'm running check-stage1-std right now tp see if I missed anything with making begin_unwind_internal private, then I'll push the changes
+[20:16:04] *** Quits: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP) (Ping timeout)
+[20:16:38] <cmr> Sharp: Mostly trans. I'm not familiar with any of that code, though.
+[20:16:53] *** Joins: tjc (tjc@820240F3.FD5C31A1.284344F5.IP)
+[20:16:53] *** ChanServ sets mode: +o tjc
+[20:16:57] <cmr> Sharp: I just noticed that tuple structs didn't generate all-that-nice-code since they used the enum codepath.
+[20:17:10] <cmr> Sharp: may have changed in the past 4 months, but I very much doubt it.
+[20:17:32] *** Quits: tjc (tjc@820240F3.FD5C31A1.284344F5.IP) (Quit: zzzzzzzzzz)
+[20:19:57] <kimundi> acrichto: r? https://github.com/mozilla/rust/pull/10120
+[20:23:57] *** Quits: geoffhill (geoffhill@moz-244CF33A.amazon.com) (Ping timeout)
+[20:24:29] <Sharp> cmr: I don't think it has, at least based on what I've see.  If it's okay with you, can I take a shot at it?
+[20:25:13] *** Joins: geoffhill (geoffhill@moz-244CF33A.amazon.com)
+[20:25:32] <Sharp> seen*
+[20:25:41] <cmr> Sharp: Yes, please do :D
+[20:25:58] <cmr> I tried taking a poke at it once but I couldn't make heads or tails of what happened where in trans :\
+[20:26:12] <Sharp> Sweet!  I'll start working on it later tonight, I have to actually get some work done :P
+[20:26:30] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[20:26:30] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1459e5aae to 14623daf6: 02http://git.io/N3iJvQ
+[20:26:30] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[20:26:31] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[20:26:31] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/mmP6kA
+[20:26:32] <ghrust> 13rust/06auto 14eee892c 15Joshua Yanovski: Special-casing iter_vec_raw to use a counter for zero-size types (Closes #9890).
+[20:26:32] <ghrust> 13rust/06auto 146789a77 15bors: auto merge of #10172 : pythonesque/rust/issue-9890, r=thestinger
+[20:26:32] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[20:27:44] *** Quits: geoffhill (geoffhill@moz-244CF33A.amazon.com) (Quit: geoffhill)
+[20:30:32] <kimundi> Where would I have to look if I wanted to add a new intrinsic?
+[20:32:28] *** Joins: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP)
+[20:32:52] <strcat> git show 45e2cf39a21b6317e01adff05a3c83c628913edc
+[20:34:52] <kimundi> Thx
+[20:37:23] *** Joins: geoffhill (geoffhill@moz-244CF33A.amazon.com)
+[20:40:54] *** Quits: eddyb (eddy@FE23D96E.F33C1089.FB866788.IP) (Ping timeout)
+[20:46:46] *** Quits: onr99 (onur@DBB90BD8.70012127.53438D71.IP) (Ping timeout)
+[21:06:29] <pcmattman> oo that was not the right thing to do in that test, nothing like forkbombing your own system before work in the morning :)
+[21:06:47] <olsonjeffery> brson acrichto : is anyone planning to work #10162?
+[21:06:47] <kimundi> hahaha
+[21:08:38] <Luqman> anyone know the peak mem usage for building each individual library?
+[21:09:37] <SimonSapin> Does this look right? pub fn serialize_component_value_iter<I: Iterator<&'self ComponentValue>>(iter: I, css: &mut ~str) { /* ... */ }
+[21:09:45] <SimonSapin> I’m getting ICE in some librustc code that asserts there is no region pointer on something
+[21:09:53] <SimonSapin> task '<unnamed>' failed at 'assertion failed: rp.is_none()', /home/simon/projects/servo/src/compiler/rust/src/librustc/middle/typeck/collect.rs:1108
+[21:10:20] <strcat> can't use 'self there
+[21:10:27] <strcat> it's not declared anywhere
+[21:10:36] <strcat> lack of an error message basically
+[21:11:17] <SimonSapin> I get the same error with fn serialize_component_value_iter<'self, I: Iterator<&'self ComponentValue>>
+[21:11:32] *** Quits: steveklabnik (steveklabn@moz-5EF6C37C.socal.res.rr.com) (Ping timeout)
+[21:12:35] <strcat> I don't think it's possible to write that as a function atm
+[21:12:36] *** Joins: tjc (tjc@moz-E7FCCD43.lightspeed.sntcca.sbcglobal.net)
+[21:12:37] *** ChanServ sets mode: +o tjc
+[21:12:41] <strcat> it has to be a static method ;\
+[21:12:56] <acrichto> olsonjeffery: I think that dbussink was starting to work on it
+[21:12:59] <SimonSapin> ugh
+[21:13:18] <olsonjeffery> acrichto: ok thanks
+[21:13:49] *** Quits: jdm (jdm@13F2CEC5.7672369.D8E68FF6.IP) (Quit: Lost terminal)
+[21:13:58] <SimonSapin> strcat: static methods are the only way to write something that takes an Iterator<&T>?
+[21:14:56] <strcat> no
+[21:15:09] <strcat> you can write a generic function, or a method (static or not)
+[21:15:28] <strcat> but I don't think lifetime parameters work well enough to do it as a free function that's only generic on the lifetime
+[21:15:49] <Luqman> soon https://github.com/mozilla/rust/pull/10153
+[21:22:34] *** Quits: erickt (etryzelaar@BF60BF52.64BC77A3.7FC6A66E.IP) (Ping timeout)
+[21:27:09] <SimonSapin> strcat: I want to write a function generic on an iterator type that iterates over &T
+[21:27:25] <strcat> SimonSapin: well, you can write it for an iterator over T
+[21:27:41] <SimonSapin> I want a concrete &T
+[21:28:02] <SimonSapin> but generic iterator
+[21:28:20] <strcat> well, it can't be a function atm
+[21:28:26] <strcat> it can be a static method
+[21:29:00] <SimonSapin> I tried a trait method, but implementing it on iterators mean I can not implement it on anything else
+[21:30:34] <strcat> don't know what you mean
+[21:30:43] <strcat> you can implement it as an iterator extension method
+[21:31:07] <SimonSapin> error: conflicting implementations for trait `serializer::ToCss`
+[21:31:16] <SimonSapin> note: note conflicting implementation here
+[21:31:21] <SimonSapin> impl<'self, I: Iterator<&'self ComponentValue>> ToCss for I {
+[21:32:06] <strcat> you only want 1 implementation, just like you'd have 1 generic function
+[21:32:20] <strcat> it's a hack to make it not be a function
+[21:32:34] <SimonSapin> but I also want this method on other types
+[21:32:42] <SimonSapin> namely ComponentValue
+[21:32:43] <strcat> but you had it as a function
+[21:33:02] <strcat> I don't understand the issue anymore then ;p
+[21:33:19] <SimonSapin> ok, let me explain
+[21:33:24] <strcat> I thought the issue was the inability to use 'self in a free function, so I'm suggesting making an extension method identical to the function
+[21:33:46] <SimonSapin> I want to write a CSS serializer for ComponentValue, which is a tree
+[21:33:58] *** Joins: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP)
+[21:34:06] <SimonSapin> So I have two mutually recursive functions
+[21:34:41] <SimonSapin> one serializes ComponentValue, one iterators of ComponentValue
+[21:34:56] <SimonSapin> the latter is more involved than just map
+[21:35:25] <SimonSapin> I initially tried to do a trait with a common method
+[21:35:33] <kimundi> acrichto: I'm not sure if you got my earlier ping, but I updated the PR. I'm going to bed now, so if there are still things I need to fix they have to wait another day :)
+[21:35:49] <acrichto> kimundi: ah yes sorry I went to lunch
+[21:35:54] <acrichto> kimundi: I will look at it soon though
+[21:35:59] <SimonSapin> which does not work because of conflicting implementations
+[21:36:11] <SimonSapin> so now I’m trying a pair of functions
+[21:36:18] *** Quits: bjz (textual@B398BE78.F804C29E.D35A31DF.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[21:36:32] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[21:36:32] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/mmP6kA
+[21:36:32] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[21:36:33] <strcat> SimonSapin: well you need a pair of extension methods if you need 'self
+[21:36:34] <kimundi> Okay :)
+[21:37:17] <SimonSapin> strcat: do you mean two methods on the same type? I’d like one method on two types
+[21:37:55] <strcat> I mean take your 2 generic functions that use 'self and make them into extension methods
+[21:38:14] <strcat> don't make them more or less generic, just implement them as methods to work around the 'self issue
+[21:38:43] <strcat> fn foo<'self>(A, B) -> extension method on A called foo
+[21:38:52] <strcat> fn bar<'self>(C, D) -> extension method on C called bar
+[21:39:31] <strcat> at least until 'self is removed as a special broken thing
+[21:39:35] <SimonSapin> oh, so you mean work around "conflicting implementations" by making two traits that do the same thing?
+[21:40:19] <strcat> I'm not deep enough in the code to suggest a good way of doing it, just a workaround for the 'self issue ;p
+[21:40:38] <strcat> if you could write it as a pair of functions assuming the ability to use 'self, you can write it as a pair of methods instead
+[21:41:17] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[21:41:18] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/yv8LKg
+[21:41:18] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[21:41:22] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[21:41:22] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/-Mw1Gw
+[21:41:22] <ghrust> 13rust/06auto 146ef1ab9 15Brian Anderson: syntax: Forbid non-string literals in meta items. #623
+[21:41:22] <ghrust> 13rust/06auto 14ce51090 15bors: auto merge of #10166 : brson/rust/meta, r=alexcrichton...
+[21:41:22] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[21:41:33] *** Joins: bjz (textual@B398BE78.F804C29E.D35A31DF.IP)
+[21:42:06] *** Joins: dbaupp (Thunderbir@moz-B3C9E9E8.lns20.syd6.internode.on.net)
+[21:43:12] *** Joins: tikue_ (tikue_star@94F1ACEF.F3E8A984.689607DE.IP)
+[21:44:55] *** nrc|afk is now known as nrc
+[21:47:20] <sfackler> SimonSapin: it is possible to work around the conflicting implementations thing
+[21:47:37] <SimonSapin> sfackler: how?
+[21:48:19] <sfackler> you define a special trait for each generic implementation and then implement the main trait for each of those
+[21:48:50] <sfackler> so like if you want to impl Foo for <B: Bar> and <Q: Qux>,
+[21:49:39] <sfackler> 1 sec
+[21:50:18] <SimonSapin> sfackler: I don’t get it, could you expand?
+[21:50:25] <sfackler> oh wait, i don't think it'll work for what you want to do
+[21:50:37] <sfackler> I was thinking of a diffferent case
+[21:50:56] *** Quits: tikue_ (tikue_star@94F1ACEF.F3E8A984.689607DE.IP) (Ping timeout)
+[21:51:04] <brson> kimundi: since we will likely change it to ~Error or something it seems like the Any bound is appropriate since not all types will implement Error
+[21:51:09] <brson> sorry for the late respnose
+[21:51:14] <SimonSapin> sfackler: I want .to_css() on ComponentValue and Iterator<&ComponentValue>
+[21:51:27] <brson> olsonjeffery: no, I'm not doing it
+[21:52:05] <sfackler> separate traits may work for that, depending on how broken resolve still is
+[21:52:07] *** Joins: tikue_ (tikue_star@94F1ACEF.F3E8A984.689607DE.IP)
+[21:53:44] <SimonSapin> ugh
+[21:57:06] <kimundi> brson: Yeah, though something similar
+[21:58:01] *** Quits: bjz (textual@B398BE78.F804C29E.D35A31DF.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[22:01:22] <SimonSapin> I hadn’t seen that one before: serializer.rs:8:5: 8:19 error: found value name used as a type: DefMod(syntax::ast::DefId{crate: 0, node: 11215})
+[22:01:25] <SimonSapin> serializer.rs:8 impl ComponentValue {
+[22:01:40] <SimonSapin> I’m pretty sure ComponentValue is a type
+[22:02:42] <dbaupp> SimonSapin: a type from a different module?
+[22:02:53] <SimonSapin> dbaupp: yes
+[22:02:58] <dbaupp> SimonSapin: sec
+[22:03:18] <dbaupp> SimonSapin: https://github.com/mozilla/rust/issues/7607#issuecomment-21474969
+[22:03:51] <brson> stopping the bots for a bit
+[22:03:55] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Ping timeout)
+[22:05:09] *** Joins: pcwalton (pcwalton@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[22:05:10] *** ChanServ sets mode: +ao pcwalton pcwalton
+[22:05:12] <SimonSapin> dbaupp: so… is there a work around?
+[22:05:33] <SimonSapin> h, sorry
+[22:05:38] *** Quits: lbergstrom (Adium@15117742.DA651652.D56BC519.IP) (Quit: Leaving.)
+[22:06:02] <dbaupp> SimonSapin: yeah, nmatsakis' last sentence there ;P
+[22:06:11] <SimonSapin> I missed it at first
+[22:07:16] <SimonSapin> hum… use ast; error: unresolved import (maybe you meant `ast::*`?)
+[22:09:42] *** Quits: tikue_ (tikue_star@94F1ACEF.F3E8A984.689607DE.IP) (Client exited)
+[22:15:35] *** Quits: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP) (Ping timeout)
+[22:16:03] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[22:16:37] *** Joins: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP)
+[22:18:52] <SimonSapin> Ok, I finally managed something with an extension method on the Iterator, and a plain method without a trait on the items
+[22:19:11] <SimonSapin> thanks strcat , sfackler, dbaupp 
+[22:20:38] *** Quits: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP) (Input/output error)
+[22:20:44] *** Joins: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP)
+[22:23:04] *** kimundi is now known as zz_kimundi
+[22:25:40] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[22:30:26] *** Joins: yghannam (yghannam@moz-C5BCCF4E.lightspeed.austtx.sbcglobal.net)
+[22:39:44] *** Quits: tjc (tjc@moz-E7FCCD43.lightspeed.sntcca.sbcglobal.net) (Quit: zzzzzzzzzz)
+[22:53:35] *** Joins: tjc (tjc@820240F3.FD5C31A1.284344F5.IP)
+[22:55:09] *** Quits: yghannam (yghannam@moz-C5BCCF4E.lightspeed.austtx.sbcglobal.net) (Ping timeout)
+[22:57:21] *** Quits: tjc (tjc@820240F3.FD5C31A1.284344F5.IP) (Ping timeout)
+[23:01:11] *** Joins: tjc (tjc@67ED1846.5A282F70.284344F5.IP)
+[23:01:11] *** ChanServ sets mode: +o tjc
+[23:02:53] *** Quits: tjc (tjc@67ED1846.5A282F70.284344F5.IP) (Ping timeout)
+[23:08:06] *** Joins: tjc (tjc@67ED1846.5A282F70.284344F5.IP)
+[23:08:06] *** ChanServ sets mode: +o tjc
+[23:09:50] *** Quits: tjc (tjc@67ED1846.5A282F70.284344F5.IP) (Ping timeout)
+[23:10:54] *** Joins: tjc (tjc@67ED1846.5A282F70.284344F5.IP)
+[23:10:54] *** ChanServ sets mode: +o tjc
+[23:12:35] *** Quits: tjc (tjc@67ED1846.5A282F70.284344F5.IP) (Ping timeout)
+[23:16:09] *** Quits: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP) (Ping timeout)
+[23:19:19] *** Joins: tjc (tjc@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[23:19:19] *** ChanServ sets mode: +o tjc
+[23:32:49] *** Quits: Sharp (Sharp@1710C26.8381A41.8725677B.IP) (Quit: Sharp)
+[23:34:26] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: leaving)
+[23:34:30] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[23:34:30] *** ChanServ sets mode: +qo brson brson
+[23:36:35] <brson> is there an issue for a deref trait?
+[23:37:11] <strcat> I think so
+[23:40:17] <pcmattman> acrichto: lifetime errors and being unable to move out of a dereference errors are the bane of my existence right now :) but getting that IoError stuff in will be really nice.
+[23:41:26] <dbaupp> brson: https://github.com/mozilla/rust/issues/7141
+[23:41:49] <acrichto> pcmattman: it is a little difficult to work with, but once the code uses it it's actually really nice
+[23:41:53] <acrichto> you get used to it pretty quickly
+[23:42:02] <acrichto> pcmattman: btw thank you so much for doing this, this is some awesome work
+[23:42:43] <pcmattman> yeah definitely, being able to pull an IoError out and raise, or dump a pretty string with ProcessExit's fmt::Default for a spawn error is going to be awesome
+[23:42:53] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[23:43:08] <brson> dbaupp: thanks!
+[23:43:20] <pcmattman> no problems, once I realised I could segfault a run-pass test and it would still be a 'pass' I figured it was important
+[23:43:49] <dbaupp> pcmattman: is that all from that? (rabbits holes! \o/ :P )
+[23:44:36] <pcmattman> well, kind of. That particular problem has led to working on greatly improving the reporting of process termination, which is good for everything
+[23:45:54] <acrichto> pcmattman: yeah I think that signal termination was just completely wrong before
+[23:46:16] <acrichto> and this is the best abstraction I've seen for process exit statuses in awhile
+[23:46:29] <acrichto> I really wish that the IoError didn't happen in wait() and rather happened in spawn()
+[23:46:40] <acrichto> but I don't really see a way to do that at all (and it would involve modifying libuv)
+[23:47:16] <pcmattman> right, failures in executing a child should really happen at spawn time, not after you've already called .wait() or .finish()
+[23:48:00] <pcmattman> I think that's a bit of a flaw in libuv, but somewhat understandable as the failure happens in the forked child, not in the parent
+[23:48:14] <acrichto> it's tough though b/c once the fork is successful, how do you wait for the successful exec?
+[23:48:23] <acrichto> in theory fork() sould block and wait for exec() to finish
+[23:48:42] <acrichto> and uv_spawn() should take two callbacks, one for finished spawning and the other for finishing the process
+[23:48:59] <strcat> it should be using posix_spawn and not fork though ;p
+[23:50:16] <pcmattman> doing it the way it's done now in libuv basically just greatly simplifies libuv's code, at the expense of delaying the error reporting
+[23:52:35] <pcmattman> all that's left is little things like 'error: mismatched types: expected `rt::io::IoError` but found `&rt::io::IoError` (expected struct rt::io::IoError but found &-ptr)' when deriving Clone
+[23:52:46] <strcat> brson: ha, I forgot that I reported it
+[23:53:19] <acrichto> pcmattman: it may not need to derive clone any more
+[23:53:33] <acrichto> or wait, how come you're deriving clone?
+[23:53:41] <dbaupp> pcmattman: that means that IoError doesn't have Clone itself
+[23:54:22] <pcmattman> wait, no, you're right - I'm out in run::process finish(), and I think clone is the wrong way to go about this anyway
+[23:54:52] <pcmattman> dbaupp: thanks, that... wasn't obvious from the error :)
+[23:56:08] <benh> acrichto: pass an additional pipe to the child, set close-on-exec, read on it for either it getting closed or an error code i guess?
+[23:56:13] <dbaupp> pcmattman: yep... I've tried to fix it, but my attempts didn't work :(
+[23:56:22] <acrichto> benh: oooh that's clever
+[23:56:31] <dbaupp> pcmattman: (fix it to be a useful error message, that is.)
+[23:56:33] <acrichto> benh: I wonder if something like that would work on windows as well
+[23:56:55] <pcmattman> benh: that is nice, and could probably go straight into libuv without any changes in the rust runtime
+[23:57:08] <benh> i don't know the first thing about the windows equivalent api :(
+[23:57:34] <pcmattman> acrichto: Windows should be able to give failure much earlier via CreateProcess anyway, surely? Rather than this fork() business...
+[23:57:51] <acrichto> pcmattman: let me take a look at the uv code again
+[23:58:56] <acrichto> pcmattman: yes you look to be correct
+[23:59:04] <acrichto> that would be pretty awesome
+[23:59:34] * pcmattman wonders if anything else that uses libuv depends on the current behaviour

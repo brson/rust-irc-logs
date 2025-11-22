@@ -1,0 +1,1914 @@
+[00:01:17] *** Quits: njn (chatzilla@moz-6gdjm4.iinet.net.au) (Ping timeout: 121 seconds)
+[00:01:19] *** Joins: insaneinside (user@moz-dgv9mb.customer.broadstripe.net)
+[00:01:50] <insaneinside> Is there any reason rustc would place a trace trap (int3) in my code without my explicitly asking for it?
+[00:02:31] *** Joins: njn (chatzilla@moz-e7amqe.iinet.net.au)
+[00:02:36] <Mutabah> insaneinside: are you in a debugger?
+[00:03:20] <insaneinside> Mutabah: well, put it this way: `cargo test` fails when the test executable exits on SIGTRAP.
+[00:03:42] <insaneinside> ...so no.
+[00:04:22] <nrc> if I build using -L . and have regex.so in the current directory, I expect extern crate regex; to work - do I need to follow a different naming ocnvention?
+[00:04:55] <doener> nrc: should be libregex.so I think
+[00:04:56] <sfackler> libregex.so right?
+[00:05:35] <nrc> that doesn't work either :-(
+[00:06:25] <nrc> ah, it does if I use --crate-name
+[00:06:27] <nrc> \o/
+[00:06:50] *** Joins: jgallagher (john@moz-6ge.dhn.131.24.IP)
+[00:08:31] <insaneinside> Oddly enough, the LLVM IR doesn't even include the word "trap" (see e.g. <http://llvm.org/docs/LangRef.html#llvm-trap-intrinsic>).
+[00:09:08] <XMPPwocky> insaneinside: is there unsafe code around?
+[00:09:34] <XMPPwocky> i know certain compilers will fill empty spaces with int3 for debugging purposes
+[00:09:39] <XMPPwocky> (for padding)
+[00:09:41] <insaneinside> XMPPwocky: oh, tons of it.
+[00:10:04] <XMPPwocky> insaneinside: check if you're actually inside a function?
+[00:12:13] <insaneinside> XMPPwocky: the assembly makes it appear so.  There's even a `jne <address of the in3 instruction>`. :|
+[00:12:15] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[00:12:26] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[00:12:44] <XMPPwocky> what's the condition on that jne
+[00:13:27] *** Quits: munksgaard (munksgaard@moz-478pev.u.parknet.dk) (Ping timeout: 121 seconds)
+[00:14:14] *** Joins: sprang_ (sprang@moz-d0kmvi.12d9.sm5v.0009.2601.IP)
+[00:16:17] <insaneinside> my x*86 assembly isn't so great -- what's the register it uses?
+[00:16:28] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[00:16:29] <insaneinside> or I could just pastebin the disasm for you
+[00:16:35] <XMPPwocky> yeah do that
+[00:16:37] <Eridius> whoa, a match on an integer with an `intrinsics::unreachable()` in the default arm, when evaluated with a value that hits that default arm, is triggering an infinite loop in an unoptimized build. How bizarre. (In an optimized build it yields one of the other branches)
+[00:16:58] *** Joins: jdm (jdm@moz-ilbt2e.cable.teksavvy.com)
+[00:17:01] <cmr> Eridius: I mean, it's UB.
+[00:17:07] <reem> it could do anything
+[00:17:08] <Eridius> yeah, it's just still kind of weird assembly
+[00:17:21] <Eridius> I also noticed that the assembly contains a number of jumps to the next instruction
+[00:17:48] <insaneinside> XMPPwocky: https://pastebin.mozilla.org/8833546
+[00:17:52] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[00:18:27] *** Parts: poiru (poiru@moz-bmdn13.kapsi.fi) ()
+[00:19:16] <insaneinside> XMPPwocky: the jne is at +70.
+[00:19:19] <doener> Eridius: match always uses multiple block per arm, even if an intermediate block is not actually needed for the given arm (i.e. no guard IIRC), in which case it just jumps to the next block
+[00:19:26] <doener> *multiple blocks
+[00:19:28] <Eridius> the test is at line +60
+[00:19:37] <Eridius> doener: why does it do that?
+[00:19:48] <XMPPwocky> insaneinside: my crappy dissassembly skills tell me that should get hit if al != 0xd4 && al != 0x1d
+[00:20:37] <doener> XMPPwocky: that would be the debug assertions for the drop marker then
+[00:21:21] <XMPPwocky> that's some obnoxious code layout for a debug assertion
+[00:21:33] <insaneinside> doener: so why is there a trap instead of a panic?
+[00:21:35] <XMPPwocky> looks like something's not marked #[cold] that probably should be
+[00:21:51] <doener> Eridius: can't tell for sure... _match.rs is weird
+[00:22:28] <cmr> insaneinside: because we can't unwind from destructors right now.
+[00:22:30] <cmr> iirc
+[00:22:50] <cmr> plus, you shouldn't be *allowed* to recover from that sort of error...
+[00:23:02] <insaneinside> cmr: fair enough.
+[00:23:19] <Eridius> doener: maybe it was written based on the assumption that LLVM would optimize it away, but it seems like a very silly thing to end up doing in debug builds
+[00:23:52] <insaneinside> The code in question is at line 118 in <https://pastebin.mozilla.org/8833550>.  Is there a better way to be doing this?
+[00:24:04] <Eridius> I wonder how much performance we could wring out of debug builds by being slightly more intelligent in trans?
+[00:24:17] <XMPPwocky> re: an unconditional jump on the most common path: it can have a suprisingly huge impact
+[00:24:18] <aatch> Eridius, a fair amount.
+[00:24:35] <XMPPwocky> i did some testing with putting the stack--check code in the alignment gap
+[00:24:49] <XMPPwocky> so if the stack check failed it'd jump *backwards* to before the prologue
+[00:24:56] <XMPPwocky> for small recursive functions it was like +100%
+[00:25:40] <Eridius> insaneinside: was the assembly you pasted optimized or debug?
+[00:25:46] <insaneinside> Eridius: debug.
+[00:26:00] <Eridius> ok, I bet LLVM moves that jump for optimized builds
+[00:26:05] <Eridius> e.g. it's going to an int3, it
+[00:26:09] <Eridius> *it's the coldest damn path there is
+[00:26:16] *** Quits: jga (jga@moz-08s.t1q.244.77.IP) (Ping timeout: 121 seconds)
+[00:26:20] <XMPPwocky> int3 is part of my workflow! :P
+[00:26:39] <insaneinside> actually, I think the release build doesn't *have* the int3 -- or at least, it doesn't get hit. 
+[00:26:48] *** Joins: jbomo (dkd@moz-uol4mm.fios.verizon.net)
+[00:27:04] <doener> insaneinside: should not be present at all unless you specifically enable debug assertions
+[00:27:09] <Eridius> insaneinside: what is that code trying to do with drop glue? (I haven't looked at src/arena/lib.rs either). If you're trying to get a function you can run with a pointer to an object's memory that drops the object, you can do so without the weird hacks
+[00:27:10] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[00:27:30] <Eridius> `fn drop_glue<T>(p: *const T) { unsafe { ptr::read(p) } }
+[00:27:36] <insaneinside> Eridius: oh?  Note the ?Sized bound on T.
+[00:27:42] <Eridius> oh I didn't notice the ?Sized
+[00:27:53] <Eridius> how does drop glue work on DST?
+[00:28:13] <insaneinside> FlexBox stores a Sized value, and returns a Ref<'a,T>.
+[00:28:36] <insaneinside> That Ref can get coerced to a trait-object ref.
+[00:29:19] <insaneinside> e.g. for some T: Iterator<Item=U>, Ref<'a,T> can become Ref<'a,Iterator<Item=U>>.
+[00:29:31] <insaneinside> this landed.. yesterday, I think.
+[00:29:57] <Eridius> ok, but you don't actually need to drop an unsized value, do you? The actual value you're working with is either a &Ref, which doesn't get dropped, or a Box<Ref>, which is a sized value
+[00:30:10] <insaneinside> no boxes.
+[00:30:26] * Eridius tries to read thorugh this code
+[00:31:14] *** Joins: anders (andars@moz-bsldst.sntcca.sbcglobal.net)
+[00:31:59] *** Quits: acharles (acharles@moz-dvfnah.static.qwest.net) (Ping timeout: 121 seconds)
+[00:32:48] *** Joins: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu)
+[00:33:11] * insaneinside realizes he probably needs to use the `size` and `align` values from the TyDesc.
+[00:33:16] <Eridius> insaneinside: is the goal here basically to have a place on the heap to temporarily store objects, and it reuses the previous allocation if possible?
+[00:33:24] <insaneinside> Eridius: exactly.
+[00:33:30] <Eridius> so kind of like a Box pool
+[00:33:38] <insaneinside> Mhm.
+[00:33:39] <Eridius> of size 1
+[00:33:48] <insaneinside> yep!
+[00:33:53] <Yurume> rkruppe: timezone fail :) (17:50 UTC = 02:50 local time) if you are available now, I can answer though.
+[00:35:33] <Eridius> insaneinside: can you use std::intrinsics::drop_in_place() to drop the value?
+[00:35:59] <Eridius> you aren't erasing the contained type, so you don't really need to store the drop glue, do you?
+[00:36:04] <rkruppe> Yurume: Basically I need to know if the table in grisu.rs can be tortured to give correctly rounded approximations of all powers of ten (that fit into f64)
+[00:36:30] <rkruppe> From what I understand it only stores 10^x, 10^x+k, 10^x+2k for some k > 1
+[00:36:51] <insaneinside> Eridius: not sure about that -- what happens when you store a coerced value?  (I'm thinking my code my currently drop the value twice!)
+[00:36:59] <rkruppe> Which would be pretty much the opposite of what Clinger's parsing algorithm needs
+[00:37:22] <Eridius> insaneinside: I'm not really up to speed on the recent coercion stuff. I only just saw CoerceUnsized a few hours ago
+[00:37:48] *** Joins: acharles (acharles@moz-dvfnah.static.qwest.net)
+[00:38:06] *** Quits: acharles (acharles@moz-dvfnah.static.qwest.net) (Client exited)
+[00:38:11] <Eridius> also: I don't know if intrinsics::drop_in_place() handles the drop flag. I hope so? But I don't know.
+[00:38:29] <insaneinside> What *is* the drop flag?
+[00:39:13] <Eridius> for any type with Drop, it's a field that's overwritten with a particular bit pattern when the value is dropped
+[00:39:27] <Yurume> rkruppe: it is safe to do so, because it asserts that (v * 10^(x+nk)) lies in the some range (probably 4 <= .. < 2^32)
+[00:39:28] <Eridius> actually, I think the entire value is overwritten with that pattern (so as to cover the drop flags of any nested types as well)
+[00:39:51] <Eridius> we used to just zero out the value, and the field held a value of 1 (I think) to indicate that it was live
+[00:39:57] <Eridius> but now we use a special bit pattern instead
+[00:40:09] <Yurume> rkruppe: Grisu uses this product to produce *both* integral parts (simple) and fractional parts (needs to track errors)
+[00:40:24] <Eridius> and there's an attribute #[unsafe_no_drop_flag] that gets rid of the drop field and requires you to write your Drop impl such that it detects the drop flag itself (e.g. because you want to just re-use an existing field)
+[00:40:25] <rkruppe> Yurume: I am certain it works for Grisu, I wonder whether I can reuse it for dec2flt
+[00:40:27] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[00:40:35] <Eridius> also, at some point the drop flag is going away entirely and it'll be tracked on the stack instead
+[00:40:43] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[00:41:02] <Yurume> rkruppe: I think V8 already uses the same techniques, but not sure.
+[00:41:35] <doener> insaneinside: what type do you put into the flexbox in the code that triggers the error?
+[00:42:52] <rkruppe> Yurume: Well, the paper by William Clinger assumes some different pattern of cached powers of ten, and I'm not qualified to redo the numerical analysis to see if it makes a difference
+[00:42:54] <rkruppe> I
+[00:43:06] <rkruppe> I'll go look at V8 though, thanks for the pointer
+[00:43:40] <insaneinside> doener: test function appended at bottom: https://pastebin.mozilla.org/8833554
+[00:45:52] *** Joins: rkruppe_ (chatzilla@moz-3nj.rnu.131.95.IP)
+[00:47:24] *** Quits: mib_6h4qar (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[00:47:34] *** Quits: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP) (Ping timeout: 121 seconds)
+[00:47:45] *** rkruppe_ is now known as rkruppe
+[00:50:02] *** Joins: _andrea_ (_andrea_@moz-2lt49q.unimelb.edu.au)
+[00:50:44] *** Quits: _andrea_ (_andrea_@moz-2lt49q.unimelb.edu.au) (Quit: Textual IRC Client: www.textualapp.com)
+[00:51:56] <Yurume> rkruppe: I haven't really read (only skimmed) the paper, but does it need a different pattern of cached powers instead of the *full* table? that sounds interesting.
+[00:52:52] <rkruppe> Yurume: It uses all small powers of ten up to some constant h, and then goes in steps of 10^(j*h) for larger powers
+[00:53:14] <rkruppe> I don't really understand why that's the right thing either, and it's only a space optimization
+[00:53:17] <XMPPwocky> > thanks for the pointer
+[00:53:18] <XMPPwocky> heh
+[00:53:37] <Yurume> what is h? (in the case of Grisu, it's about 8)
+[00:53:50] <Yurume> s/about//
+[00:53:51] *** Quits: eibwen (eibwen@moz-0oubi8.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[00:54:37] <rkruppe> Just a parameter, it only affects the table size and how often the fast path applies
+[00:55:26] <rkruppe> Since the full table is only 11 KiB and it makes the fast path applicable to larger inputs I'm inclined to leave that space optimization out and just include the full table
+[00:59:36] *** Joins: mib_yozve6 (Mibbit@moz-juv.9o3.252.72.IP)
+[00:59:50] *** Joins: unwound (bkoropoff@moz-kthi5c.wa.comcast.net)
+[01:01:07] *** Quits: mib_yozve6 (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[01:01:20] *** Quits: Nekit1234007 (nekit@moz-jpa.hli.189.91.IP) (A TLS packet with unexpected length was received.)
+[01:03:18] <Yurumechan> I've briefly read chapters 6 and 7, that does seem to be practical to reuse the table
+[01:04:08] *** Joins: Kingsquee (kingsley@moz-3fm07c.bchsia.telus.net)
+[01:04:30] <rkruppe> Yurumechan: How so?
+[01:05:14] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[01:07:13] *** Quits: annodomini (lambda@moz-hceqmj.hfc.comcastbusiness.net) (Client exited)
+[01:08:09] <Yurumechan> rkruppe : IIUC the algorithm calculates v times 10^n which can or cannot fit in the (say) u64 range, so there seems some freedom in  choosing the table
+[01:08:23] <doener> I forgot again, how can I install a specific nightly with multirust?
+[01:08:41] <Yurumechan> (sorry, on mobile)
+[01:09:44] *** Quits: larsberg (Adium@moz-kmvlue.cable.rcn.com) (Quit: Leaving.)
+[01:10:52] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Connection closed)
+[01:11:25] <rkruppe> Yurumechan: I'm not sure I follow. Powers of ten are used in several places, including the fast path where they're required to be exact (or at least I don't see how the result is supposed to be exact otherwise)
+[01:11:29] <rkruppe> Oh and I'm digging through V8 and indeed it uses a common table, but the strtod code also has another, smaller table (of doubles...) and then also lists some DiyFps for "adjustments" and there's no paper reference
+[01:11:47] <rkruppe> Bloody mess, I don't think I'll be able to copy that and be confident that it works
+[01:12:57] <cmr> rkruppe: at least for f32 you can do an exhaustive test pretty easily.
+[01:13:05] <cmr> and for f64, there is quickcheck and afl.rs
+[01:13:26] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[01:13:38] <rkruppe> cmr: Yes, and I intend to do that anyway, but it would be nice if I at least understood why it's supposed to work :P
+[01:18:06] <rkruppe> Actually, no, exhaustive f32 tests aren't that easy
+[01:18:30] <cmr> Why not?
+[01:18:43] <rkruppe> For all floats, there are a ton of different inputs that can reproduce it, and they're not all handled the same way
+[01:19:09] <cmr> Oh this is dec2flt?
+[01:19:17] <cmr> I'm sorry, missed some context there.
+[01:19:33] <rkruppe> Yes, dec2flt. 
+[01:19:36] <cmr> Yeah I have no solid idea on how to do that exhaustively.
+[01:21:15] <rkruppe> cmr: If "exhaustive" means "all possible inputs" then it's probably infeasible. But one can fuzz and hand-craft inputs to hit at least all the fundamentally different code paths (fast path, slightly-less-fast path, pretty-okay path, really-slow-bignum path)
+[01:22:08] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[01:22:10] <rkruppe> Also gotta cover all sorts of overflowing, underflowing, subnormal-producing, etc. inputs
+[01:22:53] <rkruppe> Because for some reason (masochism?) I decided I want to handle subnormals 100% correctly from the get go
+[01:23:00] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Connection closed)
+[01:23:03] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[01:27:23] *** Quits: gsingh93 (gulshan@moz-qnbukr.mi.comcast.net) (Ping timeout: 121 seconds)
+[01:28:42] *** Quits: stl (stl@moz-861.rr7.15.176.IP) (Ping timeout: 121 seconds)
+[01:29:08] *** Joins: SiegeLord (sl@moz-9jtaei.ca.comcast.net)
+[01:31:03] *** Quits: swgillespie (swgillespie@moz-1i5.3un.220.167.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[01:32:58] <WindowsBunny> okay, testing acrichto's msvc branch to see if it works
+[01:34:19] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[01:37:41] *** Quits: Kroisse (Kroisse@moz-t75tk5.krois.se) (Quit: Good bye :))
+[01:38:47] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[01:40:59] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[01:43:42] <rkruppe> Actually I was being stupid about the table layout, if I change it the full table only takes a little more than 6 KiB
+[01:43:54] <rkruppe> Yurume Yurumechan (whichever you're on) ^
+[01:44:31] <rkruppe> Meaning I'll not put any more time into this and just go with the full table, at least for the initial patch
+[01:47:08] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[01:51:48] *** Joins: Kroisse (Kroisse@moz-t75tk5.krois.se)
+[01:52:02] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (A TLS packet with unexpected length was received.)
+[01:52:34] *** Joins: annodomini (lambda@moz-qgii5v.ma.comcast.net)
+[01:52:49] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[01:55:19] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[01:57:24] <Yurume> rkruppe: (was afk) hmm, it does make me worry that V8's dec2flt lacks publication. I guess you can for now go with a separate table, we can always fix that in the future :)
+[01:57:45] *** Quits: joneshf-laptop (joneshf@moz-l4h.b5s.208.98.IP) (Ping timeout: 121 seconds)
+[01:58:39] *** Joins: erz (erz@moz-bto.a1r.220.83.IP)
+[01:58:55] <cmr> I'm unfamiliar with how these algorithms work. Is the table scanned or just indexed?
+[01:59:15] <rkruppe> Random access, and only at a single location for a given input
+[01:59:28] *** Quits: genbattle (genbattle@moz-4v0.gkd.16.182.IP) (Connection closed)
+[01:59:38] <cmr> Ok
+[01:59:40] *** Joins: genbattle (genbattle@moz-4v0.gkd.16.182.IP)
+[01:59:47] <cmr> Table size definitely doesn't matter as far as I'm concerned then
+[01:59:51] <rkruppe> The input is a Bignum f (the decimal digits) and a decimal exponent e, and it needs a floating point approximation of 10^e
+[02:05:28] *** Joins: etw (john@moz-3h5sr6.fios.verizon.net)
+[02:06:02] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[02:07:26] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[02:07:37] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[02:07:37] *** Joins: brson (brson@moz-nunj8i.tmodns.net)
+[02:07:38] *** ChanServ sets mode: +o brson
+[02:10:26] *** Joins: joneshf-laptop (joneshf@moz-l4h.b5s.208.98.IP)
+[02:10:27] *** Quits: zz_kimundi (kimundi@moz-ol7m65.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[02:12:21] *** Quits: erz (erz@moz-bto.a1r.220.83.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[02:12:51] *** chmanchester is now known as chmanchester|afk
+[02:13:38] *** Joins: zz_kimundi (kimundi@moz-a443b6.dip0.t-ipconnect.de)
+[02:13:40] *** zz_kimundi is now known as kimundi
+[02:15:29] *** Parts: insaneinside (user@moz-dgv9mb.customer.broadstripe.net) ("bye")
+[02:17:58] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[02:18:20] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[02:19:53] *** Joins: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP)
+[02:22:33] *** Quits: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP) (Ping timeout: 121 seconds)
+[02:22:35] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Connection closed)
+[02:23:30] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[02:24:22] *** blaenk_ is now known as blaenk
+[02:25:53] *** Quits: zmike_ (discomfitor@moz-oek0ra.ct.comcast.net) (Ping timeout: 121 seconds)
+[02:27:26] *** Quits: anders (andars@moz-bsldst.sntcca.sbcglobal.net) (Ping timeout: 121 seconds)
+[02:28:01] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[02:29:48] *** Quits: jdm (jdm@moz-ilbt2e.cable.teksavvy.com) (Quit: )
+[02:35:24] *** Quits: annodomini (lambda@moz-qgii5v.ma.comcast.net) (Client exited)
+[02:37:23] *** Quits: etw (john@moz-3h5sr6.fios.verizon.net) (Client exited)
+[02:39:10] *** Joins: zmike_ (discomfitor@moz-oek0ra.ct.comcast.net)
+[02:40:25] *** Quits: zmike (discomfitor@moz-vaj.v53.167.208.IP) (Ping timeout: 121 seconds)
+[02:41:21] *** Joins: mib_pvme4h (Mibbit@moz-juv.9o3.252.72.IP)
+[02:43:40] *** Quits: mib_pvme4h (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[02:44:43] *** Quits: bytewise (bytewise@moz-agoafm.adsl.alicedsl.de) (Quit: Leaving)
+[02:47:58] <huon> nrc: ping
+[02:48:07] <nrc> huon: pong
+[02:48:40] <huon> nrc: for the save-analysis patch, is the csv file basically just an extraction of stuff from the other files?
+[02:48:51] <huon> (i.e. can I skip reviewing that in detail?)
+[02:48:57] <huon> csv module*
+[02:50:26] <nrc> huon: pretty much - perhaps best to look at the commits - the extraction is in a single commit and is basically a no-op that you can skip
+[02:50:27] *** Quits: Binero (jeroen@moz-91joat.69vi.s4ge.1810.2a02.IP) (Client exited)
+[02:50:36] <nrc> there are some later changes to the csv module
+[02:51:04] <huon> ok
+[02:52:31] *** Joins: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[02:53:17] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[02:54:16] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[02:55:06] *** Joins: zmike (discomfitor@moz-tcq.oq6.55.66.IP)
+[02:57:07] *** Joins: mr_evil (Mibbit@moz-juv.9o3.252.72.IP)
+[02:57:37] *** Quits: tamird (textual@moz-gkumi9.dyn.optonline.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[02:59:32] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[02:59:32] *** ChanServ sets mode: +o pcwalton
+[02:59:40] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (A TLS packet with unexpected length was received.)
+[03:00:39] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[03:01:05] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[03:02:39] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (Ping timeout: 121 seconds)
+[03:08:25] <barosl> I've just got curious, is there a reason why rustc prints just `&-ptr` when it comes to describes type mismatch in brief?
+[03:08:35] <barosl> Instead of a specific type
+[03:08:47] <huon> because it's meant to focus on the &?
+[03:09:03] <barosl> Hmm, possibly, but what I mean is
+[03:09:14] <cmr> barosl: it focuses on the "outermost" part of the type that differs, I think.
+[03:09:15] <barosl>     (expected &-ptr,
+[03:09:15] <barosl>         found struct `collections::string::String`) [E0308]
+[03:09:15] <huon> i.e. it's detected the difference is say &i32 vs. i32, and so wants to focus on the fact that the & is wrong
+[03:09:30] <huon> (especially useful for very long e.g. iterator types)
+[03:09:35] <barosl> And &str vs. String
+[03:09:58] <barosl> huon, But it prints &-ptr even when the two compared types are fairly distinct
+[03:09:58] *** Joins: tamird (textual@moz-gkumi9.dyn.optonline.net)
+[03:11:04] <barosl> If one type is String and the other is &String, it makes sense to print just the &-difference
+[03:11:08] *** Joins: p1start (p1start@moz-nftjhe.org)
+[03:11:24] <barosl> But I don't think comparing &str and String should be done like that, but rustc does so
+[03:11:41] *** Joins: stl (stl@moz-hgg.hjg.15.176.IP)
+[03:12:17] <barosl> Well, it would be better to file this in an issue!
+[03:12:45] <cmr> barosl: what do you think it should print in that case, the full type?
+[03:13:12] <barosl> Yeah, I guess &str would be more convenient
+[03:13:17] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[03:14:05] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[03:14:19] *** Quits: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[03:14:45] <barosl> If they are formed from the same type, differing only the &-ness, it would be good to print &-ptr only (and possibly more handy)
+[03:16:04] *** Quits: O01eg (o01eg@moz-t473kj.th81.4n8f.2698.2a02.IP) (Client exited)
+[03:18:34] *** Joins: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP)
+[03:18:41] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[03:19:20] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[03:20:08] *** Quits: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au) (Ping timeout: 121 seconds)
+[03:20:48] *** Joins: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au)
+[03:22:15] *** Joins: annodomini (lambda@moz-qgii5v.ma.comcast.net)
+[03:26:18] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[03:27:33] *** Joins: semarie (semarie@moz-72353b.exit.babylon.network)
+[03:30:21] *** Joins: erz (erz@moz-n26c5c.broadband.corbina.ru)
+[03:30:40] <Manishearth> eddyb than, good point
+[03:30:48] <Manishearth> *thanks
+[03:35:29] *** Quits: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[03:38:31] *** Joins: nodweber (nodweber@moz-knt.fgq.178.5.IP)
+[03:45:36] *** Quits: nodweber (nodweber@moz-knt.fgq.178.5.IP) (A TLS packet with unexpected length was received.)
+[03:47:23] *** Quits: erz (erz@moz-n26c5c.broadband.corbina.ru) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[03:48:53] *** Quits: Rusky (russell@moz-mp2nkm.slkc.qwest.net) (Quit: Leaving.)
+[03:49:08] <bstrie> does anyone know if airmoz will be broadcasting the lightning talks tomorrow?
+[03:50:33] *** Quits: WindowsBunny (Peter@moz-prmara.east.verizon.net) (Quit: Leaving.)
+[03:54:44] *** Joins: Rusky (russell@moz-mp2nkm.slkc.qwest.net)
+[03:55:10] *** Joins: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP)
+[03:55:18] <huon> brson: ^
+[03:55:37] *** Quits: ytain (ytain@moz-07c3h9.dsl.teksavvy.com) (Quit: Textual IRC Client: www.textualapp.com)
+[03:56:03] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[03:58:02] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[03:58:03] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[03:58:22] <steveklabnik> the meetup pag esays yes
+[03:59:09] *** Joins: WindowsBunny (Peter@moz-prmara.east.verizon.net)
+[03:59:59] *** Joins: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[04:00:29] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[04:04:01] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (Ping timeout: 121 seconds)
+[04:13:03] <bstrie> cool
+[04:16:11] <kmc> woot
+[04:17:19] *** Quits: mr_evil (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[04:21:38] <geofft> acrichto: do you know off-hand if your thread/fork/kill issue (#14232) is still an issue on current OS X? 
+[04:22:59] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[04:23:46] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[04:24:13] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[04:27:05] *** Quits: Kingsquee (kingsley@moz-3fm07c.bchsia.telus.net) (Quit: Konversation terminated!)
+[04:27:48] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[04:28:42] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[04:29:04] <sfackler> are cross crate reexports a thing you can do?
+[04:30:04] <Mutabah> sfackler: I believe do
+[04:30:07] <Mutabah> (std does)
+[04:31:02] *** Joins: eddyb (eddyb@moz-egg.q07.26.188.IP)
+[04:31:53] <sfackler> oh right
+[04:34:02] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[04:35:46] *** Quits: eddyb (eddyb@moz-egg.q07.26.188.IP) (Ping timeout: 121 seconds)
+[04:39:12] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[04:39:15] <brson> steveklabnik: fwiw i don't love this first paragraph in the readme even though i changed it recently
+[04:39:30] <brson> this one https://github.com/rust-lang/rust/#the-rust-programming-language
+[04:40:17] <brson> i didn't find a new example that i liked for rust-www
+[04:43:51] <brson> acrichto: um, rustup.sh needs to be updated to default to stable!
+[04:44:33] <acrichto> geofft: yeah I believe it still is (confirmed a few weeks back)
+[04:44:35] <acrichto> brson: good point!
+[04:45:07] <brson> acrichto: I'll make a pr
+[04:45:45] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[04:46:36] *** Joins: nodweber_ (nodweber@moz-knt.fgq.178.5.IP)
+[04:49:35] <brson> acrichto: r? https://github.com/rust-lang/rustup/pull/16
+[04:50:07] <acrichto> brson: \o/, will merge tmw morning?
+[04:50:23] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[04:50:27] <brson> acrichto: sure, but it has to be uploaded to s3 to do anything
+[04:50:35] <acrichto> sure
+[04:50:40] *** Quits: nodweber_ (nodweber@moz-knt.fgq.178.5.IP) (Ping timeout: 121 seconds)
+[04:51:00] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[04:51:31] *** Quits: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com) (Ping timeout: 121 seconds)
+[04:56:52] <brson> acrichto: here's a checklist for tomorrow https://gist.github.com/brson/71737ee7f058728d2b88
+[04:58:29] <brson> i did not test the installers hard at all
+[04:58:40] <brson> i installed the x86 linux build and ran rustc
+[04:59:43] <brson> i guess in theory the betas have been fine so these should be fine
+[05:08:43] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[05:08:50] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[05:12:38] <brson> steveklabnik: is 'While this is only five lines, they’re a dense four' intentionally using two different numbers in http://doc.rust-lang.org/stable/book/dining-philosophers.html
+[05:13:06] <brson> probably not
+[05:13:31] <whipsch> maybe thats a sly philosophical joke or something
+[05:15:19] *** Parts: huon (huon@moz-hj272o.8rnv.rggd.6180.2400.IP) ("Leaving")
+[05:15:31] *** Joins: huon (huon@moz-hj272o.8rnv.rggd.6180.2400.IP)
+[05:15:31] *** ChanServ sets mode: +o huon
+[05:17:00] *** Joins: mr_fribble (Mibbit@moz-juv.9o3.252.72.IP)
+[05:18:20] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[05:19:35] *** Joins: guewen (guewen@moz-ftf7u4.cust.swisscom.ch)
+[05:20:09] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[05:22:08] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[05:22:38] <brson> the dining philosophers example is good
+[05:22:41] *** Quits: brson (brson@moz-nunj8i.tmodns.net) (Quit: leaving)
+[05:22:52] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[05:24:05] *** Joins: adu (ajr@moz-0foa9t.md.comcast.net)
+[05:25:12] *** Joins: brson (brson@moz-nunj8i.tmodns.net)
+[05:25:13] *** ChanServ sets mode: +o brson
+[05:25:14] *** Quits: brson (brson@moz-nunj8i.tmodns.net) (Quit: leaving)
+[05:31:52] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[05:31:58] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[05:36:04] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[05:37:24] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[05:43:57] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[05:43:59] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[05:45:14] *** Quits: mr_fribble (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[05:47:06] *** Joins: nodweber (nodweber@moz-knt.fgq.178.5.IP)
+[05:48:38] *** Joins: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[05:51:29] *** Quits: nodweber (nodweber@moz-knt.fgq.178.5.IP) (Ping timeout: 121 seconds)
+[05:53:09] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[05:53:28] *** Quits: genbattle (genbattle@moz-4v0.gkd.16.182.IP) (Connection closed)
+[05:53:37] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (Ping timeout: 121 seconds)
+[05:55:15] *** Joins: anom (anhedonia@moz-bbr33h.bu.edu)
+[05:56:02] *** Joins: Twisol (textual@moz-0033n4.res.rr.com)
+[05:56:32] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[05:56:38] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[05:57:43] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[05:58:07] <Manishearth> steveklabnik: the links in the dining philosophers example are broken
+[05:58:20] <Manishearth> > Here, we make a [struct][struct] to represent a philosopher. 
+[05:59:29] *** Quits: vadimcn (uid46608@moz-o7asbu.uxbridge.irccloud.com) (Quit: Connection closed for inactivity)
+[06:01:09] <Manishearth> > If you run this program, you’ll see that the philosophers eat out of order! We have mult-threading!
+[06:01:12] <Manishearth> also
+[06:01:14] <Manishearth> mult-threading
+[06:03:52] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[06:05:00] *** Joins: James (quassel@moz-225vcm.range86-148.btcentralplus.com)
+[06:06:24] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[06:11:03] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[06:11:39] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[06:12:44] *** Quits: SiegeLord (sl@moz-9jtaei.ca.comcast.net) (Quit: It's a joke, it's all a joke.)
+[06:16:56] *** Joins: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de)
+[06:19:52] *** Joins: eerie (eerie@moz-9ml73n.red.bezeqint.net)
+[06:19:55] *** Joins: npm (npm@moz-92sbjt.wa.comcast.net)
+[06:20:47] <WindowsBunny> So....
+[06:20:49] <WindowsBunny> party time?
+[06:21:17] <WindowsBunny> or are we waiting for the 1.0.0 build to be done and released?
+[06:21:47] <npm> when is it actually going to be released?
+[06:22:03] *** npm is now known as GBGamer
+[06:22:56] *** Quits: eerie (eerie@moz-9ml73n.red.bezeqint.net) (Connection closed)
+[06:23:25] *** Quits: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de) (Quit: No Ping reply in 180 seconds.)
+[06:24:46] *** Joins: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de)
+[06:25:20] <WindowsBunny> GBGamer: Probably at 11:59 PM hawaii time?
+[06:25:29] <WindowsBunny> to be as late as possible?
+[06:25:32] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[06:25:57] <GBGamer> seems likely
+[06:26:05] <Yurume> WindowsBunny: huon said that would be about 10 AM PST (i.e. 11.5 hours remaining)
+[06:26:30] <GBGamer> who is based here that all our stuff's on PST?
+[06:26:57] <GBGamer> s/here/in this time zone/
+[06:27:45] <Yurume> don't know
+[06:28:07] <GBGamer> well, it's nice for me, here in Seattle :P
+[06:28:10] <GBGamer> I'm happy about it
+[06:28:11] <geofft> Mozilla itself is in SF, no? 
+[06:28:13] *** Joins: kushal (kdas@moz-utbmir.202.sitibroadband.in)
+[06:28:46] <whipsch> yes
+[06:28:57] <Yurume> yeah, I guess that's probably a reason
+[06:28:59] <GBGamer> ah okay, that makes sense
+[06:29:05] <whipsch> mozilla standard time
+[06:29:45] <GBGamer> it seems like a lot of tech is based in PST
+[06:30:16] <GBGamer> because of the Seattle/Silicon Valley thing
+[06:33:03] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[06:34:02] *** Quits: James (quassel@moz-225vcm.range86-148.btcentralplus.com) (Ping timeout: 121 seconds)
+[06:34:23] *** Quits: Twisol (textual@moz-0033n4.res.rr.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[06:34:54] *** Joins: eerie (eerie@moz-9ml73n.red.bezeqint.net)
+[06:37:39] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[06:39:36] *** Quits: cdidd (cdidd@moz-qm9ere.broadband.corbina.ru) (Ping timeout: 121 seconds)
+[06:41:07] *** Joins: munksgaard (munksgaard@moz-478pev.u.parknet.dk)
+[06:44:33] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[06:47:07] *** Joins: bjz (bjz@moz-b43.1aa.161.202.IP)
+[06:47:18] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[06:50:56] *** Joins: Codenator (Mibbit@moz-i23.v94.198.81.IP)
+[06:51:50] *** Quits: Codenator (Mibbit@moz-i23.v94.198.81.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[06:51:52] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[06:54:00] <WindowsBunny> Rust's downloads are on the cloud, so it'll be hard to DDoS them :(
+[06:54:32] *** Joins: cdidd (cdidd@moz-b3smji.broadband.corbina.ru)
+[06:55:09] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[06:55:35] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[06:56:36] <Mutabah> Is there an easy way of listing the avaliable targets for rustc?
+[07:00:28] *** Joins: Kingsquee (kingsley@moz-3fm07c.bchsia.telus.net)
+[07:00:47] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[07:01:09] *** Joins: squiddy (squiddy@moz-md4.pm3.19.178.IP)
+[07:01:57] *** Joins: canhtak (jeremy@moz-kcs.u0t.149.5.IP)
+[07:02:12] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[07:02:29] *** Quits: anom (anhedonia@moz-bbr33h.bu.edu) (Ping timeout: 121 seconds)
+[07:06:48] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[07:07:29] *** Joins: vadimcn (uid46608@moz-o7asbu.uxbridge.irccloud.com)
+[07:08:18] *** Joins: dinfuehr (dinfuehr@moz-24o82b.highway.telekom.at)
+[07:10:44] <Mutabah> If I just want to build std etc for a target, what should I call?
+[07:12:17] *** Quits: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de) (Ping timeout: 121 seconds)
+[07:12:24] *** Joins: cornelius (Mibbit@moz-ndd.v87.162.66.IP)
+[07:12:25] *** Quits: cornelius (Mibbit@moz-ndd.v87.162.66.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[07:13:55] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[07:17:59] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[07:18:26] <GBGamer> jyeo: #[derive(Copy, Clone)] on Point
+[07:18:51] <GBGamer> still super terrible at irssi
+[07:19:04] <GBGamer> Mutabah: trying to figure it out
+[07:19:15] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[07:19:15] <Mutabah> GBGamer: Yeah, same
+[07:19:24] <Mutabah> In theory, it should be possible, but...
+[07:19:39] <Mutabah> It keeps wanting to run llvm-config
+[07:23:19] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[07:24:28] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[07:24:32] <GBGamer> you can probably just do it manually
+[07:24:39] <GBGamer> that's what I did for a cross-compiled core
+[07:24:55] <GBGamer> probably could write a tiny little makefile for it
+[07:25:48] <GBGamer> anyways, I gotta sleep
+[07:25:51] <GBGamer> g'night
+[07:26:32] *** Quits: GBGamer (npm@moz-92sbjt.wa.comcast.net) (Quit: exit(EXIT_SLEEPY_TIME))
+[07:26:39] *** Joins: aepsil0n (eduard@moz-6491ha.mv2h.pepi.8071.2a02.IP)
+[07:28:00] <Mutabah> Yeah... I want the full std
+[07:28:09] *** Quits: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[07:30:18] *** Quits: jbomo (dkd@moz-uol4mm.fios.verizon.net) (Ping timeout: 121 seconds)
+[07:33:13] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[07:33:23] *** Joins: marsel (user@moz-ms7.h9c.147.46.IP)
+[07:33:39] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[07:36:45] *** Joins: pnkfelix (pnkfelix@moz-eljppb.fbx.proxad.net)
+[07:36:45] *** ChanServ sets mode: +o pnkfelix
+[07:38:53] *** Quits: bjz (bjz@moz-b43.1aa.161.202.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[07:38:55] *** Joins: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[07:41:28] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[07:41:38] <Manishearth> four rust posts on the hn homepage now
+[07:41:42] <Manishearth> (TWIS made it too)
+[07:43:00] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (Ping timeout: 121 seconds)
+[07:46:01] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[07:48:24] *** Quits: munksgaard (munksgaard@moz-478pev.u.parknet.dk) (Ping timeout: 121 seconds)
+[08:01:11] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[08:01:23] *** Quits: squiddy (squiddy@moz-md4.pm3.19.178.IP) (Connection closed)
+[08:02:17] *** Joins: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se)
+[08:03:58] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[08:05:16] *** Quits: eerie (eerie@moz-9ml73n.red.bezeqint.net) (Connection closed)
+[08:05:37] *** Joins: bjz (bjz@moz-b43.1aa.161.202.IP)
+[08:06:25] *** Quits: bdero (bran@moz-lbs.91h.47.73.IP) (Ping timeout: 121 seconds)
+[08:06:28] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[08:10:11] *** Quits: adu (ajr@moz-0foa9t.md.comcast.net) (Client exited)
+[08:10:30] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[08:11:28] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[08:11:44] *** Quits: meteredsection (meteredsect@moz-ersuj2.wa.comcast.net) (Ping timeout: 121 seconds)
+[08:15:17] *** Joins: casey (casey@moz-v0ns05.tpgi.com.au)
+[08:16:05] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[08:16:18] *** Joins: laumann (thomas@moz-3v9.hq0.225.130.IP)
+[08:17:54] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[08:20:28] *** Joins: munksgaard (munksgaard@moz-1f0.hq0.225.130.IP)
+[08:22:02] *** Quits: pnkfelix (pnkfelix@moz-eljppb.fbx.proxad.net) (Ping timeout: 121 seconds)
+[08:22:20] *** Quits: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu) (Quit: Leaving)
+[08:23:59] *** Joins: Guest63 (textual@moz-9ct.il3.161.192.IP)
+[08:24:15] *** Quits: bjz (bjz@moz-b43.1aa.161.202.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[08:26:19] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[08:27:06] *** Joins: Guest63_ (textual@moz-6gq.t8s.78.166.IP)
+[08:27:32] *** Joins: arielb1 (Ariel@moz-2trv48.red.bezeqint.net)
+[08:27:44] <arielb1> nrc: I hate that bounce
+[08:28:12] <arielb1> apparently mac says -9.223372036854776e18f64 as i64 == 0
+[08:28:13] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[08:29:25] *** Quits: Guest63 (textual@moz-9ct.il3.161.192.IP) (Ping timeout: 121 seconds)
+[08:29:46] <WindowsBunny> arielb1: nice
+[08:29:59] <arielb1> how can I check this?
+[08:30:28] *** Joins: zmack (zmack@moz-htpein.home.aster.pl)
+[08:33:53] <arielb1> should I just remove the test?
+[08:34:47] <arielb1> rusti: -9.223372036854776e18f64 as i64
+[08:34:48] -playbot- -9223372036854775808
+[08:35:39] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[08:35:46] <arielb1> anyone has access to a mac here?
+[08:38:21] <Mutabah> arielb1: ... yes, but not running OSX
+[08:38:30] *** Joins: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de)
+[08:38:48] <arielb1> I mean, to a mac running OSX
+[08:38:51] *** Joins: nodweber (nodweber@moz-knt.fgq.178.5.IP)
+[08:40:08] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[08:41:29] *** Quits: untitaker (untitaker@moz-4k4vpj.highway.telekom.at) (Quit: ZNC - http://znc.in)
+[08:42:27] *** Joins: mib_8ob4he (Mibbit@moz-91q.u65.244.80.IP)
+[08:43:08] *** Quits: zmack (zmack@moz-htpein.home.aster.pl) (Connection closed)
+[08:43:17] *** Joins: untitaker (untitaker@moz-4k4vpj.highway.telekom.at)
+[08:43:30] *** Quits: untitaker (untitaker@moz-4k4vpj.highway.telekom.at) (Quit: ZNC - http://znc.in)
+[08:44:06] <arielb1> I commented-out the broken test
+[08:44:23] <arielb1> nrc: could you re-r+ #24333
+[08:44:27] <arielb1> gh24333
+[08:44:28] <[o__o]> Make casts follow the new RFC401: https://github.com/rust-lang/rust/pull/24333
+[08:44:34] <arielb1> or maybe someone
+[08:44:49] *** Joins: zmack (zmack@moz-htpein.home.aster.pl)
+[08:45:30] <Fenhl> arielb1: I'm on OS X right now, what do you need?
+[08:45:31] *** Quits: guewen (guewen@moz-ftf7u4.cust.swisscom.ch) (Ping timeout: 121 seconds)
+[08:45:41] <arielb1> Fenhl: run  -9.223372036854776e18f64 as i64
+[08:45:53] <arielb1> what does it return?
+[08:46:08] <Fenhl> hang on
+[08:46:43] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[08:46:59] *** Joins: genbattle (genbattle@moz-r09mao.xtra.co.nz)
+[08:47:13] *** Joins: ptalbot (ptalbot@moz-j4gnuh.fbx.proxad.net)
+[08:49:16] <Fenhl> arielb1: -9223372036854775808
+[08:49:25] <arielb1> Fenhl: with optimizations
+[08:49:55] <Fenhl> arielb1: as in `cargo run --release`?
+[08:50:01] <arielb1> yes
+[08:50:07] <Fenhl> same result
+[08:50:20] *** Quits: annodomini (lambda@moz-qgii5v.ma.comcast.net) (Client exited)
+[08:50:22] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Connection closed)
+[08:51:49] <arielb1> I should be emitting LLVMConstFPToSI in both cases
+[08:52:32] *** Joins: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP)
+[08:52:32] *** ChanServ sets mode: +o pnkfelix
+[08:52:41] *** Joins: squiddy (squiddy@moz-md4.pm3.19.178.IP)
+[08:53:04] *** Quits: ptalbot (ptalbot@moz-j4gnuh.fbx.proxad.net) (Ping timeout: 121 seconds)
+[08:53:39] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[08:54:12] <arielb1> actually it fails no-opt on my machine too
+[08:57:12] *** Quits: dustinm` (dustinm@moz-es6jb7.ip-167-114-152.net) (Ping timeout: 121 seconds)
+[08:58:21] *** Joins: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP)
+[08:59:00] *** Quits: nham (nham@moz-755.bu3.214.98.IP) (Quit: leaving)
+[08:59:08] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[08:59:23] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[09:01:08] *** Joins: guewen (guewen@moz-ftf7u4.cust.swisscom.ch)
+[09:01:25] <Manishearth> needs closing https://github.com/rust-lang/rust/pull/25408
+[09:04:02] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[09:04:27] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[09:05:53] *** Joins: eerie (eerie@moz-9ml73n.red.bezeqint.net)
+[09:07:25] *** Joins: anom (anhedonia@moz-th44la.torservers.net)
+[09:07:26] *** Quits: dinfuehr (dinfuehr@moz-24o82b.highway.telekom.at) (Connection closed)
+[09:09:06] <arielb1> nrc: fixed a bug on my end
+[09:09:08] <arielb1> or anyone
+[09:09:09] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[09:09:10] <arielb1> need r-r+
+[09:09:46] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[09:10:06] *** Quits: eerie (eerie@moz-9ml73n.red.bezeqint.net) (Ping timeout: 121 seconds)
+[09:10:55] <Manishearth> arielb1: link?
+[09:11:01] <arielb1> gh24333
+[09:11:01] <[o__o]> Make casts follow the new RFC401: https://github.com/rust-lang/rust/pull/24333
+[09:11:36] <Manishearth> done
+[09:12:11] *** Joins: dinfuehr (dinfuehr@moz-24o82b.highway.telekom.at)
+[09:12:13] *** Quits: squiddy (squiddy@moz-md4.pm3.19.178.IP) (Ping timeout: 121 seconds)
+[09:14:30] <arielb1> is there a way to do all tests with ubsan?
+[09:16:08] <arielb1> is there a UB-less version of fptosi/fptoui?
+[09:16:52] <arielb1> I mean, to fix gh24331
+[09:16:52] <[o__o]> LLVM undef with overflowing floating-point -> integer casts: https://github.com/rust-lang/rust/issues/24331
+[09:16:59] <arielb1> I would rather have some LLVM person fix this
+[09:20:22] *** Joins: duesenfranz_ (jona@moz-711djm.tirol.surfer.at)
+[09:21:08] *** Quits: dinfuehr (dinfuehr@moz-24o82b.highway.telekom.at) (Connection closed)
+[09:21:30] *** Joins: dinfuehr (dinfuehr@moz-24o82b.highway.telekom.at)
+[09:22:00] *** Quits: mib_8ob4he (Mibbit@moz-91q.u65.244.80.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[09:22:35] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[09:23:07] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[09:23:08] *** Joins: eerie (eerie@moz-9ml73n.red.bezeqint.net)
+[09:25:32] *** Quits: dinfuehr (dinfuehr@moz-24o82b.highway.telekom.at) (Ping timeout: 121 seconds)
+[09:28:04] *** Quits: arielb1 (Ariel@moz-2trv48.red.bezeqint.net) (Quit: Ex-Chat)
+[09:28:28] *** Joins: meteredsection (meteredsect@moz-k1pkr3.wa.comcast.net)
+[09:28:32] *** Joins: ConnorDoyle (ConnorDoyle@moz-edrulj.static.monkeybrains.net)
+[09:29:46] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[09:32:09] *** Quits: anom (anhedonia@moz-th44la.torservers.net) (Ping timeout: 121 seconds)
+[09:32:59] *** Joins: killercup (killercup@moz-qj5qhi.dip0.t-ipconnect.de)
+[09:33:04] *** Joins: dustinm` (dustinm@moz-1c1j82.fu2o.sj0n.5300.2607.IP)
+[09:33:29] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[09:33:33] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[09:34:20] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[09:34:54] *** Joins: mkdirtrap (Mibbit@moz-91q.u65.244.80.IP)
+[09:35:28] *** Quits: nodweber (nodweber@moz-knt.fgq.178.5.IP) (A TLS packet with unexpected length was received.)
+[09:35:49] *** Joins: eerie_ (eerie@moz-9ml73n.red.bezeqint.net)
+[09:35:49] *** Quits: eerie (eerie@moz-9ml73n.red.bezeqint.net) (Connection closed)
+[09:36:31] *** Quits: ConnorDoyle (ConnorDoyle@moz-edrulj.static.monkeybrains.net) (Ping timeout: 121 seconds)
+[09:36:32] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[09:39:17] *** Joins: anom (anhedonia@moz-hci.2cf.10.85.IP)
+[09:46:31] *** Joins: jga_ (jga@moz-640.t1q.244.77.IP)
+[09:49:29] *** Joins: summerlight (summerlight@moz-99k.2mj.130.121.IP)
+[09:50:01] *** Joins: filsmick (filsmick@moz-vq1mm2.abo.wanadoo.fr)
+[09:52:00] *** Joins: eibwen (eibwen@moz-0eb231.dip0.t-ipconnect.de)
+[09:54:23] *** Quits: canhtak (jeremy@moz-kcs.u0t.149.5.IP) (Client exited)
+[09:55:49] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[09:55:51] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[09:59:53] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[10:01:06] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[10:04:34] *** Joins: ptalbot (ptalbot@moz-1gn7gb.eu0n.jcdj.0660.2001.IP)
+[10:05:16] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[10:06:00] *** Joins: eerie (eerie@moz-9ml73n.red.bezeqint.net)
+[10:06:24] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[10:08:51] *** Quits: eerie_ (eerie@moz-9ml73n.red.bezeqint.net) (Ping timeout: 121 seconds)
+[10:09:33] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[10:09:55] *** Joins: eddyb (eddyb@moz-egg.q07.26.188.IP)
+[10:10:26] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[10:11:39] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[10:16:16] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[10:16:55] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[10:22:16] *** Joins: squiddy (squiddy@moz-md4.pm3.19.178.IP)
+[10:23:11] *** Quits: anom (anhedonia@moz-hci.2cf.10.85.IP) (Ping timeout: 121 seconds)
+[10:23:38] *** Quits: nrc (nrc@moz-9luh02.xtra.co.nz) (Ping timeout: 121 seconds)
+[10:23:55] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[10:28:28] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[10:28:52] *** Quits: casey (casey@moz-v0ns05.tpgi.com.au) (Connection closed)
+[10:29:14] *** Joins: casey (casey@moz-v0ns05.tpgi.com.au)
+[10:31:20] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[10:32:09] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[10:32:38] *** Joins: nrc (nrc@moz-9luh02.xtra.co.nz)
+[10:32:39] *** ChanServ sets mode: +o nrc
+[10:33:16] *** Quits: casey (casey@moz-v0ns05.tpgi.com.au) (Ping timeout: 121 seconds)
+[10:36:01] *** Joins: eerie_ (eerie@moz-9ml73n.red.bezeqint.net)
+[10:36:01] *** Quits: c0170 (c0170@moz-dev.ffi.127.79.IP) (Connection closed)
+[10:37:20] *** Joins: arielb1 (Mibbit@moz-co96pe.tau.ac.il)
+[10:37:31] *** Quits: nrc (nrc@moz-9luh02.xtra.co.nz) (Ping timeout: 121 seconds)
+[10:39:02] *** Quits: eerie (eerie@moz-9ml73n.red.bezeqint.net) (Ping timeout: 121 seconds)
+[10:39:43] *** Quits: zeiris (dan@moz-8jbmam.letter.agency) (Ping timeout: 121 seconds)
+[10:39:49] <arielb1> how do you debug windows buildbot crashing?
+[10:40:18] *** Joins: untitaker (untitaker@moz-4k4vpj.highway.telekom.at)
+[10:40:26] *** Quits: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua) (A TLS packet with unexpected length was received.)
+[10:42:04] *** Quits: untitaker (untitaker@moz-4k4vpj.highway.telekom.at) (Quit: ZNC - http://znc.in)
+[10:43:32] *** Joins: untitaker (untitaker@moz-4k4vpj.highway.telekom.at)
+[10:43:47] <WindowsBunny> arielb1: With horror
+[10:43:56] <WindowsBunny> arielb1: Link?
+[10:46:21] <WindowsBunny> arielb1: Wow, that error, so informative
+[10:47:23] *** Quits: Guest63_ (textual@moz-6gq.t8s.78.166.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[10:49:49] *** Joins: anom (anhedonia@moz-kc79oc.fsa-bg.org)
+[10:49:53] *** Quits: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de) (Ping timeout: 121 seconds)
+[10:58:52] *** Quits: hyunsik (hyunsik@moz-3qgjl9.ca.comcast.net) (Quit: Lost terminal)
+[10:59:55] *** Quits: johnsoft (johnsoft@moz-69mrig.res.rr.com) (Ping timeout: 121 seconds)
+[11:00:12] *** Joins: johnsoft (johnsoft@moz-69mrig.res.rr.com)
+[11:01:27] *** Quits: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP) (Ping timeout: 121 seconds)
+[11:04:44] <arielb1> WindowsBunny: http://buildbot.rust-lang.org/builders/auto-win-32-nopt-t/builds/4652/steps/test/logs/stdio
+[11:05:20] *** Joins: nodweber (nodweber@moz-b2t.2nt.255.146.IP)
+[11:05:47] *** Quits: eerie_ (eerie@moz-9ml73n.red.bezeqint.net) (Connection closed)
+[11:06:03] *** Joins: eerie (eerie@moz-9ml73n.red.bezeqint.net)
+[11:06:22] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[11:07:09] *** Joins: bjz (bjz@moz-4l6.mjm.52.113.IP)
+[11:07:18] *** Joins: canhtak (jeremy@moz-kcs.u0t.149.5.IP)
+[11:09:00] *** Joins: ytain (ytain@moz-07c3h9.dsl.teksavvy.com)
+[11:12:24] *** Quits: anom (anhedonia@moz-kc79oc.fsa-bg.org) (Ping timeout: 121 seconds)
+[11:15:05] *** Joins: hyunsik (hyunsik@moz-3qgjl9.ca.comcast.net)
+[11:17:22] *** Quits: bjz (bjz@moz-4l6.mjm.52.113.IP) (Ping timeout: 121 seconds)
+[11:18:06] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[11:20:29] <arielb1> WindowsBunny: how are you supposed to debug it?
+[11:21:05] <arielb1> can you compile Rust on windows?
+[11:21:10] <WindowsBunny> arielb1: I can
+[11:21:56] *** Joins: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[11:22:09] <arielb1> I *do* have access to a windows machine
+[11:22:21] <WindowsBunny> arielb1: Okay, it's a 32-bit issue
+[11:22:25] <WindowsBunny> because the 64-bit builder passed it
+[11:22:38] <arielb1> I think I somehow cause LLVM UB
+[11:22:38] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[11:23:02] <WindowsBunny> and non-windows 32-bit also passes
+[11:23:04] <arielb1> because it crashes on no-opt, but doesn't crash on opt
+[11:23:05] <WindowsBunny> so its just windows 32-bit
+[11:23:36] <WindowsBunny> both opt and noopt failed
+[11:23:59] <WindowsBunny> its just that opt was killed before it finished the set of run-pass
+[11:24:10] <arielb1> WindowsBunny: the thing is, that test-file has about 100 tests
+[11:24:36] <arielb1> I think only one of them is problematic
+[11:24:38] *** Joins: casey (casey@moz-v0ns05.tpgi.com.au)
+[11:25:02] <WindowsBunny> its your run-pass/cast-rfc0401.rs test
+[11:25:10] <arielb1> I know
+[11:25:14] <arielb1> that file has about a hundred tests
+[11:25:38] <WindowsBunny> so now all you gotta do is build rust on 32-bit windows
+[11:25:49] <WindowsBunny> and then build that specific test
+[11:25:51] <arielb1> can you build 32-bit Rust on 64-bit windows?
+[11:25:56] <WindowsBunny> of course
+[11:26:16] <arielb1> WindowsBunny: using 32-bit msys?
+[11:26:16] <WindowsBunny> 64-bit windows supports 32-bit fully
+[11:26:18] *** Quits: nodweber (nodweber@moz-b2t.2nt.255.146.IP) (A TLS packet with unexpected length was received.)
+[11:26:22] <WindowsBunny> 32-bit mingw
+[11:26:34] <WindowsBunny> 32-bit mingw-w64
+[11:27:32] <WindowsBunny> arielb1: Just use the standard msys2 setup, run mingw32_shell.bat, install mingw-w64-i686-toolchain, and from there build rust and debug the test
+[11:27:58] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (Ping timeout: 121 seconds)
+[11:28:49] *** Joins: nodweber (nodweber@moz-b2t.2nt.255.146.IP)
+[11:30:50] *** Quits: unwound (bkoropoff@moz-kthi5c.wa.comcast.net) (Ping timeout: 121 seconds)
+[11:31:31] *** Joins: Nekit1234007 (nekit@moz-jpa.hli.189.91.IP)
+[11:31:46] *** Joins: anom (anhedonia@moz-bp747m.stud.hig.no)
+[11:36:05] *** Joins: eerie_ (eerie@moz-9ml73n.red.bezeqint.net)
+[11:36:45] *** Joins: unwound (bkoropoff@moz-kthi5c.wa.comcast.net)
+[11:39:05] *** Quits: eerie (eerie@moz-9ml73n.red.bezeqint.net) (Ping timeout: 121 seconds)
+[11:44:06] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[11:44:29] *** Quits: nodweber (nodweber@moz-b2t.2nt.255.146.IP) (A TLS packet with unexpected length was received.)
+[11:46:43] *** Quits: jga_ (jga@moz-640.t1q.244.77.IP) (Ping timeout: 121 seconds)
+[11:49:16] *** cmr changes topic to 'Today's the day! | https://botbot.me/mozilla/rust-internals | https://buildbot.rust-lang.org/homu/queue/rust | see also #rustc and #rust-libs'
+[11:49:45] *** Quits: genbattle (genbattle@moz-r09mao.xtra.co.nz) (Ping timeout: 121 seconds)
+[11:50:14] *** Joins: rkruppe (chatzilla@moz-nge5tq.uopk.14d9.41b8.2001.IP)
+[11:50:31] *** Joins: bjz (bjz@moz-puppgq.tpgi.com.au)
+[11:52:38] *** Quits: tamird (textual@moz-gkumi9.dyn.optonline.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[11:52:50] *** Quits: Kingsquee (kingsley@moz-3fm07c.bchsia.telus.net) (Quit: Konversation terminated!)
+[11:54:17] *** Joins: tamird (textual@moz-gkumi9.dyn.optonline.net)
+[11:54:23] *** Joins: jevin_ (jevin@moz-sra.ovp.12.72.IP)
+[11:54:24] *** Quits: jevin (jevin@moz-sra.ovp.12.72.IP) (Ping timeout: 121 seconds)
+[11:58:17] *** Quits: eerie_ (eerie@moz-9ml73n.red.bezeqint.net) (Connection closed)
+[12:03:08] *** Joins: nodweber (nodweber@moz-b2t.2nt.255.146.IP)
+[12:04:53] *** Quits: tamird (textual@moz-gkumi9.dyn.optonline.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[12:06:52] *** Joins: harrisonclarke (harrisoncla@moz-b21rr4.eastlink.ca)
+[12:07:34] *** Quits: summerlight (summerlight@moz-99k.2mj.130.121.IP) (Ping timeout: 121 seconds)
+[12:12:12] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[12:13:59] *** Joins: eerie (eerie@moz-9ml73n.red.bezeqint.net)
+[12:14:36] *** Quits: njn (chatzilla@moz-e7amqe.iinet.net.au) (Quit: ChatZilla 0.9.91.1 [Firefox 40.0a1/20150510205108])
+[12:16:46] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[12:17:39] *** Quits: nodweber (nodweber@moz-b2t.2nt.255.146.IP) (Connection closed)
+[12:17:46] *** Joins: nodweber_ (nodweber@moz-b2t.2nt.255.146.IP)
+[12:21:40] *** Joins: rkruppe_ (chatzilla@moz-ju1itd.hrz.tu-darmstadt.de)
+[12:22:51] *** Joins: larsberg (Adium@moz-kmvlue.cable.rcn.com)
+[12:23:51] *** Quits: rkruppe (chatzilla@moz-nge5tq.uopk.14d9.41b8.2001.IP) (Ping timeout: 121 seconds)
+[12:24:05] *** rkruppe_ is now known as rkruppe
+[12:27:07] <WindowsBunny> cmr: https://www.youtube.com/watch?v=eYkqBM2Innc
+[12:27:07] *** Quits: p1start (p1start@moz-nftjhe.org) (Ping timeout: 121 seconds)
+[12:28:27] *** Quits: rovar (rovar@moz-6iq.47m.88.38.IP) (NickServ (RECOVER command used by rovar_))
+[12:28:27] *** rovar_ is now known as rovar
+[12:28:36] *** Quits: harrisonclarke (harrisoncla@moz-b21rr4.eastlink.ca) (Connection closed)
+[12:28:40] *** Joins: rovar_ (rovar@moz-6iq.47m.88.38.IP)
+[12:29:04] *** Joins: harrisonclarke (harrisoncla@moz-b21rr4.eastlink.ca)
+[12:29:09] *** Joins: blinky (Mibbit@moz-juv.9o3.252.72.IP)
+[12:32:51] *** Quits: blinky (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[12:33:19] *** Quits: harrisonclarke (harrisoncla@moz-b21rr4.eastlink.ca) (Ping timeout: 121 seconds)
+[12:33:51] *** Quits: rkruppe (chatzilla@moz-ju1itd.hrz.tu-darmstadt.de) (Ping timeout: 121 seconds)
+[12:34:17] *** Joins: larhat1 (Adium@moz-egv.ld6.128.213.IP)
+[12:35:24] *** Joins: proc (proc@moz-28o344.dip0.t-ipconnect.de)
+[12:38:24] *** Quits: larhat1 (Adium@moz-egv.ld6.128.213.IP) (Quit: Leaving.)
+[12:39:03] *** Joins: bdero (bran@moz-mqs.7dh.189.18.IP)
+[12:43:57] *** Joins: eerie_ (eerie@moz-9ml73n.red.bezeqint.net)
+[12:44:08] *** Quits: laumann (thomas@moz-3v9.hq0.225.130.IP) (Quit: leaving)
+[12:44:44] *** Quits: anom (anhedonia@moz-bp747m.stud.hig.no) (Quit: leaving)
+[12:44:47] <cmr> Ouch, we monomorphize mem::size_of rather than forwarding the number directly.
+[12:45:28] <doener> only intrinsics are expanded in-place
+[12:45:31] <cmr> right
+[12:45:54] <cmr> but I thought we did work to let us export the intrinsics directly and not have wrappers?
+[12:46:04] *** Quits: eerie_ (eerie@moz-9ml73n.red.bezeqint.net) (Connection closed)
+[12:47:05] <doener> oh, right, there was something... and we indeed do that for e.g. transmute
+[12:47:07] *** Quits: eerie (eerie@moz-9ml73n.red.bezeqint.net) (Ping timeout: 121 seconds)
+[12:47:29] <doener> but size_of wants to be safe
+[12:48:05] <cmr> ah right, the safe intrinsic issue.
+[12:50:29] <kimundi> btw, does mem::forget generte a function call now that it is a wrapper again?
+[12:50:42] <doener> yep, same issue
+[12:54:53] *** Quits: Diggsey (diggsey@moz-e3pv94.dsl.pipex.com) (Quit: Nettalk6 - www.ntalk.de)
+[13:00:22] *** Joins: Guest63 (textual@moz-6gq.t8s.78.166.IP)
+[13:06:21] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[13:07:27] *** Joins: kcm1700 (kcm1700@moz-ln1.e2o.117.175.IP)
+[13:08:00] <cmr> Hm, we do `%self = alloca <slefty>*; store i32* %0, i32** %self, align 8` in the prelude of method calls? I'm having a difficult time tracking this down (comes from an inlined instance of `<*const T>::is_null`)
+[13:08:30] <cmr> er, not of method calls, but of methods.
+[13:08:38] <doener> cmr: you want to know where that alloca comes from?
+[13:08:53] <cmr> copy_args_to_allocas judging by what I just paged-down into.
+[13:08:55] <cmr> but yes.
+[13:09:47] <cmr> *shudder* "For certain mode/type combinations..."
+[13:10:33] <doener> hehe, hysterical code
+[13:10:44] <doener> err, comments
+[13:10:55] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[13:11:09] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[13:11:53] <cmr> I don't like that we do that unconditionally. It seems like we'd only need to store in alloacas arguments that are *actually* by value
+[13:12:18] <doener> cmr: that check is in store_arg
+[13:12:21] <cmr> oh.
+[13:12:49] <doener> cmr: and we probably want to _remove_ that once we have the non-zeroing drop (or maybe even earlier)
+[13:13:01] <doener> cmr: not having the alloca makes SROA less effective from what I can tell
+[13:13:06] *** Joins: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[13:13:15] <cmr> doener: oh really? seems strange.
+[13:13:18] <doener> cmr: because it can't split up the incoming pointer into slices
+[13:13:25] <cmr> why can't it?
+[13:13:38] <doener> cmr: because that would change the number of arguments?
+[13:13:48] <cmr> oh I see what you mean now
+[13:14:12] <doener> cmr: %x = alloca { i32, i32 } => %x1 = alloca i32; %x2 = alloca i32;
+[13:14:19] *** Joins: eerie (eerie@moz-9ml73n.red.bezeqint.net)
+[13:14:37] <cmr> Right
+[13:15:08] <doener> cmr: e.g. derived clone implementations for enums don't currently optimize well because we directly use the sret slot for the return value
+[13:15:18] *** Joins: rkruppe (chatzilla@moz-nge5tq.uopk.14d9.41b8.2001.IP)
+[13:15:30] *** Joins: tamird (textual@moz-gkumi9.dyn.optonline.net)
+[13:15:45] <doener> cmr: having an extra alloca (i.e. "let ret = match ...; ret" allows SROA to kick in and sometimes produces massively better code
+[13:16:07] <cmr> doener: looks like we could remove alloca elision now, -g2 already needs it.
+[13:16:24] <doener> cmr: but there are also cases where that currently leads to worse code, and a cursory look suggests that it's due to the zeroing for types that move
+[13:16:49] *** Joins: ryanhieb_ (ryanhiebert@moz-nsd5kl.ks.cox.net)
+[13:17:11] <doener> cmr: hm, guess I could spend the 20 minutes to check how that plays out
+[13:18:35] *** Joins: imperio (Mibbit@moz-8otf3a.fbx.proxad.net)
+[13:20:08] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (Ping timeout: 121 seconds)
+[13:21:48] *** Joins: erz (erz@moz-n26c5c.broadband.corbina.ru)
+[13:21:57] *** Joins: mib_kicbug (Mibbit@moz-juv.9o3.252.72.IP)
+[13:22:02] *** Joins: etw (john@moz-3h5sr6.fios.verizon.net)
+[13:22:14] *** Joins: dinfuehr (dinfuehr@moz-24o82b.highway.telekom.at)
+[13:23:27] *** Quits: etw (john@moz-3h5sr6.fios.verizon.net) (Client exited)
+[13:25:55] *** Quits: rkruppe (chatzilla@moz-nge5tq.uopk.14d9.41b8.2001.IP) (Ping timeout: 121 seconds)
+[13:26:22] *** Quits: dinfuehr (dinfuehr@moz-24o82b.highway.telekom.at) (Ping timeout: 121 seconds)
+[13:28:17] *** Joins: rkruppe (chatzilla@moz-nge5tq.uopk.14d9.41b8.2001.IP)
+[13:30:28] *** Quits: ytain (ytain@moz-07c3h9.dsl.teksavvy.com) (Connection closed)
+[13:30:38] *** Joins: ytain (ytain@moz-07c3h9.dsl.teksavvy.com)
+[13:32:36] *** Quits: casey (casey@moz-v0ns05.tpgi.com.au) (Connection closed)
+[13:32:58] *** Joins: casey (casey@moz-v0ns05.tpgi.com.au)
+[13:37:00] *** Quits: casey (casey@moz-v0ns05.tpgi.com.au) (Ping timeout: 121 seconds)
+[13:37:08] <doener> or maybe 40 minutes thanks to the unused_imports ilnt 
+[13:39:01] *** Quits: arielb1 (Mibbit@moz-co96pe.tau.ac.il) (Quit: http://www.mibbit.com ajax IRC Client)
+[13:41:02] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[13:41:10] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[13:41:22] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[13:42:32] *** Quits: mceier (mceier@moz-fm89sb.dynamic.chello.pl) (Quit: leaving)
+[13:43:04] *** Joins: jdm (jdm@moz-ilbt2e.cable.teksavvy.com)
+[13:44:17] *** Joins: eerie_ (eerie@moz-9ml73n.red.bezeqint.net)
+[13:44:55] *** Quits: rkruppe (chatzilla@moz-nge5tq.uopk.14d9.41b8.2001.IP) (Ping timeout: 121 seconds)
+[13:46:01] *** Quits: nodweber_ (nodweber@moz-b2t.2nt.255.146.IP) (A TLS packet with unexpected length was received.)
+[13:46:05] *** Joins: dinfuehr (dominik@moz-24o82b.highway.telekom.at)
+[13:47:21] *** Quits: eerie (eerie@moz-9ml73n.red.bezeqint.net) (Ping timeout: 121 seconds)
+[13:50:02] *** Quits: jgallagher (john@moz-6ge.dhn.131.24.IP) (Client exited)
+[13:50:06] *** Joins: rkruppe (chatzilla@moz-hrbpkr.en61.14d9.41b8.2001.IP)
+[13:54:44] *** Quits: rkruppe (chatzilla@moz-hrbpkr.en61.14d9.41b8.2001.IP) (Ping timeout: 121 seconds)
+[13:55:37] *** Joins: nodweber (nodweber@moz-b2t.2nt.255.146.IP)
+[13:56:12] *** Joins: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de)
+[13:56:21] *** Quits: Guest63 (textual@moz-6gq.t8s.78.166.IP) (Quit: Textual IRC Client: www.textualapp.com)
+[13:57:18] *** Quits: semarie (semarie@moz-72353b.exit.babylon.network) (Quit: WeeChat 1.1)
+[14:00:32] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[14:04:27] *** Joins: rkruppe (chatzilla@moz-e3vhqn.3pse.14d9.41b8.2001.IP)
+[14:04:37] *** Joins: harrisonclarke (harrisoncla@moz-03qrro.eastlink.ca)
+[14:05:04] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[14:05:53] *** Joins: jga (jga@moz-640.t1q.244.77.IP)
+[14:06:00] *** Quits: harrisonclarke (harrisoncla@moz-03qrro.eastlink.ca) (Connection closed)
+[14:06:15] *** Quits: kmcguire (kmcguire@moz-bbqf14.res.bhn.net) (Quit: Leaving)
+[14:06:24] *** Joins: kmcguire (kmcguire@moz-326ho1.ssessess.es)
+[14:10:43] *** Joins: harrisonclarke (harrisoncla@moz-03qrro.eastlink.ca)
+[14:10:44] *** Joins: mib_4lqt2m (Mibbit@moz-juv.9o3.252.72.IP)
+[14:11:05] *** Quits: rkruppe (chatzilla@moz-e3vhqn.3pse.14d9.41b8.2001.IP) (Ping timeout: 121 seconds)
+[14:11:31] *** Quits: mib_4lqt2m (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[14:11:53] *** Joins: summerlight (summerlight@moz-99k.2mj.130.121.IP)
+[14:14:19] *** Joins: eerie (eerie@moz-9ml73n.red.bezeqint.net)
+[14:15:15] *** Quits: mib_kicbug (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[14:15:20] *** Quits: hyunsik (hyunsik@moz-3qgjl9.ca.comcast.net) (Ping timeout: 121 seconds)
+[14:17:19] *** Quits: eerie_ (eerie@moz-9ml73n.red.bezeqint.net) (Ping timeout: 121 seconds)
+[14:17:50] *** Joins: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[14:23:20] *** Joins: dinfuehr_ (dinfuehr@moz-24o82b.highway.telekom.at)
+[14:24:33] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (Ping timeout: 121 seconds)
+[14:26:30] *** Joins: jgallagher (john@moz-d5e8oc.hfc.comcastbusiness.net)
+[14:27:23] *** Quits: nodweber (nodweber@moz-b2t.2nt.255.146.IP) (A TLS packet with unexpected length was received.)
+[14:27:24] *** Quits: dinfuehr_ (dinfuehr@moz-24o82b.highway.telekom.at) (Ping timeout: 121 seconds)
+[14:28:00] *** Joins: nodweber (nodweber@moz-b2t.2nt.255.146.IP)
+[14:30:54] *** Joins: rkruppe (chatzilla@moz-jhqhos.en61.14d9.41b8.2001.IP)
+[14:39:29] *** Quits: vadimcn (uid46608@moz-o7asbu.uxbridge.irccloud.com) (Quit: Connection closed for inactivity)
+[14:39:34] *** Quits: rkruppe (chatzilla@moz-jhqhos.en61.14d9.41b8.2001.IP) (Ping timeout: 121 seconds)
+[14:42:01] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[14:43:57] *** Joins: annodomini (lambda@moz-hceqmj.hfc.comcastbusiness.net)
+[14:44:21] *** Joins: eerie_ (eerie@moz-9ml73n.red.bezeqint.net)
+[14:47:21] *** Quits: eerie (eerie@moz-9ml73n.red.bezeqint.net) (Ping timeout: 121 seconds)
+[14:47:37] *** Joins: mib_l48llr (Mibbit@moz-juv.9o3.252.72.IP)
+[14:48:01] *** Quits: mib_l48llr (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[14:48:05] <doener> cmr: leads to larger code
+[14:51:25] *** Quits: eerie_ (eerie@moz-9ml73n.red.bezeqint.net) (Connection closed)
+[14:52:31] *** Joins: umbridge (Mibbit@moz-g6k.oht.161.46.IP)
+[14:53:21] *** Joins: davebettin (davebettin@moz-hde.5e5.136.67.IP)
+[14:53:44] *** Joins: anom (anhedonia@moz-bbr33h.bu.edu)
+[14:55:28] <jga> cargo rustc subcommand made it to the beta release?
+[14:55:58] <jga> I mean, will it be included in today's release?
+[14:56:09] *** Quits: squiddy (squiddy@moz-md4.pm3.19.178.IP) (Quit: Leaving)
+[14:57:44] * WindowsBunny murders everything in sight
+[14:58:30] * jga hides
+[14:58:57] * doener jumps in the way
+[14:59:10] * kmc becomes invisible
+[15:00:15] * cmr becomes kmc
+[15:00:25] <doener> cmr: hm, might be able to do something about that though
+[15:06:24] *** Quits: aepsil0n (eduard@moz-6491ha.mv2h.pepi.8071.2a02.IP) (Connection closed)
+[15:06:25] *** Quits: achernya (quassel@moz-8tbl8i.6686.inna.4830.2001.IP) (Ping timeout: 121 seconds)
+[15:07:38] *** Joins: achernya (quassel@moz-8tbl8i.6686.inna.4830.2001.IP)
+[15:07:52] * kmc becomes death, destroyer of worlds
+[15:08:08] * kmc eats a scone
+[15:08:20] *** Quits: gus (quassel@moz-s29c4j.1136.t8sg.1801.2401.IP) (Connection closed)
+[15:09:19] *** Joins: gus (quassel@moz-s29c4j.1136.t8sg.1801.2401.IP)
+[15:10:21] *** Joins: eerie (eerie@moz-9ml73n.red.bezeqint.net)
+[15:10:39] <WindowsBunny> I want to stab Rust 1.0 in the spleen because of my anger at msys/mingw
+[15:12:01] *** Joins: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP)
+[15:13:34] <kmc> the spleen is responsible for recycling iron
+[15:13:55] *** Quits: anom (anhedonia@moz-bbr33h.bu.edu) (Ping timeout: 121 seconds)
+[15:14:10] *** Quits: eerie (eerie@moz-9ml73n.red.bezeqint.net) (Connection closed)
+[15:14:23] *** Joins: eerie (eerie@moz-9ml73n.red.bezeqint.net)
+[15:14:46] <WindowsBunny> kmc: Heh
+[15:19:47] *** Joins: SilverKey (SilverKey@moz-b7q751.biz.rr.com)
+[15:19:57] <seanmonstar> woo, heavy fog in sfo, flight delayed
+[15:22:19] *** Joins: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[15:23:52] *** Quits: imperio (Mibbit@moz-8otf3a.fbx.proxad.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:24:11] *** Joins: Jesin (Jesin@moz-4ldqea.sm.ptd.net)
+[15:24:16] *** Joins: dinfuehr_ (dinfuehr@moz-24o82b.highway.telekom.at)
+[15:26:08] <Manishearth> WindowsBunny: I think the VS team is a few floors above me; want me to stab them instead? :P
+[15:26:30] <WindowsBunny> Manishearth: Nah, you can say hi to them for me though
+[15:26:31] <Manishearth> also, over the weekend y'all should keep an eye on ohome droidarm debug
+[15:26:45] <WindowsBunny> Manishearth: on wat?
+[15:27:37] <Manishearth> damn
+[15:27:42] <Manishearth> http://stackoverflow.com/questions/tagged/rust
+[15:27:54] * Manishearth shakes fist at putty and misconfigured copy-paste
+[15:28:11] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (Ping timeout: 121 seconds)
+[15:28:23] *** Quits: dinfuehr_ (dinfuehr@moz-24o82b.highway.telekom.at) (Ping timeout: 121 seconds)
+[15:28:39] <seanmonstar> i did the stackoverflow thing for like a year when it first came out
+[15:28:46] <seanmonstar> but i got burnt out racing to answer questions
+[15:29:54] <Manishearth> you shouldn't race
+[15:30:04] <Manishearth> it's more fun when you spend time and write super huge answers
+[15:31:20] <Manishearth> My favorite super-huge answers are http://physics.stackexchange.com/a/21856/7433 and http://physics.stackexchange.com/a/23895/7433
+[15:32:58] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[15:34:25] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[15:37:41] *** Quits: nodweber (nodweber@moz-b2t.2nt.255.146.IP) (A TLS packet with unexpected length was received.)
+[15:37:54] *** Joins: ncarrillo (textual@moz-hr3gaj.subnet.rcn.com)
+[15:38:16] *** Joins: nodweber (nodweber@moz-b2t.2nt.255.146.IP)
+[15:38:52] *** Quits: ncarrillo (textual@moz-hr3gaj.subnet.rcn.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[15:39:54] *** Quits: det (chris@moz-9klsea.lv.cox.net) (Connection closed)
+[15:39:59] *** Quits: nodweber (nodweber@moz-b2t.2nt.255.146.IP) (A TLS packet with unexpected length was received.)
+[15:42:28] *** Joins: ncarrillo (textual@moz-hr3gaj.subnet.rcn.com)
+[15:42:30] *** Quits: mkdirtrap (Mibbit@moz-91q.u65.244.80.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:43:47] *** Joins: det (chris@moz-9klsea.lv.cox.net)
+[15:44:15] *** Quits: eerie (eerie@moz-9ml73n.red.bezeqint.net) (Connection closed)
+[15:44:24] *** Joins: O01eg (o01eg@moz-f4b.20h.212.176.IP)
+[15:44:25] *** Joins: eerie (eerie@moz-9ml73n.red.bezeqint.net)
+[15:45:37] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[15:47:46] *** Joins: xorcon (Mibbit@moz-juv.9o3.252.72.IP)
+[15:50:28] *** Quits: jdm (jdm@moz-ilbt2e.cable.teksavvy.com) (Quit: )
+[15:50:43] <barosl> http://tmp.fnordig.de/isrustonepointzeroreleasedyet/
+[15:50:43] <barosl> lol
+[15:51:12] <barosl> It also has a atom feed :)
+[15:52:37] *** Joins: LukasKa (lukas@moz-g8cevi.ewe-ip-backbone.de)
+[15:53:32] *** Joins: erickt (erickt@moz-njt.vqi.14.76.IP)
+[15:55:20] *** Joins: hiberno (flume@moz-bio9kd.io)
+[15:55:28] *** Joins: semarie (semarie@moz-0elh7o.nos-oignons.net)
+[15:55:59] *** Joins: Astrum|Lap (Astrum|Lap@moz-skcefh.co.comcast.net)
+[15:56:09] *** Quits: munksgaard (munksgaard@moz-1f0.hq0.225.130.IP) (Ping timeout: 121 seconds)
+[15:58:21] *** Joins: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[15:59:54] *** Joins: willem (willem@moz-facs2s.dynamic.upc.nl)
+[16:02:11] *** Quits: achernya (quassel@moz-8tbl8i.6686.inna.4830.2001.IP) (Ping timeout: 121 seconds)
+[16:03:21] *** Joins: achernya (quassel@moz-8tbl8i.6686.inna.4830.2001.IP)
+[16:03:26] *** Joins: ConnorDo_ (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[16:04:11] *** Quits: ConnorDo_ (ConnorDoyle@moz-hud.3ra.116.199.IP) (A TLS packet with unexpected length was received.)
+[16:04:53] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[16:05:13] *** Quits: ptalbot (ptalbot@moz-1gn7gb.eu0n.jcdj.0660.2001.IP) (Ping timeout: 121 seconds)
+[16:06:37] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (Ping timeout: 121 seconds)
+[16:06:56] *** Joins: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[16:11:51] *** Joins: anom (anhedonia@moz-kvs6fc.torservers.net)
+[16:11:58] *** Quits: xorcon (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[16:12:53] <doener> the moon on the subreddit is so great
+[16:13:20] <barosl> This can't be true, please give me more time
+[16:13:28] *** Quits: filsmick (filsmick@moz-vq1mm2.abo.wanadoo.fr) (Quit: )
+[16:14:35] *** Quits: canhtak (jeremy@moz-kcs.u0t.149.5.IP) (Client exited)
+[16:16:57] *** Joins: mib_qwnlpl (Mibbit@moz-juv.9o3.252.72.IP)
+[16:18:14] *** Quits: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de) (Ping timeout: 121 seconds)
+[16:18:41] <flaper87> OT: The italian party is about to start. ~20 folks! :)
+[16:18:52] *** Joins: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de)
+[16:21:11] *** Joins: mceier (mceier@moz-fm89sb.dynamic.chello.pl)
+[16:22:28] *** Quits: Astrum|Lap (Astrum|Lap@moz-skcefh.co.comcast.net) (Client exited)
+[16:24:06] <Eridius> what is that subreddit background picture?
+[16:24:17] *** Quits: mib_qwnlpl (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[16:25:02] *** Joins: dinfuehr_ (dinfuehr@moz-24o82b.highway.telekom.at)
+[16:25:34] *** Joins: canhtak (jeremy@moz-kcs.u0t.149.5.IP)
+[16:29:02] *** Quits: canhtak (jeremy@moz-kcs.u0t.149.5.IP) (Client exited)
+[16:29:06] *** Quits: dinfuehr_ (dinfuehr@moz-24o82b.highway.telekom.at) (Ping timeout: 121 seconds)
+[16:29:10] <Manishearth> Eridius: it's a zelda moon
+[16:29:28] <Manishearth> argh its huge
+[16:29:31] <Eridius> oh it is? It's zoomed in so far I can't tell
+[16:29:52] <Eridius> but now that I know what I'm looking for I see that
+[16:30:09] <Manishearth> it slowly increased in size over the last few days
+[16:30:15] <Eridius> also: what time are we actually releasing?
+[16:30:18] <Manishearth> no idea
+[16:30:27] <Eridius> (I visit the subreddit almost never :/ but I am subscribed to it so I'll see posts on my front page)
+[16:30:29] <simias> 17h UTC
+[16:30:39] <Eridius> oh, so pretty soon?
+[16:30:46] <simias> 30minutes
+[16:30:54] *** Quits: dinfuehr (dominik@moz-24o82b.highway.telekom.at) (Client exited)
+[16:30:55] <Manishearth> wait, that's nowish
+[16:30:56] <Manishearth> nice
+[16:31:06] <simias> get hype
+[16:31:29] <Eridius> too bad I actually have work to do today so I can't just dick around with Rust :/
+[16:31:30] *** Joins: mib_396nab (Mibbit@moz-juv.9o3.252.72.IP)
+[16:33:44] <bstrie> aturon: ping
+[16:33:46] <Manishearth> my day is over
+[16:33:52] *** Joins: jbomo (dkd@moz-uol4mm.fios.verizon.net)
+[16:34:01] <seanmonstar> lol work today?
+[16:34:25] <Manishearth> still at my workplace but that's because I'm waiting for a build to finish and my hotel doesn't have such fast wifi
+[16:34:46] <seanmonstar> im sitting in an airport waiting for sfo to be less foggy
+[16:34:50] <bstrie> acrichto: ping
+[16:34:52] <Manishearth> heh
+[16:34:58] <acrichto> bstrie: pong
+[16:35:10] <Eridius> seanmonstar: san francisco, less foggy? hah
+[16:35:23] <bstrie> acrichto: the word "libary" is in the release announcement, don't let aturon post it until that's fixed :P
+[16:35:24] <seanmonstar> Eridius: thats what ATC said :(
+[16:36:22] <Eridius> bstrie: someone should run a spellchecker
+[16:37:09] *** Quits: erickt (erickt@moz-njt.vqi.14.76.IP) (Ping timeout: 121 seconds)
+[16:37:40] *** Joins: Astrum|Lap (Astrum|Lap@moz-7enfbr.co.comcast.net)
+[16:38:15] <aturon> bstrie: lol, i'll make sure it's addressed
+[16:38:34] <Manishearth> Eridius: doctest should run a spellchecker :p
+[16:39:55] *** Joins: mattico (matt@moz-br0tvd.bff5.ebih.ea00.2607.IP)
+[16:41:21] <Fenhl> 1.0 last-minute bugfix: add spellck
+[16:41:40] *** Quits: mib_396nab (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[16:43:00] <bstrie> aturon: another one, "the Nightly builds of Rust already demonstrates"
+[16:43:05] <Manishearth> we should just replace borrowck with spellck
+[16:43:23] <aturon> bstrie: let me direct you to https://github.com/rust-lang/blog.rust-lang.org/pull/56
+[16:43:51] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[16:44:26] <bstrie> aturon: do you want me to comment there or edit it directly somehow?
+[16:44:38] <steveklabnik> send a PR to niko's PR ;)
+[16:44:46] <aturon> or comment there, either way
+[16:46:29] <Eridius> on an unrelated note, who's leading the language design and library subteams? I haven't been paying a lot of attention besides reading the governance RFC, so I'm not sure if that was posted anywhere
+[16:46:52] <steveklabnik> it wasn't yet, it should be soon
+[16:47:21] *** Joins: brson (brson@moz-u3dg2t.sfo1.mozilla.com)
+[16:47:21] *** ChanServ sets mode: +o brson
+[16:47:29] <Eridius> more importantly, I know I haven't been very active for a while, but I'm trying to get back into the swing of things, and those are two teams I would be interested in being involved with
+[16:47:29] <brson> let's do it!
+[16:47:31] <brson> go go go!
+[16:47:43] *** Quits: O01eg (o01eg@moz-f4b.20h.212.176.IP) (Client exited)
+[16:48:23] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[16:48:49] <Manishearth> Eridius: I think the team leaders were posted on the weekly meeting minutes
+[16:48:56] <Manishearth> Aaron for libs iirc
+[16:49:02] <Eridius> hrm, I skimmed the past few minutes, did I miss it?
+[16:49:47] <Manishearth> Niko is language
+[16:49:58] <aturon> Eridius: i'm working on putting together a web page with the full roster, should be done shortly
+[16:50:00] <Manishearth> https://github.com/rust-lang/meeting-minutes/blob/master/weekly-meetings/2015-05-12.md#meetings-subteams-oh-my-by-nmatsakis
+[16:50:21] *** Joins: O01eg (o01eg@moz-2dt635.7spt.3egh.2698.2a02.IP)
+[16:50:30] <Eridius> oh I was just looking at core team
+[16:50:59] *** Joins: gsingh93 (uid22642@moz-aq0iah.charlton.irccloud.com)
+[16:51:20] *** Joins: Florob_ (Florob@moz-je09t8.de)
+[16:51:22] *** Quits: Florob_ (Florob@moz-je09t8.de) (Quit: leaving)
+[16:51:43] <Manishearth> the weekly b^Hmeetings will go on till morale improves^W^W the subteams get into their rhythms
+[16:51:46] *** Joins: rkruppe_ (chatzilla@moz-3nj.rnu.131.95.IP)
+[16:51:56] *** Quits: ncarrillo (textual@moz-hr3gaj.subnet.rcn.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[16:52:37] *** Quits: brson (brson@moz-u3dg2t.sfo1.mozilla.com) (Quit: leaving)
+[16:52:43] *** Joins: pauls (pauls@moz-e5p333.ccs.neu.edu)
+[16:52:44] *** Joins: _Vi (vi@moz-bbs.vhj.131.104.IP)
+[16:53:02] *** Quits: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP) (Ping timeout: 121 seconds)
+[16:53:11] *** rkruppe_ is now known as rkruppe
+[16:57:55] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (A TLS packet with unexpected length was received.)
+[16:58:17] *** Joins: nham (nham@moz-755.bu3.214.98.IP)
+[16:59:03] *** Joins: brson (brson@moz-u3dg2t.sfo1.mozilla.com)
+[16:59:03] *** ChanServ sets mode: +o brson
+[17:00:03] *** Joins: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[17:00:37] *** Quits: tamird (textual@moz-gkumi9.dyn.optonline.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[17:00:53] <steveklabnik> brson: ping
+[17:01:03] <brson> steveklabnik: pong
+[17:01:13] <Eridius> it's tiiiiiiimmmeeee
+[17:01:13] <Manishearth> did we release?
+[17:01:15] <steveklabnik> did you make a ML as well for security announcements, or should i mkae a google group?
+[17:01:30] <bstrie> hold, wait one sec. are we sure we want to release? have we considered not releasing?
+[17:01:39] <bstrie> I'll file the RFC
+[17:01:44] <Manishearth> +1
+[17:01:45] *** Joins: gsingh93_ (gulshan@moz-qnbukr.mi.comcast.net)
+[17:01:47] <Eridius> :+1:
+[17:01:51] <rkruppe> Yeah, releasing seems kind of rushed at this point
+[17:01:55] <kmc> i'd like to make a final plea for fexprs instead of macros
+[17:01:55] <WindowsBunny> Manishearth: Um, did you intentionally leave in the ^H and ^W things?
+[17:02:00] <Manishearth> WindowsBunny: yeah :p
+[17:02:04] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[17:02:04] *** ChanServ sets mode: +o pcwalton
+[17:02:08] <Manishearth> WindowsBunny: IRC can't strikethrough
+[17:02:08] <WindowsBunny> Manishearth: weirdo
+[17:02:12] <bstrie> I want to reconsider changing `alt` to `match`
+[17:02:13] <Eridius> haver we considered discarding our AST and using s-exprs instead?
+[17:02:21] <WindowsBunny> brson: How's the non-release coming? :P
+[17:02:29] <Manishearth> WindowsBunny: that's actually quite common
+[17:02:36] <kmc> we shouldn't release Rust until it has support for AS/400's hardware-accelerated malloc and printf
+[17:02:40] <aturon> http://blog.rust-lang.org/2015/05/15/Rust-1.0.html
+[17:02:40] <rkruppe> This whole memory management thing is really annoying, we should just use GC for everything
+[17:02:47] *** Joins: ^BR (br@moz-71m.3nd.202.89.IP)
+[17:02:56] <Eridius> oh wait guys, we never did add proper f128 support, we can't release withtout that!
+[17:03:00] <aturon> laundry is no longer being eaten, folks!
+[17:03:16] <brson> steveklabnik: i did not, but i'd like to further discuss what platform to use before going with google groups
+[17:03:26] <Eridius> \o/
+[17:03:51] <Eridius> who runs @rustlang? It should tweet
+[17:03:52] <barosl> Damn, I loved the phrasing on eating laundry. I feel a same kind of sadness when Lovecraft's quote were removed from std...
+[17:03:57] <Manishearth> brson: you could use a forwarding email address for sec bug reporting, and then use bugzilla from thereon
+[17:03:58] <WindowsBunny> aturon: Nooooo, now I have to actually wash my laundry
+[17:04:08] <Manishearth> with bugzilla you get to add more people to the conversation if you want
+[17:04:37] <steveklabnik> Eridius: i was doing it :p
+[17:04:40] <Eridius> :D
+[17:04:43] <steveklabnik> brson: let's talk about it then, because i want this post up
+[17:04:47] <anom> congrats to everyone involved! pat yourselves on the back.
+[17:05:19] <brson> steveklabnik: sorry, it was my understanding we were'nt goin to do the list yet
+[17:05:23] <steveklabnik> ah
+[17:05:23] <Manishearth> bstrie: what have you done
+[17:05:42] <steveklabnik> okay. feels like a bad thing not to have at 1.0, but whatcha gonna do
+[17:06:09] *** Joins: ncarrillo (textual@moz-hr3gaj.subnet.rcn.com)
+[17:06:12] <Manishearth> bstrie: okay, this new style is amazing, but the usernames are all gone!
+[17:06:32] <barosl> We had 215 contributors in this period, great
+[17:07:20] <Eridius> wow yeah there's no usernames on the subreddit
+[17:07:22] <Eridius> that's kind of creepy
+[17:07:31] <Manishearth> we are rustonymous
+[17:07:33] <Manishearth> we are legion
+[17:07:44] <Manishearth> we will find you, and we will eat your laundry
+[17:08:16] <barosl> FWIW We had 172 for the beta release, 204 for alpha.2, and 250 for alpha
+[17:10:26] <Manishearth> how did we have more for alpha?
+[17:10:26] <Manishearth> O.o
+[17:11:08] <barosl> Well, because people struggled to contribute before getting the alpha period?
+[17:11:38] <Manishearth> ?
+[17:11:43] *** Quits: gsingh93_ (gulshan@moz-qnbukr.mi.comcast.net) (Ping timeout: 121 seconds)
+[17:12:01] <frewsxcv> maybe because there were more things that needed fixing before beta?
+[17:12:16] <Manishearth> Okay, rephrased: What is defined as a "contributor to 1.0" (contributor after 0.13?)
+[17:12:25] *** Joins: vadimcn (uid46608@moz-o7asbu.uxbridge.irccloud.com)
+[17:12:38] <Manishearth> because 1.0 was technically 1.0 alpha1+alpha2+beta
+[17:12:54] <barosl> Welp, I don't think so, at least currently it's the list of the contributors between beta and 1.0
+[17:12:57] <bstrie> Manishearth: ok yeah that was a bug, I whipped up this CSS basically overnight. this is the beta period :P
+[17:13:01] *** Quits: anom (anhedonia@moz-kvs6fc.torservers.net) (Ping timeout: 121 seconds)
+[17:13:06] <Manishearth> if you only count the changes made in the beta period you'll just get backports
+[17:13:22] *** Joins: ptalbot (ptalbot@moz-qci33r.2500.1rfi.0450.2001.IP)
+[17:13:43] <barosl> Yeah, in fact this is a bit wrong because the list counts only the changes on the master branch
+[17:13:48] <Manishearth> bstrie: flair/custom flair still broken. submitter style is ... strange
+[17:13:50] <barosl> (Presumably)
+[17:14:04] <barosl> So in fact the contributors are for 1.1
+[17:14:11] *** Quits: eerie (eerie@moz-9ml73n.red.bezeqint.net) (Connection closed)
+[17:14:12] <bstrie> Manishearth: submitter style?
+[17:14:29] <Manishearth> bstrie: the blue border on OP usernames
+[17:14:38] *** Joins: eerie (eerie@moz-9ml73n.red.bezeqint.net)
+[17:14:55] <frewsxcv> https://github.com/rust-lang/rust/issues/25442
+[17:15:26] <bstrie> Manishearth: I'll fix the flair up in a bit, I'll think about the submitter style
+[17:15:27] *** Joins: jdm (jdm@moz-3rch4d.ckpj.s0pt.0450.2001.IP)
+[17:15:33] <Manishearth> cool
+[17:15:53] <barosl> Hey, I'm already feeling that 1.0 is quite too old! I can't help but beg for the 1.1 release!
+[17:16:00] <Eridius> oww, the text "show the subreddit's theme" in the sidebar is painful to read
+[17:16:36] <Manishearth> bstrie: also, vote animations like http://i.stack.imgur.com/PGHwi.gif would be awesome
+[17:16:59] *** Quits: jxv (jxv@moz-2celrt.res.rr.com) (Quit: BYE)
+[17:17:03] <Manishearth> bstrie: the sidebar show/hide is dances around a bit
+[17:17:24] <Manishearth> that ... looks like it
+[17:17:33] <Manishearth> <3 the new style!
+[17:17:59] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Connection closed)
+[17:20:12] *** Joins: gsingh93_ (gulshan@moz-qnbukr.mi.comcast.net)
+[17:20:19] <kimundi> bstrie: So does this mean the end of the harsh, silly rule over r/rust ? Or will that continue, just in more pastel colors now? :P
+[17:21:45] *** Quits: _Vi (vi@moz-bbs.vhj.131.104.IP) (Ping timeout: 121 seconds)
+[17:22:01] <Eridius> huh, http://devswag.com/products/rust-t-shirt
+[17:22:24] <XMPPwocky> why are we an airship now
+[17:22:28] <XMPPwocky> i mean i'm not objecting
+[17:22:30] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[17:22:48] *** Quits: rovar (rovar@moz-96effg.dyn.optonline.net) (Connection closed)
+[17:27:33] *** Joins: hyunsik (hyunsik@moz-3qgjl9.ca.comcast.net)
+[17:28:46] <carllerche> So, when is 2.0 coming out?
+[17:29:33] *** bvssvni_ is now known as bvssvni
+[17:30:11] <WindowsBunny> carllerche: tomorrow
+[17:30:20] <Manishearth> carllerche: ugh, 1.0. That's *soo* half an hour ago
+[17:31:38] *** Quits: ^BR (br@moz-71m.3nd.202.89.IP) (Client exited)
+[17:31:44] *** Quits: harrisonclarke (harrisoncla@moz-03qrro.eastlink.ca) (Connection closed)
+[17:32:47] *** Joins: munksgaard (munksgaard@moz-478pev.u.parknet.dk)
+[17:33:30] *** Quits: samnmax (samnmax@moz-1vk.aq9.27.72.IP) (Quit: Ex-Chat)
+[17:33:55] <Eridius> internals.rust-lang just broke :'(
+[17:34:03] <Eridius> there we go, it's back
+[17:35:10] *** Quits: Jesin (Jesin@moz-4ldqea.sm.ptd.net) (Quit: Leaving)
+[17:36:06] *** Quits: ptalbot (ptalbot@moz-qci33r.2500.1rfi.0450.2001.IP) (Ping timeout: 121 seconds)
+[17:36:09] *** Joins: rkruppe_ (chatzilla@moz-3nj.rnu.131.95.IP)
+[17:37:02] *** Quits: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP) (Ping timeout: 121 seconds)
+[17:37:04] *** rkruppe_ is now known as rkruppe
+[17:38:01] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[17:39:20] <frewsxcv> r? https://github.com/rust-lang/blog.rust-lang.org/pull/58
+[17:39:33] <frewsxcv> for the 1.0 release post
+[17:40:10] *** Quits: ncarrillo (textual@moz-hr3gaj.subnet.rcn.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[17:40:13] <steveklabnik> frewsxcv: thanks
+[17:40:17] *** Quits: martin (martin@moz-bmp33l.u0v6.gff7.1608.2001.IP) (A TLS packet with unexpected length was received.)
+[17:40:42] *** Joins: martin (martin@moz-bmp33l.u0v6.gff7.1608.2001.IP)
+[17:40:50] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[17:41:32] *** Joins: frogaincia (Mibbit@moz-juv.9o3.252.72.IP)
+[17:42:31] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[17:43:15] *** Quits: eerie (eerie@moz-9ml73n.red.bezeqint.net) (Connection closed)
+[17:47:52] *** Joins: madmalik (uid13697@moz-lfin5p.brockwell.irccloud.com)
+[17:50:07] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[17:50:07] *** ChanServ sets mode: +o pcwalton
+[17:50:22] *** chmanchester|afk is now known as chmanchester
+[17:50:26] *** Joins: aepsil0n (eduard@moz-ob9p8k.hsi8.kabel-badenwuerttemberg.de)
+[17:51:54] <jroesch> congrats everyone, only been lurking in IRC lately but I'm amazed how much has got down since Alpha and I look forward to resuming hacking soon 
+[17:52:38] *** Quits: frogaincia (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[17:53:54] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[17:53:56] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (A TLS packet with unexpected length was received.)
+[17:55:45] *** Parts: annodomini (lambda@moz-hceqmj.hfc.comcastbusiness.net) ()
+[17:57:47] *** Joins: eerie (eerie@moz-9ml73n.red.bezeqint.net)
+[17:58:24] *** Joins: annodomini (lambda@moz-hceqmj.hfc.comcastbusiness.net)
+[17:58:26] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[17:58:58] *** Joins: nodweber (nodweber@moz-knt.fgq.178.5.IP)
+[17:59:13] <steveklabnik> brson: 1.0.0 tag? http://www.reddit.com/r/rust/comments/362u7n/rust_10_is_here/cra7wdy?context=3
+[18:00:52] <annodomini> steveklabnik: https://www.reddit.com/r/rust/comments/362u7n/rust_10_is_here/cra7vdx?context=3
+[18:01:11] <brson> steveklabnik: i left a response indicating that we're saving the tagging for the sf party
+[18:01:13] *** Quits: untitaker (untitaker@moz-4k4vpj.highway.telekom.at) (Ping timeout: 121 seconds)
+[18:01:44] *** Quits: eddyb (eddyb@moz-egg.q07.26.188.IP) (Ping timeout: 121 seconds)
+[18:02:44] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[18:03:45] *** Joins: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu)
+[18:04:01] *** Joins: untitaker (untitaker@moz-0p7ifv.highway.telekom.at)
+[18:04:02] <steveklabnik> ahh thanks :)
+[18:04:11] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[18:04:11] *** ChanServ sets mode: +o pcwalton
+[18:04:16] <aturon> initial subteams announced: https://internals.rust-lang.org/t/announcing-the-subteams/2042
+[18:05:31] <kwantam> fyi rust-lang.org/install.html the Beta links all 404
+[18:06:55] <nmatsakis> kwantam: we're in the process of issuing the new 1.1 beta... 
+[18:06:56] <barosl> aturon, Awesome! Now I can clearly know who to blame :P
+[18:07:25] <kwantam> nmatsakis: cool, thanks for the info
+[18:07:43] <barosl> Yay, 1.1 is ongoing
+[18:09:20] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[18:12:26] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[18:12:26] *** ChanServ sets mode: +o pcwalton
+[18:14:03] *** Joins: ncarrillo (textual@moz-hr3gaj.subnet.rcn.com)
+[18:15:17] *** Quits: snow (snow@moz-ab9.t40.131.104.IP) (Quit: Good bye)
+[18:15:48] *** Joins: _Vi (vi@moz-bbs.vhj.131.104.IP)
+[18:17:00] *** Joins: snow (snow@moz-ab9.t40.131.104.IP)
+[18:17:14] *** Joins: zippity (Mibbit@moz-juv.9o3.252.72.IP)
+[18:20:17] *** Quits: eerie (eerie@moz-9ml73n.red.bezeqint.net) (Connection closed)
+[18:20:35] *** Joins: ^BR (br@moz-71m.3nd.202.89.IP)
+[18:20:41] *** Joins: anom (anhedonia@moz-lcrn3p.server4you.net)
+[18:23:02] *** Quits: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP) (Ping timeout: 121 seconds)
+[18:23:07] *** Joins: rkruppe_ (chatzilla@moz-3nj.rnu.131.95.IP)
+[18:23:07] *** rkruppe_ is now known as rkruppe
+[18:28:31] <steveklabnik> acrichto: do you have a link to that thing where you filed a bug about the crates.io downtime?
+[18:28:47] <steveklabnik> oh duh
+[18:28:50] <acrichto> steveklabnik: https://github.com/rust-lang/crates.io/issues/154
+[18:28:50] <steveklabnik> crates.io not cargo
+[18:28:52] <steveklabnik> thanks :)
+[18:28:54] <acrichto> :D
+[18:29:16] <Manishearth> acrichto: didn't the tooling team include docs?
+[18:30:00] <acrichto> Manishearth: doc infrastructure, but not necessarily the content of the docs themselves
+[18:30:08] <Manishearth> acrichto: oh ah
+[18:30:58] *** Quits: SilverKey (SilverKey@moz-b7q751.biz.rr.com) (Ping timeout: 121 seconds)
+[18:31:52] *** Quits: zmack (zmack@moz-htpein.home.aster.pl) (Connection closed)
+[18:32:13] *** Joins: zmack (zmack@moz-htpein.home.aster.pl)
+[18:35:07] *** Quits: ^BR (br@moz-71m.3nd.202.89.IP) (Client exited)
+[18:35:08] *** Quits: zmack (zmack@moz-htpein.home.aster.pl) (Connection closed)
+[18:35:08] *** Quits: summerlight (summerlight@moz-99k.2mj.130.121.IP) (Ping timeout: 121 seconds)
+[18:35:18] <Manishearth> TIL aatch has a name
+[18:35:49] *** Quits: blank_name (blank_name@moz-2kp51l.mi.frontiernet.net) (Ping timeout: 121 seconds)
+[18:35:52] <Manishearth> acrichto: aturon (and the rest) really like the teams you picked, btw!
+[18:36:51] *** Joins: blank_name (blank_name@moz-hmo.38r.183.192.IP)
+[18:38:05] *** Quits: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP) (Ping timeout: 121 seconds)
+[18:38:26] *** Joins: dinfuehr (dinfuehr@moz-u4auem.highway.telekom.at)
+[18:39:39] *** Joins: Gankro_ (Mibbit@moz-i5m.05u.207.66.IP)
+[18:39:56] <Eridius> Moderation team doesn't list a lead
+[18:40:16] <Eridius> also, for some reason I kind of assumed steveklabnik was going to be involved with moderation (since he's opined about it in the past)
+[18:40:18] <Manishearth> we don't have one
+[18:40:27] <Manishearth> Eridius: no core team members in the mod team
+[18:40:29] <Eridius> oh? I thought all subteams had a lead
+[18:40:38] <steveklabnik> the mod team is different
+[18:40:39] <Eridius> hmm, I suppose that makes sense in a way
+[18:40:41] <Manishearth> (otherwise yes, steveklabnik would have made sense as a leader)
+[18:40:44] <steveklabnik> <3
+[18:40:45] <Manishearth> we're special and magical
+[18:40:59] <Eridius> Moderation team sounds kind of like "Community moderators" then?
+[18:41:06] <Manishearth> yes. ish.
+[18:41:29] <kmc> Manishearth: congrats / good luck / condolences on your nomination to the moderation team
+[18:41:36] <Manishearth> hahaha thanks
+[18:41:52] *** Quits: nodweber (nodweber@moz-knt.fgq.178.5.IP) (A TLS packet with unexpected length was received.)
+[18:42:00] <Eridius> incidentally, I assume the CoC will be enforced in GitHub as well, since we now know how to ban people?
+[18:42:09] <Manishearth> we don't now know how to ban people
+[18:42:14] *** Joins: Murarth_ (Murarth@moz-4bp87t.dyn.nltelcom.net)
+[18:42:17] <Eridius> yes we do. An organization admin emails github support
+[18:42:19] <kmc> that should be one of the top priorities for the moderation team
+[18:42:20] *** Quits: Murarth (Murarth@moz-mpmr8r.phnx.qwest.net) (NickServ (RECOVER command used by Murarth_))
+[18:42:20] *** Murarth_ is now known as Murarth
+[18:42:21] <Manishearth> oh that
+[18:42:21] <Manishearth> yeah
+[18:42:29] <kmc> since the CoC has included enforcement on GitHub from the start
+[18:42:44] <Eridius> rather an organization Owner
+[18:42:44] <kmc> it's in scope, it just has never been done :P
+[18:42:46] <Manishearth> kmc: it is. We have the "email github" thing already, though that's slow.
+[18:43:01] <Manishearth> kmc: one idea is to write a bot  that deletes comments as they come in
+[18:43:59] <Eridius> Manishearth: I would really hope we don't get to the point where we have someone who's so intentionally abusive that they start spamming bad comments enough to be a problem that the turnaround time with GitHub support is an issue :/
+[18:44:21] *** Joins: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com)
+[18:44:28] <kmc> don't worry, it will happen
+[18:44:31] *** Joins: nodweber (nodweber@moz-knt.fgq.178.5.IP)
+[18:44:35] <kmc> Rust is trying to replace C and C++
+[18:44:43] <Manishearth> Eridius: well, moderation is a realtime thing -- and the longer you wait, the worse it gets (more people are sucked in)
+[18:44:46] <kmc> now imagine the worst 0.1% of people in the world who use C and C++
+[18:44:53] <Eridius> our problem so far hasn't been intentional vandals, just unrepetant offenders (the only vandalism that comes to mind is what's-his-name mass-closing all his tickets)
+[18:44:54] <Manishearth> of course, we can lock the thread
+[18:45:02] <kmc> and imagine some fraction are even using Rust against their preference
+[18:45:07] <Manishearth> so put all the tools together, and we have something that should cover almost all scenarios
+[18:46:06] <Manishearth> Eridius: intentional vandals will be a problem too. When github discussions go viral (eg someone posts on HN and then the world converges on it), I've seen venom spill out onto other threads once the first one is locked
+[18:46:33] <Manishearth> But again, almost all situations with such users can be handled using a conjunction of locking and emailing GH
+[18:46:50] <Amaranth> iirc the problem with a bot that deletes all comments is that github has an API access limit
+[18:47:02] <Manishearth> hm
+[18:47:04] <Amaranth> So if multiple people are doing it at once you need multiple bot accounts to counteract it
+[18:47:04] <kmc> locking exists because of an incident where that happened, in fact
+[18:47:14] <Eridius> my point is basically that writing a moderation bot like that is a fair amount of work (largely because you need to then test it appropriately), and it's unclear how likely we are to actually need it
+[18:47:28] <Eridius> kmc: locking exists because of an incident with one of the github founders, I thought
+[18:47:35] <Manishearth> Eridius: yea, but we can do without a bot for now, and work on it slowly
+[18:47:49] <kmc> Eridius: it's not "unclear" whether some kind of solution for blocking is needed
+[18:47:58] <kmc> the moderators have repeatedly been caught completely unprepared
+[18:47:58] <Eridius> also, just to note, even with a perfect bot, emails would still get sent containing all of the bad comments
+[18:48:02] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[18:48:10] <kmc> and it's a convenient excuse for people who are fine with the status quo
+[18:48:17] <Eridius> kmc: there is a solution for blocking. It's just not great. But it exists and it should be used
+[18:48:27] <kmc> the members of the moderation teem need to figure out how to enforce the CoC *before* there's another issue
+[18:48:30] <Manishearth> Eridius: locking solves that; the issue is with new threads being started
+[18:48:32] <Eridius> a comment-deleting bot isn't a solution for blocking, it's a patch
+[18:48:40] <barosl> kmc, How can someone hate Rust? That's impossible :-)
+[18:48:58] <Eridius> Manishearth: I'm not talking about locking, I'm talking about emailing github support to ban the user
+[18:49:05] <barosl> At least in this universe!
+[18:49:16] <steveklabnik> barosl: we have a pretty dedicated set of reddit haters
+[18:49:17] <steveklabnik> actually
+[18:49:32] *** Quits: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de) (Quit: No Ping reply in 180 seconds.)
+[18:49:33] <Manishearth> kmc: we've already figured out deescalation and all. Unlike the previous times, deescalation can be coupled with a warning and a note that continued behavior of that kind will be met with a ban
+[18:49:49] <Manishearth> That *should* cover most cases
+[18:49:58] <kmc> well there are a lot of valid reasons to dislike / not use Rust, but probably the most popular *bad* reason, and one that motivates a lot of trolling, is the whole "well *I* don't make mistakes" thing
+[18:50:13] <Manishearth> and if that person continues, we can email GH and then lock the relevant threads
+[18:50:14] <kmc> imagine you spent decades learning all these C pitfalls and feeling superior to everyone
+[18:50:20] <Manishearth> kmc: lol
+[18:50:23] <Eridius> I certainly hope that giving appropriate warnings from an appropriately-authoritative source (i.e. the moderation team) can deescalate
+[18:50:27] <kmc> and now someone comes along and says "that's legacy cruft, this program will handle it for you"
+[18:50:28] <steveklabnik> yeah that's a thing that happens
+[18:50:42] <kmc> a lot of people basically want to stick with the dangerous tool because it lets them show off their hacker skillz
+[18:50:43] <Manishearth> that's actually a very good characterization of it
+[18:50:45] <kmc> the problem is
+[18:50:48] <kmc> you can draw a direct line from there to
+[18:50:48] <Manishearth> hadn't thought of it that way
+[18:50:51] <kmc> omnipresent NSA surveilance
+[18:50:53] <Eridius> kmc: it always astounds me how many people seem to think that the status quo with C/C++ is acceptable
+[18:50:58] <kmc> dissidents tortured and executed in Iran
+[18:51:02] <kmc> billions of dollars in cybercrime
+[18:51:03] <kmc> etc.
+[18:51:07] *** Joins: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de)
+[18:51:19] <barosl> kmc, I think that's a truth to a degree. "sufficiently smart C++ programmer" will code C++ just fine, without making any mistakes ever and never :)
+[18:51:22] <kmc> it's something that affects everyone, not just the people who willfully ignore advances in the field
+[18:51:35] <kmc> barosl: even if it is true: A) why do you want to spend your time on that instead of, you know, solving problems
+[18:51:55] <Manishearth> barosl: where sufficient = over 9000? :P
+[18:52:00] <kmc> B) how many of those "sufficiently smart" programmers work for NSA/GCHQ/China/Iran/Israel, and how many work on Bash or OpenSSL
+[18:52:10] <rkruppe> Though I also think the way we (i.e., a lot of people) promote Rust as /preventing/ you from making mistakes in bondage-and-discipline manner is suboptimal
+[18:52:15] <Eridius> I've long thought that multithreading issues (especially data races) are the single biggest problem for the immediate future of program development. Even when you have libraries that make multithreading relatively easy (such as libdispatch on OS X/iOS), it's far too easy to screw up and access data from the wrong place. And it's one of the hardest things to debug
+[18:52:22] *** Quits: snow (snow@moz-ab9.t40.131.104.IP) (Quit: Good bye)
+[18:52:23] <kmc> *open source* software quality is shit and bad tools are largely to blame
+[18:52:25] <rkruppe> It's a tool, you can always opt out of the checks and do something stupid
+[18:52:34] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[18:52:36] <Eridius> and the fact that Rust solves this problem is what excited me the most about it 2 years ago and continues to excite me today
+[18:52:38] <barosl> Yup, anyways I'm never a C++ expert, so I'm just happy with Rust!
+[18:52:42] <kmc> even if experts can use bad tools without hurting anyone, that is very obviously not what's happening in OSS today 
+[18:52:55] <kmc> and more yelling at everyone who makes a mistake will not fix it
+[18:53:05] *** Joins: snow (snow@moz-ab9.t40.131.104.IP)
+[18:53:15] <kmc> anyway i'm preaching to the choir
+[18:53:20] <Eridius> this kind of reminds me of the checklist manifesto
+[18:53:34] <kmc> but we may rest assured that we'll encounter that attitude a lot in the future
+[18:53:39] <Eridius> apparently there are a lot of doctors out there who refuse to use checklists because they think they're so good they don't need it
+[18:53:43] <barosl> Manishearth, You're right, frankly I don't think sufficiently smart programmers are as rare as sufficiently smart compilers. They're only shown in mangas and TV shows
+[18:53:51] <barosl> Uh, I think*
+[18:53:52] <Eridius> even though time and time again checklists have proven to significantly decrease the error rate in medical procedures
+[18:54:19] <barosl> (Which means I don't believe in sufficiently smart compiler, either)
+[18:54:46] *** Quits: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de) (Quit: No Ping reply in 180 seconds.)
+[18:54:50] <kmc> Eridius: yeah :( I doubt that programmers are unique in this regard :/
+[18:54:57] <Manishearth> kmc: it gets worse when you factor that writing secure software is harder than breaking supposedly secure software
+[18:54:59] <kmc> I just want my industry to have less depressingly low standards!
+[18:55:02] <rkruppe> I believe in pretty smart compilers, and I believe in pretty smart programmers
+[18:55:04] <kmc> Manishearth: yes, much much harder
+[18:55:13] <kmc> my motto is "smart but distracted"
+[18:55:18] <rkruppe> But everyone can slip up, safety nets are always good
+[18:55:27] <kmc> give me the powerful tools I need, including safety escape hatches, but don't bother me with irrelevant bullshit
+[18:55:43] <rkruppe> The only reason to not rely on an (easy-to-use) safety net is to show of
+[18:55:45] <rkruppe> *show off
+[18:55:47] *** Joins: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de)
+[18:55:52] <kmc> many devastating C mistakes arise from irrelevant bullshit, not fundamental difficulties of systems programming
+[18:56:05] <Manishearth> Eridius: I just had a thought of what would happen if medicine was practiced the way programming was :o
+[18:56:26] <kmc> Manishearth: what, half the doctors have gone to med school and the other half learned by experimenting on cats in their basement?
+[18:56:30] <Manishearth> kmc: *no longer relevant, technically
+[18:56:30] <kmc> I think that's how it *used* to work
+[18:56:48] * Manishearth is a cat-programmer
+[18:57:06] <kmc> 'twas a time when murdering people and selling their corpses to medical students was a profitable line of work
+[18:57:44] <kmc> the current situation in software is like if half of doctors didn't wash their hands and insisted that a good doctor doesn't need to
+[18:57:49] <kmc> which, I have read, was also a thing that happened
+[18:58:03] <Eridius> hmm, the subteams announcement mentions #rust-lang, but there is no #rust-lang channel. That should probably be grabbed now so someone doesn't come along and squat and require a server op to recover
+[18:58:24] <barosl> I'm in!
+[18:58:47] <Manishearth> acrichto: could you join #rust-lang?
+[18:59:03] <carllerche> brson: is there a multirust self update command or do I re-run the install script?
+[18:59:08] <carllerche> also, what's the toolchain for 1.0?
+[18:59:13] <carllerche> ah, just 1.0.0 :P
+[18:59:33] <Eridius> also, botbot.me will need to be set up for #rust-lang (and the other ones if it's not already there)
+[19:01:45] <brson> carllerche: multirust doesn't yet self-update. reinstalling will update it
+[19:02:12] <brson> 1.1.0-beta.1 build is started
+[19:03:45] <kmc> woot
+[19:03:59] *** Joins: eerie (eerie@moz-9ml73n.red.bezeqint.net)
+[19:04:34] <carllerche> what's the easiest way to see what's new in 1.1.0-beta.1?
+[19:05:53] *** Joins: jshs (jshs@moz-tl65b7.dip0.t-ipconnect.de)
+[19:06:14] <brson> carllerche: sadly, probably by running git log from the merge-base of stable and beta and comparing to beta
+[19:06:36] <brson> though since there were so many cherry-picks to stable there will be a number of important patches that already exist in 1.0
+[19:06:50] <steveklabnik> yeah
+[19:06:58] <steveklabnik> we gotta get used to changelogging beta stuff as well, sigh
+[19:07:05] *** Quits: brson (brson@moz-u3dg2t.sfo1.mozilla.com) (Quit: leaving)
+[19:07:33] *** Quits: mattico (matt@moz-br0tvd.bff5.ebih.ea00.2607.IP) (Ping timeout: 121 seconds)
+[19:08:20] <Eridius> incidentally, the subteam announcement doesn't mention r/rust. Is that not part of the moderation team's purview?
+[19:08:30] <Manishearth> nope
+[19:08:45] <Manishearth> it's an unofficial forum, and bstrie is already handling it amazingly
+[19:09:03] <Manishearth> save for a couple of events of the lunar kind :p
+[19:09:07] <Eridius> ok
+[19:10:19] <Eridius> hrm, brson just left, but I was going to tell him that `git log` has a --cherry-pick option which can skip commits that are identical to one already on the branch (i.e. ones that have been cherry-picked), although it doesn't catch everything (e.g. merge conflicts break equivalence)
+[19:11:04] *** Joins: ato (sid11@moz-c1oek8.0j4i.jtu0.0101.2620.IP)
+[19:11:08] *** Joins: nrc (nrc@moz-9luh02.xtra.co.nz)
+[19:11:08] *** ChanServ sets mode: +o nrc
+[19:11:10] *** Quits: jbomo (dkd@moz-uol4mm.fios.verizon.net) (Ping timeout: 121 seconds)
+[19:11:49] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[19:12:38] *** Joins: munksgaa1d (munksgaard@moz-urnkl5.u.parknet.dk)
+[19:13:21] <ato> Rust 1.0 Celebration at Mozilla London office https://irccloud.mozilla.com/file/nzEyqxNg/rust10mozldn.jpg
+[19:14:30] *** Quits: ncarrillo (textual@moz-hr3gaj.subnet.rcn.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[19:15:37] *** Quits: munksgaard (munksgaard@moz-478pev.u.parknet.dk) (Ping timeout: 121 seconds)
+[19:15:45] *** Quits: nrc (nrc@moz-9luh02.xtra.co.nz) (Ping timeout: 121 seconds)
+[19:15:54] *** Quits: gsingh93 (uid22642@moz-aq0iah.charlton.irccloud.com) (Quit: Connection closed for inactivity)
+[19:16:00] <kmc> nice!
+[19:18:21] <kmc> the slashdot thread on Rust 1.0 is 100% trolls and haters
+[19:18:32] <kmc> not surprising since it's basically the epicenter of "GOOD programmers don't make mistakes!"
+[19:19:02] <steveklabnik> there has only been ONE nice slashdot thread about rust
+[19:19:07] <annodomini> kmc: wow, slashdot is still a thing?
+[19:19:25] <kmc> annodomini: i know, right?
+[19:19:57] <kmc> unlike C, the use of slashdot doesn't cause much human suffering in a global sense
+[19:20:02] <Eridius> haha https://news.ycombinator.com/user?id=kibwen
+[19:20:03] <kmc> but they are relics of a similar sort
+[19:21:28] <Eridius> hmm, I haven't thought about ~ in a while. I remember really wishing we could somehow preserve it (as a lang item that essentially meant Box). I don't miss it anymore
+[19:22:04] <Gankro_> Eridius: with or without String/Vec magic?
+[19:22:22] <Eridius> I don't remember anymore
+[19:24:46] <Eridius> hrm, multirust says "The stable release channel doesn't actually exist yet". Presumably it does now
+[19:25:07] *** Joins: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[19:25:24] *** Quits: eerie (eerie@moz-9ml73n.red.bezeqint.net) (Connection closed)
+[19:25:27] <sfackler> Eridius: probably need to upgrade
+[19:25:36] <Eridius> hrm, Homebrew still lists Rust at 1.0.0-beta.4
+[19:25:57] <steveklabnik> rkruppe: https://github.com/Homebrew/homebrew/pull/39792
+[19:25:59] <steveklabnik> err Eridius 
+[19:26:04] <Eridius> yeah just found it
+[19:26:29] *** Joins: zmack (zmack@moz-8vhf46.residential.rdsnet.ro)
+[19:27:12] <Eridius> hrm, the PR removes the `--release-channel=beta` flag used during compilation (for non-HEAD). What's the default assumption for release channel?
+[19:27:22] <Eridius> i.e. is that correct or should it say something like --release-channel=stable?
+[19:28:02] <jga> ato: sucks that it overflowed, I couldn't go and I only had 4 people before me in the wishlist, so now I'm crying here at home
+[19:28:23] <Eridius> ah I guess it's downloading a tarball labelled as 1.0.0 so hopefully that does just do stable by default
+[19:28:31] <Eridius> although it was downloading a beta tarball before
+[19:29:31] <Eridius> hrm, I think it defaults to "dev", according to the configure script
+[19:31:04] *** Joins: rkruppe_ (chatzilla@moz-3nj.rnu.131.95.IP)
+[19:32:02] *** Quits: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP) (Ping timeout: 121 seconds)
+[19:32:13] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (A TLS packet with unexpected length was received.)
+[19:32:14] *** rkruppe_ is now known as rkruppe
+[19:32:19] *** Joins: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[19:33:31] *** Quits: blank_name (blank_name@moz-hmo.38r.183.192.IP) (Ping timeout: 121 seconds)
+[19:34:08] <Eridius> actually, why is the 1.0.0 source still defaulting to the "dev" channel? One would kind of expect it to default to "stable", assuming that the 1.0.0 binary download is stable (which AIUI it should be, but I haven't verified)
+[19:34:17] <WindowsBunny> acrichto: maybe after you finish your msvc PR you could consider moving my stdio RFC to the final stages perhaps?
+[19:36:44] <kmc> Eridius: at one point I started working on a RFC that made ~T sugar for <T as ToOwned>::Owned
+[19:37:01] <Eridius> kmc: that's.. actually kind of clever
+[19:37:15] <kmc> yes, i was very pleased with myself for being that clever
+[19:37:16] <Eridius> could you also use it as an expression to be equivalent to `ToOwned::to_owned(val)`?
+[19:37:21] <kmc> but it's an idea that doesn't actually work out well :/
+[19:37:22] *** Quits: Murarth (Murarth@moz-4bp87t.dyn.nltelcom.net) (Quit: I have come here to chew bubblegum and kick ass. And I'm all out of bubblegum.)
+[19:37:25] <kmc> trying to remember why exactly
+[19:37:30] <kmc> Eridius: yeah, that'd be ideal
+[19:37:30] <Eridius> d'oh. I'd be interested to know why not
+[19:37:39] *** Joins: Murarth (Murarth@moz-mpmr8r.phnx.qwest.net)
+[19:37:58] *** Joins: nrc (nrc@moz-9luh02.xtra.co.nz)
+[19:37:58] *** ChanServ sets mode: +o nrc
+[19:38:34] <kmc> oh, I think it's just that I decided T::ToOwned is good enough
+[19:38:44] <kmc> and that's allowed in many cases, if not all
+[19:38:47] <kmc> err
+[19:38:49] <Eridius> you mean T::Owned?
+[19:38:51] <kmc> T::Owned yeah
+[19:39:00] <Eridius> ah, but the RFC would actually work?
+[19:39:14] <kmc> ~T isn't really much better than T::Owned, not enough to justify a special operator
+[19:39:20] <Eridius> fair enough
+[19:39:45] <kmc> and ime it's rare to write functions that are generic over (borrowed, owned) type pairs
+[19:39:52] <Eridius> I guess it also doesn't really work in the general case, it would only work for things like string/vec, because ~T used to imply heap allocation but with this proposal, ~3 would not in fact be Box<3>
+[19:40:09] <kmc> yeah
+[19:40:12] <Eridius> it would be cute if you could figure out how to make it something like "if T is ToOwned then T::Owned else Box<T>"
+[19:40:59] <kmc> trait Foo where { type X; }  impl<T: ToOwned> Foo for T { type X = T::Owned; }  impl<T: !ToOwned> Foo for T { type X = Box<T>; }
+[19:41:04] <Eridius> if we had negative trait bounds, you could solve that with.. yeah that
+[19:41:20] *** Quits: annodomini (lambda@moz-hceqmj.hfc.comcastbusiness.net) (Client exited)
+[19:42:14] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[19:43:06] <kmc> associated type synonyms (which we already have) are basically equivalent to type-level functions
+[19:43:17] *** Joins: harrisonclarke (harrisoncla@moz-th044a.ns.bellaliant.net)
+[19:43:46] <Eridius> trait specialization could also be used to do this sort of thing
+[19:44:04] <Eridius> impl<T> Foo for T { type X = Box<T>; } impl<T: ToOwned> Foo for T { type X = T::Owned; }
+[19:44:09] <kmc> yeah
+[19:44:14] <kmc> that's natural in a sense
+[19:45:02] *** Quits: semarie (semarie@moz-0elh7o.nos-oignons.net) (A TLS packet with unexpected length was received.)
+[19:46:45] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[19:48:46] *** Joins: harrison_ (harrisoncla@moz-7hfo21.eastlink.ca)
+[19:49:01] *** Quits: zmack (zmack@moz-8vhf46.residential.rdsnet.ro) (Connection closed)
+[19:50:59] *** chmanchester is now known as chmanchester|afk
+[19:51:22] *** Quits: harrisonclarke (harrisoncla@moz-th044a.ns.bellaliant.net) (Ping timeout: 121 seconds)
+[19:51:59] <kimundi> hm, I'm trying to implement a "scoped threads take 2" - like API, but it seems the proposed interface is actually memory unsafe... At least I can get data races with it
+[19:52:51] <Gankro_> kimundi: example?
+[19:53:25] <Eridius> kimundi: there's apparently a bug with lifetimes that makes aturon's proposed scoped API unsafe, which is documented by me in a comment thread on the PR
+[19:53:34] <kimundi> Eridius: oh, hmm
+[19:53:34] <Eridius> hopefully the bug can be fixed
+[19:54:22] <kimundi> Does the bug result in the inner spawn(closure) being able to capture things with smaller lifetime than the scope() call?
+[19:54:34] <Eridius> basically, the `F: FnOnce() -> T + Send + 'a` does not actually seem to enforce that the function lives for 'a
+[19:54:38] <Eridius> or maybe it allows 'a to shrink for some reason
+[19:54:44] <Eridius> yes, that's precisely it
+[19:54:48] <kimundi> okay
+[19:54:59] <kimundi> that at least confirms I did not do anything wrong :P
+[19:55:05] *** Quits: kushal (kdas@moz-utbmir.202.sitibroadband.in) (Quit: Leaving)
+[19:55:07] <kimundi> any known workarounds?
+[19:55:17] <Eridius> comment thread is https://github.com/rust-lang/rfcs/pull/1084/files#r29380954
+[19:55:24] <kimundi> thx
+[19:55:26] <Eridius> my hacky implementation that demonstrates the bug is https://gist.github.com/kballard/8287fda6f9df491b2eb5
+[19:55:35] <Eridius> I don't know of any workarounds, short of fixing the bug
+[19:56:05] <Eridius> I'm also assuming that the bug is relevant. aturon said that nmatsakis said there's a bug with lifetimes that he's already looking into. So the assumption is the bug is the cause
+[19:56:34] *** Quits: munksgaa1d (munksgaard@moz-urnkl5.u.parknet.dk) (Ping timeout: 121 seconds)
+[19:58:36] *** Joins: munksgaard (munksgaard@moz-478pev.u.parknet.dk)
+[19:59:01] *** Joins: ncarrillo (textual@moz-hr3gaj.subnet.rcn.com)
+[19:59:18] *** Quits: guewen (guewen@moz-ftf7u4.cust.swisscom.ch) (Quit: Leaving...)
+[20:01:48] *** Quits: bgamari (bgamari@moz-uvr07v.q402.fm1a.0470.2001.IP) (Connection closed)
+[20:02:18] *** Quits: O01eg (o01eg@moz-2dt635.7spt.3egh.2698.2a02.IP) (Client exited)
+[20:02:37] *** Quits: aepsil0n (eduard@moz-ob9p8k.hsi8.kabel-badenwuerttemberg.de) (Connection closed)
+[20:04:18] *** Quits: zippity (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[20:04:56] <Eridius> incidentally, should maybe the crates.io crates authored by "The Rust Project Developers" consider bumping versions to 1.0.0 to match Rust 1.0? (for things like rustc-serialize and libc)
+[20:05:33] <sfackler> we don't want them permanently synchronized with rust versions
+[20:05:46] <Eridius> I'm not suggesting keeping it synchronized
+[20:06:01] <Eridius> but now that Rust 1.0 is out it makes sense to declare various packages to be 1.0 as well, if they're not expected to undergoe major changes in the near future
+[20:06:03] <steveklabnik> they're not all 1.0 ready
+[20:06:11] <steveklabnik> like, as in, their own 1.0
+[20:06:31] <Eridius> which is to say, Rust being not 1.0 was a good rationale for various packages also not being 1.0. But now that Rust is 1.0, the various packages should be evaluated to determine if it's appropriate to mark them as 1.0 as well
+[20:07:00] * kimundi considers bumping lazy_static to 1.0, but has commitment issues
+[20:08:02] *** Joins: eerie (eerie@moz-9ml73n.red.bezeqint.net)
+[20:09:16] <Eridius> I just bumped my 'alfred' package to 1.0, though I'm guessing that I'm the only client of it
+[20:10:19] *** Quits: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de) (Ping timeout: 121 seconds)
+[20:12:10] *** Joins: zeiris (dan@moz-8jbmam.letter.agency)
+[20:12:23] *** Quits: dinfuehr (dinfuehr@moz-u4auem.highway.telekom.at) (Connection closed)
+[20:12:45] *** Joins: dinfuehr (dinfuehr@moz-u4auem.highway.telekom.at)
+[20:13:02] *** Joins: eddyb (eddyb@moz-egg.q07.26.188.IP)
+[20:13:11] *** Quits: gsingh93_ (gulshan@moz-qnbukr.mi.comcast.net) (Ping timeout: 121 seconds)
+[20:13:40] *** Quits: anom (anhedonia@moz-lcrn3p.server4you.net) (Ping timeout: 121 seconds)
+[20:15:53] *** Quits: jshs (jshs@moz-tl65b7.dip0.t-ipconnect.de) (Client exited)
+[20:16:33] *** Joins: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP)
+[20:16:33] *** ChanServ sets mode: +o pnkfelix
+[20:16:48] *** Quits: dinfuehr (dinfuehr@moz-u4auem.highway.telekom.at) (Ping timeout: 121 seconds)
+[20:17:09] <Manishearth> steveklabnik: isn't the example on http://www.rust-lang.org/ a bit dense?
+[20:17:34] *** Joins: O01eg (o01eg@moz-2dt635.7spt.3egh.2698.2a02.IP)
+[20:17:39] <Eridius> Manishearth: sure beats "hello world"
+[20:18:07] <Eridius> it demonstrates iteration, pattern-matching, and formatted printing. Seems pretty good
+[20:18:25] *** Joins: tamird (textual@moz-gg3hct.res.rr.com)
+[20:18:28] <steveklabnik> i'm open to changing it
+[20:18:31] *** chmanchester|afk is now known as chmanchester
+[20:18:35] <steveklabnik> we've never really liked it
+[20:18:53] <Manishearth> Eridius: I'd like an example that does al lthat and is actually readable and makes sense
+[20:19:52] <Manishearth> someone just pinged me and said the language was unintuitive after looking at that example
+[20:19:53] <jga> will cargo 0.3 be released with rust 1.1?
+[20:20:19] <Manishearth> I looked at it too -- it's quite dense and an okayish programmer new to rust probably would be thrown off
+[20:20:44] *** Joins: nerdopoly (nerdopoly@moz-qnem8v.range217-42.btcentralplus.com)
+[20:22:07] <frewsxcv> Manishearth: how about if we replace the rust-lang.org example with properties.mako.rs?
+[20:22:07] <frewsxcv> :)
+[20:22:21] <Manishearth> +1
+[20:22:33] *** Joins: blank_name (blank_name@moz-n2h.nml.36.50.IP)
+[20:23:15] *** Quits: nerdopoly (nerdopoly@moz-qnem8v.range217-42.btcentralplus.com) (Quit: leaving)
+[20:23:43] <kimundi> *sniff*, my beautiful frontline example that I cobbled together in 20min ages ago T_T
+[20:24:20] <Manishearth> kimundi: cobble together a new one pretty please? :)
+[20:25:04] <kimundi> sure, if I knew what would be more appropiate :)
+[20:25:17] *** Joins: nerdopoly (nerdopoly@moz-qnem8v.range217-42.btcentralplus.com)
+[20:25:37] <kimundi> It ended like this initially because brson wanted something more complex and realistic than hello world
+[20:25:51] *** Quits: nerdopoly (nerdopoly@moz-qnem8v.range217-42.btcentralplus.com) (Quit: leaving)
+[20:26:07] <kimundi> I tried to make it a full fledged stack-based calculator, but that topok a few too many lines :P
+[20:26:12] *** Joins: nerdopoly (nerdopoly@moz-qnem8v.range217-42.btcentralplus.com)
+[20:26:22] <kimundi> so this was the result
+[20:26:34] *** Quits: nerdopoly (nerdopoly@moz-qnem8v.range217-42.btcentralplus.com) (Quit: leaving)
+[20:26:51] <Manishearth> steveklabnik: we should go through StackOverflow some day and make a list of all the diagnostics we can improve
+[20:26:55] <Manishearth> eg http://stackoverflow.com/q/30262970/1198729
+[20:27:03] <steveklabnik> Manishearth: yeah
+[20:27:03] <Manishearth> add links to the book, etc
+[20:27:07] <steveklabnik> that'd be sweet
+[20:27:34] <Manishearth> steveklabnik: now that the docs are largely done, I have anointed you master of diagnostics :P
+[20:27:43] <Manishearth> go forth and --explain
+[20:27:49] <kimundi> Manishearth: Maybe we should just have a reddit contest
+[20:27:56] <Manishearth> as in?
+[20:27:59] <Manishearth> oh
+[20:28:00] <Manishearth> right
+[20:28:02] <Manishearth> that's a good idea
+[20:28:09] <kimundi> "Please submit a good example, top 5 five will appear on the front page"
+[20:30:31] <Manishearth> kimundi: that sounds nice, you posting?
+[20:31:18] <steveklabnik> lol docs are done that's a joke
+[20:31:22] <Manishearth> hah
+[20:31:23] <Manishearth> I know
+[20:31:31] <Manishearth> but really I want more love for diagnostics
+[20:31:32] <steveklabnik> :) <3
+[20:31:49] *** Quits: hyunsik (hyunsik@moz-3qgjl9.ca.comcast.net) (Ping timeout: 121 seconds)
+[20:31:57] <kimundi> Manishearth: Maybe we should wait a bit because release? 
+[20:32:22] <Manishearth> Rust has great diagnostics, but Rust has a lot of new/unfamiliar concepts, so the bar is higher
+[20:32:28] *** Quits: madmalik (uid13697@moz-lfin5p.brockwell.irccloud.com) (Quit: Connection closed for inactivity)
+[20:34:49] <Manishearth> kimundi: isn't release exactly why we want to make the site perfect? :)
+[20:35:20] *** Quits: munksgaard (munksgaard@moz-478pev.u.parknet.dk) (Ping timeout: 121 seconds)
+[20:35:31] *** Quits: harrison_ (harrisoncla@moz-7hfo21.eastlink.ca) (Connection closed)
+[20:35:48] <kimundi> well before it sure. but now its too late anyway, might as well givve newcomers a weekend time to be able to submit a example themself
+[20:35:56] *** Quits: jgallagher (john@moz-d5e8oc.hfc.comcastbusiness.net) (Client exited)
+[20:36:23] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[20:38:05] *** Joins: eerie_ (eerie@moz-9ml73n.red.bezeqint.net)
+[20:38:26] *** Joins: harrison_ (harrisoncla@moz-7hfo21.eastlink.ca)
+[20:39:01] <Manishearth> kimundi: the website is fluid, not too late ( is it? steveklabnik )
+[20:39:40] <kimundi> Well, I wouldn't mind it if you posted something on reddit :)
+[20:39:50] *** Joins: rkruppe_ (chatzilla@moz-3nj.rnu.131.95.IP)
+[20:39:56] *** Quits: LukasKa (lukas@moz-g8cevi.ewe-ip-backbone.de) (Quit: Leaving)
+[20:40:24] <Manishearth> kay
+[20:40:30] <seanmonstar> Ohai sfo
+[20:40:55] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[20:41:04] *** Quits: eerie (eerie@moz-9ml73n.red.bezeqint.net) (Ping timeout: 121 seconds)
+[20:41:04] <kmc> seanmonstar: are you coming to the party?
+[20:41:20] <seanmonstar> kmc: I'm in SF commons
+[20:41:24] *** Quits: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP) (Ping timeout: 121 seconds)
+[20:41:27] <seanmonstar> Dunno if there's a better place atm
+[20:41:30] *** rkruppe_ is now known as rkruppe
+[20:42:23] <seanmonstar> Is there a Rusty room upstairs? 
+[20:43:14] <Manishearth> kimundi: http://www.reddit.com/r/rust/comments/363m3a/can_we_come_up_with_a_better_example_for_the/
+[20:44:07] <kimundi> Manishearth: Lets see what will be submitted then :)
+[20:44:13] *** Quits: marsel (user@moz-ms7.h9c.147.46.IP) (Ping timeout: 121 seconds)
+[20:44:19] *** Quits: stl (stl@moz-hgg.hjg.15.176.IP) (Ping timeout: 121 seconds)
+[20:44:57] <Manishearth> yep!
+[20:46:13] <kmc> seanmonstar: dunno, I'm at home :3
+[20:47:12] *** Joins: ptalbot (ptalbot@moz-j4gnuh.fbx.proxad.net)
+[20:47:12] *** Quits: ncarrillo (textual@moz-hr3gaj.subnet.rcn.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[20:47:14] <seanmonstar> Coming later? 
+[20:47:33] <kmc> yep
+[20:47:43] <kmc> bstrie and I will arrive around 6:30
+[20:48:36] <seanmonstar> aturon: is there a Pre event room in SF? 
+[20:48:46] *** Quits: jdm (jdm@moz-3rch4d.ckpj.s0pt.0450.2001.IP) (Quit: )
+[20:48:46] *** Joins: larhat1 (Adium@moz-vlo5br.cable.virginm.net)
+[20:50:10] *** Joins: jbomo (dkd@moz-uol4mm.fios.verizon.net)
+[20:50:13] *** Quits: larhat1 (Adium@moz-vlo5br.cable.virginm.net) (Quit: Leaving.)
+[20:50:26] *** Joins: larhat1 (Adium@moz-vlo5br.cable.virginm.net)
+[20:51:24] *** Joins: ^BR (br@moz-71m.3nd.202.89.IP)
+[20:52:27] *** Joins: munksgaard (munksgaard@moz-478pev.u.parknet.dk)
+[20:53:16] *** Quits: eerie_ (eerie@moz-9ml73n.red.bezeqint.net) (Connection closed)
+[20:55:17] *** Joins: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de)
+[20:55:31] *** Quits: ^BR (br@moz-71m.3nd.202.89.IP) (Ping timeout: 121 seconds)
+[20:56:13] *** chmanchester is now known as chmanchester|afk
+[20:56:45] *** Joins: ^BR (br@moz-71m.3nd.202.89.IP)
+[20:56:53] *** Quits: ^BR (br@moz-71m.3nd.202.89.IP) (Connection closed)
+[20:58:02] *** Quits: Gankro_ (Mibbit@moz-i5m.05u.207.66.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[20:58:42] *** Joins: rovar (rovar@moz-4cpbha.biz.rr.com)
+[21:05:54] *** Joins: anom (anhedonia@moz-4lmh4m.privacyfoundation.ch)
+[21:07:52] *** Quits: munksgaard (munksgaard@moz-478pev.u.parknet.dk) (Ping timeout: 121 seconds)
+[21:08:07] *** Joins: p1start (p1start@moz-nftjhe.org)
+[21:10:13] *** Joins: mattico (matt@moz-ejunpc.bff5.ebih.ea00.2607.IP)
+[21:10:42] *** Joins: ConnorDo_ (ConnorDoyle@moz-edrulj.static.monkeybrains.net)
+[21:12:59] *** Joins: dinfuehr (dinfuehr@moz-u4auem.highway.telekom.at)
+[21:13:43] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (Ping timeout: 121 seconds)
+[21:14:36] *** Joins: ConnorDoyle (ConnorDoyle@moz-edrulj.static.monkeybrains.net)
+[21:14:46] *** Quits: ConnorDo_ (ConnorDoyle@moz-edrulj.static.monkeybrains.net) (Ping timeout: 121 seconds)
+[21:14:55] *** Joins: munksgaard (munksgaard@moz-478pev.u.parknet.dk)
+[21:16:23] *** Quits: ConnorDoyle (ConnorDoyle@moz-edrulj.static.monkeybrains.net) (Connection closed)
+[21:16:26] *** Joins: ConnorDo_ (ConnorDoyle@moz-edrulj.static.monkeybrains.net)
+[21:17:03] *** Quits: dinfuehr (dinfuehr@moz-u4auem.highway.telekom.at) (Ping timeout: 121 seconds)
+[21:17:07] *** Joins: swgillespie (swgillespie@moz-1i5.3un.220.167.IP)
+[21:18:05] *** Quits: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP) (Ping timeout: 121 seconds)
+[21:19:01] *** Quits: ConnorDo_ (ConnorDoyle@moz-edrulj.static.monkeybrains.net) (A TLS packet with unexpected length was received.)
+[21:19:23] *** Joins: ncarrillo (textual@moz-mke7jn.cable.rcn.com)
+[21:19:44] <rovar> What was the official count for the number of people who contributed to Rust 1.0?
+[21:19:56] <rovar> or is there a list somewhere online?
+[21:20:18] <rovar> found it
+[21:20:19] <seanmonstar> rovar: of all time? 
+[21:20:22] <seanmonstar> K
+[21:21:16] *** Quits: ncarrillo (textual@moz-mke7jn.cable.rcn.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[21:21:34] *** Joins: brson (brson@moz-u3dg2t.sfo1.mozilla.com)
+[21:21:35] *** ChanServ sets mode: +o brson
+[21:23:09] *** Joins: ncarrillo (textual@moz-mke7jn.cable.rcn.com)
+[21:23:33] <acrichto> WindowsBunny: yeah I'll try to take another look at that soon, last I looked I was afraid that there was 1 comment and otherwise very little discussion
+[21:24:36] *** Quits: jevin_ (jevin@moz-sra.ovp.12.72.IP) (Connection closed)
+[21:25:00] *** Joins: jevin (jevin@moz-sra.ovp.12.72.IP)
+[21:25:10] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[21:25:10] *** ChanServ sets mode: +o pcwalton
+[21:26:07] *** Quits: larsberg (Adium@moz-kmvlue.cable.rcn.com) (Quit: Leaving.)
+[21:28:01] *** Joins: ConnorDoyle (ConnorDoyle@moz-edrulj.static.monkeybrains.net)
+[21:28:33] *** Joins: erickt (erickt@moz-l8ebtf.sfo1.mozilla.com)
+[21:29:24] *** Quits: joneshf-laptop (joneshf@moz-l4h.b5s.208.98.IP) (Ping timeout: 121 seconds)
+[21:30:31] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[21:32:34] *** Quits: ConnorDoyle (ConnorDoyle@moz-edrulj.static.monkeybrains.net) (Ping timeout: 121 seconds)
+[21:33:07] *** Joins: bytewise (bytewise@moz-mjih15.adsl.alicedsl.de)
+[21:35:05] *** Quits: Rym (y@moz-aun.38r.38.217.IP) (Ping timeout: 121 seconds)
+[21:36:24] <simukis> so, did we decide whether next is 1.2 or 2.0?
+[21:36:56] <simukis> (maybe we should just skip over to Rust 7.0?)
+[21:37:41] *** Quits: ncarrillo (textual@moz-mke7jn.cable.rcn.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[21:38:40] *** Joins: filsmick (filsmick@moz-vq1mm2.abo.wanadoo.fr)
+[21:40:06] *** Joins: ncarrillo (textual@moz-mke7jn.cable.rcn.com)
+[21:40:31] *** Quits: nodweber (nodweber@moz-knt.fgq.178.5.IP) (A TLS packet with unexpected length was received.)
+[21:40:43] *** Quits: killercup (killercup@moz-qj5qhi.dip0.t-ipconnect.de) (Quit: Bye)
+[21:41:12] <nrc> rovar: 1008 contributors according to GH
+[21:41:27] <nrc> Not sure if that is more or less than the official authors list
+[21:41:43] <nrc> I guess the true number is the union of those two lists, minus the dups
+[21:42:29] *** Quits: p1start (p1start@moz-nftjhe.org) (Ping timeout: 121 seconds)
+[21:42:47] <ato> jga: Oh you should’ve let me know, and I would’ve put you on the list!
+[21:43:31] *** Joins: p1start (p1start@moz-nftjhe.org)
+[21:45:22] *** Parts: anom (anhedonia@moz-4lmh4m.privacyfoundation.ch) ()
+[21:45:33] *** Quits: Astrum|Lap (Astrum|Lap@moz-7enfbr.co.comcast.net) (Client exited)
+[21:45:47] *** Joins: aepsil0n (eduard@moz-ob9p8k.hsi8.kabel-badenwuerttemberg.de)
+[21:45:49] *** Quits: aepsil0n (eduard@moz-ob9p8k.hsi8.kabel-badenwuerttemberg.de) (Quit: Leaving.)
+[21:46:15] *** Quits: eddyb (eddyb@moz-egg.q07.26.188.IP) (Ping timeout: 121 seconds)
+[21:46:32] *** Joins: nicknikolov (nicknikolov@moz-tn7.3ti.5.94.IP)
+[21:47:11] *** Quits: filsmick (filsmick@moz-vq1mm2.abo.wanadoo.fr) (Quit: )
+[21:48:41] <SimonSapin> brson: when http://devswag.com/products/rust-t-shirt is a sold out for a size, do you expect there will be another batch?
+[21:49:54] <brson> SimonSapin: yes i expect there will be another batch
+[21:50:03] <SimonSapin> cool
+[21:50:13] <brson> i don't even have one yet!
+[21:50:18] *** Quits: Kxepal (Miranda@moz-eduvui.pppoe.mtu-net.ru) (Ping timeout: 121 seconds)
+[21:50:21] <brson> there will be batches until brson gets a t-shirt
+[21:50:30] <SimonSapin> hehe
+[21:51:00] <SimonSapin> brson: are the sizes the same as the previous Rust t-shirt?
+[21:51:12] <brson> SimonSapin: yes
+[21:51:47] <dherman> SimonSapin: the challenge is that we have to order in batches so I have to be careful given that margins are super slim
+[21:51:57] <simias> so I'm probably in uncharted territories but I'm trying to use inline assembly on MIPS and I'm having some troubles
+[21:51:59] <dherman> And the up front cost is high
+[21:52:00] <simias> https://gist.github.com/simias/c820a81d4786002065c3
+[21:52:01] *** Joins: Kxepal (Miranda@moz-0e3gpc.pppoe.mtu-net.ru)
+[21:52:09] <simias> LLVM yells at me and I don't understand what it's expecting
+[21:52:12] <dherman> But I am working on figuring out the next order
+[21:52:22] <simias> I've tried replacing {a0} with {$a0} but it's still unhappy
+[21:52:29] <SimonSapin> dherman: makes sense
+[21:52:40] <aji> congrats on 1.0 today btw
+[21:52:53] *** Joins: Rym (y@moz-aun.38r.38.217.IP)
+[21:53:05] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[21:53:51] *** Quits: ebfull (ebfull@moz-2hf06a.co.comcast.net) (Connection closed)
+[21:53:53] *** Joins: gsingh93_ (gulshan@moz-qnbukr.mi.comcast.net)
+[21:54:48] *** Joins: ConnorDoyle (ConnorDoyle@moz-edrulj.static.monkeybrains.net)
+[21:55:31] *** Quits: ConnorDoyle (ConnorDoyle@moz-edrulj.static.monkeybrains.net) (A TLS packet with unexpected length was received.)
+[21:56:03] *** Joins: ebfull (ebfull@moz-2hf06a.co.comcast.net)
+[21:56:09] *** Quits: mattico (matt@moz-ejunpc.bff5.ebih.ea00.2607.IP) (Quit: Leaving)
+[21:56:42] *** Quits: swgillespie (swgillespie@moz-1i5.3un.220.167.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[21:57:06] *** Quits: nham (nham@moz-755.bu3.214.98.IP) (Ping timeout: 121 seconds)
+[21:59:27] *** Quits: bdero (bran@moz-mqs.7dh.189.18.IP) (Ping timeout: 121 seconds)
+[21:59:36] <SimonSapin> aturon: +1 on preferring async communication (re announcing subteams on discuourse)
+[21:59:43] *** Joins: swgillespie (swgillespie@moz-1i5.3un.220.167.IP)
+[22:00:50] *** bvssvni is now known as bvssvni_
+[22:01:14] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[22:01:14] *** ChanServ sets mode: +o pcwalton
+[22:04:09] *** Joins: nham (nham@moz-755.bu3.214.98.IP)
+[22:04:53] *** Quits: larhat1 (Adium@moz-vlo5br.cable.virginm.net) (Quit: Leaving.)
+[22:06:56] <huon> r? https://github.com/rust-lang/rust-www/pull/129
+[22:08:10] *** Quits: erickt (erickt@moz-l8ebtf.sfo1.mozilla.com) (Ping timeout: 121 seconds)
+[22:10:47] <dherman> SimonSapin: some sort of inventory bug -- not sold out! https://mobile.twitter.com/DevSwagShop/status/599335624483557376
+[22:10:53] <dherman> Act fast :)
+[22:11:10] <SimonSapin> ha!
+[22:12:23] *** Quits: nicknikolov (nicknikolov@moz-tn7.3ti.5.94.IP) (Connection closed)
+[22:12:38] <SimonSapin> ugh, 15$ shipping to France
+[22:13:14] *** Joins: erickt (erickt@moz-l8ebtf.sfo1.mozilla.com)
+[22:13:26] <SimonSapin> oh well
+[22:13:39] <nrc> SimonSapin: if we order to MV or SF, perhaps someone would be kind enough to bring them to Whistler?
+[22:13:45] *** Joins: dinfuehr (dinfuehr@moz-u4auem.highway.telekom.at)
+[22:13:55] <SimonSapin> nrc: that’s a good idea actually
+[22:14:14] <nrc> I imagine there are a few of us who would otherwise pay ridiculous deivery charges
+[22:14:29] *** Quits: nham (nham@moz-755.bu3.214.98.IP) (Ping timeout: 121 seconds)
+[22:15:46] <jga> ato: next time!, hope you had a great time there in the meetup
+[22:16:37] *** Quits: jevin (jevin@moz-sra.ovp.12.72.IP) (Connection closed)
+[22:17:48] *** Quits: dinfuehr (dinfuehr@moz-u4auem.highway.telekom.at) (Ping timeout: 121 seconds)
+[22:18:42] *** Joins: jevin (jevin@moz-sra.ovp.12.72.IP)
+[22:20:43] *** Joins: summerlight (summerlight@moz-99k.2mj.130.121.IP)
+[22:21:10] <SimonSapin> nrc: oh well, I paid the ridiculous charge
+[22:22:48] *** Quits: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de) (Ping timeout: 121 seconds)
+[22:24:50] *** Quits: gsingh93_ (gulshan@moz-qnbukr.mi.comcast.net) (Ping timeout: 121 seconds)
+[22:25:36] *** Joins: mib_jt53j1 (Mibbit@moz-juv.9o3.252.72.IP)
+[22:26:23] <simias> okay, I was just using the wrong format for the registers, it doesn't support the usual aliases
+[22:26:36] <simias> next question: I tried enabling -C lto and I get this error:
+[22:26:37] <simias> error: missing compressed bytecode in /home/simias/src/psx-sdk-rs/runtime/libpsx.rlib
+[22:26:46] <simias> what does it mean?
+[22:27:21] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[22:28:36] *** Quits: ncarrillo (textual@moz-mke7jn.cable.rcn.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[22:31:39] *** Joins: nham (nham@moz-755.bu3.214.98.IP)
+[22:31:54] *** Quits: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua) (Ping timeout: 121 seconds)
+[22:33:04] *** Quits: nham (nham@moz-755.bu3.214.98.IP) (Quit: leaving)
+[22:38:24] *** Joins: genbattle (genbattle@moz-r09mao.xtra.co.nz)
+[22:38:33] <doener> acrichto: what did you mean by the base pointer thing in gh25434?
+[22:38:33] <[o__o]> Allow for better optimizations of iterators for zero-sized types: https://github.com/rust-lang/rust/pull/25434
+[22:38:40] *** Joins: ncarrillo (textual@moz-mke7jn.cable.rcn.com)
+[22:39:15] <acrichto> doener: oh just in the sense that the "base pointer" of arithmetic comes from the slice itself, but we could ignore that entirely and just manufacture one out of thin air (e.g. 0x1)
+[22:42:14] <doener> acrichto: I didn't want to tie the intrinsic to zero-sized types or "meaningless" pointers, but eddyb suggested something along the lines of translating all pointers to zero-sized items as 0x1. I didn't know where/how to implement that though. Might want to do that later, as using 0x1 instead of the actual pointer for the "start" pointer in the iterator is indeed important for best optimizations
+[22:45:30] *** Joins: nicknikolov (nicknikolov@moz-tn7.3ti.5.94.IP)
+[22:45:49] <cmr> Does anyone recall which RFC or other document laid out the precise Deref algorithm? (nmatsakis? aturon?)
+[22:46:07] <Luqman> cmr: Deref coercions?
+[22:46:20] <huon> cmr: I don't think there is one
+[22:46:30] *** Joins: larhat1 (Adium@moz-vlo5br.cable.virginm.net)
+[22:46:56] <huon> cmr: although I did write http://stackoverflow.com/a/28552082/1256624 based off the source (and got niko's feedback)
+[22:47:11] <cmr> Luqman: that's the only thing I could find, but I feel like I remember seeing (and commenting on) a much longer algorithm.
+[22:47:16] <cmr> Maybe it was from a proposal that got dropped.
+[22:47:27] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[22:47:45] <Luqman> ah, well huon's link is pretty comprehensive it looks like
+[22:47:56] *** Quits: ryanhieb_ (ryanhiebert@moz-nsd5kl.ks.cox.net) (Connection closed)
+[22:49:11] <cmr> Oh I think I was thinking of DST coercions, not Deref coercions.
+[22:49:15] <cmr> Yeah definitely.
+[22:49:17] <aturon> cmr: huon: that spec is correct
+[22:49:39] <cmr> aturon: thanks!
+[22:50:30] <acrichto> doener: so it's not undefined beahvior to use 0x1 and then gep inbounds on it?
+[22:50:32] <aturon> (one open question is how/whether we might want upcasting coercions to play into this as well -- right now we have methods on e.g. Box<Any> and separately Box<Any + Send> because dispatch doesn't try to upcast away the + Send)
+[22:50:45] <acrichto> doener: I figured that .iter()/.iter_mut() could just ignore the pointer in &self and always manufacture 0x1 for 0-sized types
+[22:52:08] <Eridius> acrichto: I thought it was in fact undefined behavior to upse gep inbounds to construct a pointer that's out of bounds of the object, even if you never dereference it
+[22:52:17] <doener> acrichto: with inbounds gep, it's undefined, but should be fine without inbounds
+[22:52:27] <Eridius> (which would suggest that it's undefined behavior to use gep on a garbage pointer because there's no valid bounds)
+[22:52:39] <doener> acrichto: that's what that PR does
+[22:52:40] <acrichto> doener: ah ok, then it wouldn't help much for this patch, I was hoping to avoid adding that intrinsic just yet, but oh well!
+[22:52:49] <cmr> Eridius: it's up to the address space to define what that means.
+[22:52:57] *** Joins: achanda (achanda@moz-m7s4h8.static.monkeybrains.net)
+[22:54:21] *** Joins: eddyb (eddyb@moz-egg.q07.26.188.IP)
+[22:54:44] *** Quits: munksgaard (munksgaard@moz-478pev.u.parknet.dk) (Ping timeout: 121 seconds)
+[22:54:50] *** kimundi is now known as zz_kimundi
+[22:57:35] *** Joins: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[22:57:54] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (A TLS packet with unexpected length was received.)
+[22:58:02] *** Joins: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[22:58:06] *** Quits: summerlight (summerlight@moz-99k.2mj.130.121.IP) (Ping timeout: 121 seconds)
+[22:59:31] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[23:00:21] *** Quits: kmcguire (kmcguire@moz-326ho1.ssessess.es) (Ping timeout: 121 seconds)
+[23:01:43] *** Quits: brson (brson@moz-u3dg2t.sfo1.mozilla.com) (Ping timeout: 121 seconds)
+[23:01:46] *** Joins: achanda_ (achanda@moz-m7s4h8.static.monkeybrains.net)
+[23:01:53] *** Joins: brson (brson@moz-u3dg2t.sfo1.mozilla.com)
+[23:01:54] *** ChanServ sets mode: +o brson
+[23:02:06] *** Quits: harrison_ (harrisoncla@moz-7hfo21.eastlink.ca) (Connection closed)
+[23:03:42] <doener> huon: you refactored me into doliash
+[23:04:22] <Eridius> incidentally, someone I know just remarked that they wish the Mac pkg installer was signed
+[23:04:58] <Eridius> (using Apple's code signature stuff, which probably requires having a Mac dev account, but Mozilla has one of those already (Firefox is signed))
+[23:05:08] *** Quits: achanda (achanda@moz-m7s4h8.static.monkeybrains.net) (Ping timeout: 121 seconds)
+[23:05:25] *** Joins: adu (ajr@moz-0foa9t.md.comcast.net)
+[23:05:40] *** Quits: brson (brson@moz-u3dg2t.sfo1.mozilla.com) (Quit: leaving)
+[23:05:56] *** Quits: achanda_ (achanda@moz-m7s4h8.static.monkeybrains.net) (Ping timeout: 121 seconds)
+[23:06:10] <Eridius> also, it might be worth trying to come up with some pre-baked installers for some less-popular platforms for stable releases
+[23:06:14] <Eridius> things like Raspberry Pi
+[23:06:19] <Eridius> (my friend is trying to figure out how to get rustc on his Pi)
+[23:06:30] <huon> doener: arg, sorry!
+[23:06:38] <Eridius> (he's been compiling a cross-compiler for it, but for some reason wants to build directly on it)
+[23:06:42] *** Joins: James (quassel@moz-225vcm.range86-148.btcentralplus.com)
+[23:08:15] <doener> huon: np, gave me a laugh :-)
+[23:09:53] *** Joins: brson (brson@moz-u3dg2t.sfo1.mozilla.com)
+[23:09:53] *** ChanServ sets mode: +o brson
+[23:10:28] <kmc> pre-baked raspberry pi w/ rust sprinkled on top
+[23:10:35] *** Joins: aldeka (quassel@moz-qqf.of6.243.162.IP)
+[23:12:03] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (A TLS packet with unexpected length was received.)
+[23:12:03] *** Quits: mib_jt53j1 (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[23:12:35] *** Joins: FreeFull (freefull@moz-f65lp3.skybroadband.com)
+[23:12:41] *** Parts: FreeFull (freefull@moz-f65lp3.skybroadband.com) (""Real stupidity beats artificial intelligence every time." - Terry Pratchett")
+[23:12:46] <huon> I feel like I should blog/write something since 1.0 was release, but I dunno what
+[23:12:47] <huon> any ideas?
+[23:13:46] <carllerche> I feel like I should write a blog post period... but i am terrible
+[23:13:50] *** Joins: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de)
+[23:14:31] *** Joins: dinfuehr (dinfuehr@moz-u4auem.highway.telekom.at)
+[23:17:44] *** Quits: adu (ajr@moz-0foa9t.md.comcast.net) (Client exited)
+[23:17:53] *** Joins: harrisonclarke (harrisoncla@moz-7hfo21.eastlink.ca)
+[23:18:01] <unwound> Congrats on 1.0
+[23:18:16] *** Quits: proc (proc@moz-28o344.dip0.t-ipconnect.de) (Quit: Gotta eat my pizza)
+[23:18:40] *** Quits: dinfuehr (dinfuehr@moz-u4auem.highway.telekom.at) (Ping timeout: 121 seconds)
+[23:19:05] *** Quits: duesenfranz_ (jona@moz-711djm.tirol.surfer.at) (Client exited)
+[23:20:01] *** Quits: ptalbot (ptalbot@moz-j4gnuh.fbx.proxad.net) (Ping timeout: 121 seconds)
+[23:24:05] <doener> pcwalton: are you still working on non-zeroing?
+[23:24:12] <pcwalton> no, but pnkfelix is
+[23:24:19] <doener> ah, cool
+[23:26:55] *** Quits: nicknikolov (nicknikolov@moz-tn7.3ti.5.94.IP) (Connection closed)
+[23:27:21] *** Quits: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de) (Ping timeout: 121 seconds)
+[23:29:06] *** Quits: playbot (playbot@moz-1vk5qd.compute.amazonaws.com) (Connection closed)
+[23:29:06] *** Quits: playbot-mini (playbot-min@moz-1vk5qd.compute.amazonaws.com) (Connection closed)
+[23:29:09] *** Joins: playbot (playbot@moz-1vk5qd.compute.amazonaws.com)
+[23:29:09] *** Joins: playbot-mini (playbot-min@moz-1vk5qd.compute.amazonaws.com)
+[23:29:36] <acrichto> playbot: VERSION
+[23:29:37] -playbot- "rustc 1.0.0 (a59de37e9 2015-05-13) (built 2015-05-14)"
+[23:29:40] *** Joins: jgallagher (john@moz-6ge.dhn.131.24.IP)
+[23:30:58] *** Joins: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[23:31:05] *** Joins: nicknikolov (nicknikolov@moz-tn7.3ti.5.94.IP)
+[23:31:44] *** Quits: brson (brson@moz-u3dg2t.sfo1.mozilla.com) (Quit: leaving)
+[23:34:26] *** Quits: harrisonclarke (harrisoncla@moz-7hfo21.eastlink.ca) (Connection closed)
+[23:35:30] <nrc> can anyone help me with a makefile question?
+[23:35:33] <nrc> I have $(CARGO) build
+[23:35:37] <huon> unwound: you're bkoporoff, right?
+[23:36:02] <nrc> as a target, but make interprests build as a target rather than a literal (please excuse nomenclature mistakes)
+[23:36:12] <nrc> so searches for `build` which it doesn't find
+[23:36:42] <nrc> how do I get it to just execute `cargo build` (assuming $CARGO == cargo)?
+[23:36:54] <Eridius> I'm confused. Where are you putting this?
+[23:37:20] <Eridius> are you saying something like `all: $(CARGO) build`?
+[23:37:28] <nrc> yes, exactly
+[23:37:37] *** Joins: pnkfelix (pnkfelix@moz-eljppb.fbx.proxad.net)
+[23:37:37] *** ChanServ sets mode: +o pnkfelix
+[23:37:46] <huon> also, what's jakub-'s irc nick?
+[23:38:01] <Eridius> you should say something like `all: target/debug/foo` and then have a separate `target/debug/foo:\n\t$(CARGO) build`
+[23:38:25] <Eridius> or you could say `all:\n\t$(CARGO) build`
+[23:38:32] <Eridius> (but I like being a little more explicit in my makefiles)
+[23:38:41] <Eridius> note that if you do use target/debug/foo you'll want to mark it as .PHONY as well
+[23:38:46] <Eridius> `.PHONY: target/debug/foo`
+[23:38:55] <Eridius> unless you want to try and build a dependencies file so Makefile knows when it needs to be rebuilt
+[23:39:02] <nrc> I have the \n\t in there and it still looks for build target
+[23:39:44] <Eridius> when you say `all: foo bar` the "foo bar" are dependencies. If you say `all:\n\tfoo bar` the "foo bar" is a command. If make is looking for a target named build then you probably listed it as a dependency
+[23:40:19] <Eridius> nrc: here's an example of a Makefile I have for one of my projects: https://github.com/kballard/alfred-unicode-info/blob/master/Makefile
+[23:40:28] <nrc> Eridius: verbatim, I have https://pastebin.mozilla.org/8833686
+[23:41:10] <Eridius> nrc: that will try and execute the line `$(CARGO) build`, which sounds fine, except you haven't defined CARGO anywhere
+[23:41:10] <nrc> oh wait
+[23:41:14] <Eridius> so it will actually execute ` build`
+[23:41:15] <nrc> I'm being dumb
+[23:41:27] <nrc> I am running this from a script and
+[23:41:33] <nrc> I fogot to export CARGO
+[23:41:36] * Eridius chuckles
+[23:41:39] <nrc> I just set it
+[23:41:42] <nrc> d'oh
+[23:41:51] <nrc> thanks for helping, anyway
+[23:41:52] <Eridius> the error message presumably was telling you that it couldn't find a binary named `build` to execute, rather than not being able to find a Makefile target
+[23:42:39] *** Quits: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se) (Ping timeout: 121 seconds)
+[23:43:50] *** Joins: ConnorDo_ (ConnorDoyle@moz-hud.3ra.116.199.IP)
+[23:45:57] <huon> thoughts? https://github.com/rust-lang/rust-www/pull/131
+[23:46:55] *** Quits: ConnorDoyle (ConnorDoyle@moz-hud.3ra.116.199.IP) (Ping timeout: 121 seconds)
+[23:47:06] *** chmanchester|afk is now known as chmanchester
+[23:47:14] <nrc> I would just put the irc nick in brackets, rather than have it on hover
+[23:47:26] <Eridius> huon: :+1:
+[23:47:55] <Eridius> nrc: the names are already using the entire horizontal space alloted to each headshot. Adding a second line of text for IRC nick wouldn't look particularly good
+[23:47:57] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[23:48:10] <nrc> true
+[23:48:29] <nrc> and having a look at the rendered page, the on hover bahviour is more apparent than I expected
+[23:48:57] <nrc> might be worth saying that its the irc nick as opposed to the GH id, since it is different in some cases
+[23:49:12] <Eridius> I also like it because if you don't know who someone is, your inclination is to click on them for info, and this way it's like "nope, you don't have to click, here's who they are" :)
+[23:49:15] <nrc> but +1 overall
+[23:50:05] <huon> nrc: hm, I'm not sure how to make it say "irc: ..." in a dry way
+[23:50:25] *** Joins: bdero (bran@moz-lbs.91h.47.73.IP)
+[23:50:33] <nrc> maybe just a note somewhere?
+[23:53:12] <huon> updated with a note in the into paragraph
+[23:53:32] <huon> nrc: ^
+[23:54:13] <nrc> lgtm :-)
+[23:54:34] <nrc> huon: what was the exact syntax for cargo rustc you mentioned yesterday? --help is not being helpful

@@ -1,0 +1,1084 @@
+[00:00:03] *** cgaebel is now known as cgaebel|afk
+[00:00:11] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[00:02:31] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[00:07:53] <erickt> dbaupp / brson: ping
+[00:08:54] *** cgaebel|afk is now known as cgaebel
+[00:09:02] <dbaupp> erickt: pong
+[00:09:25] <erickt> dbaupp: good afternoon! I just finished up another hash variant: https://gist.github.com/erickt/8904646
+[00:09:42] <erickt> this one supports a hasher doing custom things for uints and other primitive types
+[00:10:01] <dbaupp> good morning :P (looking now)
+[00:10:16] <erickt> great
+[00:10:28] <erickt> I'm starting to get happier with this direction
+[00:10:54] *** Quits: tjc (tjc@4104E3FB.CB3251F2.284344F5.IP) (Ping timeout)
+[00:11:02] <dbaupp> it seems reasonable to me... I'll have to think about any tradeoffs for a bit
+[00:11:28] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[00:11:28] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/mVUIAA
+[00:11:28] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[00:11:35] <dbaupp> erickt: ah, minor thing: I'd prefer hash_slice to hash_vec
+[00:11:42] <dbaupp> and doesn't it need to input the length?
+[00:11:56] <dbaupp> (similarly, doesn't str need the 0xff thing?)
+[00:12:22] <erickt> it is unfortunate how it'll force adding 1 or 2 new typarams to things though
+[00:12:43] <erickt> I couldn't get the default type parameters to do anything for me
+[00:12:51] <dbaupp> :(
+[00:12:54] <dbaupp> bugs?
+[00:13:28] <cgaebel> could we do a vtable lookup for hashing? it would reduce non-useful code bloat (for different hashing algorithms), and a vtable lookup is a LOT cheaper than a hash
+[00:13:49] <erickt> dbaupp: possibly. The odd thing is that if we need to call hash, we need `<K: Eq + Hash<S>, V, S, H: Hasher<S>>`
+[00:14:09] <dbaupp> cgaebel: not for a super-fast fixed integer hash
+[00:14:18] <dbaupp> erickt: o_O
+[00:14:25] <erickt> dbaupp: oh, forgot about the 0xff for strings
+[00:14:48] <dbaupp> S would be SipHash by default, right? and H would be?
+[00:15:20] <cgaebel> dbaupp: it just worries me. I guess I'll try factoring out a lot of hashmap to be hashing-algorithm independent. I'm already headed down that route with some of my latest un-pushed changes.
+[00:15:34] <erickt> dbaupp: updated the gist to add your changes
+[00:16:27] <erickt> dbaupp: S is the hash state. For streams, it's an impl of `Stream`. H is an impl of `Hasher<S>`
+[00:16:35] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[00:16:35] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/FeCZsQ
+[00:16:35] <ghrust> 13rust/06auto 143062d0f 15Brian Anderson: mk: Replace 'compile_and_link' with 'oxidize'
+[00:16:35] <ghrust> 13rust/06auto 1435b4115 15bors: auto merge of #12126 : brson/rust/oxidize_mk, r=alexcrichton...
+[00:16:36] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[00:16:37] <dbaupp> cgaebel: theoretically it would just be changed to be `self.hasher.hash(&value)` instead of `sip_hash(&value)` (or whatever it is now)
+[00:16:39] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[00:16:39] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/rITPjA
+[00:16:39] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[00:17:28] <cgaebel> why does it need a 'hasher'? isn't it stateless?
+[00:17:36] <dbaupp> erickt: and so what are S and H for the default HashMap?
+[00:17:36] <erickt> cgaebel: check out https://gist.github.com/erickt/8904646, it shows how you can reuse HashMap with custom hashers
+[00:18:05] <erickt> dbaupp: it would be S = SipStream, H: SipHasher
+[00:18:17] <dbaupp> hm...
+[00:18:21] <erickt> I haven't updated my PR to use this approach yet though
+[00:18:27] <dbaupp> it seems weird to need it duplicated
+[00:18:29] * dbaupp thinks
+[00:19:21] <erickt> I'd love for `Hash` to be independent of the hasher `State`, but I haven't yet figured out how to do that yet
+[00:19:54] <dbaupp> I don't quite understand why the Hasher trait is necessary
+[00:20:06] <cgaebel> it just adds 'yet another word' to the hashtable for no immediately obvious benefit
+[00:20:24] <dbaupp> can't Stream just be Hasher?
+[00:20:26] <erickt> cgaebel: it's the same overhead we have now
+[00:20:52] <dbaupp> cgaebel: can use zero sized types for things that are truly stateless
+[00:20:54] <erickt> cgaebel: std::hashmap::HashMap already has 2 words for the Sip key0 and key1 values
+[00:21:11] <cgaebel> erickt: oh so those are for the keys?
+[00:21:17] <cgaebel> erickt: that makes sense then.
+[00:21:21] <erickt> dbaupp: the Hasher trait is needed for HashMap. Something needs to make the state that's threaded through the things we are hashing
+[00:21:47] <dbaupp> erickt: yeah, but why does it need to be separate to Stream?
+[00:22:22] <erickt> hm. Maybe we wouldn't if we have a .reset() method on the Hasher
+[00:23:09] <dbaupp> anyway, I've got to focus on other things for a bit; I'll keep thing about it.
+[00:23:51] <erickt> dbaupp: .reset() would be problematic if we ever add a concurrent hashmap though
+[00:23:57] <cgaebel> does rust do struct reordering?
+[00:25:21] <erickt> cgaebel: I know if the struct is exported they are compatible with C struct layout. I'm not sure what llvm will do if a struct for non-exported structs
+[00:25:52] <cgaebel> erickt: alright. I'll assume it doesn't then and reorder myself.
+[00:31:10] *** Joins: lpy (lpy@AEF55484.D19CEE75.952560D4.IP)
+[00:32:55] <erickt> dbaupp: wootI I got default params to work! https://gist.github.com/erickt/8904646
+[00:33:14] *** Quits: lpy (lpy@AEF55484.D19CEE75.952560D4.IP) (Ping timeout)
+[00:35:28] <dbaupp> erickt: \o/
+[00:36:15] <erickt> dbaupp: and this looks like the old hash usage: https://gist.github.com/erickt/8904646#file-hash-rs-L458 
+[00:37:17] <dbaupp> erickt: neat
+[00:38:39] <erickt> dbaupp: do you think it's worth reviving generic hash return types? so crc32 could return a 32 bit value?
+[00:39:31] <dbaupp> erickt: I guess? if it's not too ugly
+[00:39:40] <cgaebel> erickt: what's wrong with u64?
+[00:39:54] <dbaupp> cgaebel: some hashes only need u32
+[00:40:03] <dbaupp> and some want u128 (well, (u64, u64))
+[00:40:09] <dbaupp> etc.
+[00:40:18] <cgaebel> eeh
+[00:40:22] <cgaebel> I guess
+[00:40:33] <erickt> or more. this framework could support md5, sha, etc
+[00:40:39] <dbaupp> hashmap would only request u64
+[00:40:59] <dbaupp> and non u64 hashes would require wrappers that coerced/truncated to u64
+[00:41:46] <erickt> now that i got default typarams to work, I'll see if I can get that return type to work
+[00:41:47] <cgaebel> makes sense
+[00:42:02] <erickt> now i must run to the supermarket :)
+[00:42:12] *** Quits: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[00:44:21] *** Quits: eibwen (kvirc@moz-FBCDE62C.dip0.t-ipconnect.de) (Ping timeout)
+[00:45:26] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[00:48:21] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[00:48:21] *** ChanServ sets mode: +ao dherman dherman
+[00:52:34] <brson> acrichto: is https://github.com/mozilla/rust/issues/8925 done?
+[00:53:21] <acrichto> brson: kinda, it's not very fancy in that it can only do A records and that's about it
+[00:53:37] <acrichto> brson: but any more would require us to write a DNS implementation ourselves I think
+[00:54:11] *** Quits: vadimcn (chatzilla@FB06B64.76F9E272.DA40C4B3.IP) (Input/output error)
+[00:54:28] *** Joins: vadimcn (chatzilla@FB06B64.76F9E272.DA40C4B3.IP)
+[00:56:08] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[00:56:51] *** kimundi is now known as zz_kimundi
+[01:00:14] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[01:02:32] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[01:08:10] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[01:11:18] <cmr> If anyone wants to play with sanitizers, my branch is https://github.com/cmr/rust/tree/sanitize
+[01:11:23] <cmr> I can't seem to actually get it to emit the attributes
+[01:11:29] <cmr> I think I might just be adding it in the wrong place
+[01:18:49] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Connection reset by peer)
+[01:19:23] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[01:20:01] *** Quits: lkuper (lkuper@moz-AD4C50F5.dhcp-bl.indiana.edu) (Quit: lkuper)
+[01:21:49] <acrichto> cmr: I was talking to sunfish the other day and I think that the sanitize_{address,thread,memory} attributes are only information to the optimizers to not perform some optimizations on those functions
+[01:22:08] <acrichto> it sounded like it still required extra compiler instrumentation to make use of the sanitization (unsure how though)
+[01:22:22] <cmr> acrichto: I checked the LLVM source and I think that is true.
+[01:22:47] <cmr> I'm not sure what other instrumentation we could need.
+[01:22:56] <cmr> It wasn't obvious from my look-through of the source
+[01:24:08] <acrichto> yeah I'd hope that there was documentation somewhere
+[01:24:12] <acrichto> but that may bee too wishful
+[01:24:21] <cmr> I've found exactly 0
+[01:24:42] <acrichto> :(
+[01:26:40] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[01:26:40] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/FeCZsQ
+[01:26:41] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[01:28:44] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[01:31:32] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[01:31:32] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/MRyy3A
+[01:31:32] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[01:31:56] *** Joins: lpy (lpy@AEF55484.D19CEE75.952560D4.IP)
+[01:33:58] *** Quits: lpy (lpy@AEF55484.D19CEE75.952560D4.IP) (Ping timeout)
+[01:47:39] <cmr> acrichto: did we decide that address is never significant?
+[01:47:44] <cmr> address of a function, that is.
+[01:48:38] <acrichto> I thought we decided "no"
+[01:50:48] <aatch> you can take the address of a function, right?
+[02:00:15] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[02:02:36] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[02:04:32] <acrichto> wycats: it sounds like you'd want a set_nonblock() and is_nonblock() for streams
+[02:04:43] <acrichto> wycats: and then we'd just propagate up EWOULDBLOCK
+[02:04:51] <acrichto> whoa wrong channel
+[02:04:58] <cmr> too many channels!
+[02:32:41] *** Joins: lpy (lpy@AEF55484.D19CEE75.952560D4.IP)
+[02:34:31] <cmr> dbaupp: thanks for black_box and the iter changes.
+[02:34:42] <dbaupp> cmr: np
+[02:34:43] *** Quits: lpy (lpy@AEF55484.D19CEE75.952560D4.IP) (Ping timeout)
+[02:41:31] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[02:41:31] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/hraZzQ
+[02:41:31] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[02:46:28] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[02:46:29] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/NVdqiQ
+[02:46:29] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[02:46:32] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[02:46:32] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/M6JoKQ
+[02:46:32] <ghrust> 13rust/06auto 1466c036c 15Bruno de Oliveira Abinader: Fixed a typo in list's find() documentation.
+[02:46:32] <ghrust> 13rust/06auto 14d0affa5 15bors: auto merge of #12131 : brunoabinader/rust/list-find-doc-typo, r=alexcrichton...
+[02:46:32] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[02:55:49] *** Joins: lpy (lpy@AEF55484.D19CEE75.952560D4.IP)
+[03:00:10] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[03:02:34] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[03:18:59] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[03:38:50] *** Quits: zz_kimundi (kimundi@moz-4FC677A6.dip0.t-ipconnect.de) (Ping timeout)
+[03:42:32] *** Joins: zz_kimundi (kimundi@moz-44C5A950.dip0.t-ipconnect.de)
+[03:42:33] *** zz_kimundi is now known as kimundi
+[03:43:21] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[03:47:41] *** Joins: brson (brson@6A848D32.C1B840DD.76F66111.IP)
+[03:47:41] *** ChanServ sets mode: +qo brson brson
+[03:49:20] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[03:49:20] *** ChanServ sets mode: +ao dherman dherman
+[03:54:24] <wycats> acrichto: channel, such ambiguity
+[03:54:37] <wycats> channel.set_nonblock()
+[03:56:35] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[03:56:35] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/M6JoKQ
+[03:56:35] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[04:00:08] *** Quits: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[04:01:32] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[04:01:32] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/UlWTnQ
+[04:01:32] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[04:01:32] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[04:01:32] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/GfArJw
+[04:01:32] <ghrust> 13rust/06auto 1463b1d78 15Bruno de Oliveira Abinader: Implement List's any() function...
+[04:01:32] <ghrust> 13rust/06auto 145d50caa 15bors: auto merge of #12132 : brunoabinader/rust/list-matches-predicate, r=alexcrichton...
+[04:01:33] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[04:07:47] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[04:10:18] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[04:12:58] *** Quits: cgaebel (clark@ADA4DDE2.290DF317.EE6E63A5.IP) (Ping timeout)
+[04:26:27] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[04:28:00] *** Quits: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com) (Client exited)
+[04:29:27] *** Joins: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com)
+[04:41:29] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[04:41:29] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/VTHpXQ
+[04:41:29] <ghrust> 13rust/06auto 14b0ef791 15Flavio Percoco: Make `if` and `while` conditions temporary...
+[04:41:29] <ghrust> 13rust/06auto 1447e1445 15bors: auto merge of #12134 : FlaPer87/rust/temporary-conditions, r=nikomatsakis...
+[04:41:29] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[04:41:32] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[04:41:32] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 145d50caa to 14d0affa5: 02http://git.io/N3iJvQ
+[04:41:32] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[04:49:52] *** Quits: vadimcn (chatzilla@FB06B64.76F9E272.DA40C4B3.IP) (Ping timeout)
+[04:50:31] *** Quits: new_one (new_one@C0EFC43B.8BFB2575.B3C0173E.IP) (Quit: leaving)
+[04:50:44] *** Joins: vadimcn (chatzilla@FB06B64.76F9E272.DA40C4B3.IP)
+[04:51:03] *** Quits: Yurume (Yurume@A826BD81.8A0DEF81.38747683.IP) (Ping timeout)
+[04:51:05] *** Joins: Yurume (Yurume@A826BD81.8A0DEF81.38747683.IP)
+[04:58:28] *** Joins: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[04:59:51] *** Quits: dbaupp (Thunderbir@2702835C.D5A1DCF.37681C44.IP) (Quit: dbaupp)
+[05:00:10] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[05:00:22] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Ping timeout)
+[05:02:39] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[05:03:24] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[05:13:08] *** Quits: zimbabao (rajaram@A4B9C314.E11C2288.D2D1FAF0.IP) (Ping timeout)
+[05:19:17] *** Quits: canhtak (canhtak@moz-46C3B4C8.wl.t.ulaval.ca) (Quit: canhtak)
+[05:20:56] *** Quits: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com) (Ping timeout)
+[05:25:40] *** Quits: brson (brson@6A848D32.C1B840DD.76F66111.IP) (Ping timeout)
+[05:28:14] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[05:28:14] *** ChanServ sets mode: +qo brson brson
+[05:35:37] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[05:36:50] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[05:46:32] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[05:46:32] *** ChanServ sets mode: +ao dherman dherman
+[05:50:24] *** Joins: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[05:51:33] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[05:51:33] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/VTHpXQ
+[05:51:33] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[05:56:30] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[05:56:30] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/90IUuw
+[05:56:30] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[05:56:30] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[05:56:30] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/zxPpHw
+[05:56:30] <ghrust> 13rust/06auto 14882e2c3 15Alex Crichton: Fix the signature of CreateSymbolicLinkW...
+[05:56:30] <ghrust> 13rust/06auto 145bad63c 15bors: auto merge of #12136 : alexcrichton/rust/issue-12123, r=brson...
+[05:56:31] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[06:06:40] *** Joins: zimbabao (rajaram@47769425.AE842F9B.81C3DAA1.IP)
+[06:16:35] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[06:18:40] *** Joins: NiccosSystem (NiccosSyst@AB1AFDE.FC7B0C35.A7597CB6.IP)
+[06:31:08] *** Joins: dbaupp (Thunderbir@moz-25BBAF91.lns20.syd6.internode.on.net)
+[06:37:37] <nrc> acrichto: ping
+[06:45:25] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: sleep)
+[06:50:11] <acrichto> nrc: pong
+[06:54:25] <nrc> hi acrichto, I had a question about resolve/privacy - for imports the algorithm seems to be that we find the definition they refer to and make sure we can see it in the privacy check. But if the import is not a pub use (just a use) and is not referring to an extern mod, then we  also set the last_private info for the import to its definitin. Is that just an optimisation, or is it part of the...
+[06:54:26] <nrc> ...privacy specification?
+[06:55:26] <acrichto> nrc: hm, I remember using the last_private map in order to determine whether a path is valid in privacy
+[06:55:36] <acrichto> I forget the exact details though, is this a second of code?
+[06:56:05] <nrc> a second?
+[06:57:55] *** Joins: rwt (rwt@F66A57C6.82A0B0FA.51B6877.IP)
+[06:58:09] *** Quits: rwt_ (rwt@moz-59AFDDF4.dhcp-bl.indiana.edu) (Ping timeout)
+[07:00:10] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[07:02:34] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[07:02:49] *** Quits: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[07:06:29] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[07:06:29] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/zxPpHw
+[07:06:29] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[07:11:26] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[07:11:26] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/mdYflA
+[07:11:26] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[07:11:28] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[07:11:28] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/-D51Jg
+[07:11:28] <ghrust> 13rust/06auto 141b77331 15Brian Anderson: std: Stop parameterizing some memcpy functions over RawPtr...
+[07:11:28] <ghrust> 13rust/06auto 1407c5e5d 15Brian Anderson: std: Clean up the swap function a little
+[07:11:29] <ghrust> 13rust/06auto 14f3a87a7 15bors: auto merge of #12143 : brson/rust/swap, r=alexcrichton...
+[07:11:31] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[07:32:43] <acrichto> nrc: sry a section of code
+[07:32:51] <acrichto> I'm real good at typing soemtimes
+[07:35:31] <nrc> acrichto: https://github.com/mozilla/rust/blob/master/src/librustc/middle/resolve.rs#L2467 and the rest of that function above it
+[07:35:57] <nrc> used_public = used_reexport || used_public
+[07:37:44] <nrc> used_rexeport is true if the use item we are examining points to another `use` and used_public is true if it is a `pub use` or points at something via an extern mod
+[07:48:05] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[07:51:13] *** Joins: ssira_ (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[07:51:18] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Ping timeout)
+[08:00:06] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[08:02:31] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[08:02:36] <acrichto> nrc: ah sorry I keep getting distracted
+[08:03:04] <nrc> no worries, me too - trying to setup my new machine - total pita
+[08:03:10] <acrichto> the basic idea is that each path has some number of components, and it's trying to keep track of the "last private thing" used in that path
+[08:03:24] <acrichto> you can't go froma  definition up the tree b/c you may not go through teh reexports
+[08:03:42] <acrichto> so the used_public means that you "used a public path component somehow"
+[08:03:56] <acrichto> where if you did the last private thing remains the same, and if you didn't the new private thing is what you're currently looking at
+[08:04:11] <acrichto> "using a public thing" is defined as using a reexport (pub use) or the thing being public already (pub fn)
+[08:04:19] *** Quits: rwt (rwt@F66A57C6.82A0B0FA.51B6877.IP) (Quit: Leaving)
+[08:04:54] <sfackler> acrichto: how crazy/feasible would it be to add an intrinsic to skip calling a type's `Drop` impl but still running the destructors for all fields?
+[08:05:24] <acrichto> sfackler: seems dubious, what for?
+[08:05:26] <cmr> sfackler: wouldn't that just be let Struct { field, field2, field3 } = value;
+[08:05:44] <acrichto> I'm not sure you can destructure a struct with a destructor
+[08:05:47] <acrichto> (for that reason)
+[08:05:47] <sfackler> cmr: you can't destruct types with destructors
+[08:05:50] <cmr> ah
+[08:05:53] <cmr> makes a lot of sense.
+[08:06:10] <sfackler> acrichto: RAII-y types where the cleanup can fail
+[08:06:47] <sfackler> I think a decent solutino is to have the destructor fail on errors, and have a separate `fn finish(self) -> Result<(), Erorr>` function that returns an error instead
+[08:06:50] <acrichto> sfackler: if you fail!() at the beginning of a destructor, you've described today's current behavior
+[08:07:04] <acrichto> for I/O?
+[08:07:33] <sfackler> i'm thinking about it in terms of rust-postgres, but the stdlib IO library has the same issue
+[08:07:57] <acrichto> why would you cancel the destructor?
+[08:08:00] <sfackler> right now I've added a `finished: bool` field to the type that the destructor checks and `finish` sets, but it'd be nice to not have to add it
+[08:08:02] <acrichto> wouldn't it just be self.close() ?
+[08:08:14] <acrichto> oh I see what you mean
+[08:08:24] <acrichto> yeah that does seem semi-ugly
+[08:08:33] <cmr> acrichto: if you see strcat, can you ask him what we need to do to get good sanitizer support?
+[08:08:44] *** Joins: eddyb (eddy@moz-92B95652.residential.rdsnet.ro)
+[08:08:45] <acrichto> fn finish(self) -> Result { task::try(proc() { drop(self) }) }
+[08:08:55] <acrichto> cmr: sure
+[08:08:59] <cmr> thanks
+[08:09:01] <sfackler> acrichto: D:
+[08:09:14] <acrichto> lol
+[08:09:47] <sfackler> a fail_unless_failing!() macro and a drop_without_Drop intrinsic end up making it reasonably clean
+[08:16:10] *** Joins: eibwen (kvirc@moz-67BD5340.dip0.t-ipconnect.de)
+[08:20:33] *** Joins: Zr40 (zr40@EE4BB9F5.926C319A.BE2F4011.IP)
+[08:21:32] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[08:21:32] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/-D51Jg
+[08:21:32] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[08:21:49] *** Quits: pcmattman (pcmattman@moz-D9B7D938.net) (Ping timeout)
+[08:23:24] *** Joins: pcmattman (pcmattman@moz-D9B7D938.net)
+[08:25:08] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[08:27:03] *** Quits: limeburst (me@247D1419.D73964AC.27A8748.IP) (Connection reset by peer)
+[08:28:42] *** Joins: dbussink (dbussink@moz-E0A5568C.bussink.me)
+[08:29:37] <nrc> acrichto: thanks, I need to chew that over...
+[08:31:29] <dbaupp> sfackler: drop_without_Drop?
+[08:31:51] <dbaupp> ah
+[08:31:55] * dbaupp reads backscroll
+[08:32:53] *** flaper87|afk is now known as flaper87
+[08:33:14] <sfackler> dbaupp: an example of where it'd be useful: https://github.com/sfackler/rust-postgres/blob/master/src/lib.rs#L366
+[08:33:23] <sfackler> also drop_without_Drop is a terrible name :P
+[08:34:44] <dbaupp> you could have an inner struct that doesn't have the destructor, which you can move out
+[08:35:15] <dbaupp> i.e. struct InnerPostgresConn { inner: InnerInnerPostgresConn } impl Drop for InnerPostgresConn { ... }
+[08:35:33] <sfackler> you can't move out of InnerPostgresConn then though
+[08:35:49] <dbaupp> transmute out
+[08:35:53] <dbaupp> <3 transmute
+[08:36:54] <sfackler> that is an option I guess
+[08:37:17] <sfackler> macro-define two structs, impl everything on the first and transmute to the second
+[08:37:29] <eddyb> Option dance?
+[08:38:06] <sfackler> eddyb: option dance on 5+ fields will be a bit sad
+[08:38:47] <dbaupp> it'll be like the ballet
+[08:38:53] <sfackler> c.c
+[08:39:07] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[08:39:13] <sfackler> i'm kind of liking the macro-assisted transmute solution
+[08:40:15] * sfackler -> sleep
+[08:46:22] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[08:46:22] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/ZOnUoQ
+[08:46:22] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[08:46:28] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[08:46:29] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/hZ4AXQ
+[08:46:29] <ghrust> 13rust/06auto 14a64eca6 15Flavio Percoco: Switch to `Ignore` output mode for () blocks...
+[08:46:29] <ghrust> 13rust/06auto 1490cbdb0 15bors: auto merge of #12095 : FlaPer87/rust/issue-11709, r=nikomatsakis...
+[08:46:29] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[08:51:00] *** Joins: doener (doener@moz-C68F600D.unity-media.net)
+[08:53:43] <doener> nmatsakis: ping
+[09:02:20] <acrichto> cmr: whoa I had no idea SendStr was removed
+[09:06:17] <dbaupp> acrichto: replaced by std::str::MaybeOwned<'static>... so not completely removed
+[09:06:35] <acrichto> interesting!
+[09:06:47] <acrichto> net negative diff 
+[09:06:48] <acrichto> r+
+[09:07:06] <acrichto> and now I sleep
+[09:21:28] <Yurume> acrichto: and std::str::SendStr is now an alias of MaybeOwned<'static>
+[09:22:56] <doener> does anyone have an idea how the comment in the DoAutorefArg case in trans_arg_expr should end? And why the lvalue datum is created in a scope that has already been popped?
+[09:26:26] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[09:26:27] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/vBWmOA
+[09:26:27] <ghrust> 13rust/06auto 14071ee96 15Alex Crichton: Consolidate codegen-related compiler flags...
+[09:26:27] <ghrust> 13rust/06auto 14d440a56 15bors: auto merge of #12084 : alexcrichton/rust/codegen-opts, r=cmr...
+[09:26:27] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[09:29:00] <eddyb> where's rusti :(?
+[09:31:52] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[09:32:01] <eddyb> enum Foo {A(~int), B(~int)} size_of::<Option<(u32, Foo)>>() == 32
+[09:32:26] <eddyb> enum Foo {A(u32, ~int), B(u32, ~int)} size_of::<Foo>() == 16, despite containing the same information :P
+[09:32:53] <eddyb> dbaupp: Option wasn't making a big difference before because the nodes were big anyways
+[09:37:38] *** Joins: rca (rcatolino@moz-85E59476.adsl.proxad.net)
+[09:38:31] <doener> eddyb: how's that containing the same information? I don't see how you could represent None with that
+[09:38:45] <eddyb> doener: a third Foo variant
+[09:39:57] <doener> ok, yeah, if that is added, it works :-)
+[09:42:32] <dbaupp> eddyb: for the ast map?
+[09:42:57] <eddyb> dbaupp: yupp
+[09:43:54] <eddyb> it's thin and not shareable :D
+[09:44:38] <eddyb> and I think I want to move the "pretty" impl name to the parser and ext
+[09:45:23] <eddyb> after all, each item has an ident, might as well use that field for ItemImpl
+[09:46:24] <eddyb> instead of __extensions__ or (after my changes) ""
+[09:52:42] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[10:00:07] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[10:02:30] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[10:15:16] *** Joins: limeburst (me@247D1419.D73964AC.27A8748.IP)
+[10:24:02] *** Joins: gimpf (gimpf@moz-409692CD.adsl.highway.telekom.at)
+[10:27:40] *** Quits: dbaupp (Thunderbir@moz-25BBAF91.lns20.syd6.internode.on.net) (Ping timeout)
+[10:30:45] <flaper87> eddyb: hey, how are those changes going?
+[10:30:52] <flaper87> any luck on making it compile?
+[10:30:58] <flaper87> I think I can split this in several PRs
+[10:31:15] <eddyb> it compiles, making it work at runtime now ;)
+[10:31:17] <flaper87> I'll start sending the first one that just s/Ident/Name/ for for loops
+[10:31:22] <flaper87> eddyb: +1
+[10:36:28] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[10:36:28] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/vBWmOA
+[10:36:28] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[10:57:44] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[11:30:09] *** Joins: dbaupp (Thunderbir@moz-25BBAF91.lns20.syd6.internode.on.net)
+[11:48:31] *** Joins: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP)
+[11:48:55] *** Quits: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP) (Quit: rcirc on GNU Emacs 24.3.1)
+[11:57:41] *** Joins: jdm (jdm@CA0BC3BB.187B3A7C.7042C455.IP)
+[11:58:48] *** Quits: pcmattman (pcmattman@moz-D9B7D938.net) (Ping timeout)
+[12:00:06] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[12:02:29] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[12:02:52] <eddyb> any news on the Hash stuff?
+[12:03:08] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[12:03:52] <dbaupp> eddyb: https://gist.github.com/erickt/8904646
+[12:03:55] *** Joins: pcmattman (pcmattman@moz-D9B7D938.net)
+[12:03:59] <dbaupp> default params \o/
+[12:04:18] <eddyb> delicious, thanks :D
+[12:04:28] <eddyb> I was going to ask erickt but he just left
+[12:06:49] <eddyb> dbaupp: that and the robin hood changes, can't wait to have them all together
+[12:08:03] <eddyb> dbaupp: what's with this? https://gist.github.com/erickt/8904646#file-hash-rs-L24
+[12:08:17] *** Quits: pcmattman (pcmattman@moz-D9B7D938.net) (Ping timeout)
+[12:08:37] <eddyb> I guess it's related to doener's optimizations
+[12:09:26] <dbaupp> eddyb: *dbaupp's optimizations
+[12:09:45] * doener was confused
+[12:09:53] <dbaupp> eddyb: https://github.com/mozilla/rust/pull/11863#discussion_r9363967
+[12:09:57] <eddyb> sorry, I didn't know much
+[12:10:07] <dbaupp> but yeah, the thing doener did to writer :)
+[12:11:48] <eddyb> the traits are confusing
+[12:12:20] <eddyb> Stream looks like it could be implemented by any Stream hasher
+[12:12:25] *** Joins: pcmattman (pcmattman@moz-D9B7D938.net)
+[12:12:46] <eddyb> and block hash functions could buffer bytes instead
+[12:14:00] <eddyb> dbaupp: what if I make impl_pretty_name output the pretty-printed type instead? with no $ shennanigans
+[12:14:07] *** Joins: cgaebel (clark@ADA4DDE2.290DF317.EE6E63A5.IP)
+[12:15:30] <eddyb> dbaupp: mangling already escapes funny characters, $VEC$T is inconsistent with the way [T] is mangled (which makes it hard/impossible for rustfilt to turn it back to [T]) etc.
+[12:16:28] <dbaupp> eddyb: as long as it doesn't break the assemblers I'm very ok with improving the mangling
+[12:17:01] <eddyb> no, we already give pretty representations to mangling (the glue functions)
+[12:28:42] <eddyb> why the heck do we output a path for struct fields?
+[12:29:24] <eddyb> do I have a metadata expert around to bug them?
+[12:30:40] *** Joins: glaebhoerl (glaebhoerl@moz-3590251D.kabelnet.hu)
+[12:38:21] <dbaupp> eddyb: I don't think such a thing exists :P
+[12:38:34] <eddyb> but I have some weird magic here :/
+[12:39:07] *** Joins: sokomo (sokomo@8293D4FC.93FF164A.408809BB.IP)
+[12:39:25] *** Quits: rca (rcatolino@moz-85E59476.adsl.proxad.net) (Ping timeout)
+[12:44:38] <eddyb>     /* Each class has its own index, since different classes may have fields with the same name */
+[12:45:14] <eddyb> "class" >_>
+[13:03:33] *** Quits: zimbabao (rajaram@47769425.AE842F9B.81C3DAA1.IP) (Ping timeout)
+[13:10:19] *** Joins: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP)
+[13:10:28] *** Quits: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP) (Quit: rcirc on GNU Emacs 24.3.1)
+[13:10:46] *** Joins: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP)
+[13:16:00] <eddyb> pnkfelix: hey :)
+[13:16:14] <eddyb> any chance *you* know anything about metadata?
+[13:16:20] <pnkfelix> eddyb: hola.
+[13:16:31] <eddyb> I have to beg for knowledge
+[13:16:41] <pnkfelix> eddyb: metadata like what's encoded in the crates?
+[13:17:00] <eddyb> mhmm. there's some data that I don't know how it could be read
+[13:17:12] <pnkfelix> eddyb: I fixed a bug in crate metadata recently (or wait, did that ever actually land...)
+[13:17:18] <eddyb> (because I don't know the data flow in the decoder)
+[13:17:31] <pnkfelix> eddyb: but I'm pretty ignorant, that experience was a trial by fire.
+[13:17:47] <eddyb> there's ebml_w.start_tag(tag_items_data_item); all over the place in the encoder
+[13:17:59] <eddyb> but no mention of that tag in the decoder, so there's magic going on
+[13:18:56] <glaebhoerl> while we're begging for knowledge... is macro hygiene for items just not implemented or not even wanted?
+[13:20:22] *** Joins: rca (rcatolino@moz-85E59476.adsl.proxad.net)
+[13:20:24] <pnkfelix> glaebhoerl: .. my instinct is that we probably would want that.
+[13:20:37] <glaebhoerl> i.e. right now if I declare a macro that uses a static or fn, it will resolve to the one in scope at the *use* of the macro, rather than at its decl, which feels wrong
+[13:20:41] <glaebhoerl> but I didn't see a bug for it
+[13:21:11] *** Quits: jyyou (jyyou@moz-47B052FA.cs.nctu.edu.tw) (Ping timeout)
+[13:21:42] <pnkfelix> eddyb: there's definitely magic in the decoding.  At least, I was shocked that my bug fix seemed to only require fixing something on one side (e.g. just the encoder), and the decoder magically picked up the addition without my changing anything over there.
+[13:22:02] <eddyb> great
+[13:22:18] <pnkfelix> eddyb: I infer that its because the ebml format is like some sort of dynamic dictionary
+[13:22:34] <pnkfelix> eddyb: rather than a fixed layout.  Does that make sense?
+[13:22:40] <eddyb> yupp
+[13:22:56] <eddyb> I don't know if I can safely remove this data
+[13:23:05] <pnkfelix> eddyb: what are you trying to remove?
+[13:23:58] <eddyb> encode_info_for_struct
+[13:24:00] <eddyb> http://static.rust-lang.org/doc/master/src/serialize/home/rustbuild/src/rust-buildbot/slave/doc/build/src/libserialize/ebml.rs.html#217-229
+[13:24:05] <eddyb> hmm, that makes sense
+[13:26:14] <eddyb> pnkfelix: I feel a bit silly, looking in metadata::common
+[13:26:27] <eddyb> tag_items_data_item wraps tag_items_data_item_*
+[13:30:17] <eddyb> pnkfelix: okay, so, order doesn't matter
+[13:30:18] <pnkfelix> eddyb: I don't know what that use of the word "wraps" is supposed to mean in this context.
+[13:30:56] <eddyb> it's a container
+[13:31:47] *** Joins: jyyou (jyyou@moz-47B052FA.cs.nctu.edu.tw)
+[13:31:49] <pnkfelix> eddyb: ah in the sense of an EBML container?
+[13:32:18] <eddyb> I guess... and it's probably only referenced by the index, not read from its parent
+[13:34:01] *** Quits: gimpf (gimpf@moz-409692CD.adsl.highway.telekom.at) (Quit: Leaving.)
+[13:43:34] <eddyb> pnkfelix: okay, so from the looks of things, anything holding an id of the field can request the field item
+[13:44:40] <eddyb> mc::field_mutbl is silly. we don't have field mutability anymore :/
+[13:56:12] *** Joins: canhtak (canhtak@moz-71C1AFFE.wl.t.ulaval.ca)
+[14:00:07] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[14:02:32] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[14:09:53] *** Quits: doomlord_ (servitor@moz-9B2006BF.range109-151.btcentralplus.com) (Ping timeout)
+[14:09:59] *** Quits: doomlord__ (servitor@moz-9B2006BF.range109-151.btcentralplus.com) (Ping timeout)
+[14:13:01] *** Joins: zimbabao (rajaram@1C9B7651.990FA73D.D2D1FAF0.IP)
+[14:15:05] *** Quits: lpy (lpy@AEF55484.D19CEE75.952560D4.IP) (Client exited)
+[14:27:18] *** Joins: ChristopherBurg (Christophe@moz-2C03E71B.hfc.comcastbusiness.net)
+[14:28:16] *** Joins: doomlord_ (servitor@moz-9B2006BF.range109-151.btcentralplus.com)
+[14:29:37] <eddyb> pnkfelix: I'll remove the path (which was the problem I was trying to solve), since there is no fixed layout
+[14:31:27] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[14:31:27] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/UzL8Pg
+[14:31:28] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[14:31:30] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[14:31:30] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/fRtK5A
+[14:31:30] <ghrust> 13rust/06auto 14e205185 15Tom Lee: IterBytes for IpAddr and SocketAddr
+[14:31:30] <ghrust> 13rust/06auto 14d324917 15bors: auto merge of #12149 : thomaslee/rust/ipaddr_deriving_iter_bytes, r=cmr...
+[14:31:30] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[14:32:42] <eddyb> pnkfelix: and I'll try to see if I can remove it later
+[14:42:54] *** Quits: doomlord_ (servitor@moz-9B2006BF.range109-151.btcentralplus.com) (Client exited)
+[14:47:29] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Ping timeout)
+[14:49:52] *** Joins: larsberg (larsberg@moz-5D8E4B14.lightspeed.cicril.sbcglobal.net)
+[14:51:03] <eddyb> only debuginfo and my closure wrapper need paths for things that aren't inlined and mapped separately, so I can probably start removing a bunch of stuff
+[14:51:05] *** Joins: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP)
+[14:52:29] <flaper87> nmatsakis: https://github.com/mozilla/rust/pull/12095 r? test's main wasn't public and one of the jobs failed :(
+[15:15:41] *** Joins: lpy (lpy@AEF55484.D19CEE75.952560D4.IP)
+[15:17:48] *** Quits: lpy (lpy@AEF55484.D19CEE75.952560D4.IP) (Ping timeout)
+[15:31:21] *** Joins: japaric (japaric@165B2E0D.E90D5F40.F29ED47E.IP)
+[15:31:44] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[15:31:44] *** ChanServ sets mode: +ao dherman dherman
+[15:41:29] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[15:41:29] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/fRtK5A
+[15:41:29] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[15:41:36] *** Quits: [o__o] (~o__o@604A2740.DB688352.F4ADE383.IP) (Input/output error)
+[15:41:53] *** Joins: [o__o] (~o__o@604A2740.DB688352.F4ADE383.IP)
+[15:45:43] <eddyb> hmm, I think I can change the trait/ty order
+[15:50:20] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[15:50:31] *** Joins: lpy (lpy@AEF55484.D19CEE75.952560D4.IP)
+[15:52:32] *** Quits: lpy (lpy@AEF55484.D19CEE75.952560D4.IP) (Ping timeout)
+[15:59:26] *** Quits: Blaze- (blaze@moz-9B9AB2F0.dhcp.inet.fi) (Ping timeout)
+[15:59:52] *** Joins: Blaze- (blaze@moz-9B9AB2F0.dhcp.inet.fi)
+[16:07:57] *** Quits: Zr40 (zr40@EE4BB9F5.926C319A.BE2F4011.IP) (Ping timeout)
+[16:13:09] <Diamond> hm
+[16:13:51] <Diamond> the new fourcc crate depends on a host create (syntax). as a target create it's not supposed to.
+[16:14:43] *** Joins: jsonnull (Thunderbir@F1457BE1.3E7847E.494A0F8B.IP)
+[16:15:24] <mrmonday> could one of you re-open this please? https://github.com/mozilla/rust/pull/11410
+[16:16:37] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[16:16:37] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/wKu2ew
+[16:16:37] <ghrust> 13rust/06auto 14266b7e0 15Jake Kerr: Update comment in contravariant test...
+[16:16:37] <ghrust> 13rust/06auto 144f16e51 15bors: auto merge of #12150 : jakerr/rust/patch-1, r=pnkfelix...
+[16:16:38] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[16:16:40] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[16:16:40] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/qK8tDA
+[16:16:40] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[16:18:53] <pnkfelix> mrmonday: done
+[16:18:56] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[16:19:31] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[16:20:00] <mrmonday> awesome, thanks :)
+[16:21:20] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[16:27:42] *** Joins: dherman (dherman@moz-B31C6965.dsl.pltn13.sbcglobal.net)
+[16:27:42] *** ChanServ sets mode: +ao dherman dherman
+[16:44:23] *** Joins: Zr40 (zr40@moz-CCFEAB92.adsl.xs4all.nl)
+[16:48:37] *** Quits: Kxepal (Miranda@moz-DC59528D.pppoe.mtu-net.ru) (Ping timeout)
+[16:48:59] *** Joins: gwty (gwtypc@E7015355.880489FA.6BE1A500.IP)
+[16:50:29] *** Quits: jdm (jdm@CA0BC3BB.187B3A7C.7042C455.IP) (Input/output error)
+[16:50:33] *** Joins: jdm (jdm@CA0BC3BB.187B3A7C.7042C455.IP)
+[16:50:49] *** Quits: glaebhoerl (glaebhoerl@moz-3590251D.kabelnet.hu) (Ping timeout)
+[16:51:14] *** Joins: lpy (lpy@AEF55484.D19CEE75.952560D4.IP)
+[16:52:29] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[16:52:47] *** Joins: Kxepal (Miranda@moz-74CACFA5.pppoe.mtu-net.ru)
+[16:53:19] *** Quits: lpy (lpy@AEF55484.D19CEE75.952560D4.IP) (Ping timeout)
+[16:56:39] *** Quits: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP) (Ping timeout)
+[17:00:22] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[17:01:37] *** Quits: sokomo (sokomo@8293D4FC.93FF164A.408809BB.IP) (Quit: Read error: Connection reset by peer)
+[17:02:29] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[17:04:52] *** Joins: k4nar (quassel@moz-EE8DAF45.ip-91-121-75.eu)
+[17:05:38] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[17:05:48] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[17:11:08] *** Quits: Blaze- (blaze@moz-9B9AB2F0.dhcp.inet.fi) (Ping timeout)
+[17:13:35] *** Quits: jdm (jdm@CA0BC3BB.187B3A7C.7042C455.IP) (Quit: Lost terminal)
+[17:15:11] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[17:16:44] *** Joins: Blaze- (blaze@moz-9B9AB2F0.dhcp.inet.fi)
+[17:20:25] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[17:25:30] *** Joins: jdm (jdm@CA0BC3BB.187B3A7C.7042C455.IP)
+[17:26:34] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[17:26:34] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/wKu2ew
+[17:26:34] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[17:27:33] <sfackler> Diamond: it's linked into the compiler at runtime, it has to depend on the host libsyntax
+[17:31:40] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[17:31:40] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/DYOwCw
+[17:31:40] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[17:31:41] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[17:31:41] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/8kDigQ
+[17:31:41] <ghrust> 13rust/06auto 147cd42b5 15Flavio Percoco: Switch to `Ignore` output mode for () blocks...
+[17:31:41] <ghrust> 13rust/06auto 14c8dfe89 15bors: auto merge of #12095 : FlaPer87/rust/issue-11709, r=nikomatsakis...
+[17:31:42] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[17:32:24] <Diamond> i know; it just means it isn't a target crate, hence it shouldn't be with the target crate.
+[17:32:33] <Diamond> sfackler: ^
+[17:34:23] *** Quits: erickt (Adium@49C4075F.3AC15C18.2321E71E.IP) (Quit: Leaving.)
+[17:36:03] *** Joins: glaebhoerl (glaebhoerl@3391DE98.E9231B2.A0179ACD.IP)
+[17:36:05] *** Quits: glaebhoerl (glaebhoerl@3391DE98.E9231B2.A0179ACD.IP) (Quit: glaebhoerl)
+[17:36:37] *** Quits: ssira_ (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Client exited)
+[17:36:58] *** Joins: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[17:38:43] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Ping timeout)
+[17:46:50] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[17:51:15] *** Joins: cyndis (cyndis@moz-C4357EA7.kapsi.fi)
+[17:51:59] *** Joins: lpy (lpy@AEF55484.D19CEE75.952560D4.IP)
+[17:54:02] *** Quits: lpy (lpy@AEF55484.D19CEE75.952560D4.IP) (Ping timeout)
+[17:54:49] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[17:54:49] *** ChanServ sets mode: +ao pcwalton pcwalton
+[17:55:16] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[18:06:41] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[18:06:41] *** ChanServ sets mode: +qo brson brson
+[18:07:45] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[18:10:21] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse)
+[18:16:32] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[18:16:32] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14c8dfe89 to 144f16e51: 02http://git.io/N3iJvQ
+[18:16:32] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[18:17:04] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[18:18:52] <nmatsakis> doener: pong
+[18:20:09] <doener> nmatsakis: I wondered about the comment here: https://github.com/mozilla/rust/blob/master/src/librustc/middle/trans/callee.rs#L887
+[18:20:18] <doener> nmatsakis: how is that supposed to continue?
+[18:20:48] <doener> nmatsakis: also, I don't understand why the lvalue is created in a scope that has already been popped from the scope stack
+[18:21:42] <eddyb> flaper87: sorry I've been delaying this
+[18:21:43] <nmatsakis> doener: oops. "We want an lvalue, so that we can pass by ref and we don't have to deal with clenaup"
+[18:22:21] <eddyb> I could've used this time to test the metadata changes :/
+[18:23:53] <nmatsakis> doener: not sure what you mean about being created in a scope that's already been popped from the scope stack
+[18:24:53] <eddyb> error: type `&mut std::vec_ng::Vec<ast_map::MapEntry>` does not implement any method in scope named `grow_set`
+[18:24:55] <eddyb> strcat pls
+[18:24:56] <doener> nmatsakis: the scope for arg_expr.id is pushed to and popped from the scope stack earlier, in the call to trans on line 867
+[18:25:23] <nmatsakis> doener: it's not cleaned up in the scope for arg_expr.id
+[18:25:32] <nmatsakis> doener: it's cleaned up the *temporary scope* for arg_expr.id,
+[18:25:42] <nmatsakis> doener: which is the innermost enclosing statement (generally)
+[18:26:05] *** Quits: dbussink (dbussink@moz-E0A5568C.bussink.me) (Ping timeout)
+[18:26:32] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[18:26:39] <nmatsakis> doener: as an unrelated aside, i've been meaning to refactor that code so that the expr-id from which an rvalue datum originated is carried about as part of the datum, so that we don't have to pass it in separately to to_lvalue() and so on -- but that's what's going on, the argument is saying where the datum originated, from which we derive the correct scope to use. it's not telling the scope itself.
+[18:27:06] *** Quits: gwty (gwtypc@E7015355.880489FA.6BE1A500.IP) (Ping timeout)
+[18:28:21] <doener> nmatsakis: ah! so there are multiple scopes for the expression
+[18:28:39] <nmatsakis> doener: not sure what you mean by "multiple scopes for the expression" -- the expression has a single scope,
+[18:28:44] <nmatsakis> but that is not the scope in which a temporary gets cleaned up
+[18:29:01] <nmatsakis> that is, the temporary value produced by the expression is cleaned up in an enclosing scope,
+[18:29:07] <doener> ast scope + temp scope
+[18:29:09] <nmatsakis> otherwise it wouldn't make much sense -- you'd create it just to free it
+[18:29:20] <nmatsakis> it's like this:
+[18:29:31] <nmatsakis> each AST scope has an associated AST scope called its temporary scope
+[18:29:40] <nmatsakis> I think that's what I called it
+[18:29:55] <doener> yeah, cleanup and temporary
+[18:30:07] <nmatsakis> you can look it up with cleanup::temporary_scope()
+[18:36:05] *** Joins: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com)
+[18:39:27] <doener> nmatsakis: so for foo(&5), &5 would have a scope that is nested in the scope for the call to foo(), and its cleanup scope would be the call's scope?
+[18:39:33] <doener> s/cleanup/temporary/
+[18:40:28] <nmatsakis> doener: in that case, the cleanup scope would be the innermost enclosing statement, not the call (the statement has a scope distinct from the expr it contains)
+[18:40:33] <nmatsakis> but roughly yes
+[18:43:16] <eddyb> nmatsakis: nice seeing you around :)
+[18:46:49] <nmatsakis> eddyb: hey ;) I've been wanting to get back to you about DST To Do items, not to mention variadic generics. Been slowly working on that.
+[18:47:16] <eddyb> remember the Path thing I was telling you about?
+[18:47:26] <eddyb> still working on getting that refactoring mess to work
+[18:49:04] <erickt> dbaupp / brson: I'm starting to get pretty happy with my hash PR :) got time to check it out? https://github.com/mozilla/rust/pull/11863
+[18:49:33] <Eridius> wip; wip; wip; wip; wip; wip
+[18:50:05] <eddyb> weep?
+[18:50:05] <erickt> dbaupp / brson: I managed to get eddyb's default typarams to work in order to get the general use of Hash to look like the old hash usage
+[18:50:18] <erickt> Eridius: heh yeah, it's completely unmergable at the moment
+[18:50:43] <eddyb> erickt: any issues?
+[18:51:05] <cmr> KEEP_THE_LINKER_HAPPY_SINCE_KEEP_IS_NOT_WORKING
+[18:51:05] <erickt> Eridius: I have a couple interesting variations of the code in my history so I didn't want to squash things down yet
+[18:51:15] <Eridius> heh
+[18:51:24] <cmr> Or, rather, void KEEP_THE_LINKER_HAPPY_SINCE_KEEP_IS_NOT_WORKING() { EntryPoint(); }
+[18:51:32] <cmr> And this is production code!
+[18:51:35] <cmr> Written by microsoft!
+[18:51:45] <eddyb> why am I not surprised?
+[18:51:57] <erickt> eddyb: not really, though if we land this code we'd want to add #[allow(default_type_params)] (or whatever it's called)
+[18:52:22] <eddyb> erickt: within std?
+[18:52:43] *** Joins: lpy (lpy@AEF55484.D19CEE75.952560D4.IP)
+[18:52:44] <erickt> and external too
+[18:53:03] <eddyb> the way lints work, you can enable replacing a default type param with an explicit type, for a single item
+[18:53:23] <erickt> eddyb: we could still leave it behind a feature gate though
+[18:53:30] <eddyb> defining an item with default type params requires the feature gate
+[18:54:51] *** Quits: lpy (lpy@AEF55484.D19CEE75.952560D4.IP) (Ping timeout)
+[18:55:29] <erickt> using default ty params here will pretty much make them mandatory given the importance of the Hash trait
+[18:56:35] <eddyb> #[deriving(Hash)] can use the allow attr internally
+[18:56:36] <erickt> without them every user of Hash will need to add 2 typarams to a declaration
+[18:56:50] <erickt> eddyb: oh that's a good idea
+[18:58:26] *** Quits: zimbabao (rajaram@1C9B7651.990FA73D.D2D1FAF0.IP) (Ping timeout)
+[18:58:48] <eddyb> erickt: the general consensus is that we should limit their required external usage to a minimum to allow removing them later without much trouble
+[18:58:59] <eddyb> but I doubt there's a chance of that happening
+[18:59:06] <sfackler> gated feature checking happens before expansion right now so deriving() could use them without trouble
+[18:59:11] <sfackler> that may change though
+[18:59:25] <sfackler> tbh, #[feature(...)] should work in places other than the crate root
+[19:00:55] <eddyb> the definitions containing defaults are feature-gated and impls don't need defaults
+[19:01:28] <eddyb> overriding a type param with a default uses a lint because it's too hard to feature-gate it
+[19:03:01] <erickt> eddyb: I think as far as the end user is concerned, as long as people are only using `Hash` to feed into a `HashMap`, they would only have to change their `#[deriving(IterBytes)]` into `#[deriving(Hash)]`, they won't really see the default typaram usage and we could remove it without breaking that much code
+[19:03:22] <eddyb> that's great :D
+[19:04:13] <erickt> so to summarize, I'll change my `#[deriving(Hash)]` to include `#[allow(default_type_params)]`
+[19:06:18] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[19:06:39] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[19:07:19] <erickt> second question. this new hash code also needs two traits. `Hash`, which is a high level abstract trait, and `StreamHash`, which implements hashing from a stream of bytes. I've implemented `#[deriving(Hash, StreamHash)]` but that's a bit unwieldy. What does everyone think about merging the two and have `#[deriving(Hash)]` generate impls for both traits?
+[19:07:42] <acrichto> dbaupp: ping
+[19:08:07] <eddyb> erickt: sounds okay, though the interactions between the two traits are a bit fuzzy in my head
+[19:08:10] <eddyb> also Hasher vs Hash
+[19:09:02] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[19:09:25] *** Joins: edwardw (Mibbit@96E7298D.3E260003.B9C6B12A.IP)
+[19:09:57] <edwardw> Can someone take a look at https://github.com/mozilla/rust/pull/11956?
+[19:10:12] <edwardw> numerous rebases become a little bit painful now
+[19:10:14] *** Joins: zxcdw (r-a@5F0EDB29.B543C4DE.3933CC16.IP)
+[19:12:48] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[19:13:29] * erickt shakes fist at wireless
+[19:14:52] *** Joins: zimbabao (rajaram@6B6D6DC8.AA646A33.D2D1FAF0.IP)
+[19:15:21] <erickt> eddyb: in order to support general hashing, a Hash, the thing that will be hashed, needs to have some knowledge of the Hasher, the thing that actually computes the hash
+[19:15:41] <eddyb> so what implements which trait?
+[19:15:59] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[19:16:37] <erickt> actually I mispoke
+[19:18:39] <eddyb> Ok(task 'rustc' failed at 'no path elem for NodeExpr(@ast::Expr{id: 138640u32, node: ExprFnBlock
+[19:18:44] <eddyb> yay errors I know how to fix :)
+[19:19:06] <erickt> a Hash works with a generic state type. For some kinds of hashes, like for Sip, needs to thread a SipState through all the Hash members
+[19:20:49] <erickt> for other hashers, where there is a baked in hash in a value like https://github.com/mozilla/rust/pull/11863/files#diff-ae1284090feb4c99a611f29ed4e8ae9eR424, no state is needed so we can use () as the state object
+[19:21:11] <Eridius> what is the purpose of Void.uninhabited()? It's never called, and since it has a ! return type I have to assume calling it isn't giong to do anything useful (I didn't realize you could even declare a function with ! return type without using some sort of fail)
+[19:21:39] <eddyb> Eridius: well... Void *is* uninhabited...
+[19:21:54] <eddyb> what is it doing?
+[19:22:00] <erickt> a `Hasher` is a special trait that's necessary for a generic HashMap. Hashers create the state that is threaded through the type that gets hashed
+[19:22:03] <Eridius> eddyb: nothing
+[19:22:07] <Eridius> eddyb: it's literally `match self {}`
+[19:22:14] <eddyb> Eridius: that's not nothing :P
+[19:22:26] <eddyb> that match fails at runtime
+[19:23:01] <Eridius> that's just an implementation detail, though, isn't it? Couldn't a match on an uninhabited enum theoretically just do nothing?
+[19:23:14] <eddyb> I know it's dumb and I found out about it a couple of days ago. dbaupp did suggest that change, which makes sense
+[19:23:23] <Eridius> anyway, what the heck is the point of the method? Nobody calls it, and I can't imagine why anyone *would* call it
+[19:23:31] <Eridius> and the docstring claims it's for "ignoring this uninhabited type", but it actually fails
+[19:24:02] <eddyb> match foo {} with an uninhabited foo would be valid, but you couldn't actually have any match arms (you can now)
+[19:24:20] <Eridius> how can you have match arms now for an uninhabited type?
+[19:24:27] <eddyb> _
+[19:24:46] <Eridius> you sure about that? I thought you couldn't use _ unless you had at least one un-matched value
+[19:25:01] <Eridius> because arms that can never be hit are prohibited
+[19:25:03] <eddyb> pretty sure we tried it and it worked
+[19:25:57] <Eridius> eddyb: "error: unreachable pattern" pointing at _
+[19:26:08] * Eridius just tested with a 2-value enum, with 3 match arms, one being _
+[19:26:17] <eddyb> try it with a no-value enum
+[19:26:30] <eddyb> fn foo(x: Void) {match x {_ => {}}}
+[19:26:40] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[19:26:40] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/3EN1RQ
+[19:26:40] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[19:26:56] <Eridius> eek, that does compile
+[19:27:02] <Eridius> that seems strange
+[19:27:13] <eddyb> Eridius: you can handle the issue for it :)
+[19:27:35] <Eridius> anyway, this still doesn't answer the question of what the heck .uninhabited() is for
+[19:28:25] <edwardw> Eridius: I honestly don't know :D
+[19:28:26] <Eridius> the only possible utility is failing if, for some reason, you can't coerce the &Void into whatever it's really standing in for. But in that case I'd expect a fail!() with an appropriate message
+[19:28:39] <Eridius> not the obtuse "scrutinizing value that can't exist" error, triggered by an implementation detail
+[19:30:12] <eddyb> I would remove it
+[19:30:20] <Eridius> eddyb: yeah, I just commented to that effect on edwardw's PR
+[19:30:23] <eddyb> death to dead code!
+[19:30:50] <edwardw> Sure, I'll do it
+[19:31:18] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[19:31:46] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[19:31:46] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/de1aXw
+[19:31:46] <ghrust> 13rust/06auto 141b969e1 15gifnksm: Makefile.in: --no-rpath => -C no-rpath
+[19:31:46] <ghrust> 13rust/06auto 141f245cc 15bors: auto merge of #12151 : gifnksm/rust/disable-rpath, r=pnkfelix...
+[19:31:47] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[19:33:26] <edwardw> Eridius: say I do another rebase, will the line comments like yours lost?
+[19:33:35] <Eridius> edwardw: yes
+[19:33:48] <Eridius> they'll be accessible via clicking on "_ commented on an outdated diff", but otherwise gone
+[19:33:52] <edwardw> is that okay then?
+[19:33:59] <Eridius> if you fix what I commented, then sure ;)
+[19:34:10] <edwardw> LOL
+[19:35:55] <Eridius> edwardw: was it decided that swap/replace should not be reexported in prelude?
+[19:36:35] <Eridius> whoa. I can't search for "drop" on the rust-lang docs. Even just "dr" fails
+[19:36:38] <edwardw> Eridius: no, they are moved to std::mem instead
+[19:36:53] <sfackler> is drop still in the prelude or did it get moved to?
+[19:37:03] <Eridius> edwardw: sure, but they could also be re-exported. It's unclear if a real decision was made. My impression from acrichto's comment was that he was in favor of exporting them in prelude
+[19:37:23] <Eridius> sfackler: unless things have changed since yesterday, drop() appears to be defined directly in prelude
+[19:37:29] <Eridius> maybe that should be moved to std::mem and re-exported from prelude?
+[19:37:40] <eddyb> I think it was in std::util initially
+[19:37:44] <edwardw> Eridius: before my last commit of the PR, they were reexported in prelude
+[19:37:45] <eddyb> and that got dismantled?
+[19:37:51] <sfackler> I moved it from util::ignore to prelude::drop
+[19:38:05] <sfackler> std::mem seems like a kind of weird place for drop imo
+[19:38:08] <acrichto> Eridius: edwardw: I was more in favor of not putting them in the prelude if they lived in std::mem
+[19:38:11] <Eridius> well if swap() and replace() are going to std::mem..
+[19:38:28] <Eridius> it feels weird to me to have a function defined in the prelude directly
+[19:38:31] <sfackler> drop() doesn't really deal with memory like swap and replace do
+[19:38:35] <sfackler> but yeah
+[19:38:45] <acrichto> I agree the prelude isn't the right place for drop
+[19:38:48] <Eridius> swap() and replace() move values. drop() destructs a value
+[19:38:52] <sfackler> I know, let's make a util module for random stuff like drop that doesn't fit anywhere! /s
+[19:38:56] <Eridius> \o
+[19:38:56] <edwardw> Eridius: but before it could make to the master, a commit from brson surfaced several memory related intrinsics to std::mem
+[19:39:03] <edwardw> and I decided to follow suit
+[19:39:49] <edwardw> since reexporting them in prelude leave the impression that they come from nowhere
+[19:40:03] <Eridius> I think drop() should be moved to std::mem() if swap and replace are going there. I'm also inclined to say that drop and swap should be re-exported in prelude. Not as sure about replace()
+[19:40:22] <sfackler> I use replace more than swap tbh
+[19:40:28] <edwardw> what's the difference between them?
+[19:40:37] <Eridius> I'm fine with replace going there too, but replace is built using swap, so it just feels like swap is more fundamental
+[19:40:38] <edwardw> drop and swap vs. replace?
+[19:40:45] <sfackler> swap(&T, &T) -> ()
+[19:40:52] <sfackler> replace(&T, T) -> T
+[19:41:02] <edwardw> No, I mean why one in prelude and another in mem
+[19:41:12] <sfackler> oh
+[19:41:27] <sfackler> swap is a bit more fundamental than replace
+[19:41:35] <sfackler> replace is just a utility wrapper around swap anyway
+[19:41:41] <Eridius> both should be in mem. I'm fine with exporting both, I was just suggesting only exporting swap in an effort to not re-export quite so much
+[19:41:46] <edwardw> from impl. point of view, maybe
+[19:41:59] <edwardw> but less so from user's point of view
+[19:42:07] <brson> i'm inclined not to put swap in the prelude because, though it is fundamental, I don't believe it is common to use in practice
+[19:42:22] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[19:42:26] <Eridius> brson: fair enough. What about drop?
+[19:42:37] <sfackler> I guess it could go in std::drop
+[19:42:45] <brson> it does seem like people are using `drop` as an explicit way to move things out of scope
+[19:42:51] <sfackler> er, that doesn't exist
+[19:42:52] <Eridius> sfackler: there is no std::drop
+[19:42:55] <sfackler> yeah
+[19:42:59] <Eridius> std::mem::drop seems the most apt place, given edwardw's PR
+[19:43:06] <Eridius> brson: I just wish drop() would also end borrows
+[19:45:48] <Eridius> any objection to moving drop to std::mem and re-exporting in prelude?
+[19:45:51] <Eridius> brson, acrichto: ^
+[19:46:06] *** Joins: sunfish (chatzilla@moz-BBE3ABD.mv.mozilla.com)
+[19:46:59] <eddyb> acrichto: how much do you know about metadata?
+[19:48:05] <eddyb> there's a bunch of stuff that I don't think we need to encode
+[19:50:10] <acrichto> Eridius: I am ok with that
+[19:50:25] <eddyb> rustc: /home/eddy/Projects/rust/src/llvm/include/llvm/Support/Casting.h:240: typename llvm::cast_retty<X, Y*>::ret_type llvm::cast(Y*) [with X = llvm::Function; Y = llvm::Value; typename llvm::cast_retty<X, Y*>::ret_type = llvm::Function*]: Assertion `isa<X>(Val) && "cast<Ty>() argument of incompatible type!"' failed.
+[19:50:29] <acrichto> eddyb: I would believe that, I've worked with metadata but I wouldn't classify myselfas having a "true understanding"
+[19:50:55] <Eridius> acrichto: what about exporting swap (but not replace) in prelude?
+[19:51:27] <eddyb> acrichto: I don't think we use the data produced by encode_info_for_struct, among other things
+[19:52:02] <brson> Eridius: sounds good to me
+[19:52:08] <acrichto> Eridius: hm, I would expect neither swap nor replace to be in the prelude
+[19:52:18] <acrichto> Eridius: I also have found that 99% of locations using swap() should use replace() instead
+[19:52:19] <Eridius> hmm, ok, I'll err on the side of no swap
+[19:52:23] <edwardw> Eridius: recap: move drop to std::mem, reexport drop *and* swap in prelude
+[19:52:29] <acrichto> eddyb: cutting down on metadata would be nice
+[19:52:35] <edwardw> Do I understand you correctly?
+[19:52:49] <Eridius> edwardw: well now, it's just reexport drop. Don't export swap
+[19:52:54] * Eridius updated his comment on the PR
+[19:53:00] <edwardw> Eridius: okay
+[19:53:28] *** Joins: lpy (lpy@AEF55484.D19CEE75.952560D4.IP)
+[19:53:56] <eddyb> if only I knew what to do earlier, I wouldn't have wasted the entire day *sigh*
+[19:54:42] <Luqman> nmatsakis: i'm trying to figure out #11612 and it seems to be because the ty returned by expr_ty_adjusted doesn't have a concrete region (ReInfer) and so kindck decides it's not valid when it should be
+[19:55:03] <Luqman> nmatsakis: i'm not sure how to preoperly substitue those for a concrete region
+[19:55:37] *** Quits: lpy (lpy@AEF55484.D19CEE75.952560D4.IP) (Ping timeout)
+[19:56:27] <eddyb> nmatsakis: your cleanup debug output makes debugging trans so hard *sigh*
+[19:56:28] <nmatsakis> Luqman: that should not be, sounds like a bug for sure, that reigon should have been resolved,
+[19:56:43] <nmatsakis> eddyb: too much output, you mean?
+[19:56:57] <nmatsakis> guess it depends on what you're debugging :)
+[19:57:07] <eddyb> yeah, I think it's slowed down by pprust
+[19:57:25] <eddyb> enum.::Option<u16> that doesn't look right :/
+[19:57:26] <doener> nmatsakis: skimming the region inference docs and a bit of the actual region code cleared some things up for me
+[19:57:32] <nmatsakis> eddyb: yeah, it's a problem. of course, the fact that those serializations are in there is usually the only way I can find the spot I am interested in
+[19:57:57] <eddyb> I guess I can restrict it to trans::base
+[19:57:59] <nmatsakis> Luqman: I am particularly concerned about that code path
+[19:58:04] * edwardw updated PR 11956
+[19:58:16] <nmatsakis> eddyb: that's usually what I do, although of course narrowing to a smaller test case is better,
+[19:58:33] <eddyb> my test case is std :P
+[19:58:38] <nmatsakis> eddyb: or else if all else fails add some custom printouts ...
+[19:58:55] <eddyb> new_fn_ctxt(path=::Some, id=109329, param_substs=Some(param_substs {tys:[~::Any:Send], vtables:None}))
+[19:58:58] <eddyb> this is obviously wrong
+[19:59:30] <edwardw> Eridius: brson: acrichto: https://github.com/mozilla/rust/pull/11956 updated
+[19:59:41] <Eridius> edwardw: already commented ;)
+[19:59:43] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[19:59:44] <nmatsakis> actually, can you do RUST_LOG=rustc::middle::trans,rustc::middle::trans::cleanup=9
+[19:59:57] <nmatsakis> eddyb: try that and see what it does ^ (well, I forget if 9 or 0 is what you want...)
+[20:00:11] <nmatsakis> point is, override a submodule
+[20:00:49] <Luqman> nmatsakis: check_cast_for_escaping_regions ?
+[20:00:56] <eddyb> making thread_local_storage::hd1892a4b6cd158bf::v0.10.pre
+[20:01:20] <eddyb> nmatsakis: thanks, but I think I screwed up way more than that can help me
+[20:01:24] <nmatsakis> Luqman: right. there are some other open bugs about it too, I've been meaning to read it over carefully for a while now...
+[20:01:37] <nmatsakis> eddyb: then don't blame me ;)
+[20:03:57] * edwardw updated PR 11956. IRC is way more productive!
+[20:04:20] <eddyb> than a mailing list? sure :P
+[20:04:38] <edwardw> eddyb: yes!
+[20:04:55] <eddyb> flaper87: this is just silly
+[20:05:01] <nmatsakis> eddyb: another idea, btw, is too modify ppaux::Repr for @ast::Expr to be less chatty
+[20:05:06] <nmatsakis> eddyb: maybe control it with a -Z flag
+[20:05:10] *** Quits: canhtak (canhtak@moz-71C1AFFE.wl.t.ulaval.ca) (Quit: canhtak)
+[20:05:22] <eddyb> nmatsakis: it kinda looks like the output comes from node_to_str
+[20:05:34] <eddyb> or rather, ast_map::node_id_to_str, before my changes
+[20:06:16] <nmatsakis> eddyb: at least in trans I try to direct everything through repr (which in turn calls other things...)
+[20:06:24] <nmatsakis> well I try to direct everthing through repr everywhere
+[20:06:27] <nmatsakis> but there is still old code
+[20:06:34] <SimonSapin> Does Option<char> optimize to one 32bits word yet?
+[20:07:34] <Eridius> edwardw: PR looks good, but that commit history needs to be cleaned up slightly
+[20:07:53] <eddyb> SimonSapin: seriously doubt it
+[20:07:56] <eibwen> where is the Option<&T> to one word optimization implemented?
+[20:08:17] <nmatsakis> eibwen: trans::adt
+[20:08:52] <SimonSapin> eddyb: I read that it could, now that char is limited to the range of Unicode code points (21 bits). But maybe it’s not implemented yet.
+[20:09:15] <eddyb> "now"? pretty sure char has been that way for a long time
+[20:09:35] <Eridius> eddyb: we now have an LLVM range assertion on char, which we didn't before
+[20:09:47] <eddyb> ohh, didn't know about that
+[20:09:48] <Eridius> because there were two cases where -1u was (unsafely) being used as a char value
+[20:09:57] <eibwen> nmatsakis: sorry, I don't understand that, can you give me something like a path in the source tree?
+[20:10:15] <eddyb> eibwen: rustc::middle::trans::adt
+[20:10:27] <eddyb> that's src/librustc/middle/trans/adt.rs
+[20:10:38] <eibwen> thanks
+[20:11:51] <eddyb> (the module trees in src/lib* are pretty kosher, so it isn't that hard to get accustomed to the codebase's layout. can't say the same thing for the content :P)
+[20:12:04] *** flaper87 is now known as flaper87|afk
+[20:12:51] <SimonSapin> eddyb: yes, "now" is since a few months
+[20:13:41] <SimonSapin> Eridius: is tho range assertion is what enables the optimization of Option<char>?
+[20:13:46] <Eridius> SimonSapin: no
+[20:14:01] <edwardw> Eridius: brson: acrichto: nagging again https://github.com/mozilla/rust/pull/11956
+[20:14:06] <Eridius> the optimization is enabled by rustc::middle::trans::adt::represent_type_uncached which explicitly encodes the knowledge about non-nullable pointers
+[20:14:45] <Eridius> SimonSapin: the fact that char is now explicitly restricted everywhere to the appropriate range means that this function could learn about char and optimize that too, but that has to be written by hand
+[20:15:08] <SimonSapin> Eridius: I see, thanks
+[20:16:25] <Eridius> one possible approach would be to use -1u as the marker that indicates that the other zero-sized enum variant is the active one (the same way that 0 is used in the Option<ptr> case)
+[20:16:35] <acrichto> edwardw: it seems that more squashing are in order, I would expect the first commit to not be in the history
+[20:16:51] *** flaper87|afk is now known as flaper87
+[20:16:59] <flaper87> eddyb: hey, no worries, I think I'll go ahead and submit this first PR
+[20:17:01] <flaper87> it's not that big 
+[20:17:03] <flaper87> eddyb: the work you're doing there seems to be way bigger
+[20:17:06] <flaper87> nmatsakis: btw, I was thinking to stab the s/expr::Ignore// change now. You mentioned you frosee expr::Dest being a ValueRef. I thought about using Option<ValueRef> because of those cases where `expr::Ignore` was used
+[20:17:12] <flaper87> also, I think we're passing `dest` in too many functions where it's not even being used
+[20:17:16] <edwardw> acrichto: makes sense
+[20:17:29] <eddyb> flaper87: it expands
+[20:17:34] <flaper87> eddyb: :S
+[20:17:44] * eddyb The Necromonger
+[20:17:50] <flaper87> eddyb: LOL
+[20:18:10] <flaper87> eddyb: I'd recommend you to start splitting it whenver you can
+[20:18:19] <SimonSapin> Eridius: This could even allow some number of < 32bit variants rather than just one zero-size, but it may not be common enough to be worth it
+[20:18:20] <Eridius> eddyb: all 3 commits may want to be squashed together
+[20:18:34] <Eridius> eddyb: since the "Remove unnecessary use declarations" only makes sense when those functions are re-exported from prelude, which they aren't anymore
+[20:18:53] * eddyb casts "redirect tab"
+[20:19:31] <eddyb> flaper87: it's still too entangled to split, most changes I'm doing right now are to make it work right
+[20:19:53] <eddyb> it seems to be fine, API-wise, but the paths are all one long
+[20:20:33] <edwardw> Eridius: brson: acrichto: commits squashed https://github.com/mozilla/rust/pull/11956
+[20:20:41] <flaper87> acrichto: https://github.com/mozilla/rust/pull/12095 r? added xfail-pretty 
+[20:20:44] *** Joins: canhtak (canhtak@moz-71C1AFFE.wl.t.ulaval.ca)
+[20:21:01] *** Joins: Vert (nobody@6F384F56.153E7D13.6894ADF4.IP)
+[20:21:40] <eddyb> *self = None; haha I'm an idiot
+[20:22:04] <eddyb> (that should be *self = node.next;, as I'm iterating a linked list)
+[20:22:10] <Eridius> edwardw: it looks weird to re-export replace/swap in prelude in the first commit, then to turn around and delete that in the second. You should probably just squash it down to a single commit
+[20:22:35] <Eridius> edwardw: and that commit should probably also mention Void -> std::any
+[20:22:56] <edwardw> Eridius: it probably becomes too long then :)
+[20:23:01] <Eridius> that's what newlines are for
+[20:23:17] <Eridius> "Move replace and swap to std::mem. Get rid of std::util\n\nAlso move Void to std::any."
+[20:23:29] <edwardw> I see. thanks
+[20:23:54] <Eridius> in the PR comment, you said "There's still some residue reference to std::util in std itself". If std::util is gone, how are there still references?
+[20:24:40] *** Quits: dbaupp (Thunderbir@moz-25BBAF91.lns20.syd6.internode.on.net) (Ping timeout)
+[20:24:46] <edwardw> No. that's the residue of my first attempt, which just reexporting rather than moving them to mem
+[20:25:09] <Eridius> ok, so that comment can be modified then, I guess
+[20:25:16] <Eridius> since bors takes the title/comment from the PR and uses it for the merge commit
+[20:25:40] *** Quits: Vert (nobody@6F384F56.153E7D13.6894ADF4.IP) (Client exited)
+[20:26:22] <edwardw> Eridius: all done
+[20:26:50] <Eridius> edwardw: thanks
+[20:27:36] <Eridius> edwardw: I'm going to delete that line in your PR comment about residue reference to std::util
+[20:28:05] <edwardw> Eridius: sure
+[20:28:16] <Eridius> ok, r+'d, and it's next in the bors queue after disable-rpath
+[20:28:52] <edwardw> Eridius: hurray, that would be my first commit to the master
+[20:28:59] <Eridius> edwardw: sweet. Now go make more! ;)
+[20:29:07] <edwardw> Eridius: LOL
+[20:29:24] <nmatsakis> flaper87: I don't think Option<ValueRef> is really needed, personally, my goal would be to simplify the code by removing variations,
+[20:29:40] <nmatsakis> flaper87: for zero-sized values, we can just pass an Undef value as the destination,
+[20:29:48] <nmatsakis> flaper87: for other things, we can make a temporary with cleanup in the appropriate scope,
+[20:30:08] <nmatsakis> flaper87: the Ignore mode is kind of an ad-hoc temporary cleanup thing that complicates when cleanup occurs, from my POV
+[20:31:26] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[20:31:26] *** ChanServ sets mode: +ao pcwalton pcwalton
+[20:33:29] *** Quits: edwardw (Mibbit@96E7298D.3E260003.B9C6B12A.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[20:36:38] <eddyb> https://github.com/mozilla/rust/pull/12162
+[20:36:39] *** Quits: zimbabao (rajaram@6B6D6DC8.AA646A33.D2D1FAF0.IP) (Ping timeout)
+[20:36:48] <eddyb> don't ask where I removed 600 lines from because I have no idea :P
+[20:37:03] *** Quits: sunfish (chatzilla@moz-BBE3ABD.mv.mozilla.com) (Quit: ChatZilla 0.9.90.1 [Firefox 26.0/20131206145143])
+[20:40:29] *** Joins: sunfish (chatzilla@moz-BBE3ABD.mv.mozilla.com)
+[20:41:44] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[20:41:44] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/de1aXw
+[20:41:44] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[20:46:21] <flaper87> nmatsakis: that makes sense to me. Sounds like a plan! I'll start working on that. Do you know if there's a GH issue for this? Otherwise I'll file a new one
+[20:46:49] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[20:46:49] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/b9A_nw
+[20:46:49] <ghrust> 13rust/06auto 146551774 15Edward Wang: Move replace and swap to std::mem. Get rid of std::util...
+[20:46:49] <ghrust> 13rust/06auto 14821c586 15bors: auto merge of #11956 : edwardw/rust/issue-7556, r=kballard...
+[20:46:50] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[20:47:05] *** Joins: rca_ (rcatolino@moz-D8DCC6B5.adsl.proxad.net)
+[20:47:40] *** Quits: rca (rcatolino@moz-85E59476.adsl.proxad.net) (Ping timeout)
+[20:47:42] <nmatsakis> flaper87: not that I'm aware of, just been an itch I've been wanting to scratch every time I modify trans
+[20:53:32] *** Joins: zimbabao (rajaram@915E41.E4B85B81.D2D1FAF0.IP)
+[20:54:13] *** Joins: lpy (lpy@AEF55484.D19CEE75.952560D4.IP)
+[20:54:53] <flaper87> nmatsakis: ok, thanks! :)
+[20:55:08] <flaper87> nmatsakis: btw, could please add this https://github.com/mozilla/rust/pull/11979 to the agenda for tomorrows meeting ?
+[20:56:20] *** Joins: ecr (chatzilla@moz-75C94A03.dhcp4.washington.edu)
+[20:56:21] *** Quits: lpy (lpy@AEF55484.D19CEE75.952560D4.IP) (Ping timeout)
+[20:56:31] <nmatsakis> yep
+[20:56:42] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[20:56:42] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/lb6OTA
+[20:56:42] <ghrust> 13rust/06auto 1431576c7 15Flavio Percoco: Switch to `Ignore` output mode for () blocks...
+[20:56:42] <ghrust> 13rust/06auto 14cf9164f 15bors: auto merge of #12095 : FlaPer87/rust/issue-11709, r=nikomatsakis...
+[20:56:42] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[20:56:43] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[20:56:43] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14821c586 to 141f245cc: 02http://git.io/N3iJvQ
+[20:56:43] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[20:56:45] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[20:56:46] <flaper87> also, I'd love to reach a consensus about what should happen with https://github.com/mozilla/rust/pull/12017 Probably worth adding to the agenda too
+[20:56:47] <flaper87> acrichto: ^
+[20:57:23] *** Quits: zimbabao (rajaram@915E41.E4B85B81.D2D1FAF0.IP) (Ping timeout)
+[20:58:19] *** Quits: doener (doener@moz-C68F600D.unity-media.net) (Quit: leaving)
+[20:59:07] *** Joins: edwardw (Mibbit@F6D3ED62.E91AB7CD.1D660E71.IP)
+[20:59:36] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[20:59:51] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: pcwalton)
+[21:02:21] <edwardw> There's failure in bors test and there's exception. Do both need to be addressed?
+[21:02:26] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[21:02:26] *** ChanServ sets mode: +ao pcwalton pcwalton
+[21:03:25] <acrichto> edwardw: exceptions just mean that the build was canceled
+[21:03:27] *** Quits: edwardw (Mibbit@F6D3ED62.E91AB7CD.1D660E71.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[21:03:38] <acrichto> once one failure happens everything else is canceled
+[21:03:53] <acrichto> flaper87: I'm not sure if it should go on the agenda again because we've already discussed it
+[21:04:40] <flaper87> acrichto: cmr had some concerns and thought about discussing it further
+[21:04:59] <acrichto> a meeting may not be the best place to do it though
+[21:05:02] <cmr> acrichto: contextual keywords were discussed?
+[21:05:10] <acrichto> not specifically
+[21:05:18] <cmr> that's what I think needs discussing...
+[21:05:22] *** Joins: edwardw (Mibbit@F6D3ED62.E91AB7CD.1D660E71.IP)
+[21:05:55] <edwardw> Do both bors failure and exception need to be addressed?
+[21:06:07] <sfackler> only the failure does
+[21:06:13] <edwardw> okay
+[21:06:14] <cmr> edwardw: no, exception is from the failure interrupting the other builds
+[21:07:07] <edwardw> and the fix for the failure needs to be squashed into the original commit, doesn't it?
+[21:07:49] *** Parts: edwardw (Mibbit@F6D3ED62.E91AB7CD.1D660E71.IP) ()
+[21:07:57] *** Joins: edwardw (Mibbit@F6D3ED62.E91AB7CD.1D660E71.IP)
+[21:09:30] <sfackler> preferably
+[21:09:56] <edwardw> ok
+[21:12:11] *** Joins: zimbabao (rajaram@6A9533ED.A7AC81F6.D2D1FAF0.IP)
+[21:12:15] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[21:12:29] <flaper87> brson: Do you have some minutes to visit this PR? https://github.com/mozilla/rust/pull/12017 There are still some concerns as to whether we should first work on contextual keywords before making crate a keyword
+[21:16:24] *** Quits: jdm (jdm@CA0BC3BB.187B3A7C.7042C455.IP) (Quit: Lost terminal)
+[21:16:34] <edwardw> After fixing bors failure, do I need another review and approve?
+[21:17:02] <cmr> edwardw: yes
+[21:17:34] <edwardw> cmr: okay
+[21:17:58] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Ping timeout)
+[21:19:08] *** Quits: zimbabao (rajaram@6A9533ED.A7AC81F6.D2D1FAF0.IP) (Ping timeout)
+[21:24:09] <edwardw> May I get another review for https://github.com/mozilla/rust/pull/11956? A bors failure was fixed
+[21:28:41] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[21:32:42] <edwardw> cmr: thanks
+[21:33:43] <eddyb> error: internal compiler error: get_field_type: in class syntax::ast::DefId{crate: 1u32, node: 113906u32}, field ID syntax::ast::DefId{crate: 1u32, node: 113907u32} not found
+[21:34:25] <eddyb> pnkfelix, acrichto: ^^ that answers it. the type is encoded by encode_info_for_struct, so I should keep it :)
+[21:34:38] *** Joins: zimbabao (rajaram@F3C2F859.DA20CA3D.D2D1FAF0.IP)
+[21:35:12] <eddyb> it's actually good news because I'd hate having to do even more cleanup work
+[21:37:52] <eddyb> and no lints were triggered :D
+[21:38:12] <eddyb> (I think inlined paths are still off, but we'll see tomorrow)
+[21:40:33] *** Quits: eddyb (eddy@moz-92B95652.residential.rdsnet.ro) (Ping timeout)
+[21:43:25] <brson> flaper87: ok. we'll make a decision tomorrow
+[21:43:41] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[21:48:10] *** Quits: edwardw (Mibbit@F6D3ED62.E91AB7CD.1D660E71.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[21:50:39] <brson> I wish format! was fmt! again
+[21:51:19] <larsberg> brson: ping
+[21:51:30] <cmr> larsberg: there were three typos in TWiS
+[21:51:40] <cmr> Two dangling links and a name mispelling.
+[21:52:06] <larsberg> cmr: sorry! I'll try to be better about checking that in the future :-( thanks for fixing it up!
+[21:53:19] *** Joins: doomlord_ (servitor@moz-9B2006BF.range109-151.btcentralplus.com)
+[21:53:27] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[21:54:58] *** Joins: lpy (lpy@AEF55484.D19CEE75.952560D4.IP)
+[21:55:11] <brson> larsberg: pong
+[21:56:17] <larsberg> brson: are there any issues related to getting the full set of error message (or an indicator of how far you got through on the compile process) with rustc?
+[21:56:44] <larsberg> I've gotten used to the errors, but some of our contribuors said they found the process of getting something work, "demoralizing because it looks like the number of errors is decreasing, but in reality the parser just hasn't gotten past the second line"
+[21:57:02] *** Quits: lpy (lpy@AEF55484.D19CEE75.952560D4.IP) (Ping timeout)
+[21:57:06] <larsberg> when you get through the first set of 40 errors in, say, parsing, before you get to typechecking
+[21:58:08] <cmr> larsberg: I use -Z time-passes as a reminder.
+[21:58:23] <cmr> I think we could add a counter
+[21:58:33] <cmr> "125 errors (stage 3/N)"
+[21:58:43] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[21:59:55] <flaper87> brson: thanks :)
+[22:02:50] <larsberg> cmr: I think something like that would definitely be better than the experience you get now. I'll open an issue since I couldn't find one and it sounds like nobody else knows of one.
+[22:04:31] <brson> larsberg: there is not an issue on it
+[22:04:40] *** Quits: ecr (chatzilla@moz-75C94A03.dhcp4.washington.edu) (Ping timeout)
+[22:05:23] *** Joins: ecr (chatzilla@moz-75C94A03.dhcp4.washington.edu)
+[22:06:46] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[22:06:46] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/lb6OTA
+[22:06:46] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[22:07:27] *** Quits: rca_ (rcatolino@moz-D8DCC6B5.adsl.proxad.net) (Ping timeout)
+[22:08:28] <aatch> larsberg, well we couldn't get the "full set" of error messages because each step generally relies on the previous one
+[22:08:49] <aatch> If parsing fails, I don't think macro expansion is going work
+[22:10:04] <larsberg> aatch: totally agree. The question of "how much recovery is worthwhile" is a hard one, particularly since the more broken the program is the less accurate the overall count will be
+[22:11:11] <cmr> type checking already tries really hard to proceed in the facd of errors
+[22:11:31] <cmr> and that leads to things like BUG[0u] and (I think it's called) <type error>
+[22:11:44] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[22:11:45] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/znA6nA
+[22:11:45] <ghrust> 13rust/06auto 14e9ff91e 15Edward Wang: Move replace and swap to std::mem. Get rid of std::util...
+[22:11:45] <ghrust> 13rust/06auto 14f07b28c 15bors: auto merge of #11956 : edwardw/rust/issue-7556, r=cmr...
+[22:11:45] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[22:11:55] <larsberg> I've watched developer decades spent working on that problem, so I know it's a pretty deep rabbit hole and I won't complain if the answer is just to print out that the error occurred in parsing and we still have N more phases :-)
+[22:13:15] <ChrisMorgan> cmr: yeah, I've been observing that more recently too since it was changed to plough through errors as long as it could, and I'm becoming sceptical that it's optimal to keep going quite so far as it is—these BUG[0u]s and <type error>s can make it difficult, obscuring the real issue.
+[22:13:44] <ChrisMorgan> When you change one thing and one hundred and thirty two of the one hundred and thirty three errors disappear, you've got to wonder whether there's an easier way.
+[22:14:08] *** Joins: aepsil0n (eduard@moz-15CB80F2.hsi8.kabel-badenwuerttemberg.de)
+[22:14:18] <sfackler> I personally find the  <type error> stuff annoying since it generates an extra error that isn't really one
+[22:14:59] <nrc> me too
+[22:15:00] <ChrisMorgan> I wonder what would happen if you just suppressed error messages containing type errors or BUGs while there were other error messages.
+[22:15:39] <ChrisMorgan> You could put "(ignored 30 probably spurious errors)" and show them with -v.
+[22:15:42] <cmr> "That's what I thought the first time I saw a "This Week in Rust". Then it was just as packed the next week. And the week after. And the week after...
+[22:15:44] <cmr> "
+[22:15:48] <cmr> Good job everybody :)
+[22:16:02] <ChrisMorgan> cmr: source?
+[22:16:03] <aatch> cmr, context?
+[22:16:17] <cmr> http://www.reddit.com/r/rust/comments/1xi8kd/this_week_in_rust_9_feb_2014/cfbp62f
+[22:18:38] *** Quits: dherman (dherman@moz-B31C6965.dsl.pltn13.sbcglobal.net) (Quit: dherman)
+[22:24:54] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[22:24:55] *** ChanServ sets mode: +ao dherman dherman
+[22:38:43] *** Quits: ecr (chatzilla@moz-75C94A03.dhcp4.washington.edu) (Ping timeout)
+[22:38:51] *** Joins: ecr (chatzilla@9D3FCFC0.5FFFD366.11F8506F.IP)
+[22:40:53] *** Joins: tjc (tjc@moz-7EE2AFFC.hfc.comcastbusiness.net)
+[22:40:53] *** ChanServ sets mode: +o tjc
+[22:47:06] *** Quits: doomlord_ (servitor@moz-9B2006BF.range109-151.btcentralplus.com) (Ping timeout)
+[22:49:34] *** Quits: ktt3ja (ktt3ja@moz-85E2770C.hsd1.va.comcast.net) (Ping timeout)
+[22:55:43] *** Joins: lpy (lpy@AEF55484.D19CEE75.952560D4.IP)
+[22:56:47] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[22:56:47] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14f07b28c to 14cf9164f: 02http://git.io/N3iJvQ
+[22:56:47] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[22:56:48] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[22:56:48] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/T7SzWA
+[22:56:48] <ghrust> 13rust/06auto 14e9ff91e 15Edward Wang: Move replace and swap to std::mem. Get rid of std::util...
+[22:56:48] <ghrust> 13rust/06auto 1438ed467 15bors: auto merge of #11956 : edwardw/rust/issue-7556, r=cmr...
+[22:56:49] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[22:58:00] *** Quits: lpy (lpy@AEF55484.D19CEE75.952560D4.IP) (Ping timeout)
+[23:00:25] *** Quits: NiccosSystem (NiccosSyst@AB1AFDE.FC7B0C35.A7597CB6.IP) (Ping timeout)
+[23:01:05] *** Quits: canhtak (canhtak@moz-71C1AFFE.wl.t.ulaval.ca) (Quit: canhtak)
+[23:07:30] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[23:07:54] *** Quits: Zr40 (zr40@moz-CCFEAB92.adsl.xs4all.nl) (Quit: leaving)
+[23:07:57] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[23:09:47] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[23:11:46] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[23:26:19] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[23:37:40] *** Joins: canhtak (canhtak@moz-71C1AFFE.wl.t.ulaval.ca)
+[23:43:10] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[23:48:04] *** Quits: eibwen (kvirc@moz-67BD5340.dip0.t-ipconnect.de) (Ping timeout)
+[23:55:49] <acrichto> we need to alter bors to post status reports of what's currently being oxidized in this channel
+[23:56:28] *** Joins: lpy (lpy@AEF55484.D19CEE75.952560D4.IP)
+[23:58:35] *** Quits: lpy (lpy@AEF55484.D19CEE75.952560D4.IP) (Ping timeout)
+[23:58:43] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[23:59:35] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: pcwalton)

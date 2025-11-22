@@ -1,0 +1,1437 @@
+[00:00:11] *** Joins: gsingh93 (gulshan@moz-qnbukr.mi.comcast.net)
+[00:05:03] *** Joins: ytain (ytain@moz-pr2.aip.175.108.IP)
+[00:05:26] *** Joins: brson (brson@moz-8uhedf.tmodns.net)
+[00:05:26] *** ChanServ sets mode: +o brson
+[00:05:30] *** Quits: brson (brson@moz-8uhedf.tmodns.net) (Quit: leaving)
+[00:06:17] <scott> some members of the core team want to add specialization, right? will specialized things require the Reflect marker trait (which I just learned about and understand exists so we can rely on parametricity for non-Reflect type parameters)?
+[00:10:03] <bstrie> scott: I've never seen a design proposed for specialization, too soon to say
+[00:10:15] <scott> fair enough, thanks!
+[00:10:17] <sfackler> not sure it'd be necessary in the specialization use-case
+[00:10:37] <sfackler> since you know statically that your thing will go to the specialized version
+[00:11:09] <scott> specialization is pretty much exactly the kind of thing that breaks parametricity as I understand it
+[00:11:11] <sfackler> unlike fn foo<T: Reflect>(t: T) { <downcast foo here> }
+[00:11:51] <aatch> My idea for specialisation is to treat it like user-controlled monomorphism.
+[00:12:01] <bstrie> I don't see how specialization would break parametricity, the function signature is the same. just the guts differ
+[00:12:47] <scott> that's the point - parametricity lets you infer that the guts don't differ (in that they result in the exact same effects from an outside perspective, at least)
+[00:13:40] <sfackler> but you can look and see fn foo<T> and fn foo<T: Vec> or whatever the syntax would be and know that if you pass a Vec in the guts will differ since they're different functions
+[00:13:40] <scott> it's probably bad style if your specialization does change externally visible behaviour, but it would be possible
+[00:14:02] *** Joins: Rym_ (y@moz-rmaga4.range86-187.btcentralplus.com)
+[00:14:12] <bstrie> we already don't gurantee that methods on different types will have the same effects
+[00:14:22] <bstrie> impl Foo for Bar, impl Foo for Qux
+[00:14:31] <bstrie> two different implementations of the same methods, different guits
+[00:14:57] <bstrie> if it's not in the method signature, you can't rely on it
+[00:14:58] <scott> yeah, trait methods are already a form of specialization / type casing
+[00:15:07] <scott> but say, fn f<T>(t: T) -> T
+[00:15:20] <aatch> To me, specialisation is more important for changing the representation of types.
+[00:15:25] <scott> parametricity tells you that has to be the identity function (ignoring loops, panics, unsafe, ...)
+[00:15:37] <scott> specialization means it may not be the identity function for all types
+[00:15:55] <scott> specialization seems pretty important for optimizations
+[00:15:55] <aatch> scott, no, the signature says it has to return the same type it's passed in.
+[00:16:06] <bstrie> scott: no, you can branch on size_of::<T>
+[00:16:11] <aatch> scott, the signature says nothing about the value of the return type.
+[00:16:31] <scott> add anything that lets you switch on the type in any fashion to my '...'
+[00:16:33] <scott> ;)
+[00:17:09] <bstrie> I think my point is that you are attributing to rust greater guarantees than it actually provides :)
+[00:17:25] <scott> it's a similar situation in other languages where parametricity holds so long as you ignore $big_list_of_bad_behaviour
+[00:18:01] <scott> well, I'm stating something that is claimed in the Reflect documentation
+[00:18:12] <scott> > In particular, thanks to the Reflect bound, callers know that a function declared like fn bar<T>(...) will always act in precisely the same way no matter what type T is supplied, because there are no bounds declared on T. (The ability for a caller to reason about what a function may do based solely on what generic bounds are declared is often called the
+[00:18:12] <scott> "parametricity property".)
+[00:18:20] <bstrie> file a doc bug :)
+[00:18:34] *** Quits: Rym_ (y@moz-rmaga4.range86-187.btcentralplus.com) (Ping timeout: 121 seconds)
+[00:18:48] <scott> or make size_of require T: Reflect :P
+[00:19:16] <aatch> Any implementation of specialisation would presumably require that specialised items conform to the signature of the matching generic item.
+[00:19:56] <scott> the value of parametricity is that it lets you infer things about the implementation beyond the signature from just the signature
+[00:20:12] <scott> but I understand if it's not a priority to make parametricity usually-reliable
+[00:23:23] <reem> scott: besides size_of, curious if you can think of anything else that breaks parametricity that doesn’t require Reflect 
+[00:23:33] <reem> I actually don’t think it’s ridiculous for size_of to require Reflect
+[00:23:34] <aatch> reem, needs_drop
+[00:23:49] <reem> needs_drop too, sounds like exactly what Reflect exists for
+[00:23:51] <scott> it'd be nice to have a list at least to see how prevalent it is
+[00:24:34] <aatch> Unfortunately size_of is very, very prevalent.
+[00:24:36] <reem> The problem is we couldn’t add those bounds without stabilizing Reflect (or requiring Any, which ~= Reflect + ‘static)
+[00:24:46] <scott> yeah, seems like it would break a lot of code
+[00:24:48] <reem> and requiring ‘static for size_of is a non-starter imo
+[00:25:00] <scott> anything that takes a type and returns some bit of information about that type breaks parametricity I believe
+[00:25:12] <aatch> Indirectly. Think about how much code uses Vec<T>.
+[00:25:50] <reem> Vec<T> is a great example. I don’t think it’s practical to actually require Reflect for this stuff, but it would make sense.
+[00:25:51] <scott> but maybe not necessarily in a way that will matter
+[00:26:25] <scott> is there a common example of size_of usage that would cause changes in behaviour visible from outside the function it's used in?
+[00:27:29] <aatch> scott, map_in_place maybe? It'll panic depending on the value returned by size_of
+[00:27:58] <scott> true
+[00:28:07] <scott> although panics alone already break parametricity
+[00:28:15] <aatch> scott, how?
+[00:28:33] <scott> fn id<T>(t: T) -> T might not be the identity function if it just panics
+[00:28:47] <scott> i.e. if it's not a 'total function' in the mathematical sense
+[00:29:02] <aatch> scott, `fn id<T>(t: T) -> T` might not be the identity function anyway.
+[00:29:42] <bluss> it could be the disk wipe & identity function
+[00:30:01] <kmc> in haskell this is usually handwaved away ;)
+[00:30:03] <aatch> In a limited version of Rust, sure, you could say that.
+[00:30:44] <scott> yeah, I'm also assuming the function is pure... maybe the Reflect docs really should just have that bit removed
+[00:30:46] <kmc> but also in Haskell, _|_ manifests at every level of a value
+[00:30:53] <reem> id x = id x has type a -> a in haskell and isn’t the identity function anyway
+[00:30:58] <scott> in which case I wonder what the new explanation for Reflect's behaviour would be
+[00:30:58] <kmc> Rust did explicitly abandon purity checking for functions
+[00:31:06] <scott> err, s/behaviour/existance/
+[00:31:06] <kmc> parametricity checking seems similar
+[00:32:34] <aatch> I think Reflect is supposed to be a bit more heavy-handed than branching on size_of.
+[00:33:00] <bluss> scott: if you remove the part about parametricy from the Reflect docs, the whole purpose of it is gone though?
+[00:33:18] <scott> bluss: yeah that's why I'm questioning it
+[00:33:46] <aatch> I think Reflect is supposed to indicate where type-checking has been moved to runtime, rather than compile time.
+[00:33:50] <reem> fwiw I have questioned Reflect for a while :P
+[00:34:02] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[00:34:08] <reem> there’s a reason we have been keeping it #[unstable]
+[00:34:31] <scott> aatch: that seems like a reasonable explanation
+[00:34:44] <scott> makes sense with that name, Reflect
+[00:35:16] <aatch> I'm admittedly just guessing. I don't actually *know* the reasons for Reflect.
+[00:35:35] <aatch> Its ties to Any suggests that though.
+[00:36:43] <reem> It was basically added so we have some guarantees of parametrically
+[00:36:47] <reem> parametricity*
+[00:37:04] <reem> specifically it exists so if you want to use Any you have to explicitly say T: Any
+[00:37:16] <reem> (since Reflect is not stable you can’t use it directly anyway)
+[00:43:47] <bstrie> < scott> the value of parametricity is that it lets you infer things about the implementation beyond the signature from just the signature
+[00:43:57] <bstrie> scott: ^ I think it is very dangerous to assume that this will ever hold true for rust
+[00:44:14] <bstrie> to reiterate, if it's not in the signature, it cannot be relied upon
+[00:44:59] <scott> yeah, it seems to be a rather shaky assumption
+[00:45:04] *** Joins: kmcguire (kmcguire@moz-bbqf14.res.bhn.net)
+[00:45:33] <bstrie> I'm afraid that this is the same kind of thining that led to the Leak snafu
+[00:45:43] <bstrie> people assuming guarantees that rust does not provide
+[00:46:09] <aatch> Rust is Love. Rust is Life.
+[00:46:10] <scott> on the other hand, most functions will end up having the same behaviour for all types because code is simply easier to understand that way
+[00:46:31] <scott> but I agree it's probably not something to assume holds without actually checking
+[00:46:51] <scott> because of that key word 'most'
+[00:47:36] <aatch> I think people over-think things too. At the end of the day, broken code is broken, whether or not Rust could/should prevent that doesn't unbreak it.
+[00:48:42] *** Quits: jga (jga@moz-6g1.t1q.244.77.IP) (Ping timeout: 121 seconds)
+[00:48:56] <aatch> I see the language as a collection of tools for building programs. If I don't have a tool that would be really useful in some situation, I make do with the ones I *do* have.
+[00:49:45] <aatch> Having more, better tools is good, but they're useless if they don't help me write software.
+[00:49:49] <bluss> aatch++
+[00:50:48] *** Joins: Rusky (russell@moz-vn1e9f.slkc.qwest.net)
+[00:50:57] <scott> parametricity is less a tool and more a local reasoning property akin to "this &T will never mutate under me" and "this &mut T is not aliased"
+[00:51:04] <aatch> People have been writing C code for decades and the world hasn't ended yet. I'm sure we can handle not being 100% mathematically sound.
+[00:51:08] <scott> but like those properties, it incurs restrictions
+[00:51:24] <scott> in this case, restrictions that are probably too restrictive for Rust
+[00:52:02] <scott> I really only bring this up because of the Reflect docs, which I now agree with bstrie should be changed
+[00:52:15] *** Joins: Bira (Bira@moz-sq6.nc4.106.187.IP)
+[00:52:51] <aatch> scott, I was more making a general statement. Partially my building sentiment to the recent leaking hysteria if I'm being honest.
+[00:53:26] <scott> I haven't been very aware of the leak discussions, other than the fact that they are happening and there's been a lot of proposals
+[00:54:02] <aatch> scott, I've kept at arms length, last time something like this happened (albeit much worse that time), I ragequit Rust.
+[00:54:08] <scott> I read nmatsakis' post about the situation
+[00:54:36] <scott> what was the previous thing?
+[00:55:45] <aatch> scott, nmatsakis proposed (and only proposed) removing immutable-by-default and moving to a unique/shared paradigm instead of a mutable/immutable one.
+[00:55:48] <reem> It can be pretty frustrating to engage on topic like the leak thing, I’ve definitely had moments where I had to step away from the computer after reading /r/rust comments and stuff
+[00:56:02] <reem> staying at arm’s length is probably wise :P
+[00:56:07] <scott> aatch: ah, that must have been before my time
+[00:56:18] <reem> I remember that, the “mutpocalypse”
+[00:57:12] <aatch> My initial reaction to "leaking the JoinGuard allows for memory unsafety" was "well then don't leak the JoinGuard".
+[00:57:24] *** Quits: johnsoft (johnsoft@moz-69mrig.res.rr.com) (Ping timeout: 121 seconds)
+[00:58:27] <aatch> Which I think just about sums how I think as a programmer.
+[00:58:35] <scott> I think the problem was over-hyped, but it was troubling from the outside. ("rust doesn't actually guarantee memory safety, oh no!" was the reaction I mostly saw)
+[00:59:32] *** Joins: tamird (textual@moz-gg3hct.res.rr.com)
+[01:00:00] * Eridius skims backscroll
+[01:00:20] *** Joins: Stebalien (Stebalien@moz-i00.hrk.38.73.IP)
+[01:00:33] <Eridius> I don't think we need to say <T: Reflect> in order to employ specialization. I think it's sufficient to just indicate that a function / type has been specialized in the documentation
+[01:00:54] <aatch> Woo, back to specialisation!
+[01:01:06] <Eridius> e.g. there's no real difference to the user between `fn foo<T: Reflect>(x: T)` and `fn foo<T>(x: T) // T has been specialized`
+[01:01:32] <aatch> Personally, I think specialisation shouldn't interact with most of the type system beyond ensuring that specialised instances are valid.
+[01:01:34] *** Joins: johnsoft (johnsoft@moz-69mrig.res.rr.com)
+[01:01:36] <bluss> I thought we could see the big discussion about scoped as something positive. Lots of brain power spent in the community to try to solve it, lots of rfcs written
+[01:01:40] <scott> that's pretty much what C++ does, see http://en.cppreference.com/w/cpp/container/vector for an example (vector<bool>)
+[01:02:03] *** Quits: GBGamer (npm@moz-92sbjt.wa.comcast.net) (NickServ (RECOVER command used by npm))
+[01:02:03] *** Joins: GBGamer (npm@moz-92sbjt.wa.comcast.net)
+[01:02:13] <aatch> scott, that's my idea for it in Rust, more or less.
+[01:02:15] <scott> a particular bad example of specialization, mind, but I'm just pointing out the docs :P
+[01:02:40] *** Joins: npm (npm@moz-92sbjt.wa.comcast.net)
+[01:02:52] <aatch> scott, basically just allowing users to write monomorphised instances instead of them being compiler-generated.
+[01:03:01] <Eridius> heck, if we wanted we could even add some syntax to have you type something like `fn foo<specialized T>(x: T)` if you want it reflected in the type signature somehow, although I don't think that's really strictly necessary
+[01:03:14] <aatch> Eridius, I was thinking an attribute.
+[01:03:20] <Eridius> aatch: good idea
+[01:03:40] <aatch> Eridius, so `#[specialised] fn foo<f32> ...`
+[01:03:41] <scott> it would be nice if the 'general' version of the generic had some sign that it would later be specialization
+[01:03:45] <scott> however it looks
+[01:03:52] *** Quits: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au) (Connection closed)
+[01:04:02] <scott> specialized*
+[01:04:17] <Eridius> I could get behind the idea of requiring an attribute on the generic declaration
+[01:05:08] <scott> and presumably that wouldn't ever be a problem, because we shouldn't be allowing specializations to happen in other crates from where the original definition is
+[01:05:12] *** Joins: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au)
+[01:05:42] <Eridius> I would expect something like our current coherence rules for traits to apply to specializations
+[01:05:42] <aatch> My motivating example is using SIMD in otherwise-generic math code
+[01:06:05] <scott> I think you can technically do that in C++... specializations in different compilation units
+[01:06:08] <Eridius> e.g. you can specialize someone else's generic function if a local type is the value of the specialized type parameter
+[01:06:14] <scott> not sure if the standard disallows it or if it's just a terrible idea
+[01:06:47] <Eridius> but this question would require deciding whether we require an attribute on specializable functions or not, e.g. should you be able to specialize someone else's generic type/function even if they didn't think it was necessary?
+[01:07:20] <scott> if you could specialization anything, you could even specialize size_of for your type
+[01:07:23] <scott> seems weird
+[01:07:41] <scott> my fingers really want to type 'specialization' instead of 'specialize' a lot
+[01:07:47] <Eridius> true, although there's always the inverse concept of "deny specialization"
+[01:08:09] <aatch> I'd argue that keeping specialising crate-local is require for back-compat concerns.
+[01:08:15] *** Joins: Rym_ (y@moz-a44.2as.55.31.IP)
+[01:08:19] <aatch> specialisation*
+[01:09:23] <aatch> Since otherwise you'd break external code with an otherwise-internal change.
+[01:09:59] <scott> vector<bool> is an interesting case study to me
+[01:10:30] <scott> it seems silly to make all vector<bool> automatically bitvecs since those have difference performance characteristics and I don't think bitvec is a clear cut winner in all cases
+[01:10:44] <scott> but choosing between Vec<bool> and BitVec in Rust is a decision you can only make at the top level
+[01:10:48] <aatch> scott, I think that vector<bool> should be *possible* in Rust, even if its a bad idea.
+[01:11:19] <scott> if you have S<T> and S<T> contains Vec<T> then you might want Vec<T> for not bool and BitVec for bool
+[01:11:30] <scott> which seems to be the rationale for C++'s vector<bool> specialization
+[01:11:37] <scott> but I wonder if there's some better way to handle that
+[01:11:52] <aatch> scott, you just specialise S
+[01:12:08] <Eridius> aatch: what do you mean by "you'd break external code"? If external code hits your specialization, then they're using a type defined in your crate, which means they depend on your crate, which means you already have infinite ways to introduce breaking changes
+[01:12:42] *** Quits: Rym_ (y@moz-a44.2as.55.31.IP) (Ping timeout: 121 seconds)
+[01:12:54] <scott> aatch: yeah... I think that's more reasonable of a solution than I thought
+[01:12:56] <aatch> Eridius, I mean that if people could write specialisations of your functions, making an internal change could break those external specialisations.
+[01:14:23] <aatch> Eridius, if for example you start maintaining some datastructure that other code relies on, specialised instances outside your crate would maintain it (and might not be able due to privacy) and stuff would break.
+[01:14:46] <aatch> wouldn't maintain it*
+[01:14:46] <Eridius> aatch: same thing could be said for if you write a function bounded by traits, an external implementation of that trait on an external type could behave incorrectly
+[01:15:37] <Eridius> if your function is maintaining private invariants that an external implementation wouldnt be able to do, then it just doesn't make sense to have an external implementation
+[01:16:17] <seanmonstar> i'd be interested in seeing doc tests sped up. the slowness is because each test is compiled as a new crate?
+[01:16:29] <scott> traits and function specialization are very close the same thing afaict
+[01:16:41] <scott> close to*
+[01:16:48] <Eridius> so the question is: Allow specialization of all types/functions and just assume people won't do bad things? Allow specialization only on types/functions explicitly annotated as such and hope people remember to apply that attribute to types they vend that might possibly want to be specialized? Or have an attribute that blocks specialization and hope people remember to use it when necessary?
+[01:17:16] <scott> in fact, I think you can throw in data structure specialization thanks to associated types
+[01:17:46] <aatch> scott, the crucial difference is that you can have a generic instance overridden by a specialised one.
+[01:18:09] <scott> ah, yes. trait blanket impls preclude any further impls
+[01:18:58] <Eridius> speaking of trait blanket impls, I just tried implementing Any on a type and the error message is a bit confused
+[01:19:10] <Eridius> it's listing my own impl as the conflicting impl in crate `core`
+[01:20:17] <aatch> scott, which is why my motivating example is for something like mathematical code using SIMD when the base number is f32
+[01:20:21] <scott> a blanket impl + an 'override impl' kind of thing would roughly be C++-style specialization, but I can foresee lots of irritating details to be worked out around that idea
+[01:20:41] *** Joins: SiegeLord (sl@moz-9jtaei.ca.comcast.net)
+[01:21:06] <aatch> scott, since I can implement (for example) the dot product for any base type that I can add and multiply.
+[01:21:10] <scott> aatch: like using vectors twice as large for f32 than f64? (I don't know SIMD that well)
+[01:21:37] <scott> ah, or just using SIMD at all for f32 and not at all for more complex types
+[01:22:00] <aatch> scott, but with SIMD instructions, the naive way results in lots of moving in and out of SIMD registers.
+[01:23:09] <aatch> But you can't use the "fast for SIMD" way in non-SIMD code because it'll almost always be slower due the shuffles that the SIMD code does.
+[01:23:34] *** Quits: A205B064 (A205B064@moz-9s9nhk.nap.wideopenwest.com) (Ping timeout: 121 seconds)
+[01:24:05] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[01:24:43] <aatch> I have some code that forwards to either an SIMD implementation of some operation, or a serial version, based on a compile-time switch.
+[01:25:25] <aatch> But my vectors always have either f32 or f64 in them, so I can do that.
+[01:26:10] <aatch> I can't make my vectors parameterized on the base number type since then I couldn't have an SIMD version at all.
+[01:26:24] <scott> there's always something like comparing against the value of intrinsics::type_name::<T>() for specialization today :)
+[01:26:50] <aatch> scott, the problem is that I can't switch representation with that.
+[01:26:51] <scott> in nightly, at least
+[01:27:06] <scott> right, that'd be function specialization only
+[01:28:42] <aatch> As I've said, I think specialisation will work best if we see it as monomorphism done by the programmer instead of the compiler.
+[01:29:14] *** Joins: annodomini (lambda@moz-qgii5v.ma.comcast.net)
+[01:30:03] <scott> sounds like a good way to put it
+[01:34:35] *** Quits: ytain (ytain@moz-pr2.aip.175.108.IP) (Quit: Textual IRC Client: www.textualapp.com)
+[01:42:00] *** Joins: summerlight (summerlight@moz-99k.2mj.130.121.IP)
+[01:45:13] <WindowsBunny> scott: as long as you're specializing in the same crate as the type is defined, then a specialization for that type should be fine
+[01:46:32] <scott> yeah, same-crate doesn't have any obvious problems. (not sure which lines from me you're responding to exactly)
+[01:47:29] *** Joins: Ericson2314 (user@moz-md3.070.16.138.IP)
+[01:51:16] *** Quits: Bira (Bira@moz-sq6.nc4.106.187.IP) (Quit: Leaving...)
+[01:56:21] <frewsxcv> if anyone is familiar with Homebrew on OSX and/or the rust build process on OSX would be great to get thoughts on https://github.com/rust-lang/rust/issues/25130#issuecomment-99284515
+[01:56:31] <frewsxcv> (not that comment in particular)
+[01:57:26] *** Quits: barosl (barosl@moz-tmp.qma.67.220.IP) (Connection closed)
+[01:57:43] *** Joins: barosl (barosl@moz-tmp.qma.67.220.IP)
+[02:01:01] *** Quits: swgillespie (swgillespie@moz-1i5.3un.220.167.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[02:02:20] *** Joins: Rym_ (y@moz-a44.2as.55.31.IP)
+[02:06:52] *** Quits: Rym_ (y@moz-a44.2as.55.31.IP) (Ping timeout: 121 seconds)
+[02:13:46] *** Joins: jgallagher (john@moz-6ge.dhn.131.24.IP)
+[02:16:02] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[02:16:02] *** ChanServ sets mode: +o pcwalton
+[02:16:10] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (Client exited)
+[02:21:30] *** Quits: zz_kimundi (kimundi@moz-udrtd0.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[02:24:04] *** Joins: zz_kimundi (kimundi@moz-136e94.dip0.t-ipconnect.de)
+[02:24:05] *** zz_kimundi is now known as kimundi
+[02:35:52] *** Quits: chc4 (chc4@moz-pdo0at.ma.comcast.net) (Quit: AHHHHH BEES)
+[02:43:34] *** Quits: Stebalien (Stebalien@moz-i00.hrk.38.73.IP) (Quit: leaving)
+[02:56:32] *** Joins: Rym_ (y@moz-a44.2as.55.31.IP)
+[03:01:02] *** Quits: Rym_ (y@moz-a44.2as.55.31.IP) (Ping timeout: 121 seconds)
+[03:04:15] *** Quits: npm (npm@moz-92sbjt.wa.comcast.net) (Quit: AndroIRC - Android IRC Client ( http://www.androirc.com ))
+[03:07:03] *** Joins: p1start (p1start@moz-nftjhe.org)
+[03:18:50] *** Joins: mermiews (Mibbit@moz-juv.9o3.252.72.IP)
+[03:27:35] *** Joins: semarie (semarie@moz-tlq7ff.arbitrary.ch)
+[03:48:28] *** Quits: p1start (p1start@moz-nftjhe.org) (Ping timeout: 121 seconds)
+[03:50:04] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[03:50:38] *** Joins: Rym_ (y@moz-a44.2as.55.31.IP)
+[03:52:34] *** Quits: annodomini (lambda@moz-qgii5v.ma.comcast.net) (Client exited)
+[03:54:11] *** Quits: gsingh93 (gulshan@moz-qnbukr.mi.comcast.net) (Ping timeout: 121 seconds)
+[03:55:12] *** Quits: Rym_ (y@moz-a44.2as.55.31.IP) (Ping timeout: 121 seconds)
+[04:06:03] *** Quits: mermiews (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[04:40:18] *** Joins: sprang (sprang@moz-d0kmvi.12d9.sm5v.0009.2601.IP)
+[04:41:13] *** Joins: munksgaard (munksgaard@moz-478pev.u.parknet.dk)
+[04:44:48] *** Joins: Rym_ (y@moz-a44.2as.55.31.IP)
+[04:47:55] *** Joins: Rusky1 (russell@moz-de0fff.slkc.qwest.net)
+[04:48:23] *** Quits: Rusky (russell@moz-vn1e9f.slkc.qwest.net) (Ping timeout: 121 seconds)
+[04:49:22] *** Quits: Rym_ (y@moz-a44.2as.55.31.IP) (Ping timeout: 121 seconds)
+[04:56:45] *** Quits: sully (sully@moz-qhc979.emarhavil.com) (*.net *.split)
+[04:56:45] *** Quits: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu) (*.net *.split)
+[04:56:45] *** Quits: shep-home (shep@moz-7pm0e0.fios.verizon.net) (*.net *.split)
+[04:56:45] *** Quits: jevin (jevin@moz-sra.ovp.12.72.IP) (*.net *.split)
+[04:56:45] *** Quits: poorman (poorman@moz-sdl0oq.res.rr.com) (*.net *.split)
+[04:56:45] *** Quits: WindowsBunny (Peter@moz-prmara.east.verizon.net) (*.net *.split)
+[04:56:45] *** Quits: steveklabnik (root@moz-fft.uo8.55.45.IP) (*.net *.split)
+[04:56:45] *** Quits: comex (comex@moz-0m1t01.compute-1.amazonaws.com) (*.net *.split)
+[04:56:45] *** Quits: hugod (user@moz-885.jmo.24.70.IP) (*.net *.split)
+[04:56:45] *** Quits: ebfull (ebfull@moz-2hf06a.co.comcast.net) (*.net *.split)
+[04:56:45] *** Quits: kemurphy (kemurphy@moz-ke1.ea2.241.192.IP) (*.net *.split)
+[04:56:45] *** Quits: blank_name (blank_name@moz-5144dk.mi.frontiernet.net) (*.net *.split)
+[04:56:45] *** Quits: cgaebel (cgaebel@moz-aq9.qj7.199.198.IP) (*.net *.split)
+[04:56:45] *** Quits: zeiris (zeiris@moz-8jbmam.letter.agency) (*.net *.split)
+[04:56:45] *** Quits: JustAPerson (JustAPerson@moz-un628q.moe) (*.net *.split)
+[04:56:45] *** Quits: [o__o] ([o__o]@moz-4s2t5k.compute-1.amazonaws.com) (*.net *.split)
+[04:56:45] *** Quits: jgallagher (john@moz-6ge.dhn.131.24.IP) (*.net *.split)
+[04:56:45] *** Quits: Ericson2314 (user@moz-md3.070.16.138.IP) (*.net *.split)
+[04:56:45] *** Quits: jmorton (jmorton@moz-83s.irv.199.198.IP) (*.net *.split)
+[04:56:45] *** Quits: lu324 (lu324___@moz-3v8ljg.dhcp.embarqhsd.net) (*.net *.split)
+[04:56:45] *** Quits: Aaron (aaron@moz-em79ik.aaronlindsay.com) (*.net *.split)
+[04:56:45] *** Quits: kmehall (quassel@moz-i98f9d.kevinmehall.com) (*.net *.split)
+[04:56:45] *** Quits: kwantam (kwantam@moz-1adqok.DYNAPOOL.NYU.EDU) (*.net *.split)
+[04:56:45] *** Quits: Luqman (laden@moz-bjmiqc.csclub.uwaterloo.ca) (*.net *.split)
+[04:56:45] *** Quits: geofft (geofft@moz-vfphq1.mit.edu) (*.net *.split)
+[04:56:45] *** Quits: mmun (mmun@moz-iar.moo.170.107.IP) (*.net *.split)
+[04:56:45] *** Quits: bitemyapp (callen@moz-s2l.6j9.199.198.IP) (*.net *.split)
+[04:56:45] *** Quits: Amaranth (travis@moz-1raqsl.cpe.cableone.net) (*.net *.split)
+[04:56:45] *** Quits: Rusky1 (russell@moz-de0fff.slkc.qwest.net) (*.net *.split)
+[04:56:45] *** Quits: bdero (bran@moz-lbs.91h.47.73.IP) (*.net *.split)
+[04:56:45] *** Quits: rovar_ (rovar@moz-96effg.dyn.optonline.net) (*.net *.split)
+[04:56:45] *** Quits: dustinm (dustinm@moz-9ms.n6q.68.208.IP) (*.net *.split)
+[04:56:45] *** Quits: Sergio (Sergio@moz-23roph.bz) (*.net *.split)
+[04:56:45] *** Quits: lahwran (lahwran@lahwran.net) (*.net *.split)
+[04:56:45] *** Quits: tamird (textual@moz-gg3hct.res.rr.com) (*.net *.split)
+[04:56:45] *** Quits: jmesmon (ydoc@moz-naocu2.einic.org) (*.net *.split)
+[04:56:45] *** Quits: rovar (rovar@moz-6iq.47m.88.38.IP) (*.net *.split)
+[04:56:45] *** Quits: tdfischer (tdfischer@hackerbots.net) (*.net *.split)
+[04:56:45] *** Quits: johnsoft (johnsoft@moz-69mrig.res.rr.com) (*.net *.split)
+[04:56:45] *** Quits: frewsxcv (frewsxcv@moz-lr4.h2r.241.192.IP) (*.net *.split)
+[04:56:45] *** Quits: arrdem (arrdem@moz-mho.ehc.170.107.IP) (*.net *.split)
+[04:56:45] *** Quits: k1i (k1i@moz-moheke.k1.io) (*.net *.split)
+[04:56:45] *** Quits: awe (awe@moz-vpr.va5.236.104.IP) (*.net *.split)
+[04:56:45] *** Quits: burntsushi (burntsushi@moz-t92kn9.ma.charter.com) (*.net *.split)
+[04:56:45] *** Quits: jamwt (jamwt@moz-noo6hc.jamwt.com) (*.net *.split)
+[04:56:45] *** Quits: ndt (ndt@moz-t0t.9gv.241.192.IP) (*.net *.split)
+[04:56:45] *** Quits: tbelaire (tbelaire@moz-e3f93l.csclub.uwaterloo.ca) (*.net *.split)
+[04:56:45] *** Quits: pauls (pauls@moz-e5p333.ccs.neu.edu) (*.net *.split)
+[04:56:45] *** Quits: bodie (bodie@moz-vs7.tk8.243.162.IP) (*.net *.split)
+[04:56:45] *** Quits: BlakeWilliams (BW@moz-32q.80a.230.173.IP) (*.net *.split)
+[04:56:45] *** Quits: japaric (japaric@moz-n93.1g3.233.190.IP) (*.net *.split)
+[04:56:45] *** Quits: bstrie (ben@moz-avu3ju.members.linode.com) (*.net *.split)
+[04:56:45] *** Quits: kmcguire (kmcguire@moz-bbqf14.res.bhn.net) (*.net *.split)
+[04:56:54] *** Joins: jevin (jevin@moz-sra.ovp.12.72.IP)
+[04:57:04] *** Joins: sully (sully@moz-qhc979.emarhavil.com)
+[04:57:04] *** Joins: tdfischer (tdfischer@hackerbots.net)
+[04:57:04] *** Joins: kwantam (kwantam@moz-1adqok.DYNAPOOL.NYU.EDU)
+[04:57:04] *** Joins: tbelaire (tbelaire@moz-e3f93l.csclub.uwaterloo.ca)
+[04:57:04] *** Joins: jamwt (jamwt@moz-noo6hc.jamwt.com)
+[04:57:04] *** Joins: jmorton (jmorton@moz-83s.irv.199.198.IP)
+[04:57:04] *** Joins: comex (comex@moz-0m1t01.compute-1.amazonaws.com)
+[04:57:04] *** Joins: pauls (pauls@moz-e5p333.ccs.neu.edu)
+[04:57:04] *** Joins: jmesmon (ydoc@moz-naocu2.einic.org)
+[04:57:04] *** Joins: Sergio (Sergio@moz-23roph.bz)
+[04:57:04] *** Joins: lahwran (lahwran@lahwran.net)
+[04:57:04] *** Joins: bodie (bodie@moz-vs7.tk8.243.162.IP)
+[04:57:04] *** Joins: kemurphy (kemurphy@moz-ke1.ea2.241.192.IP)
+[04:57:04] *** Joins: JustAPerson (JustAPerson@moz-un628q.moe)
+[04:57:04] *** Joins: awe (awe@moz-vpr.va5.236.104.IP)
+[04:57:04] *** Joins: mmun (mmun@moz-iar.moo.170.107.IP)
+[04:57:04] *** Joins: ndt (ndt@moz-t0t.9gv.241.192.IP)
+[04:57:04] *** Joins: cgaebel (cgaebel@moz-aq9.qj7.199.198.IP)
+[04:57:04] *** Joins: k1i (k1i@moz-moheke.k1.io)
+[04:57:04] *** Joins: frewsxcv (frewsxcv@moz-lr4.h2r.241.192.IP)
+[04:57:04] *** Joins: Amaranth (travis@moz-1raqsl.cpe.cableone.net)
+[04:57:04] *** Joins: Rusky1 (russell@moz-de0fff.slkc.qwest.net)
+[04:57:04] *** Joins: BlakeWilliams (BW@moz-32q.80a.230.173.IP)
+[04:57:04] *** Joins: kmehall (quassel@moz-i98f9d.kevinmehall.com)
+[04:57:04] *** Joins: dustinm (dustinm@moz-9ms.n6q.68.208.IP)
+[04:57:04] *** Joins: Luqman (laden@moz-bjmiqc.csclub.uwaterloo.ca)
+[04:57:04] *** Joins: bstrie (ben@moz-avu3ju.members.linode.com)
+[04:57:04] *** Joins: arrdem (arrdem@moz-mho.ehc.170.107.IP)
+[04:57:04] *** Joins: steveklabnik (root@moz-fft.uo8.55.45.IP)
+[04:57:04] *** Joins: shep-home (shep@moz-7pm0e0.fios.verizon.net)
+[04:57:04] *** Joins: bitemyapp (callen@moz-s2l.6j9.199.198.IP)
+[04:57:04] *** Joins: Aaron (aaron@moz-em79ik.aaronlindsay.com)
+[04:57:04] *** Joins: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu)
+[04:57:04] *** Joins: blank_name (blank_name@moz-5144dk.mi.frontiernet.net)
+[04:57:05] *** Joins: kmcguire (kmcguire@moz-bbqf14.res.bhn.net)
+[04:57:05] *** Joins: tamird (textual@moz-gg3hct.res.rr.com)
+[04:57:05] *** Joins: hugod (user@moz-885.jmo.24.70.IP)
+[04:57:05] *** Joins: poorman (poorman@moz-sdl0oq.res.rr.com)
+[04:57:05] *** Joins: zeiris (zeiris@moz-8jbmam.letter.agency)
+[04:57:05] *** levin.mozilla.org sets mode: +oo bstrie steveklabnik
+[04:57:05] *** Joins: jgallagher (john@moz-6ge.dhn.131.24.IP)
+[04:57:05] *** Joins: bdero (bran@moz-lbs.91h.47.73.IP)
+[04:57:05] *** Joins: Ericson2314 (user@moz-md3.070.16.138.IP)
+[04:57:05] *** Joins: WindowsBunny (Peter@moz-prmara.east.verizon.net)
+[04:57:05] *** Joins: japaric (japaric@moz-n93.1g3.233.190.IP)
+[04:57:05] *** Joins: rovar_ (rovar@moz-96effg.dyn.optonline.net)
+[04:57:05] *** Joins: burntsushi (burntsushi@moz-t92kn9.ma.charter.com)
+[04:57:05] *** Joins: johnsoft (johnsoft@moz-69mrig.res.rr.com)
+[04:57:05] *** Joins: geofft (geofft@moz-vfphq1.mit.edu)
+[04:57:05] *** Joins: rovar (rovar@moz-6iq.47m.88.38.IP)
+[04:57:05] *** Joins: ebfull (ebfull@moz-2hf06a.co.comcast.net)
+[04:57:05] *** Joins: [o__o] ([o__o]@moz-4s2t5k.compute-1.amazonaws.com)
+[04:57:05] *** Joins: 557AABEQ2 (jevin@moz-sra.ovp.12.72.IP)
+[04:57:05] *** Joins: lu324 (lu324___@moz-3v8ljg.dhcp.embarqhsd.net)
+[04:57:19] *** Quits: Amaranth (travis@moz-1raqsl.cpe.cableone.net) (Connection closed)
+[04:57:44] *** Quits: geofft (geofft@moz-vfphq1.mit.edu) (Connection closed)
+[04:58:09] *** Quits: poorman (poorman@moz-sdl0oq.res.rr.com) (Ping timeout: 121 seconds)
+[04:58:35] *** Joins: poorman (poorman@moz-sdl0oq.res.rr.com)
+[04:59:54] *** Quits: 557AABEQ2 (jevin@moz-sra.ovp.12.72.IP) (Ping timeout: 121 seconds)
+[05:02:43] *** Quits: aatch (james@moz-ciignl.bmm3.j08e.e000.2406.IP) (Connection closed)
+[05:04:36] *** Joins: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP)
+[05:08:33] *** Joins: kushal (kdas@moz-ae6469.202.sitibroadband.in)
+[05:15:43] *** Quits: Diggsey (diggsey@moz-2s5u1v.dsl.pipex.com) (Ping timeout: 121 seconds)
+[05:19:01] *** Quits: munksgaard (munksgaard@moz-478pev.u.parknet.dk) (Ping timeout: 121 seconds)
+[05:21:48] *** Quits: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu) (Ping timeout: 121 seconds)
+[05:22:04] *** Joins: p1start (p1start@moz-nftjhe.org)
+[05:22:45] <seanmonstar> hrm, a compile-fail fails to compile, so its an error...
+[05:30:10] <sfackler> cfail tests have to fail to compile in a specific way to pass
+[05:30:11] *** Quits: dcb (textual@moz-j72nfe.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[05:31:33] <seanmonstar> sfackler: yea, finally noticed that the message didn't match correctly
+[05:32:38] *** Joins: dinfuehr (dinfuehr@moz-c25.u8s.112.91.IP)
+[05:32:56] <Mutabah> Is there a way of storing a cache of note attributes from a linter?
+[05:34:00] *** Joins: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu)
+[05:34:04] *** Quits: O01eg (o01eg@moz-bgq.20h.212.176.IP) (Client exited)
+[05:34:22] <Mutabah> E.g. a Map<NodeId,Set<&'tcx str>>
+[05:34:47] *** Joins: xarcus (Mibbit@moz-juv.9o3.252.72.IP)
+[05:38:58] *** Joins: Rym_ (y@moz-a44.2as.55.31.IP)
+[05:41:16] *** Quits: xarcus (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[05:43:29] *** Quits: Rym_ (y@moz-a44.2as.55.31.IP) (Ping timeout: 121 seconds)
+[05:48:44] *** Quits: dustinm` (dustinm@moz-1c1j82.fu2o.sj0n.5300.2607.IP) (Ping timeout: 121 seconds)
+[05:49:09] *** Quits: zxq9 (ceverett@moz-qsm369.mesh.ad.jp) (Quit: Konversation terminated!)
+[05:49:55] <Mutabah> meh, just stick that cache in the lint object
+[05:53:46] *** Joins: James (quassel@moz-225vcm.range86-148.btcentralplus.com)
+[05:54:18] *** Joins: zxq9 (ceverett@moz-qsm369.mesh.ad.jp)
+[05:56:48] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[06:01:20] *** Quits: kmcguire (kmcguire@moz-bbqf14.res.bhn.net) (Ping timeout: 121 seconds)
+[06:04:50] *** Quits: bdero (bran@moz-lbs.91h.47.73.IP) (Ping timeout: 121 seconds)
+[06:05:36] *** Joins: erz (erz@moz-45hupr.broadband.corbina.ru)
+[06:07:10] *** Quits: genbattle (genbattle@moz-4v0.gkd.16.182.IP) (Ping timeout: 121 seconds)
+[06:17:10] *** Quits: jgallagher (john@moz-6ge.dhn.131.24.IP) (Ping timeout: 121 seconds)
+[06:24:00] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[06:26:19] *** Quits: japaric (japaric@moz-n93.1g3.233.190.IP) (Ping timeout: 121 seconds)
+[06:26:47] *** Quits: johnsoft (johnsoft@moz-69mrig.res.rr.com) (Ping timeout: 121 seconds)
+[06:26:51] *** Joins: johnsoft (johnsoft@moz-69mrig.res.rr.com)
+[06:26:53] *** Joins: jgallagher (john@moz-6ge.dhn.131.24.IP)
+[06:32:06] *** Quits: Astrum|Lap (Astrum|Lap@moz-skcefh.co.comcast.net) (Client exited)
+[06:33:14] *** Joins: Rym_ (y@moz-a44.2as.55.31.IP)
+[06:34:51] <bstrie> aatch scott reem: related to the earlier discussion, I don't know if any of us realized that Reflect is actually stable now: https://github.com/rust-lang/rust/pull/24793
+[06:35:18] *** Joins: dustinm` (dustinm@moz-es6jb7.ip-167-114-152.net)
+[06:35:42] <scott> ah, interesting
+[06:35:50] <bstrie> oh wait, I bet reem did, he's commenting on that issue :P
+[06:36:05] <reem> I did realize and it was not actually stabilized as a result :)
+[06:36:44] <bstrie> ah
+[06:36:48] <bstrie> aatch: nm false alarm :P
+[06:36:55] *** Joins: squiddy (squiddy@moz-md4.pm3.19.178.IP)
+[06:37:02] <bstrie> that's what I get for not reading
+[06:37:17] *** Quits: James (quassel@moz-225vcm.range86-148.btcentralplus.com) (Ping timeout: 121 seconds)
+[06:37:39] *** Quits: Rym_ (y@moz-a44.2as.55.31.IP) (Ping timeout: 121 seconds)
+[06:40:05] *** Joins: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP)
+[06:40:12] *** Quits: rkruppe (chatzilla@moz-3nj.rnu.131.95.IP) (Quit: ChatZilla 0.9.91.1 [Firefox 37.0.2/20150415140819])
+[06:44:45] *** Quits: njn (chatzilla@moz-gfeqi3.iinet.net.au) (Quit: ChatZilla 0.9.91.1 [Firefox 40.0a1/20150503160042])
+[06:47:14] *** Joins: japaric (japaric@moz-n93.1g3.233.190.IP)
+[06:48:34] *** Quits: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[06:48:43] <Ericson2314> --sysroot is just for linking what is built, not overriding rpath for compiler itself, right?
+[06:49:32] *** Rusky1 is now known as Rusky
+[06:50:16] *** Quits: SiegeLord (sl@moz-9jtaei.ca.comcast.net) (Quit: It's a joke, it's all a joke.)
+[06:59:30] *** Joins: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP)
+[07:05:32] <Mutabah> Ericson2314: Afaik, yes
+[07:06:21] <Ericson2314> I'm thinking i'll finally get around to writing my cargo libstd independence RFC
+[07:06:21] *** Quits: japaric (japaric@moz-n93.1g3.233.190.IP) (Ping timeout: 121 seconds)
+[07:08:10] <Ericson2314> would be awkward to mess up the details. thanks
+[07:12:19] *** Quits: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[07:13:18] *** Joins: bjz (bjz@moz-b43.1aa.161.202.IP)
+[07:21:17] <Mutabah> Is there a way of going from a crate ID in a linter to the 'extern crate' item?
+[07:23:07] *** Joins: munksgaard (munksgaard@moz-1i4.hq0.225.130.IP)
+[07:24:30] <Manishearth> Mutabah: you need the def id for that
+[07:24:58] *** Joins: pnkfelix (pnkfelix@moz-eljppb.fbx.proxad.net)
+[07:24:58] *** ChanServ sets mode: +o pnkfelix
+[07:25:14] *** Quits: pnkfelix (pnkfelix@moz-eljppb.fbx.proxad.net) (Quit: rcirc on GNU Emacs 24.5.1)
+[07:25:30] *** Joins: pnkfelix (pnkfelix@moz-eljppb.fbx.proxad.net)
+[07:25:30] *** ChanServ sets mode: +o pnkfelix
+[07:25:50] <Manishearth> Mutabah: wait no. not sure
+[07:26:00] <Mutabah> yeah, have that
+[07:26:32] <Mutabah> (I want to have an attribute on the 'extern crate' to apply as a default)
+[07:26:39] <Manishearth> hm
+[07:26:50] <Manishearth> PathResolution doesn't sem to know about crates
+[07:27:15] *** Joins: Rym_ (y@moz-a44.2as.55.31.IP)
+[07:27:32] <Mutabah> :/ fun
+[07:27:56] <Mutabah> Tangential - How do I mark an attribute as used?
+[07:28:09] <Manishearth> Mutabah: check_name
+[07:28:12] <Manishearth> Mutabah: but
+[07:28:18] <Manishearth> in a lint you can't. ish
+[07:28:21] *** Quits: bjz (bjz@moz-b43.1aa.161.202.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[07:28:23] <Mutabah> :/
+[07:28:37] <Manishearth> Mutabah: the attribute use thingy runs with the rest of the lints
+[07:28:44] <Mutabah> ahah
+[07:28:53] <Manishearth> (so it runs in "parallel" like the rest in a single visitor)
+[07:29:15] <Manishearth> so while your mark_used() may work for an attribute on an item you're visiting, it won't work for an attribute on an already visited item
+[07:29:45] <Manishearth> Mutabah: suggestion: write a decorator for your attribute that expands to an internal version of that attribute allong with allow(unused_attribute)
+[07:30:12] <Manishearth> eg #[magic] ->#[allow(unused_attribute)] #[_magic]
+[07:30:17] <Mutabah> I could probably use that for the extern_crate too
+[07:30:20] <Manishearth> and then have your lint work on #[_magic]
+[07:30:36] *** Quits: summerlight (summerlight@moz-99k.2mj.130.121.IP) (Ping timeout: 121 seconds)
+[07:30:40] <Mutabah> would that affect other unused attributes on the same item?
+[07:30:52] <Manishearth> you can get all extern crate declarations by looking at the items in the crate root
+[07:30:59] <Manishearth> yes :)
+[07:31:07] <Manishearth> there is no attribute scoping, yet
+[07:31:11] <Manishearth> and hopefully there won't be
+[07:31:14] <Manishearth> that sounds horrible
+[07:31:32] <Mutabah> it does sound horrible
+[07:31:35] <Manishearth> Mutabah: an alternative solution is to modify the compiler so that plugins can declare attributes that they wish to use
+[07:31:43] <fredy> Hello, not sure if it is the right channel... I have this code that doesn't compile http://is.gd/vrsWm6 and I am wondering if it is the same issue as https://github.com/rust-lang/rust/issues/24682
+[07:31:46] <Mutabah> :/ yeah, don't want to patch rustc
+[07:31:49] *** Quits: Rym_ (y@moz-a44.2as.55.31.IP) (Ping timeout: 121 seconds)
+[07:32:16] <Manishearth> Mutabah: it's a simple patch
+[07:32:25] <Manishearth> you let the registry register attributes
+[07:32:39] <Mutabah> I don't care how simple it is, I don't want to be recompiling rustc as part of using my linter
+[07:32:50] <Manishearth> Mutabah: no no
+[07:32:55] <Manishearth> add this as a feature to rustc
+[07:33:02] <Mutabah> ... point
+[07:33:17] <bstrie> fredy: what version of rust are you using?
+[07:33:29] <Manishearth> registrar.register_attribute("magic", Whitelisted)
+[07:33:48] <Manishearth> use AttributeType from http://doc.rust-lang.org/nightly/syntax/feature_gate/enum.AttributeType.html, just ignore Gated
+[07:33:48] <fredy> bstrie: rustc 1.0.0-beta.2 (e9080ec39 2015-04-16) (built 2015-04-16)
+[07:34:05] <Manishearth> this way the custom_attribute gate need not be used when plugins are in play
+[07:34:13] <reem> fredy: Make the traits inherit from Sized, or add ?Sized bounds to T and S for both methods.
+[07:34:41] <Mutabah> Manishearth: ... not a bad idea
+[07:34:59] <Mutabah> Manishearth: Downside - Does require me to get a rustc build env set up
+[07:35:03] <Manishearth> Mutabah: make sure to disallow gated
+[07:35:10] <Manishearth> Mutabah: yes, but don't you have that already?
+[07:35:13] <Mutabah> nope
+[07:35:18] <Manishearth> get one :)
+[07:38:54] <fredy> reem: I tried inherit from Sized and it works fine. Does this solution adds any restrictions on the traits?
+[07:39:49] <reem> fredy: They can no longer be used with un-Sized types, including trait objects of those traits. In other words, it makes those traits “object unsafe” and they can’t be made into trait objects.
+[07:40:00] <reem> The alternative of adding ?Sized bounds is more flexible
+[07:40:08] <reem> since it lifts all these restrictions
+[07:40:21] <reem> Note your traits are already object unsafe since they have generic methods.
+[07:42:46] <fredy> reem: thx for the explanation
+[07:45:16] *** Joins: bjz (bjz@moz-b43.1aa.161.202.IP)
+[07:46:51] *** Quits: bjz (bjz@moz-b43.1aa.161.202.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[07:53:52] *** Joins: zmack (zmack@moz-htpein.home.aster.pl)
+[07:56:46] *** Joins: genbattle (genbattle@moz-ikj3l8.xtra.co.nz)
+[07:57:13] *** Quits: zmack (zmack@moz-htpein.home.aster.pl) (Connection closed)
+[08:00:35] *** Joins: larhat (Adium@moz-1dkvl5.81.in-addr.arpa)
+[08:00:41] <Mutabah> Compiler plugins on beta, possible?
+[08:00:55] *** Quits: Kxepal (Miranda@moz-gs3et5.pppoe.mtu-net.ru) (Ping timeout: 121 seconds)
+[08:01:02] <aatch> Mutabah, don't think so. They're feature-gated aren't they?
+[08:01:16] <Mutabah> Looks like it
+[08:01:33] <Manishearth> Mutabah: nope
+[08:01:41] <Manishearth> Mutabah: you can use erickt's syntex
+[08:02:40] <Manishearth> Mutabah: we (me, eddy, erick, keegan, nick)  discussed this a bit at portland -- syntex is one way of stabilization, though it's really a stopgap measure
+[08:02:48] *** Quits: larhat (Adium@moz-1dkvl5.81.in-addr.arpa) (Quit: Leaving.)
+[08:02:59] *** Joins: Kxepal (Miranda@moz-k3c9pl.pppoe.mtu-net.ru)
+[08:03:25] <Mutabah> yeah
+[08:03:40] <Manishearth> perhaps stabilizing a plugins "ABI" might work; so that an old plugin compiled with an old rustc can be used with a new library on a new rustc, but it sounded complicated and icky
+[08:03:49] <Mutabah> Just working on making my magic tagging linter into a cargo crate
+[08:04:23] <Manishearth> iirc the verdict was "we'll just wait and watch for a while", though we want to consciously keep plugin stability in mind as we extend the API
+[08:04:30] *** Joins: Guest63 (textual@moz-qfs.570.70.83.IP)
+[08:04:38] <Mutabah> completely understandable
+[08:04:53] <Manishearth> the problem with stabiizing plugins is that things like the AST and type representation will change as new features are added
+[08:04:58] <Manishearth> so it's not easy
+[08:04:58] *** Joins: FallingAlways (FallingTime@moz-1fu.gli.225.99.IP)
+[08:17:11] *** Quits: erz (erz@moz-45hupr.broadband.corbina.ru) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[08:17:50] *** Joins: ptalbot (ptalbot@moz-1gn7gb.eu0n.jcdj.0660.2001.IP)
+[08:21:24] *** Joins: Rym_ (y@moz-a44.2as.55.31.IP)
+[08:22:07] *** Joins: imperio (Mibbit@moz-dju.aov.119.80.IP)
+[08:25:34] <reem> If I derive PartialEq, Debug, and Hash for a type containing raw pointers, they will pay print and compare the pointer itself right?
+[08:25:38] <reem> there is no implicit dereferencing?
+[08:25:58] *** Quits: Rym_ (y@moz-a44.2as.55.31.IP) (Ping timeout: 121 seconds)
+[08:25:59] <kimundi> correct, as deriving can not know how to do that safely
+[08:28:51] <aatch> There's even a warning for it.
+[08:30:50] <Mutabah> Anyone interested in looking at my evil linter? 
+[08:31:04] <Manishearth> Mutabah: sure
+[08:31:16] *** Joins: zmack (zmack@moz-1oe.89t.76.82.IP)
+[08:31:16] <Mutabah> https://github.com/thepowersgang/tag_safe
+[08:33:03] <Manishearth> Mutabah: be sure to use compiletest-rs to get some rpass/cfail tests
+[08:34:17] <Manishearth> Mutabah: you don't need a separate visitor there
+[08:34:24] <Mutabah> Oh?
+[08:34:38] <Manishearth> Mutabah: struct Pass will be treated asa visitor by the lint
+[08:34:44] <Manishearth> keep track of all state there
+[08:34:59] <Mutabah> :/ dunno, there is two different states to it...
+[08:35:05] <Manishearth> ?
+[08:35:05] <Mutabah> meh
+[08:35:22] <Manishearth> writing another visitor wil lslow things down :)
+[08:35:27] <Mutabah> Manishearth: Well, there's the simple pass across a method, and then possible recursion
+[08:35:30] <Manishearth> all lints are run as a single visitor so it's not too bad
+[08:36:14] <WindowsBunny> I'm still annoyed that there are types that are Copy but not Clone despite Copy: Clone
+[08:36:27] <Manishearth> Mutabah: I'm saying visit_expr_post could just be a check_expr in the lint pass
+[08:36:27] <huon> how?
+[08:36:33] <huon> surely such types stop compilation?
+[08:37:03] <huon> WindowsBunny: ^
+[08:37:31] <Mutabah> Manishearth: It could be, but there is the quirk of the two different modes to the visitor.
+[08:37:46] <Mutabah> Manishearth: The current models isn't bad, right? Just a little more verbose than it needs to be?
+[08:38:02] <Manishearth> Mutabah: why aren't you using ty::get_attrs? or ty::has_attr?
+[08:38:12] <WindowsBunny> huon: fixed size arrays
+[08:38:12] <Mutabah> I didn't know about it?
+[08:38:13] <Manishearth> No, I think you're recursing and resolving way more than you need to
+[08:38:16] <Manishearth> Mutabah: :)
+[08:38:18] <Manishearth> use it
+[08:38:29] <huon> WindowsBunny: oh :/
+[08:38:33] <Manishearth> your second recursion sems to be solely to recurse down that fn
+[08:38:35] <huon> WindowsBunny: is there a bug filed about it?
+[08:38:49] <WindowsBunny> huon: I hope so
+[08:38:55] <Manishearth> when you should be using defmap lookups
+[08:39:05] <Manishearth> without def lookups your thing will fail cross crate anyway
+[08:39:23] <huon> WindowsBunny: can't find one
+[08:39:28] <WindowsBunny> huon: neither can I
+[08:39:43] <Manishearth> Mutabah: technically you can get the parent ItemFn or ImplItem or TraitItem using get_parent(nodeid) as well
+[08:39:51] <Manishearth> in that case you don't need to keep track of state at all
+[08:39:53] <WindowsBunny> huon: there is a closed one by mahkoh....
+[08:40:11] <kimundi> Fixed sized array are copy but not clone? Pff, okay I really expected that but had hope such bugs wouldn't slip through...
+[08:40:33] <WindowsBunny> huon: Should I open a new issue then?
+[08:40:57] <Manishearth> then you just need a check_expr on exprmethodcall which looks for annotations on get_parent(),  resolves the method, checks ty::has_attr, and compares
+[08:41:09] <Manishearth> this is *much* more complicated than it needs to be
+[08:41:13] <huon> WindowsBunny: ah, found it: https://github.com/rust-lang/rust/issues/24000#issuecomment-93588481
+[08:41:27] <Mutabah> Manishearth: In case it isn't obvious, this recursively checks if there is no known safety information
+[08:41:36] <Manishearth> Mutabah: as in?
+[08:42:47] <Manishearth> oh I see
+[08:42:52] <WindowsBunny> huon: ah, thanks
+[08:42:54] <Manishearth> yes, you need recursion then
+[08:43:17] <Manishearth> though this will not cross crate boundaries well afaict
+[08:43:26] <Mutabah> Manishearth: It makes an assumption on crate boundaries
+[08:43:37] *** Quits: stl (stl@moz-r3l6lh.broadband.corbina.ru) (Ping timeout: 121 seconds)
+[08:43:49] <Manishearth> hm?
+[08:43:50] <Mutabah> (atm it assumes safe on the boundary, not a good assumption when I get to crates that have these annotations)
+[08:43:53] <Manishearth> ah
+[08:44:07] <Manishearth> if yoyu're doing that for crate boundaries anyway, you could just enforce annotation at fn boundaries
+[08:44:17] <Manishearth> so all unsafe methods should be marked as such
+[08:46:27] *** Joins: Rym_ (y@moz-a44.2as.55.31.IP)
+[08:47:22] <Mutabah> Manishearth: My plan was to assume all external methods are unsafe, unless they or the 'extern crate' is annotated safe
+[08:57:06] *** Joins: stl (stl@moz-fg4.kee.15.176.IP)
+[08:59:47] <Manishearth> ah
+[09:00:58] *** Joins: laumann (thomas@moz-3v9.hq0.225.130.IP)
+[09:05:59] *** Quits: munksgaard (munksgaard@moz-1i4.hq0.225.130.IP) (Ping timeout: 121 seconds)
+[09:06:28] *** Quits: laumann (thomas@moz-3v9.hq0.225.130.IP) (Ping timeout: 121 seconds)
+[09:08:01] *** Joins: munksgaard (munksgaard@moz-1i4.hq0.225.130.IP)
+[09:12:15] *** Quits: munksgaard (munksgaard@moz-1i4.hq0.225.130.IP) (Ping timeout: 121 seconds)
+[09:13:30] *** Joins: laumann (thomas@moz-3v9.hq0.225.130.IP)
+[09:13:32] *** Quits: pnkfelix (pnkfelix@moz-eljppb.fbx.proxad.net) (Ping timeout: 121 seconds)
+[09:14:17] *** Joins: munksgaard (munksgaard@moz-1i4.hq0.225.130.IP)
+[09:17:09] *** Joins: bjz (bjz@moz-puppgq.tpgi.com.au)
+[09:22:05] <Manishearth>  error: cannot borrow immutable field as mutable
+[09:22:09] <Manishearth> what's up with that?
+[09:22:22] <Manishearth> I'm getting that error when trying to do &mut x.f, where x is mutable
+[09:24:44] *** Joins: erz (erz@moz-8v4.af0.232.213.IP)
+[09:26:26] <Mutabah> you sure x is mutable?
+[09:26:37] <Mutabah> Manishearth: Not a & &mut?
+[09:26:39] <Manishearth> ohhhh
+[09:26:46] <Manishearth> deref_mut() isn't impld on Item
+[09:26:47] <Manishearth> bummer
+[09:26:59] <Manishearth> sorry, on P
+[09:27:11] <Manishearth> huon: why can't I deref_mut() a P?
+[09:27:25] <Mutabah> Manishearth: Isn't P a Rc?
+[09:27:27] *** Quits: Kingsquee (kingsley@moz-3fm07c.bchsia.telus.net) (Quit: Konversation terminated!)
+[09:27:36] <Mutabah> Manishearth: So, you can't get a &mut to the innards?
+[09:27:46] <Manishearth> no, it's a box
+[09:30:24] <Mutabah> Manishearth: See the docs on P
+[09:30:33] <Mutabah> well, on the ptr module
+[09:30:34] <Manishearth> yeah, tehre's a map() method
+[09:30:39] <Manishearth> oh
+[09:33:47] *** kimundi is now known as zz_kimundi
+[09:38:06] *** Quits: erz (erz@moz-8v4.af0.232.213.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[09:41:01] *** Joins: c0170 (c0170@moz-bb29a4.cambridge.arm.com)
+[09:44:10] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[09:46:59] *** Quits: kushal (kdas@moz-ae6469.202.sitibroadband.in) (Ping timeout: 121 seconds)
+[09:59:32] *** Quits: genbattle (genbattle@moz-ikj3l8.xtra.co.nz) (Ping timeout: 121 seconds)
+[10:02:09] *** Joins: c0170_ (c0170@moz-bb29a4.cambridge.arm.com)
+[10:02:56] *** Joins: jooert (johannes@moz-l5olp2.zim.uni-duisburg-essen.de)
+[10:03:12] *** Quits: c0170 (c0170@moz-bb29a4.cambridge.arm.com) (Ping timeout: 121 seconds)
+[10:03:19] *** Quits: johnsoft (johnsoft@moz-69mrig.res.rr.com) (Ping timeout: 121 seconds)
+[10:03:24] *** Joins: johnsoft (johnsoft@moz-69mrig.res.rr.com)
+[10:03:51] *** zz_kimundi is now known as kimundi
+[10:05:48] *** Quits: jooert (johannes@moz-l5olp2.zim.uni-duisburg-essen.de) (Client exited)
+[10:05:49] *** Joins: filsmick (filsmick@moz-tj8j41.abo.wanadoo.fr)
+[10:09:41] <kimundi> Manishearth: What type is x? is something before that immutably borrowing x ?
+[10:10:40] <Manishearth> kimundi: it was P<>
+[10:10:51] <Manishearth> kimundi: I assumed P was just box, but turns out it can't be deref_mutted
+[10:14:30] <kimundi> ah, yeah
+[10:16:49] *** Quits: hyunsik (hyunsik@moz-3qgjl9.ca.comcast.net) (Ping timeout: 121 seconds)
+[10:18:25] *** Quits: semarie (semarie@moz-tlq7ff.arbitrary.ch) (Ping timeout: 121 seconds)
+[10:23:47] *** Joins: semarie (semarie@moz-cfrupk.tor-exit.network)
+[10:25:54] *** Joins: pnkfelix (pnkfelix@moz-71m.3nd.202.89.IP)
+[10:25:54] *** ChanServ sets mode: +o pnkfelix
+[10:27:18] *** kimundi is now known as zz_kimundi
+[10:27:32] *** Joins: mib_t59n1a (Mibbit@moz-lg6dg3.dynamic.fusionbroadband.com)
+[10:28:56] *** Quits: mib_t59n1a (Mibbit@moz-lg6dg3.dynamic.fusionbroadband.com) (Quit: http://www.mibbit.com ajax IRC Client)
+[10:32:58] *** Quits: p1start (p1start@moz-nftjhe.org) (Ping timeout: 121 seconds)
+[10:36:28] *** Joins: erz (erz@moz-8v4.af0.232.213.IP)
+[10:38:01] *** Joins: aepsil0n (eduard@moz-6491ha.mv2h.pepi.8071.2a02.IP)
+[10:39:47] *** Joins: larhat (Adium@moz-1dkvl5.81.in-addr.arpa)
+[10:40:37] *** Quits: erz (erz@moz-8v4.af0.232.213.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[10:41:57] *** Quits: larhat (Adium@moz-1dkvl5.81.in-addr.arpa) (Quit: Leaving.)
+[10:43:25] *** Quits: zxq9 (ceverett@moz-qsm369.mesh.ad.jp) (Quit: Konversation terminated!)
+[10:46:18] *** Joins: larhat (Adium@moz-1dkvl5.81.in-addr.arpa)
+[10:46:24] *** Quits: larhat (Adium@moz-1dkvl5.81.in-addr.arpa) (Quit: Leaving.)
+[10:46:56] *** Joins: zxq9 (ceverett@moz-qsm369.mesh.ad.jp)
+[10:58:28] *** Joins: summerlight (summerlight@moz-99k.2mj.130.121.IP)
+[10:59:39] *** Joins: arielb1 (Mibbit@moz-cmi.jfj.114.192.IP)
+[11:07:17] *** Quits: Guest63 (textual@moz-qfs.570.70.83.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[11:23:13] *** Joins: _1126_ (flume@moz-bio9kd.io)
+[11:24:20] *** Quits: _1126 (flume@moz-bio9kd.io) (Connection closed)
+[11:24:30] *** Joins: kushal (kdas@moz-cbaein.202.sitibroadband.in)
+[11:24:46] *** Quits: filsmick (filsmick@moz-tj8j41.abo.wanadoo.fr) (Quit: )
+[11:27:10] *** Joins: kmcguire_ (kmcguire@moz-pg1gb9.biz.rr.com)
+[11:30:23] *** Joins: Amaranth (travis@moz-1raqsl.cpe.cableone.net)
+[11:32:55] *** Joins: dinfuehr_ (dinfuehr@moz-c25.u8s.112.91.IP)
+[11:32:57] *** Quits: dinfuehr_ (dinfuehr@moz-c25.u8s.112.91.IP) (Connection closed)
+[11:33:18] *** Joins: dinfuehr_ (dinfuehr@moz-c25.u8s.112.91.IP)
+[11:35:39] *** Quits: dinfuehr (dinfuehr@moz-c25.u8s.112.91.IP) (Ping timeout: 121 seconds)
+[11:36:34] *** Joins: ytain (ytain@moz-pr2.aip.175.108.IP)
+[11:36:53] <Manishearth> doener: hey, do closures that capture nothing get optimized to regular static calls?
+[11:37:22] *** Quits: dinfuehr_ (dinfuehr@moz-c25.u8s.112.91.IP) (Ping timeout: 121 seconds)
+[11:40:01] *** Joins: jga (jga@moz-9h1.t1q.244.77.IP)
+[11:42:18] <aatch> Manishearth, all unboxed closures are statically dispatched.
+[11:42:35] <Manishearth> aatch: oh, right
+[11:42:38] <Manishearth> I'm an idiot
+[11:43:51] <aatch> Manishearth, heh. It happens. You get an idea stuck in your head and you need somebody else to dislodge it.
+[11:48:19] *** Joins: Guest63 (textual@moz-qfs.570.70.83.IP)
+[11:52:23] *** Quits: Guest63 (textual@moz-qfs.570.70.83.IP) (Ping timeout: 121 seconds)
+[11:53:48] *** Joins: casey (casey@moz-v0ns05.tpgi.com.au)
+[11:54:18] *** Quits: jga (jga@moz-9h1.t1q.244.77.IP) (Connection closed)
+[11:54:33] *** Joins: Guest63 (textual@moz-qfs.570.70.83.IP)
+[11:59:59] *** Joins: erz (erz@moz-45hupr.broadband.corbina.ru)
+[12:07:06] *** Joins: dinfuehr (dominik@moz-b31i9i.highway.telekom.at)
+[12:11:03] *** Joins: jga (jga@moz-9h1.t1q.244.77.IP)
+[12:13:33] *** _1126_ is now known as _1126
+[12:17:34] *** Joins: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at)
+[12:25:26] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[12:26:17] *** Quits: untitaker (untitaker@moz-nskdhs.highway.telekom.at) (Ping timeout: 121 seconds)
+[12:27:19] *** Quits: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at) (Connection closed)
+[12:27:40] *** Joins: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at)
+[12:28:08] *** Joins: untitaker (untitaker@moz-lcvhbq.highway.telekom.at)
+[12:31:42] *** Quits: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at) (Ping timeout: 121 seconds)
+[12:33:14] *** Joins: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at)
+[12:34:14] *** Quits: casey (casey@moz-v0ns05.tpgi.com.au) (Connection closed)
+[12:36:40] *** Quits: tamird (textual@moz-gg3hct.res.rr.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[12:42:47] <Mutabah> Manishearth: :/ You know how you suggested I get a rustc build env working? (about five hours ago)
+[12:42:54] <Mutabah> It's still going
+[12:43:32] <Manishearth> haha
+[12:43:35] <Manishearth> Mutabah: use ccache
+[12:43:48] <Mutabah> how would that help?
+[12:43:54] <Manishearth> ./configure --enable--ccache
+[12:44:07] <Manishearth> You'll not have to worry much about rebuilding llvm
+[12:44:12] <Manishearth> install ccache first, of course
+[12:44:20] <Manishearth> the first time will take a while though
+[12:44:22] <Mutabah> nah, this is taking ages on rustc components
+[12:44:24] <Manishearth> try make -j8
+[12:44:34] <Mutabah> four cores
+[12:45:59] <Manishearth> ah
+[12:46:50] <Mutabah> libsyntax is a behemoth
+[12:47:42] *** Quits: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at) (Connection closed)
+[12:48:03] *** Joins: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at)
+[12:48:05] <Mutabah> Manishearth: Not sure if you answered this earlier - What do you think of the concept of that linter?
+[12:48:50] <Mutabah> Basically, has tag_safe(ident) and tag_unsafe(ident), an untagged method is parsed recusively for an unsafe tagging, and safe tagged methods need to only use safe methods
+[12:51:57] <Manishearth> Mutabah: I like the concept, I disagree with the implementation
+[12:52:05] *** Quits: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at) (Ping timeout: 121 seconds)
+[12:52:08] <Mutabah> Well, it's a first try ;)
+[12:52:12] <Manishearth> I think you should be forcing unsafety/safety tags on fn boundaries
+[12:52:16] <Manishearth> like how regular unsafe works
+[12:52:46] <Mutabah> I considered that
+[12:52:59] <Mutabah> but it's a large split between IRQ-safe and IRQ-unsafe code
+[12:53:00] <Manishearth> It makes the lint more efficient and easier to modify
+[12:53:08] <Manishearth> choose a default
+[12:53:10] *** Joins: bdero (bran@moz-mqs.7dh.189.18.IP)
+[12:53:12] <Mutabah> (most of the supporting libraries are safe, but anything heap isn't safe)
+[12:53:13] <Manishearth> preferably unsafe=default
+[12:53:16] <Manishearth> ah
+[12:53:29] <Mutabah> and anything mutex-ish is unsafe
+[12:54:05] <Mutabah> and much like OIBITs and trait objects, it'd be infectious
+[12:58:08] <Mutabah> :/ I possibly could do default unsafe, but the annotations would be challenging
+[12:58:17] <Mutabah> s/challenging/excessive
+[12:59:35] *** Joins: annodomini (lambda@moz-hceqmj.hfc.comcastbusiness.net)
+[13:03:53] *** Joins: tamird (textual@moz-lje.m54.130.157.IP)
+[13:06:51] *** Joins: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at)
+[13:07:44] *** Quits: bdero (bran@moz-mqs.7dh.189.18.IP) (Connection closed)
+[13:07:54] *** Joins: bdero (bran@moz-mqs.7dh.189.18.IP)
+[13:08:56] *** Quits: poorman (poorman@moz-sdl0oq.res.rr.com) (Ping timeout: 121 seconds)
+[13:09:20] *** Quits: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at) (Connection closed)
+[13:09:51] *** Joins: poorman (poorman@moz-sdl0oq.res.rr.com)
+[13:10:11] <arielb1> Mutabah: by Rust rules, Mutexes are safe
+[13:10:32] <arielb1> through I suppose you don't consider them so
+[13:10:46] <arielb1>  - you want to prevent it statically
+[13:11:01] <Mutabah> arielb1: IRQ safe, subtly different concept
+[13:11:13] <Mutabah> arielb1: And yes, I want to statically prevent potential deadlocks
+[13:12:09] <arielb1> you *could* thread a NotInIRQ parameter
+[13:12:31] <arielb1> but that's probably ugly
+[13:15:23] *** Joins: samnmax (samnmax@moz-1vk.aq9.27.72.IP)
+[13:20:15] *** Quits: ptalbot (ptalbot@moz-1gn7gb.eu0n.jcdj.0660.2001.IP) (Ping timeout: 121 seconds)
+[13:21:45] *** Quits: summerlight (summerlight@moz-99k.2mj.130.121.IP) (Ping timeout: 121 seconds)
+[13:34:50] *** Joins: casey (casey@moz-v0ns05.tpgi.com.au)
+[13:36:03] *** Quits: arielb1 (Mibbit@moz-cmi.jfj.114.192.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[13:38:53] *** Quits: casey (casey@moz-v0ns05.tpgi.com.au) (Ping timeout: 121 seconds)
+[13:39:58] *** Joins: jdm (jdm@moz-ilbt2e.cable.teksavvy.com)
+[13:41:00] *** Joins: marsel (user@moz-76c.4gi.180.94.IP)
+[13:42:01] *** zz_kimundi is now known as kimundi
+[13:45:12] *** Quits: squiddy (squiddy@moz-md4.pm3.19.178.IP) (Quit: Leaving)
+[13:48:05] *** Quits: barosl (barosl@moz-tmp.qma.67.220.IP) (Connection closed)
+[13:59:16] *** Quits: poorman (poorman@moz-sdl0oq.res.rr.com) (Connection closed)
+[14:00:22] *** Quits: pnkfelix (pnkfelix@moz-71m.3nd.202.89.IP) (Quit: rcirc on GNU Emacs 24.5.1)
+[14:01:08] *** Joins: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP)
+[14:01:08] *** ChanServ sets mode: +o pnkfelix
+[14:03:14] *** Joins: proc (proc@moz-qkgpmr.dip0.t-ipconnect.de)
+[14:03:14] *** Joins: barosl (barosl@moz-tmp.qma.67.220.IP)
+[14:03:27] *** Joins: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at)
+[14:04:24] *** Joins: summerlight (summerlight@moz-99k.2mj.130.121.IP)
+[14:08:04] <Mutabah> Manishearth: You recon you'd have time to create an API for plugins to register attributes?
+[14:08:22] <Mutabah> Manishearth: Rustc is taking AGES to compile on my box, and I have two busy days coming up
+[14:08:30] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[14:11:33] *** Joins: garming (garming@moz-5uejkm.xtra.co.nz)
+[14:11:59] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Quit: Leaving)
+[14:14:36] *** Quits: munksgaard (munksgaard@moz-1i4.hq0.225.130.IP) (Quit: Lost terminal)
+[14:15:57] *** Joins: munksgaard (munksgaard@moz-1i4.hq0.225.130.IP)
+[14:17:32] *** Joins: munksgaa1d (munksgaard@moz-1i4.hq0.225.130.IP)
+[14:17:35] *** Quits: munksgaa1d (munksgaard@moz-1i4.hq0.225.130.IP) (Quit: leaving)
+[14:25:32] *** Joins: larhat (Adium@moz-1dkvl5.81.in-addr.arpa)
+[14:30:52] <Manishearth> mutabah yes, its pretty easy
+[14:30:58] *** Quits: semarie (semarie@moz-cfrupk.tor-exit.network) (Ping timeout: 121 seconds)
+[14:33:25] *** Joins: semarie (semarie@moz-1fgc6t.privacyfoundation.ch)
+[14:33:50] <Tobba> is it just me or are the stdlib method names incredibly inconsistent?
+[14:34:02] <steveklabnik> in what way
+[14:34:15] <Tobba> we have... weak_count, count_ones and num_days
+[14:34:28] *** Joins: japaric (japaric@moz-i83.l2i.232.190.IP)
+[14:34:43] *** Quits: larhat (Adium@moz-1dkvl5.81.in-addr.arpa) (Quit: Leaving.)
+[14:34:47] *** Joins: scialex (scialex@moz-j5mi8i.cs.brown.edu)
+[14:35:33] <Tobba> 3 different conventions for something that returns how many of something there are
+[14:35:35] *** Joins: casey (casey@moz-v0ns05.tpgi.com.au)
+[14:35:37] <Tobba> I'm sure there are more of these
+[14:35:48] *** Joins: larhat (Adium@moz-1dkvl5.81.in-addr.arpa)
+[14:35:48] <steveklabnik> yeah, that seems legit
+[14:35:54] <steveklabnik> how many of those are stable?
+[14:36:03] <Tobba> all of them
+[14:36:10] *** Quits: larhat (Adium@moz-1dkvl5.81.in-addr.arpa) (Quit: Leaving.)
+[14:36:10] <Tobba> actually, weak_count isn't
+[14:36:28] <Tobba> neither is num_days, looks I'm talking shit
+[14:36:34] <steveklabnik> :)
+[14:36:39] <Tobba> count_ones is though
+[14:36:41] <steveklabnik> a good thing to point out as we work on stabilizing though!
+[14:39:07] <bluss> isn't count_ones kind of correct as an action, not a property
+[14:39:23] <steveklabnik> gramatically, yes
+[14:39:29] <steveklabnik> but english isn't grammar
+[14:39:38] *** Quits: casey (casey@moz-v0ns05.tpgi.com.au) (Ping timeout: 121 seconds)
+[14:39:53] <bluss> I'm comfortable with popcount as an action
+[14:40:45] <Tobba> it's correct in that sense, yes. but they're all methods that return some form of count
+[14:40:50] <Tobba> which I think is the important property
+[14:41:26] <Tobba> I'm pretty sure num_days has to be calculated from the time stored internally
+[14:42:46] *** Quits: munksgaard (munksgaard@moz-1i4.hq0.225.130.IP) (Ping timeout: 121 seconds)
+[14:50:01] *** Joins: killercup (killercup@moz-qj5qhi.dip0.t-ipconnect.de)
+[14:51:10] *** Joins: larhat (Adium@moz-1dkvl5.81.in-addr.arpa)
+[14:51:56] *** Quits: larhat (Adium@moz-1dkvl5.81.in-addr.arpa) (Quit: Leaving.)
+[14:57:38] *** Quits: scialex (scialex@moz-j5mi8i.cs.brown.edu) (Quit: Leaving)
+[15:02:01] *** Quits: blank_name (blank_name@moz-5144dk.mi.frontiernet.net) (Ping timeout: 121 seconds)
+[15:02:01] *** Quits: c0170_ (c0170@moz-bb29a4.cambridge.arm.com) (Ping timeout: 121 seconds)
+[15:03:23] *** Quits: imperio (Mibbit@moz-dju.aov.119.80.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:03:29] *** Quits: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at) (Connection closed)
+[15:03:50] *** Joins: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at)
+[15:07:52] *** Quits: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at) (Ping timeout: 121 seconds)
+[15:09:10] *** Quits: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP) (Ping timeout: 121 seconds)
+[15:19:27] *** Joins: SiegeLord (sl@moz-9jtaei.ca.comcast.net)
+[15:25:27] *** Joins: Diggsey (diggsey@moz-2s5u1v.dsl.pipex.com)
+[15:28:10] *** Joins: c0170 (c0170@moz-4stj9o.cable.virginm.net)
+[15:28:59] *** Joins: blank_name (blank_name@moz-7oq.uca.36.50.IP)
+[15:37:34] *** Quits: SiegeLord (sl@moz-9jtaei.ca.comcast.net) (Quit: It's a joke, it's all a joke.)
+[15:37:49] *** Joins: brson (brson@moz-l8ebtf.sfo1.mozilla.com)
+[15:37:49] *** ChanServ sets mode: +o brson
+[15:39:47] *** Joins: Astrum|Lap (Astrum|Lap@moz-skcefh.co.comcast.net)
+[15:40:13] *** Quits: GBGamer (npm@moz-92sbjt.wa.comcast.net) (Quit: Lost terminal)
+[15:43:04] *** Joins: quibbit (Mibbit@moz-juv.9o3.252.72.IP)
+[15:43:37] <brson> aturon: I think I'll try to update the releases and authors files today
+[15:44:19] <aturon> brson: :D so exciting! let me know if you want any help; i'd be happy to look over the draft release notes
+[15:45:18] *** Quits: laumann (thomas@moz-3v9.hq0.225.130.IP) (Quit: leaving)
+[15:45:38] *** Joins: O01eg (o01eg@moz-hpr2gc.ci24.4n8f.2698.2a02.IP)
+[15:48:05] *** Quits: blank_name (blank_name@moz-7oq.uca.36.50.IP) (Ping timeout: 121 seconds)
+[15:49:03] *** Joins: blank_name (blank_name@moz-649u30.mi.frontiernet.net)
+[15:52:24] *** Joins: bombless (_@moz-ovk.piv.41.59.IP)
+[15:52:48] <jgallagher> i’m not sure what the requirements/process are for backporting patches into a beta, but this might qualify (bug in RwLock): https://github.com/rust-lang/rust/pull/25153
+[15:53:41] <brson> jgallagher: I tagged it
+[15:53:53] <jgallagher> brson: thanks
+[15:54:47] *** Joins: munksgaard (munksgaard@moz-ob0t16.0.fullrate.dk)
+[16:00:20] *** Quits: zmack (zmack@moz-1oe.89t.76.82.IP) (Connection closed)
+[16:00:30] *** Joins: dcb (textual@moz-j72nfe.ca.comcast.net)
+[16:02:41] *** Quits: dcb (textual@moz-j72nfe.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[16:02:55] *** Quits: quibbit (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[16:03:05] *** Joins: arielb1 (Ariel@moz-78pi5m.red.bezeqint.net)
+[16:03:27] *** Joins: naerbnic (naerbnic@moz-i9o.rs4.199.12.IP)
+[16:06:21] *** Quits: Astrum|Lap (Astrum|Lap@moz-skcefh.co.comcast.net) (Client exited)
+[16:07:09] *** Quits: munksgaard (munksgaard@moz-ob0t16.0.fullrate.dk) (Ping timeout: 121 seconds)
+[16:09:20] *** Quits: bombless (_@moz-ovk.piv.41.59.IP) (Ping timeout: 121 seconds)
+[16:10:10] *** Joins: larhat (Adium@moz-1dkvl5.81.in-addr.arpa)
+[16:13:25] *** Joins: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at)
+[16:13:27] *** Joins: pnkfelix (pnkfelix@moz-71m.3nd.202.89.IP)
+[16:13:27] *** ChanServ sets mode: +o pnkfelix
+[16:15:35] *** Joins: dcb (textual@moz-j72nfe.ca.comcast.net)
+[16:15:48] *** Quits: garming (garming@moz-5uejkm.xtra.co.nz) (Ping timeout: 121 seconds)
+[16:16:22] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[16:16:43] *** Joins: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP)
+[16:16:53] *** Quits: swgillespie (swgillespie@moz-rn1.vmq.232.104.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[16:17:31] *** Quits: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at) (Ping timeout: 121 seconds)
+[16:17:46] *** Quits: summerlight (summerlight@moz-99k.2mj.130.121.IP) (Ping timeout: 121 seconds)
+[16:20:07] *** Quits: untitaker (untitaker@moz-lcvhbq.highway.telekom.at) (Ping timeout: 121 seconds)
+[16:21:37] *** Joins: untitaker (untitaker@moz-lcvhbq.highway.telekom.at)
+[16:23:37] *** Joins: gsingh93 (gulshan@moz-qnbukr.mi.comcast.net)
+[16:25:27] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[16:26:45] *** Joins: Astrum|Lap (Astrum|Lap@moz-7enfbr.co.comcast.net)
+[16:28:01] *** Quits: naerbnic (naerbnic@moz-i9o.rs4.199.12.IP) (Client exited)
+[16:29:49] *** Quits: aepsil0n (eduard@moz-6491ha.mv2h.pepi.8071.2a02.IP) (Ping timeout: 121 seconds)
+[16:30:55] *** Quits: larhat (Adium@moz-1dkvl5.81.in-addr.arpa) (Quit: Leaving.)
+[16:32:31] *** Quits: pnkfelix (pnkfelix@moz-71m.3nd.202.89.IP) (Quit: rcirc on GNU Emacs 24.5.1)
+[16:34:19] *** Quits: Rym_ (y@moz-a44.2as.55.31.IP) (Ping timeout: 121 seconds)
+[16:34:49] *** Joins: eibwen (eibwen@moz-n4tjds.dip0.t-ipconnect.de)
+[16:35:51] *** Joins: masterofchess (Icedove@moz-ag828p.dyn.telefonica.de)
+[16:38:04] *** Joins: munksgaard (munksgaard@moz-ob0t16.0.fullrate.dk)
+[16:38:48] <Manishearth> Mutabah: https://github.com/rust-lang/rust/compare/master...Manishearth:register_attr
+[16:38:49] * Mutabah is away (Sleeping)
+[16:39:21] <Manishearth> WIP, haven't tried building it yet, and needs a few tweaks before building, but that should do it
+[16:39:26] *** Quits: dcb (textual@moz-j72nfe.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[16:40:32] *** Quits: johnsoft (johnsoft@moz-69mrig.res.rr.com) (Ping timeout: 121 seconds)
+[16:40:43] *** Joins: johnsoft (johnsoft@moz-69mrig.res.rr.com)
+[16:44:04] *** Joins: naerbnic (naerbnic@moz-i9o.rs4.199.12.IP)
+[16:50:25] *** Quits: munksgaard (munksgaard@moz-ob0t16.0.fullrate.dk) (Ping timeout: 121 seconds)
+[16:55:06] *** Joins: larhat (Adium@moz-tb1ulb.cable.virginm.net)
+[16:57:27] *** Joins: munksgaard (munksgaard@moz-ob0t16.0.fullrate.dk)
+[16:58:28] *** Joins: Stebalien (Stebalien@moz-o1j.a0q.30.128.IP)
+[16:58:36] *** Joins: dcb (textual@moz-j72nfe.ca.comcast.net)
+[17:00:56] *** Joins: Rym_ (y@moz-a44.2as.55.31.IP)
+[17:02:24] *** Quits: madmalik (uid13697@moz-lfin5p.brockwell.irccloud.com) (Quit: Connection closed for inactivity)
+[17:06:25] <Gankro> eddyb: Is the notnull-forgetting stuff soemthing that can be addressed in the frontend or something that would require patching llvm?
+[17:07:49] *** Quits: munksgaard (munksgaard@moz-ob0t16.0.fullrate.dk) (Ping timeout: 121 seconds)
+[17:08:42] <doener> not-null forgetting?
+[17:09:06] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[17:09:06] *** ChanServ sets mode: +o pcwalton
+[17:12:55] *** Quits: Rym_ (y@moz-a44.2as.55.31.IP) (Ping timeout: 121 seconds)
+[17:13:45] <Gankro> doener: metadata about whether a pointer is null or not getting lost when Options get involved
+[17:14:19] <Gankro> Which seems to hurt several other optimizations
+[17:14:29] *** Joins: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at)
+[17:15:45] *** Quits: Guest63 (textual@moz-qfs.570.70.83.IP) (Ping timeout: 121 seconds)
+[17:17:15] <pcwalton> nmatsakis: I've got the start of the dynamic drop static analysis written
+[17:17:23] <pcwalton> very broken I'm sure
+[17:18:36] *** Quits: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at) (Ping timeout: 121 seconds)
+[17:20:10] *** Joins: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de)
+[17:27:40] *** Quits: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu) (Connection closed)
+[17:29:26] *** chmanchester is now known as chmanchester|afk
+[17:29:43] <pcwalton> I want to abbrevate "drop obligation" to "drobligation"
+[17:30:05] *** Quits: masterofchess (Icedove@moz-ag828p.dyn.telefonica.de) (Client exited)
+[17:30:45] <mcpherrin> dropbligions
+[17:30:53] *** Joins: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu)
+[17:31:08] <mcpherrin> drobligons sound like bad scifi aliens
+[17:32:13] <kmc> skolems vs. drobligons
+[17:34:47] <bstrie> floatersection
+[17:35:12] <doener> wat? Option<&i32> gets compiled as i8*?!
+[17:35:49] *** Joins: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at)
+[17:36:23] *** Quits: dcb (textual@moz-j72nfe.ca.comcast.net) (Ping timeout: 121 seconds)
+[17:41:08] *** Joins: Codenator (Mibbit@moz-mkk.391.198.81.IP)
+[17:41:14] *** Parts: Codenator (Mibbit@moz-mkk.391.198.81.IP) ()
+[17:41:29] *** Joins: dcb (textual@moz-j72nfe.ca.comcast.net)
+[17:42:10] *** Quits: Rusky (russell@moz-de0fff.slkc.qwest.net) (Quit: Leaving.)
+[17:46:11] *** Joins: Rusky (russell@moz-mp2nkm.slkc.qwest.net)
+[17:46:50] *** Joins: pnkfelix (pnkfelix@moz-eljppb.fbx.proxad.net)
+[17:46:50] *** ChanServ sets mode: +o pnkfelix
+[17:47:08] *** Quits: dcb (textual@moz-j72nfe.ca.comcast.net) (Quit: Textual IRC Client: www.textualapp.com)
+[17:48:17] <bstrie> doener: if true, it sounds like we should have noticed that by dint of it breaking something
+[17:48:35] <bstrie> pretty sure people rely on the null-pointer representation of option willy-nilly
+[17:49:44] <doener> bstrie: hm? Option<&i32> getting translated as i8* as just weird and might kill some optimizations, that's all
+[17:50:10] <doener> bstrie: i8* being the type used in LLVM, not a rust raw pointer
+[17:50:21] <bstrie> ah
+[17:51:17] <bluss> so the correct type is i32* ?
+[17:51:18] *** Joins: dcb (textual@moz-j72nfe.ca.comcast.net)
+[17:52:43] <doener> bluss: yeah
+[17:52:52] <Gankro> doener: I'd be much obliged if you could improve option handling :P
+[17:53:02] <Luqman> doener: problem is probably: librustc_trans/trans/type_of.rs:195
+[17:54:45] <doener> Luqman: yeah
+[17:54:59] <Luqman> doener: or rather that we use type_of::sizing_type_of for adt::type_of
+[17:55:05] *** Joins: nerdopoly (nerdopoly@moz-ouaagf.range86-143.btcentralplus.com)
+[17:55:53] <doener> Luqman: let's try with type_of
+[17:55:59] *** Joins: Rym_ (y@moz-a44.2as.55.31.IP)
+[17:56:43] <doener> and then get the nonnull attr/metadata going
+[17:56:48] <arielb1> doener: type_of::in_memory_type_of is supposed to fixup it
+[17:57:48] *** Quits: brson (brson@moz-l8ebtf.sfo1.mozilla.com) (Ping timeout: 121 seconds)
+[17:57:52] *** Quits: kushal (kdas@moz-cbaein.202.sitibroadband.in) (Quit: Leaving)
+[17:58:17] <Luqman> doener: hmm, i think the reason why it used sizing_type_of was to prevent cycles
+[17:59:58] *** Joins: brson (brson@moz-u3dg2t.sfo1.mozilla.com)
+[17:59:58] *** ChanServ sets mode: +o brson
+[18:00:24] <arielb1> I don't think Struct::setBody works well for pointers
+[18:00:26] *** Quits: Rym_ (y@moz-a44.2as.55.31.IP) (Ping timeout: 121 seconds)
+[18:00:28] <arielb1> through
+[18:05:09] <pnkfelix> nmatsakis: hey during the discussion of aturon's semver RFC
+[18:05:48] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[18:06:03] <pnkfelix> nmatsakis: he noted that a way to defend against upstream minor changes is to encode an elaborated AST at the time of the compile, e.g. including type-annotations and using UFCS
+[18:06:35] <pnkfelix> nmatsakis: but there were a few places where a minor change would break such an AST.  One such change was adding new generic params, which breaks explicit type instantiation
+[18:06:52] <nmatsakis> right
+[18:07:02] <pnkfelix> nmatsakis: So I was wondering: Should we think about addressing that, perhaps with a syntax like `f::<A, B, ..>()`
+[18:07:12] <nmatsakis> yeah I was wondering something similar
+[18:07:29] <nmatsakis> which would kind of be equiv to f::<A, B, _, _>
+[18:07:31] <pnkfelix> where `::<..>` means "expand to as many _'s as necessary in `::<_, _, ...>`
+[18:07:32] <nmatsakis> for an approriate number of _
+[18:07:33] <nmatsakis> right
+[18:07:33] <pnkfelix> right
+[18:07:40] <pnkfelix> and I guess to deal with lifetime params
+[18:07:53] <pnkfelix> you'd have support for `f::<.., A, B, ..>` as well
+[18:08:10] <nmatsakis> at the moment, we don't permit explicit lifetime params to be provided
+[18:08:11] <pnkfelix> (do we support explicit instatiation of lifetime params there anyway?  I don't rmember
+[18:08:13] <pnkfelix> heh
+[18:08:15] <pnkfelix> okay great
+[18:08:23] <nmatsakis> but presumably we'd have to consider it if/when we did
+[18:08:31] <pnkfelix> so that could be a future extension. doesn't seem like a big problem.
+[18:11:24] <arielb1> nmatsakis: what do you think of my solution to 25076?
+[18:11:29] <arielb1> gh25076
+[18:11:29] <[o__o]> cat_expr Errd on "fold": https://github.com/rust-lang/rust/issues/25076
+[18:12:40] <nmatsakis> arielb1: I saw that, I was just about to try and run the test case locally actually to better understand 
+[18:12:58] <arielb1> nmatsakis: the problem is that we try to project
+[18:13:22] <arielb1> I mean, we have $0 = <() as InOut<$0>>::Output
+[18:13:40] <arielb1> there's a single $0 because it is bound to B
+[18:13:56] <arielb1> but selection fails, so $0 ~ ty_err
+[18:14:24] <nmatsakis> ok
+[18:14:37] <nmatsakis> and no error is reported? or one would be reported, but too late?
+[18:14:48] <arielb1> nmatsakis: so no error is reported
+[18:15:14] <arielb1> there is only one place that reports this error
+[18:15:37] <nmatsakis> so, you're saying, we bind $0 to err because sel failed
+[18:15:38] <nmatsakis> but then
+[18:15:43] <nmatsakis> because we see that the sel involved err
+[18:15:46] <nmatsakis> we repress the msg?
+[18:15:49] <arielb1> nmatsakis: exactly
+[18:15:53] <nmatsakis> interesting
+[18:16:09] <nmatsakis> ok, I see the logic to your fix now
+[18:17:30] <nmatsakis> at minimum we should have a better comment in the code :)
+[18:17:39] <arielb1> nmatsakis: we kind-of have a comment
+[18:19:23] <nmatsakis> arielb1: well, I mean a comment here explaining why the `||` makes sense (or, perhaps better yet, moving the condition into a fn which carreis a comment): https://github.com/arielb1/rust/commit/620c2f8eed66bc5b26fb4531cbe5c9291cc58912#diff-d420782dc8de6def9ed97cb6622d62d5L59
+[18:20:00] <nmatsakis> but it'd be nice if we could detect this self-referential situation another way
+[18:21:03] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[18:22:03] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[18:22:11] <arielb1> nmatsakis: maybe we should report Unimplemented errors more early
+[18:23:31] *** Joins: avikpal (avikpal@moz-bcb.bnc.79.112.IP)
+[18:24:47] <arielb1> actually, maybe just not unify failing projections with ty_err
+[18:25:03] *** Quits: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at) (Connection closed)
+[18:25:14] *** Joins: hyunsik (hyunsik@moz-3qgjl9.ca.comcast.net)
+[18:25:24] *** Joins: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at)
+[18:25:56] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Quit: Leaving.)
+[18:26:14] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Ping timeout: 121 seconds)
+[18:26:37] <nmatsakis> arielb1: I'd rather not report the errors early, but not unifying with anything might make sense
+[18:26:57] <nmatsakis> that is, I would like to keep the selection process gathering errors and not reporting them, i've found that's a better pattern in general
+[18:27:37] <nmatsakis> arielb1: or, another option might be to not unify IF the variable appears inside the predicate, something like that, but it seems like it'd be nicer to just do the same thing unconditionally
+[18:28:06] <arielb1> nmatsakis: you are afraid not unifying would lead to an error cascade?
+[18:28:41] *** Joins: aepsil0n (eduard@moz-g8ss54.mv2h.pepi.8071.2a02.IP)
+[18:28:45] *** Joins: avikpal_ (avikpal@moz-bjc.3l6.233.117.IP)
+[18:29:03] *** Quits: nerdopoly (nerdopoly@moz-ouaagf.range86-143.btcentralplus.com) (Ping timeout: 121 seconds)
+[18:29:28] *** Quits: dinfuehr_ (dinfuehr@moz-b31i9i.highway.telekom.at) (Ping timeout: 121 seconds)
+[18:29:29] *** Quits: dinfuehr (dominik@moz-b31i9i.highway.telekom.at) (Ping timeout: 121 seconds)
+[18:29:33] *** Quits: avikpal (avikpal@moz-bcb.bnc.79.112.IP) (Ping timeout: 121 seconds)
+[18:30:22] <arielb1> Unifying the input and output can basically occur at any time
+[18:31:59] <nmatsakis> arielb1: I an not really afraid about not unifying -- that seems like it might be a better strategy
+[18:32:09] <nmatsakis> I guess the question is where else we produce ty_Err in that process
+[18:32:16] <nmatsakis> when reporting an error is not somewhat guaranteed
+[18:32:19] <nmatsakis> that seems kind of like a bug
+[18:32:37] <nmatsakis> that is, producing a ty-err in that scenario is arguably the bug, since for all we know, the caller will choose not to report the error
+[18:32:53] <nmatsakis> (for other, legit, reasons, like this was a prospective search)
+[18:33:03] <kmc> it's confusing that you can write  let _ = *p;  where p is a pointer to non-Copy
+[18:33:06] <kmc> though I sort of see why
+[18:33:29] <arielb1> nmatsakis: does producing a ty_err imply a compile error?
+[18:33:30] *** chmanchester|afk is now known as chmanchester
+[18:33:37] <nmatsakis> arielb1: it is supposed to :)
+[18:34:11] <arielb1> it seems that places like to call normalize
+[18:34:47] <arielb1> I mean, traits::normalize = project::normalize
+[18:35:39] *** Quits: avikpal_ (avikpal@moz-bjc.3l6.233.117.IP) (Ping timeout: 121 seconds)
+[18:38:06] <nmatsakis> so, the faulty logic is that when we produce the ty-err, we also produce an obligation we believe guaranteed to lead to an error being reported,
+[18:38:12] <nmatsakis> but (because of the reason you identified) it does not
+[18:38:23] <nmatsakis> (in `project::normalize_to_error`)
+[18:39:03] <arielb1> nmatsakis: normalize_to_error is only called after an error is detected
+[18:39:18] <nmatsakis> a trait resolutoin error, yes
+[18:39:32] <nmatsakis> but that does not imply compilation will fail
+[18:39:47] <nmatsakis> so another possible fix would be to add some kind of obligation
+[18:39:54] <nmatsakis> that indicates a deferred error
+[18:40:03] <nmatsakis> I can see why I wanted to return ty-err though :)
+[18:40:10] <nmatsakis> that is, vs treating it as equivalent to ambig
+[18:40:32] <arielb1> nmatsakis: we call normalize in several places
+[18:40:34] <nmatsakis> still, that is prob also ok in that it would work -- just not unifying and treating TooMany and Error as equiv, which would cause us not to unify
+[18:40:52] <nmatsakis> arielb1: yes, I am aware ?
+[18:41:03] <nmatsakis> but I feel like that latter option may lead to a lot of type variables being created etc
+[18:41:10] <nmatsakis> doesn't seem right
+[18:41:15] <arielb1> I mean, they don't handle errors
+[18:41:43] *** Quits: Amaranth (travis@moz-1raqsl.cpe.cableone.net) (Ping timeout: 121 seconds)
+[18:43:10] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[18:46:03] <nmatsakis> I'm not quite sure what you mean, but it seems ok to produce a ty-err if you also produce an obligation that, when processed, is guaranteed to yield an error. The invariant we are trying to maintain is that, if I see a ty-err, I can produce more ty-errs and just generally suppress error reporting
+[18:46:36] <nmatsakis> but I am going back and forth on whether your fix is a better way of ensuring that
+[18:46:47] <nmatsakis> then trying to add some of other SpecialCased obligation type,
+[18:46:59] <nmatsakis> which might in turn lead to bad experience where users see "[type error]" in more cases 
+[18:47:26] <nmatsakis> I tend to think your fix is better -- but that normalize_to_error is sketch
+[18:47:43] <nmatsakis> I should write down my plans to revisit how we do normalization, I think it might bear on this case
+[18:48:21] <nmatsakis> anyway, in short term, I like your fix, as long as we add a more detailed comment explaining the scenario (and link to that comment in `normalize_to_error` as well)
+[18:49:34] *** Quits: pnkfelix (pnkfelix@moz-eljppb.fbx.proxad.net) (Quit: rcirc on GNU Emacs 24.5.1)
+[18:50:03] *** Joins: Rym_ (y@moz-a44.2as.55.31.IP)
+[18:52:14] *** Joins: onix (Mibbit@moz-juv.9o3.252.72.IP)
+[18:52:26] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[18:52:42] *** Quits: onix (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[18:54:14] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[18:54:31] *** Quits: brson (brson@moz-u3dg2t.sfo1.mozilla.com) (Ping timeout: 121 seconds)
+[18:54:37] *** Quits: Rym_ (y@moz-a44.2as.55.31.IP) (Ping timeout: 121 seconds)
+[18:55:23] *** Quits: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua) (Connection closed)
+[18:56:36] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Ping timeout: 121 seconds)
+[18:56:36] <arielb1> nmatsakis: again, are you not supposed to create error types in a successful compilation?
+[18:56:43] <doener> Gankro: hmm, do you have an actual case where that nonnull thing on Option wrapped pointers causes trouble?
+[18:56:47] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[18:56:47] *** ChanServ sets mode: +o pcwalton
+[18:57:31] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[18:57:32] <nmatsakis> arielb1: I'm not sure I would say it quite like that; we often do things transactionally, for example
+[18:57:58] <nmatsakis> arielb1: and I imagine that an error could occur during one of these transactions, but that transaction may get rolled back for other reasons, and compliation can go on to succeed
+[18:58:11] <doener> Gankro: because 0 is still special for e.g. Option<&i32>, because that's None, so LLVM should still have that info, just in a different way
+[18:58:58] <arielb1> nmatsakis: maybe just put freshened types in the obligation normalize_to_error generates?
+[19:00:06] <nmatsakis> arielb1: that's not realy what freshened types are for, they are not intended to propagate "in the wild" outside of caches and the like
+[19:03:12] <arielb1> again how can normalize_to_error be called outside of error situations?
+[19:03:31] <arielb1> or bad-transaction situations
+[19:04:23] <arielb1> actually, it can happen in winnow
+[19:05:59] *** Quits: naerbnic (naerbnic@moz-i9o.rs4.199.12.IP) (Client exited)
+[19:08:25] <Murarth> Hey, just wondering if someone could put an A-rustdoc label on this: https://github.com/rust-lang/rust/issues/25061
+[19:09:06] *** Joins: mjboa (mike@moz-gfdglf.hsi06.unitymediagroup.de)
+[19:09:41] <arielb1> nmatsakis: pushed
+[19:13:45] *** Joins: munksgaard (munksgaard@moz-ob0t16.0.fullrate.dk)
+[19:16:05] <nmatsakis> arielb1: thanks -- I left another comment 
+[19:16:29] <nmatsakis> how long have we had line numbers in RUST_BACKTRACE output?
+[19:16:33] <nmatsakis> they just started showing up for me, which is awesome
+[19:16:50] <nmatsakis> I guess before rustc was probably just not building with -g or something?
+[19:17:25] <arielb1> nmatsakis: I think that was since the debuginfo/assertions change
+[19:18:02] <arielb1> you have to build rustc with --enable-debuginfo for this through
+[19:18:18] <arielb1> which (a) fails some tests and (b) isn't default
+[19:18:53] <nmatsakis> I always configure with --enable-debug...that seems to be enough? 
+[19:19:08] <nmatsakis> I guess that's shorthand for a couple of useful debug options now?
+[19:19:11] <arielb1> the semantics of --enable-debug changed
+[19:19:26] <arielb1> for example, now it no longer enables LLVM assertions
+[19:19:37] <arielb1> or maybe now it does
+[19:20:18] <nmatsakis> ok, well, gotta go. ttyl.
+[19:23:30] <arielb1> nmatsakis: pushed
+[19:23:33] <kmc> what's the right thing to do when a rust library provides a C header file and another rust library needs that C header to build
+[19:23:51] <kmc> I'd rather not force the user to install the header, since cargo is going to download the source anyway
+[19:25:58] <sfackler> kmc: you can do some dubious things like having a build dependency on some crate that has the header stored as a string
+[19:26:24] <klutzy> anyone familiar with qualified path grammar? I'm not sure if this is full fix of expr_qualified_path   https://github.com/klutzy/rust/commit/2f577eec5b6f51caacc82a878ce7fb9d55d9b459
+[19:26:30] <sfackler> I don't think there's a good way of getting access to raw files of dependencies though
+[19:26:35] *** Quits: jdm (jdm@moz-ilbt2e.cable.teksavvy.com) (Quit: )
+[19:27:59] *** Joins: nerdopoly (nerdopoly@moz-ouaagf.range86-143.btcentralplus.com)
+[19:30:52] *** Joins: swgilles_ (swgillespie@moz-1i5.3un.220.167.IP)
+[19:32:20] *** Joins: Rym_ (y@moz-a44.2as.55.31.IP)
+[19:33:15] *** Joins: willem (willem@moz-facs2s.dynamic.upc.nl)
+[19:34:55] *** Quits: swgilles_ (swgillespie@moz-1i5.3un.220.167.IP) (Ping timeout: 121 seconds)
+[19:42:00] *** Joins: dinfuehr (dominik@moz-b31i9i.highway.telekom.at)
+[19:42:05] *** Quits: johnsoft (johnsoft@moz-69mrig.res.rr.com) (Ping timeout: 121 seconds)
+[19:42:27] *** Joins: johnsoft (johnsoft@moz-69mrig.res.rr.com)
+[19:45:01] *** Quits: semarie (semarie@moz-1fgc6t.privacyfoundation.ch) (A TLS packet with unexpected length was received.)
+[19:49:43] *** Quits: nerdopoly (nerdopoly@moz-ouaagf.range86-143.btcentralplus.com) (Quit: leaving)
+[19:50:11] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[19:52:56] *** Quits: bdero (bran@moz-mqs.7dh.189.18.IP) (Ping timeout: 121 seconds)
+[19:54:32] *** Joins: Amaranth (travis@moz-1raqsl.cpe.cableone.net)
+[19:59:26] *** Joins: duesenfranz_ (jona@moz-711djm.tirol.surfer.at)
+[20:00:48] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[20:01:35] *** Joins: brson (brson@moz-u3dg2t.sfo1.mozilla.com)
+[20:01:35] *** ChanServ sets mode: +o brson
+[20:01:37] *** Quits: Stebalien (Stebalien@moz-o1j.a0q.30.128.IP) (Ping timeout: 121 seconds)
+[20:07:23] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[20:08:49] *** Joins: genbattle (genbattle@moz-4v0.gkd.16.182.IP)
+[20:09:07] *** Joins: Kingsquee (kingsley@moz-3fm07c.bchsia.telus.net)
+[20:09:10] *** Joins: Stebalien (Stebalien@moz-ijf92o.csail.mit.edu)
+[20:09:35] *** Quits: dcb (textual@moz-j72nfe.ca.comcast.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[20:14:32] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[20:16:37] <aturon> bluss: btw, i was talking with acrichto and after the points you and others have raised about overloaded + on Vec it seems like we should definitely avoid stabilization for the time being, and address this through an RFC
+[20:17:03] <aturon> bluss: it's a shame that we can't just treat it as unstable
+[20:17:41] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[20:19:56] *** Joins: ptalbot (ptalbot@moz-j4gnuh.fbx.proxad.net)
+[20:22:43] <bluss> yes. I'm worried it's going to have some impact
+[20:23:31] <bluss> aturon: I'm not sure it's the right choice to destabilize since it might break so much
+[20:23:50] *** Joins: srh (User@moz-328gfs.q9f2.utp8.0306.2602.IP)
+[20:23:55] <bluss> but it's sad it never got the right scrutiny
+[20:23:57] <aturon> bluss: i'll get a branch together and ask brson to run it in his crates.io analysis tool
+[20:24:05] <aturon> to get a better idea of the breakage
+[20:24:30] <aturon> but yes, it's also quite late to make this change. the de facto stabilization problems for impls is really unfortunate
+[20:25:16] <sfackler> how much pain would be involved in getting stability checks on impls?
+[20:26:05] <aturon> sfackler: some parts of it are easy, but it's hard to know we've plugged all the possible holes
+[20:26:25] <aturon> (in either case, a change like this would move people off stable onto nightly regardless)
+[20:26:45] <aturon> on the other hand, acrichto audited all unstable impls
+[20:26:50] <aturon> this is basically the only problematic one
+[20:26:52] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Connection closed)
+[20:27:01] <aturon> (in that it never went through an RFC, and there are legit worries about it)
+[20:27:02] <acrichto> (to the best of my knowledge at least)
+[20:27:07] <aturon> :)
+[20:27:07] <acrichto> and that only covered the explicit #[unstable] impls
+[20:27:22] <aturon> yeah, i suppose i shouldn't claim too much
+[20:27:34] <aturon> though IIRC we also audited implementations for "standard" traits
+[20:28:31] <acrichto> at some point I believe huon did a pass for #[derive] at least
+[20:28:32] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[20:28:44] *** Joins: jdm (jdm@moz-pdn.m8h.114.24.IP)
+[20:33:18] <sfackler> my gut says that not too many people are going to be shedding tears over Vec's Add impl (unlike BufStream ;_; :P)
+[20:33:49] <aturon> hahaha :)
+[20:35:54] <bstrie> what are we supposed to use instead? extend?
+[20:36:11] <cmr> push!
+[20:36:19] <cmr> if you're talking about the single-item rfc.
+[20:37:17] <bstrie> I mean, in my stable code today, I have two Vecs that I want to concat, what is the preferred way of doing so
+[20:37:29] *** Joins: summerlight (summerlight@moz-99k.2mj.130.121.IP)
+[20:37:32] <sfackler> i'd use extend
+[20:37:38] <cmr> I would also use extend
+[20:37:46] <bstrie> I'll try it out
+[20:37:58] <sfackler> v1.extend(v2.iter().cloned()) i guess would be equivalent to the old Add impl
+[20:38:26] *** Joins: bdero (bran@moz-lbs.91h.47.73.IP)
+[20:38:30] *** Quits: sprang (sprang@moz-d0kmvi.12d9.sm5v.0009.2601.IP) (Connection closed)
+[20:38:33] <bstrie> super gross
+[20:38:55] <sfackler> it's also not something I've ever wanted to do
+[20:39:11] <bstrie> right now I'm doing `foo + &bar[1..]`
+[20:39:16] <bstrie> let's see how ugly this becomes :)
+[20:39:51] <bstrie> oh right, extend doesn't return a vec
+[20:39:55] <bstrie> so I have to use a temporary
+[20:39:58] <bstrie> and mutate it
+[20:40:00] <bstrie> wheeee
+[20:40:19] <aturon> yeah, the ergonomics are definitely worse
+[20:40:42] <aturon> the main argument here is that you may want + to overload to pointwise addition on a vector, and have some other operator for concatenation
+[20:41:02] *** Quits: dinfuehr (dominik@moz-b31i9i.highway.telekom.at) (Client exited)
+[20:41:09] <bstrie> aturon: concatenation isn't important enough to reserve a symbol for
+[20:41:12] <aturon> i'm not sure how the Add impl came about, but it wasn't considered via an RFC, and there seem to be enough drawbacks that it would be good to have a chance to discuss it
+[20:41:16] <bstrie> either you use + or you just use a method :P
+[20:41:32] <bstrie> aturon: do we overload + on strings too? have we removed that as well?
+[20:41:44] <aturon> bstrie: we do overload, and that would want to be removed as well, yes
+[20:41:52] <aturon> (often format! is a better choice there anyway)
+[20:41:58] *** Joins: dinfuehr (dinfuehr@moz-b31i9i.highway.telekom.at)
+[20:42:39] <aturon> bstrie: to be clear, i don't personally have a strong opinion on the operator at the moment, i'm just trying to avoid freezing something that hasn't gotten enough scrutiny
+[20:45:58] <pcwalton> nmatsakis: how do I go from the node ID of a local to its enclosing scope?
+[20:45:59] <pcwalton> I forget
+[20:46:09] <bstrie> I can't even figure out how to use extend with a slice :( `foo.extend(bar[1..].iter())` gives cryptic errors
+[20:46:22] <cmr> bstrie: bar.iter().skip(1)
+[20:46:36] <bluss> bstrie: yes, needs cloned()
+[20:46:54] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[20:47:30] <pcwalton> nmatsakis: never mind, I think I figured it out
+[20:47:30] <bstrie> cmr: doesn't work
+[20:47:49] <aturon> acrichto: oh, you already put together a PR removing addition :P
+[20:47:51] <bstrie> bluss: also doesn't work
+[20:47:57] *** Quits: Stebalien (Stebalien@moz-ijf92o.csail.mit.edu) (Ping timeout: 121 seconds)
+[20:47:57] <aturon> acrichto: i should check my mail more often...
+[20:48:13] <bstrie> remind me why we have this fancy range syntax if we're just going to tell people not to use it :P
+[20:48:18] <aturon> acrichto: it should be removed from strings as well, if we do this, though
+[20:48:29] <acrichto> aturon: whoa
+[20:48:34] <acrichto> that seems far less controversial to me
+[20:48:36] <aturon> acrichto: given that one of the arguments here is in favor of a concatenation operator
+[20:48:39] <acrichto> and also likely to cause far more breakage
+[20:48:40] <aturon> s/less/more/ ?
+[20:48:48] <acrichto> wait how far are we taking this?
+[20:48:54] <bstrie> bluss: ah, I got it now
+[20:48:55] <acrichto> are we going to remove all the existing ops on all collctions?
+[20:48:59] <aturon> no
+[20:49:04] <acrichto> then why just strings/vecs?
+[20:49:06] <aturon> the stuff on sets was part of an RFC
+[20:49:26] <acrichto> but surely + on a string can only mean one thing
+[20:49:30] <aturon> acrichto: (FWIW i already have a patch for strings)
+[20:49:38] <aturon> acrichto: right, but if we introduce a concat operator,
+[20:49:41] <aturon> string should use that instead
+[20:49:43] <bstrie> acrichto: what if we want "1" + "2" = "3" someday
+[20:49:45] <acrichto> no reason to not have both though?
+[20:50:01] <aturon> i could live with that
+[20:50:34] <aturon> i mean, again, to be clear: i have no horse in this race, i am only trying to avoid de facto stabilization 
+[20:50:54] <aturon> i could be convinced that the ship has sailed at this point, though
+[20:51:04] <acrichto> I do kinda feel that way about this
+[20:51:08] <acrichto> both for vecs and strings
+[20:51:18] <aturon> bluss: sfackler: bstrie: thoughts? ^
+[20:52:02] <bstrie> aturon: I'm a-ok with + for vec concatenation as long as it's *the* preferred way of doing things. if it's going to be a perf hazard, better not to have it
+[20:52:15] <sfackler> my biggest concern is the perf hazard
+[20:52:27] <cmr> I think it's syntax diabetes, I've never been a fan of it.
+[20:52:27] <bluss> I think it's too late. Not using `+` for concatenation is better, but I didn't win that argument last time I had it
+[20:52:28] <sfackler> +'ing to build a big string out of parts vs format!'ing it
+[20:52:32] <seanmonstar> aturon: anything against &str (and perhaps String) implementing AsRef<[u8]>?
+[20:52:38] <sfackler> also syntax diabetes
+[20:52:43] <aturon> seanmonstar: funny you should ask ... one sec
+[20:53:02] <aturon> sfackler: yeah, that's a common gotcha
+[20:53:03] <sfackler> running into n^2 land with String + in Java is a thing that's not uncommon to see
+[20:53:07] <seanmonstar> :D
+[20:53:28] <bluss> + isn't a perf hazard as long as you take the first argument by value and evaluate it left to right.. However that makes the + operator very asymmetrical, which is very un-addition
+[20:53:48] <cmr> which is why a concat operator makes sense, if you're going to use an operator.
+[20:54:07] <seanmonstar> aturon: possible bonus points: adjusting std::io::Write::write to accept an AsRef<[u8]> instead of &[u8]
+[20:54:13] <frewsxcv> why does it matter if + is asymmetrical?
+[20:54:16] <aturon> well, ok, we're slipping back into discussion of the merits -- but i guess the main question here is: is it too late regardless?
+[20:54:16] <bluss> sfackler: Vec<T> + &[T] -> Vec<T> is fine, we have move semantics and java doesn't
+[20:54:30] <cmr> aturon: I think it probably is...
+[20:54:38] <aturon> my thinking was we could just toss together a branch and see how it looks on crates.io
+[20:54:45] <aturon> but even if the breakage is small, it's still risky
+[20:54:51] <reem> Probably lots of things will break but the breakage is tiny and easily fixable
+[20:55:11] <reem> actually we don’t have push_all anymore iirc so it’s not *so* easy
+[20:55:20] <aturon> reem: it's there, just unstable
+[20:55:26] <aturon> alternatively,
+[20:55:31] <reem> right, but same thing for the purpose of this question
+[20:55:31] <bstrie> aturon: measure the breakage
+[20:55:34] <aturon> we could remove + from Vec for now,
+[20:55:38] <bstrie> that's what this tool is for!
+[20:55:49] <aturon> and in the future if we gain a concat operator, we could deprecate + on String in favor of it
+[20:55:53] <seanmonstar> reading `a = b + c` when B and C are arrays always leaves me confused, no matter tha language
+[20:56:16] <pcwalton> you know, if we had fixits in the compiler and had Xcode-like integration for fixits into vim and emacs, then we could have the compiler auto-insert the correct lifetimes into your code
+[20:56:25] <pcwalton> just say "accept suggestion"
+[20:56:25] <bstrie> I will fight a dedicated concat operator, just fyi :)
+[20:56:29] <aturon> brson: can you test https://github.com/rust-lang/rust/pull/25157 on crater?
+[20:56:51] <brson> aturon: sure!
+[20:56:55] <cmr> aturon: as much as I hate the feature, I think it would not be worth removing at this point.
+[20:56:56] <aturon> <3
+[20:57:11] <bstrie> cmr: who knows, maybe nobody is using it...
+[20:57:14] <aturon> ok, well, no harm in seeing the breakage for vec removal, just so we have more data to make this decision
+[20:57:19] <cmr> Yeah.
+[20:57:24] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[20:57:36] <aturon> ok g2g to meeting, back later
+[20:57:41] <cmr> pcwalton: I think the compiler is probably pretty close to being able to do that... that'd be neat.
+[20:58:00] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[20:58:00] *** ChanServ sets mode: +o pcwalton
+[20:58:58] <cmr> pcwalton: I think the compiler is probably pretty close to being able to do that... that'd be neat.
+[20:59:14] <bstrie> pcwalton: we were talking about this the other day, the idea of having a cargo command where it just accepts whatever suggestions the compiler spits out and you and recompiles with them, seeing if it eventually passes
+[20:59:30] <reem> One of the things I’m most excited about with rustfmt is the potential to build other tools for automating rust code with the same base, so we could use it for fixing search/replace deprecations and such.
+[20:59:30] <bstrie> specifically with regard to lifetime bounds
+[21:00:07] <pcwalton> yup, it would be easy
+[21:00:12] <pcwalton> as far as the compiler is concerned
+[21:00:21] <pcwalton> the only tricky part will be the editor integration
+[21:00:26] <cmr> Yeah.
+[21:00:50] *** Quits: erz (erz@moz-45hupr.broadband.corbina.ru) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[21:01:23] *** Quits: joneshf-laptop (joneshf@moz-l4h.b5s.208.98.IP) (Ping timeout: 121 seconds)
+[21:01:30] <bstrie> and if the compiler is so often right about guessing what you want wrt lifetime annotations, maybe that's an argument for even more elision :)
+[21:03:19] *** Joins: Stebalien (Stebalien@moz-ijf92o.csail.mit.edu)
+[21:05:53] <seanmonstar> bstrie: the worst bugs ive had is tracking down incorrect elision :(
+[21:06:05] *** Quits: munksgaard (munksgaard@moz-ob0t16.0.fullrate.dk) (Ping timeout: 121 seconds)
+[21:06:58] <larsberg> aturon: fyi, we're having our first "servo needs this change, but upstream dep doesn't want to be on unstable features" funtime - https://github.com/servo/glutin/pull/19
+[21:07:23] <aturon> larsberg: ahh! thanks for the heads-up, i'll look into it
+[21:07:30] <larsberg> aturon: No action required; it'll just be interested to see how this plays out w.r.t. do we use cargo features to ifdef it out per target, etc.
+[21:07:49] <larsberg> We'll definitely need to come up with a plan longer-term for stuff like that, but it's not a crisis yet :-)
+[21:07:56] <reem> #[cfg(nightly) :)
+[21:08:02] <aturon> yep (by look into it i partly mean, think more about this issue)
+[21:08:07] <aturon> reem: yes :)
+[21:08:09] <larsberg> aturon: thanks!
+[21:08:10] <seanmonstar> exactly ^
+[21:08:16] *** Joins: dcb (textual@moz-j72nfe.ca.comcast.net)
+[21:08:26] <larsberg> reem: yes, but what if that requires two totally different copies of large pieces of code, as it does in this case? :-)
+[21:08:49] <seanmonstar> larsberg: pop open libstd/sys :D
+[21:09:26] <larsberg> seanmonstar: upstream library owners still have dreams of beauty, long since abandoned in the hallowed halls of standard libraries and compiler internals :-)
+[21:09:27] <sfackler> brson: where does multirust store overrides?
+[21:10:10] <brson> sfackler: ~/.multirust/overrides
+[21:10:21] <reem> larsberg: I think that can be alleviated slightly with more flexibility about where you can stick #[cfg], but it remains a sort of fundamental limitation.
+[21:10:43] <reem> It’s easier than a cargo feature :P
+[21:10:54] *** Joins: Guest63 (textual@moz-ttd.2as.255.109.IP)
+[21:11:32] <seanmonstar> larsberg: in this PR, it looks like the duplicate code would be small
+[21:11:36] *** Quits: proc (proc@moz-qkgpmr.dip0.t-ipconnect.de) (Quit: Gotta eat my pizza)
+[21:11:39] <larsberg> reem: Yeah, I agree! I think just figuring out how we should generally ask to handle it will be particularly important for Servo, as we're now pushing pretty close to 100 crates after the rustup through deprecategate :-)
+[21:11:57] <reem> wow!
+[21:12:13] <seanmonstar> i cant imagine any other solution besides conditional compilation to be able to build on stable and unstable
+[21:13:05] <larsberg> seanmonstar: in this PR, I suspect we might even be able to avoid the bifurcation entirely, but it had a good example that raised the issue. Being able to figure out an answer when we're not under the gun (which would result in us just maintaining a servo fork and depending on that instead of the crates version - our default behavior) would be cool.
+[21:13:40] <sfackler> brson: would it be possible to have some kind of .cargo/ like thing for multirust? The use case is that if I'm working on a project that needs unstable stuff, it'd be nice to be able to git-track a file that tells multirust which toolchain should be used
+[21:14:01] <sfackler> so everyone working on it's on the same nightly
+[21:14:48] *** Quits: annodomini (lambda@moz-hceqmj.hfc.comcastbusiness.net) (Client exited)
+[21:15:29] <larsberg> reem: yeah, once you get to so many crates, particularly across all our compilation targets (linux, osx, android, gonk/FFOS), managing rust upgrades and all the dependencies is... fun :-)
+[21:16:14] *** Joins: annodomini (lambda@moz-hceqmj.hfc.comcastbusiness.net)
+[21:16:16] <reem> hopefully that’s better now (or in like two weeks)
+[21:17:06] <larsberg> reem: certainly, our push to get all of our dependencies using travis and building against nightly has been a huge help (at least for the linux bit)
+[21:17:11] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[21:17:38] <larsberg> but we'll probably always be relying on unstable features, so... 
+[21:18:41] <seanmonstar> larsberg: its also possible to add to travis.yml to test both on nightly and beta (or stable)
+[21:18:45] *** Quits: Stebalien (Stebalien@moz-ijf92o.csail.mit.edu) (Quit: leaving)
+[21:20:00] <bstrie> so why is `Weak` unstable, anyway
+[21:20:35] *** Quits: gsingh93 (gulshan@moz-qnbukr.mi.comcast.net) (Ping timeout: 121 seconds)
+[21:20:35] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[21:20:55] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[21:25:05] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[21:25:21] *** chmanchester is now known as chmanchester|afk
+[21:26:07] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[21:26:08] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[21:26:09] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[21:30:59] <simukis> nobody bothered to make it not be unstable
+[21:31:33] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[21:33:56] *** Quits: dinfuehr (dinfuehr@moz-b31i9i.highway.telekom.at) (Connection closed)
+[21:34:00] *** Joins: dinfuehr (dinfuehr@moz-b31i9i.highway.telekom.at)
+[21:34:04] *** Quits: c0170 (c0170@moz-4stj9o.cable.virginm.net) (Ping timeout: 121 seconds)
+[21:35:24] *** Quits: dinfuehr (dinfuehr@moz-b31i9i.highway.telekom.at) (Connection closed)
+[21:35:45] *** Joins: dinfuehr (dinfuehr@moz-b31i9i.highway.telekom.at)
+[21:39:47] *** Quits: dinfuehr (dinfuehr@moz-b31i9i.highway.telekom.at) (Ping timeout: 121 seconds)
+[21:42:32] <cmr> How do we feel about #[doc(hidden)] stuff that has been deprecated for 1 release?
+[21:43:22] <cmr> ie, foo is deprecated in 1.3, in 1.4 we #[doc(hidden)] it.
+[21:43:45] <sfackler> still breaking
+[21:43:58] <sfackler> seems kind of dubious to doc(hidden) it in the first place post 1.0 though
+[21:44:30] <cmr> why is it breaking?
+[21:44:40] <sfackler> you're deleting stuff that is stable
+[21:44:57] <cmr> From the *docs*?
+[21:45:06] <sfackler> oh sorry
+[21:45:18] <sfackler> thought you meant deleting stuff that was already doc(hiddened)
+[21:45:23] <cmr> No
+[21:45:42] <sfackler> hiding it completely seems like it would just cause confusion.
+[21:45:54] <sfackler> we can do some stuff to hide deprecated stuff by deafult in the frontend
+[21:45:58] <sfackler> or shrink it or whatever
+[21:46:05] <cmr> I feel pretty strongly that deprecated things should never be used.
+[21:46:09] <sfackler> but they will be
+[21:46:14] <sfackler> especially in old code
+[21:46:24] <sfackler> and given that they're deprecated, people won't be framiliar with what they are
+[21:46:43] <sfackler> and it'll be a real bummer if it's impossible to find out any information about them
+[21:46:54] <cmr> I guess so, yeah.
+[21:46:59] <bluss> the deprecation message should tell what the replacement is
+[21:47:37] <reem> still, information about the old API is valuable to recreate behavior precisely using whatever the new API is
+[21:47:49] <bstrie> I had a dream about this last night
+[21:47:56] <bstrie> it was a very mundane dream
+[21:48:25] <bstrie> I think we just ended up making it so that deprecated things were displayed in light grey text in rustdoc
+[21:48:49] <cmr> sounds good to me, if it's backed by prophecy.
+[21:51:27] *** Quits: killercup (killercup@moz-qj5qhi.dip0.t-ipconnect.de) (Quit: Bye)
+[21:53:09] <frewsxcv> dreaming about rust deprecation.....
+[21:53:22] <frewsxcv> i think we might need a support group soon....
+[21:54:39] <simukis> we already tell pretty clearly in the documentation (both search/listing and item docs) that it is deprecated
+[21:55:06] <simukis> hiding is for internal implementation details such as set_panic/set_stdout.
+[21:55:50] <frewsxcv> what value is there in displaying functionality one can't use?
+[21:56:14] <cmr> you can use deprecated stuff.
+[21:56:24] <frewsxcv> oh, nevermind, this is about deprecation
+[21:56:32] <frewsxcv> i for some reason was thinking about 'unstable'
+[21:56:35] *** Joins: micka (micka@moz-bio722.abo.wanadoo.fr)
+[21:56:37] *** Joins: gsingh93 (gulshan@moz-qnbukr.mi.comcast.net)
+[21:56:37] <bluss> hiding it seems ok. Googling will lead to older documentation versions
+[21:56:40] <cmr> simukis: sfackler: yeah, I'm convinced.
+[21:57:27] *** Quits: larhat (Adium@moz-tb1ulb.cable.virginm.net) (Quit: Leaving.)
+[21:58:53] *** Quits: micka (micka@moz-bio722.abo.wanadoo.fr) (Quit: http://www.kiwiirc.com/ - A hand crafted IRC client)
+[22:01:53] *** Joins: micka (micka@moz-bio722.abo.wanadoo.fr)
+[22:02:29] *** Quits: micka (micka@moz-bio722.abo.wanadoo.fr) (Quit: http://www.kiwiirc.com/ - A hand crafted IRC client)
+[22:03:45] *** Joins: micka (micka@moz-bio722.abo.wanadoo.fr)
+[22:06:54] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[22:08:48] *** Joins: munksgaard (munksgaard@moz-478pev.u.parknet.dk)
+[22:08:53] *** Joins: swgillespie (swgillespie@moz-1i5.3un.220.167.IP)
+[22:12:02] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[22:12:36] *** Quits: ytain (ytain@moz-pr2.aip.175.108.IP) (Quit: Textual IRC Client: www.textualapp.com)
+[22:13:48] *** Joins: munksgaa1d (munksgaard@moz-urnkl5.u.parknet.dk)
+[22:14:03] *** Quits: munksgaard (munksgaard@moz-478pev.u.parknet.dk) (Ping timeout: 121 seconds)
+[22:18:38] *** Quits: swgillespie (swgillespie@moz-1i5.3un.220.167.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[22:19:30] *** Quits: willem (willem@moz-facs2s.dynamic.upc.nl) (A TLS packet with unexpected length was received.)
+[22:19:34] *** Quits: gsingh93 (gulshan@moz-qnbukr.mi.comcast.net) (Ping timeout: 121 seconds)
+[22:19:41] <pcwalton> I wrote ty_box, agh
+[22:19:50] * pcwalton will always be writing in ancient rust
+[22:20:40] *** Joins: willem (willem@moz-facs2s.dynamic.upc.nl)
+[22:26:15] *** Quits: munksgaa1d (munksgaard@moz-urnkl5.u.parknet.dk) (Ping timeout: 121 seconds)
+[22:27:23] *** Quits: bjz (bjz@moz-puppgq.tpgi.com.au) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[22:28:11] <brson> sfackler: I've been thinking of having multirust interpret metadata directly out of Cargo.toml for that kind of thing
+[22:28:18] <sfackler> oh cool
+[22:31:51] *** Quits: arielb1 (Ariel@moz-78pi5m.red.bezeqint.net) (Quit: Ex-Chat)
+[22:31:52] <pcwalton> nmatsakis: I'm trying an alternative, simpler approach where I just write DTOR_DONE to the drop flag locations instead of to all bytes
+[22:32:16] <pcwalton> hopefully LLVM can optimize that better
+[22:32:37] *** Joins: gsingh93 (gulshan@moz-qnbukr.mi.comcast.net)
+[22:33:08] *** Quits: brson (brson@moz-u3dg2t.sfo1.mozilla.com) (Quit: leaving)
+[22:35:10] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[22:37:23] *** Quits: eibwen (eibwen@moz-n4tjds.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[22:38:12] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[22:39:39] *** Quits: Guest63 (textual@moz-ttd.2as.255.109.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[22:39:45] *** Joins: summerlight_ (summerlight@moz-99k.2mj.130.121.IP)
+[22:39:48] *** Joins: barosl_ (barosl@moz-tmp.qma.67.220.IP)
+[22:42:41] *** Quits: summerlight (summerlight@moz-99k.2mj.130.121.IP) (Ping timeout: 121 seconds)
+[22:42:49] *** Quits: barosl (barosl@moz-tmp.qma.67.220.IP) (Ping timeout: 121 seconds)
+[22:44:58] *** Quits: micka (micka@moz-bio722.abo.wanadoo.fr) (Quit: http://www.kiwiirc.com/ - A hand crafted IRC client)
+[22:45:09] *** Joins: madmalik (uid13697@moz-lfin5p.brockwell.irccloud.com)
+[22:45:18] *** Quits: hyunsik (hyunsik@moz-3qgjl9.ca.comcast.net) (Quit: Lost terminal)
+[22:49:35] *** Quits: annodomini (lambda@moz-hceqmj.hfc.comcastbusiness.net) (Client exited)
+[22:53:57] *** Quits: mjboa (mike@moz-gfdglf.hsi06.unitymediagroup.de) (Quit: leaving)
+[22:55:33] <frewsxcv> thank you box!
+[22:56:51] *** Joins: njn (chatzilla@moz-6gdjm4.iinet.net.au)
+[22:57:43] *** Joins: arielb1 (Ariel@moz-78pi5m.red.bezeqint.net)
+[22:59:17] *** Joins: swgillespie (swgillespie@moz-1i5.3un.220.167.IP)
+[23:00:32] *** Joins: naerbnic (naerbnic@moz-mol.4ra.239.216.IP)
+[23:02:08] *** Quits: jdm (jdm@moz-pdn.m8h.114.24.IP) (Quit: )
+[23:02:32] *** Quits: tamird (textual@moz-lje.m54.130.157.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[23:03:02] *** Quits: arielb1 (Ariel@moz-78pi5m.red.bezeqint.net) (Quit: Ex-Chat)
+[23:03:21] *** Quits: swgillespie (swgillespie@moz-1i5.3un.220.167.IP) (Ping timeout: 121 seconds)
+[23:04:21] *** Quits: duesenfranz_ (jona@moz-711djm.tirol.surfer.at) (Client exited)
+[23:09:23] *** Quits: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu) (A TLS packet with unexpected length was received.)
+[23:11:15] *** Quits: Kingsquee (kingsley@moz-3fm07c.bchsia.telus.net) (Quit: Konversation terminated!)
+[23:14:58] *** Quits: jga (jga@moz-9h1.t1q.244.77.IP) (Ping timeout: 121 seconds)
+[23:15:06] *** Quits: willem (willem@moz-facs2s.dynamic.upc.nl) (Quit: leaving)
+[23:16:38] *** Joins: Jesin (Jesin@moz-t88s6v.cc.lehigh.edu)
+[23:17:50] *** Joins: swgillespie (swgillespie@moz-1i5.3un.220.167.IP)
+[23:17:50] *** Quits: swgillespie (swgillespie@moz-1i5.3un.220.167.IP) (Connection closed)
+[23:17:54] *** Joins: swgillespie (swgillespie@moz-1i5.3un.220.167.IP)
+[23:20:41] *** Quits: mgottschlag (quassel@moz-8uvcc8.hsi15.kabel-badenwuerttemberg.de) (Ping timeout: 121 seconds)
+[23:21:23] *** Quits: Diggsey (diggsey@moz-2s5u1v.dsl.pipex.com) (Ping timeout: 121 seconds)
+[23:26:04] *** Quits: swgillespie (swgillespie@moz-1i5.3un.220.167.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[23:28:04] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[23:28:28] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Connection closed)
+[23:34:11] *** Joins: chc4 (chc4@moz-pdo0at.ma.comcast.net)
+[23:43:12] *** Quits: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua) (Ping timeout: 121 seconds)
+[23:44:38] *** Quits: ptalbot (ptalbot@moz-j4gnuh.fbx.proxad.net) (Ping timeout: 121 seconds)
+[23:46:07] *** Joins: aatch (james@moz-ciignl.bmm3.j08e.e000.2406.IP)
+[23:48:38] *** Joins: Ericson2315 (user@moz-j5mi8i.cs.brown.edu)
+[23:49:15] *** Quits: Astrum|Lap (Astrum|Lap@moz-7enfbr.co.comcast.net) (Client exited)
+[23:50:06] *** Quits: chc4 (chc4@moz-pdo0at.ma.comcast.net) (Connection closed)
+[23:50:55] *** Joins: chc4 (chc4@moz-pdo0at.ma.comcast.net)
+[23:51:08] *** Joins: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca)
+[23:55:10] *** Quits: harrisonclarke (harrisoncla@moz-uur7pt.eastlink.ca) (Ping timeout: 121 seconds)
+[23:55:33] *** Joins: swgillespie (swgillespie@moz-1i5.3un.220.167.IP)
+[23:59:14] *** kimundi is now known as zz_kimundi
+[23:59:36] *** Quits: swgillespie (swgillespie@moz-1i5.3un.220.167.IP) (Ping timeout: 121 seconds)

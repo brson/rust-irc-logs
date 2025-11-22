@@ -1,0 +1,2137 @@
+[00:22:50] *** Quits: japaric (japaric@6EEB4A44.E90D5F40.F29ED47E.IP) (Connection reset by peer)
+[00:23:37] <acrichto> dbaupp: you beat me :(
+[00:24:12] * dbaupp is lightning
+[00:24:12] <acrichto> brson: did we intend on having 'proc { foo() }' parse?
+[00:25:10] *** Joins: japaric (japaric@6EEB4A44.E90D5F40.F29ED47E.IP)
+[00:26:05] *** Quits: new_one (new_one@565B6F06.B4699C3B.B3C0173E.IP) (Ping timeout)
+[00:27:27] <Eridius> acrichto: regarding #11894, you said that only network stream objects reasonably want to be split. Why not file io objects?
+[00:27:36] <acrichto> you can open a file again
+[00:28:09] <Eridius> what if you were given the fd through some form of IC?
+[00:28:10] <Eridius> *IPC
+[00:28:25] <Eridius> well, I suppose in that case you probably have the raw fd and can dup() it manually
+[00:29:36] <Eridius> acrichto: actually, you can't necessarily reopen a file. Trivial example: file could have been deleted. Your file handle is still valid (although writing doesn't make much sense if the file's gone)
+[00:29:58] <Eridius> or, say, permissions changed and you no longer have privileges to open the file. I assume the existing fd is still valid while it's open, but you can't make a new one
+[00:30:13] <acrichto> Eridius: yes, you can contribe an example where you'd want clone, but it's generally not necessary
+[00:30:21] <acrichto> this is mainly to support simultaneous reads/writes
+[00:30:24] <acrichto> you rarely do that with a file
+[00:30:43] <Eridius> true
+[00:31:02] <brson> acrichto: i haven't heard. I thought it should though
+[00:31:03] <Eridius> well, what about a character device file?
+[00:31:27] <acrichto> Eridius: perhaps, I'd like to just limit it to network I/O for now
+[00:31:48] <Eridius> fair enough
+[00:32:23] <ChrisMorgan> Eridius: Clone is such a standard trait that implementing it for File I/O can be a completely separate thing later. Network I/O is the main place where it's already really obvious that it's utterly essential in one way or another.
+[00:32:53] * ChrisMorgan is pleased with the Clone solution; it's much more elegant than the solutions earlier discussed.
+[00:32:54] <Eridius> ChrisMorgan: agreed. I'm not trying to say Clone has to be implemented everywhere at once. I'm just arguing against the assertion that it's not useful elsewhere
+[00:33:02] <ChrisMorgan> Oh, yeah.
+[00:33:04] <acrichto> ChrisMorgan: this doesn't implement the Clone trait though, b/c the call to clone() can fail
+[00:33:46] <ChrisMorgan> Oh yeah, I did notice that when you had your draft commits earlier, but I forgot it.
+[00:33:52] <Eridius> acrichto: hrm. Maybe it should be called .dup() or something?
+[00:34:11] <ChrisMorgan> fn clone(&self) -> Result<~rtio::RtioPipe, IoError>;
+[00:34:13] <acrichto> I'd be down with that
+[00:34:17] <acrichto> dup()
+[00:34:18] <strcat> acrichto: when would it fail? out of file descriptors?
+[00:34:31] <Eridius> strcat: dup() can fail
+[00:34:37] <acrichto> strcat: it calls dup() on native, so whatever the failure reasons are there
+[00:34:45] <acrichto> or whatever the failure reasons are for the WSA apis 
+[00:34:50] *** Joins: lpy (lpy@9248CA04.F930CE91.65042015.IP)
+[00:34:52] <acrichto> it's always successful on libgreen though
+[00:34:57] <acrichto> pending an allocation success
+[00:35:01] <strcat> Eridius: it can fail for a reason other than running out of fds?
+[00:35:05] <Eridius> acrichto: incidentally, one of the failure reasons is EINTR. Maybe it should retry automatically for that
+[00:35:14] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[00:35:27] <Eridius> strcat: Looks like EINTR is the only reason besides out-of-fd's that it can fail for a valid fd
+[00:35:27] <strcat> running out of memory and running out of fds doesn't seem much different
+[00:35:42] <strcat> Eridius: EINTR isn't a real failure, just means loop
+[00:35:49] <acrichto> lol EINTR
+[00:35:52] <Eridius> strcat: yes, and the code in the PR doesn't loop
+[00:35:57] <strcat> rust shouldn't be bubbling up EINTR anywhere
+[00:35:58] <acrichto> OSX can really easily hit the fd limit
+[00:36:02] <Eridius> that's why I'm suggesting looping automatically instead of returning it as an IoError
+[00:36:04] <ChrisMorgan> Eridius: how about EBUSY if you try to clone from two different tasks?
+[00:36:05] <acrichto> nah yeah I'll fix the EINTR one
+[00:36:21] <acrichto> Eridius: yeah we try to hide EINTR everywhere, and this shouldn't be an exception
+[00:36:22] <ChrisMorgan> Oh, that only applies to dup2 and dup3.
+[00:36:22] <strcat> acrichto: it looks like dup2 can have EINTR but not dup...
+[00:36:28] <Eridius> ChrisMorgan: if you have access to the stream from two different tasks you're already using some sort of synchronization
+[00:36:35] <ChrisMorgan> Yeah, EINTR is dup2 or dup3 only also.
+[00:36:36] <Eridius> and I don't see EBUSY in my dup manpage
+[00:36:44] <Eridius> ChrisMorgan: my dup manpage lists EINTR for dup()
+[00:36:46] *** Quits: lpy (lpy@9248CA04.F930CE91.65042015.IP) (Ping timeout)
+[00:36:48] <acrichto> strcat: yeah it looks like the only failure mode is out of file descriptors
+[00:36:49] <ChrisMorgan> Eridius: but that's exactly what this *allows*
+[00:36:51] <acrichto> at least for linux
+[00:36:58] <strcat> acrichto: I'm looking at the POSIX standard
+[00:37:54] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[00:38:09] <strcat> I don't trust the man-pages project anymore
+[00:38:11] <strcat> ;s
+[00:38:24] <ChrisMorgan> Eridius: accessing the stream from two different tasks is one of the primary cases for this functionality. The normal usage of that will be reading in one and writing from another, but it's not the only thing that *can* be done with it.
+[00:38:29] <Eridius> the OS X manpage lists EINTR for dup(). But you're right, googling around shows other manpages that don't. https://developer.apple.com/library/mac/documentation/Darwin/Reference/ManPages/man2/dup.2.html
+[00:38:47] <strcat> The dup() function shall fail if:
+[00:38:48] <ChrisMorgan> let socket: TcpSocket; let subsocket = socket.dup().unwrap(); spawn(proc() { subsocket.dup() }); socket.dup();  // Well, can this conceivably return EBUSY?
+[00:38:49] <strcat> [EBADF]
+[00:38:51] <strcat>     The fildes argument is not a valid open file descriptor.
+[00:38:53] <strcat> [EMFILE]
+[00:38:55] <strcat>     All file descriptors available to the process are currently open. 
+[00:38:57] <strcat> from POSIX
+[00:39:01] <Eridius> ChrisMorgan: I'm not sure what you were suggesting for EBUSY then. I thought you were suggesting this if you tried to dup the handle from two tasks simultaneously
+[00:39:26] <Eridius> ah, EBUSY is Linux only for dup()
+[00:39:35] <Eridius> although http://linux.die.net/man/2/dup says it's dup2() and dup3() only
+[00:39:47] <strcat> Eridius: http://pubs.opengroup.org/onlinepubs/9699919799/functions/dup.html *shrug*
+[00:39:52] <Eridius> (and it's caused by dup2/dup3 trying to write to a fd that open() is also trying to grab)
+[00:40:23] <Eridius> strcat: yeah, no EINTR for dup() there. But OS X says dup() will return EINTR, so it should be handled
+[00:41:11] * ChrisMorgan hates the madness of having a function foo and then, when you decide it doesn't do quite what you want, making a new one foo2 and then foo3 and so on with no obvious semantic meaning.
+[00:41:37] <strcat> ChrisMorgan: well they are probably going to add posix_close
+[00:41:39] <strcat> to go along with close
+[00:41:46] <strcat> cause close doesn't work right cross-platform
+[00:41:56] <acrichto> what's the difference?
+[00:42:05] <Eridius> ChrisMorgan: dup2() at least made sense as "dup to", because it dups to a given fd. Whomever created dup3 is on crack
+[00:42:07] <strcat> whether the fd is closed when close returns EINTR
+[00:42:10] <strcat> varies per platform
+[00:42:22] <strcat> on AIX/Linux/FreeBSD/OSX, I think it is closed on close returning EINTR
+[00:42:31] <strcat> on HP-UX, I think it is not ever closed
+[00:42:45] <Eridius> strcat: if it's closed on EINTR, why even return EINTR? Since closing is what it wanted to do
+[00:43:23] <strcat> Eridius: because it means it is still performing I/O and may encounter an error it's not going to tell you about
+[00:43:31] * strcat shrugs
+[00:43:37] <Eridius> o_O
+[00:44:13] <strcat> Eridius: meaningless anyway
+[00:44:21] <strcat> you may or may not see an error from close itself
+[00:44:27] <strcat> you have to call fsync to really know
+[00:44:30] <Eridius> :/
+[00:44:53] <strcat> you can close it and it tries to write to disk 20 seconds later
+[00:44:55] <strcat> and hits an error
+[00:44:56] <ChrisMorgan> strcat: last I heard, you can't even trust fsync on OS X any more.
+[00:45:04] <strcat> ChrisMorgan: why?
+[00:45:09] <ChrisMorgan> It lies.
+[00:45:14] <strcat> that's a spec violation then ;p
+[00:45:22] <ChrisMorgan> Yep. But I read that it happens.
+[00:45:28] <dbaupp> acrichto: heh, 25% of the open PRs are yours
+[00:45:39] * ChrisMorgan rushes to open some PRs
+[00:45:46] <Eridius> ChrisMorgan: fsync flushes to the hard drive. It doesn't force the drive to physically write
+[00:45:53] <strcat> http://www.opengroup.org/austin/docs/austin_549.txt
+[00:45:55] <acrichto> dbaupp: I need to land more PRs :(
+[00:45:55] <Eridius> you can use fcntl() with F_FULLFSYNC to ask the drives to flush to disk
+[00:45:55] <strcat> posix_close
+[00:45:57] * strcat cackles
+[00:46:03] <Eridius> rather, this is how it works on OS X
+[00:46:30] <dbaupp> acrichto: most are approved, so it's ok :P
+[00:46:43] <acrichto> oh wow
+[00:47:23] * ChrisMorgan can't find the article he was looking for on the topic of Mac OS X's deception in flushing and writing ☹
+[00:47:41] <acrichto> dbaupp: lol just rebased
+[00:47:53] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[00:47:53] *** ChanServ sets mode: +ao pcwalton pcwalton
+[00:47:57] * acrichto wants to ignore all rustpkg tests
+[00:48:11] <strcat> it doesn't seem like we report fd exhaustion
+[00:48:16] <strcat> since spawning a task opens urandom
+[00:48:21] <strcat> and spawn doesn't report an error
+[00:48:23] * strcat shrugs
+[00:49:07] <acrichto> I don't think spawning does that any more
+[00:49:19] <acrichto> spawning used to touch some hash maps, but I don't believe it does any more
+[00:50:07] <Eridius> ChrisMorgan: From what I can tell, OS X is behaving just fine with fsync(). The POSIX definition for fsync() doesn't say anything about forcing the storage device to flush its own caches, it only talks about flushing data to the storage device
+[00:50:35] <ChrisMorgan> Eridius: I can't remember all the details of it, but the article that I have in mind made a very clear case for spec violation for performance
+[00:50:50] <Eridius> furthermore, the linux fsync() manpage says that in older kernels and on some filesystems, fsync() doesn't know how to flush the disk cache. So Linux apparently used to behave like OS X does (and still does on some fs's)
+[00:51:52] <strcat> Eridius: by 'older' it means 'long before ext2'
+[00:51:53] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[00:51:54] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1487b11f8 to 14edfb546: 02http://git.io/N3iJvQ
+[00:51:54] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[00:51:55] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[00:51:55] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/OB0APA
+[00:51:55] <ghrust> 13rust/06auto 149896beb 15Alex Crichton: Implement an unused_result lint...
+[00:51:56] <ghrust> 13rust/06auto 14a4779ef 15Alex Crichton: Flag Result as #[must_use] and deal with fallout.
+[00:51:56] <ghrust> 13rust/06auto 148c8df07 15bors: auto merge of #11754 : alexcrichton/rust/unused-result, r=brson...
+[00:51:57] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[00:52:19] <strcat> before linux actually implemented the pthread API
+[00:52:34] <Eridius> strcat: http://blog.httrack.com/blog/2013/11/15/everything-you-always-wanted-to-know-about-fsync/ links to http://unixhelp.ed.ac.uk/CGI/man-cgi?fsync for ext3 that says "If the underlying hard disk has write caching enabled,  then  the  data may  not	 really	 be  on	 permanent  storage when fsync() / fdatasync() return.
+[00:52:39] <Eridius> "
+[00:52:55] <Eridius> it looks like for ext4 fsync only started flushing caches as recently as 2008? http://lwn.net/Articles/270891/
+[00:53:21] *** kimundi is now known as zz_kimundi
+[00:54:01] <Eridius> a comment on that blog entry (http://blog.httrack.com/blog/2013/11/15/everything-you-always-wanted-to-know-about-fsync/#comment-1131787874) backs up my interpretation of the POSIX man page, which is that fsync() is not required to flush the caches on the physical storage device
+[00:55:13] <Eridius> Dominic Giampaolo also asserts that OS X's implementation of fsync() is consistent with unixes from the dawn of time: http://lists.apple.com/archives/darwin-dev/2005/Feb/msg00072.html
+[00:57:54] <strcat> Eridius: ext2/ext3 had barriers before 2008...
+[00:58:31] <strcat> I forget when ext4 stopped being totally experimental
+[00:59:04] <Eridius> strcat: regardless of Linux's history, the point is that OS X is perfectly consistent with unices of the past, and conforms to POSIX. It's Linux that decided to change how fsync() works
+[00:59:15] <strcat> Eridius: drives didn't used to have caches afaik
+[00:59:36] <Eridius> they have for a very long time
+[01:01:25] *** Quits: b (b@moz-55CA322E.org) (Quit: !)
+[01:01:26] <acrichto> brson: for https://github.com/mozilla/rust/issues/11897, it looks like we can tell s3 that our "index document" is index.html, but I have to change some thing to "Enable website hosting", any objections?
+[01:01:26] <strcat> Eridius: well, _POSIX_SYNCHRONIZED_IO is optional
+[01:01:36] <strcat> Eridius: if it's defined then it has to flush the drive cache
+[01:01:40] <strcat> if it's not then fsync can be a no-op
+[01:01:42] <strcat> per the standard
+[01:01:46] <acrichto> brson: I think our CNAMEs should continue to work...
+[01:01:51] *** Quits: tjc (tjc@moz-7EE2AFFC.hfc.comcastbusiness.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[01:02:11] <Eridius> strcat: what is "the synchronized I/O completion state"?
+[01:02:55] <strcat> Eridius: well read the rationale nonsense thing ;p
+[01:03:06] <strcat> not that 'should probably' means much
+[01:03:08] * strcat shrugs
+[01:03:14] *** Joins: b (b@moz-55CA322E.org)
+[01:03:27] <Eridius> the rationale is purely informative text, not normative
+[01:03:47] *** Quits: notmatt (notmatt@CC62CF7E.1E7FDFDB.A82DBDDB.IP) (Client exited)
+[01:03:49] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[01:04:12] *** Joins: notmatt (notmatt@CC62CF7E.1E7FDFDB.A82DBDDB.IP)
+[01:05:10] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Connection reset by peer)
+[01:05:14] <strcat> Eridius: POSIX_SYNCHRONIZED_IO has more docs
+[01:05:42] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[01:05:52] *** Quits: notmatt (notmatt@CC62CF7E.1E7FDFDB.A82DBDDB.IP) (Ping timeout)
+[01:06:05] *** Joins: canhtak (canhtak@moz-9E539298.wl.t.ulaval.ca)
+[01:08:40] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[01:11:59] *** Quits: dherman (dherman@moz-21F91504.cfw-a-gci.corp.yahoo.com) (Quit: dherman)
+[01:21:49] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[01:21:50] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 148c8df07 to 14edfb546: 02http://git.io/N3iJvQ
+[01:21:50] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[01:21:50] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[01:21:50] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/bdmxBw
+[01:21:50] <ghrust> 13rust/06auto 149ab91ea 15Niko Matsakis: Introduce marker types for indicating variance and for opting out...
+[01:21:50] <ghrust> 13rust/06auto 14f0f210c 15bors: auto merge of #11768 : nikomatsakis/rust/issue-11385-cell-and-variance, r=pnkfelix...
+[01:21:50] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[01:23:13] <brson> acrichto: no
+[01:28:44] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[01:29:12] *** Joins: erickt (Adium@8C9ECD8F.3A598286.F12515B4.IP)
+[01:34:29] *** Joins: tjc (tjc@A92AED49.FD5C31A1.284344F5.IP)
+[01:34:29] *** ChanServ sets mode: +o tjc
+[01:34:59] *** Quits: Kxepal (Miranda@moz-9BB50C73.pppoe.mtu-net.ru) (Ping timeout)
+[01:35:29] *** Joins: lpy (lpy@9248CA04.F930CE91.65042015.IP)
+[01:35:34] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[01:36:02] *** Quits: erickt (Adium@8C9ECD8F.3A598286.F12515B4.IP) (Quit: Leaving.)
+[01:37:31] *** Quits: lpy (lpy@9248CA04.F930CE91.65042015.IP) (Ping timeout)
+[01:38:32] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[01:39:45] <dbaupp> acrichto: does the S3 change automatically redirect ...foo/index.html to ...foo/ ?
+[01:40:00] <acrichto> dbaupp: that's what I think it's advertised to do, haven't seen it in action yet
+[01:40:06] <acrichto> http://stackoverflow.com/questions/27899/is-there-a-way-to-have-index-html-functionallity-with-content-hosted-on-s3
+[01:40:32] <acrichto> that's what I followed
+[01:43:07] <dbaupp> it's not clear to me that that will drop the `index.html` (rather than just serve index.html when the page is missing), but, it doesn't particularly matter.
+[01:43:16] *** Quits: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp) (Client exited)
+[01:43:18] *** Joins: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp)
+[01:43:34] <acrichto> I don't think we'll render links without index.html
+[01:43:40] <acrichto> but you should be able to type it without index.html
+[01:43:52] <acrichto> (I think)
+[01:44:01] <Eridius> if index document works like it does in normal web servers, then dbaupp is correct
+[01:44:31] <acrichto> hm
+[01:44:42] <acrichto> we don't have a lot of control over S3 I think
+[01:44:55] <dbaupp> acrichto: yes, that's what I mean: given a link rendered with index.html, does the web server auto-redirect to remove the index.html (it's just aesthetics)
+[01:44:57] <Eridius> if you want to redirect from index.html to the dir, you can presumably write a redirect rule, but I think that's unnecessary
+[01:44:59] *** Quits: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp) (Ping timeout)
+[01:45:14] <acrichto> this is all rustdoc generated docs as well
+[01:45:25] <acrichto> and we want rustdoc generated docs to still work with filesystem viewing
+[01:45:30] <dbaupp> if we *really* wanted it, I guess we could have some JS that removed the index.html from links on the website (so that filesystem still works)
+[01:45:31] <dbaupp> yeah
+[01:45:32] <acrichto> but we could perhaps have a fancy redirect rule
+[01:45:37] <acrichto> oh yeah
+[01:46:04] <Eridius> is there some reason to bother redirecting?
+[01:46:10] <dbaupp> it looks nicer?
+[01:46:12] <Eridius> incidentally, http://www.apple.com/index.html works without redirecting
+[01:46:15] <dbaupp> but nothing other than that
+[01:46:28] <acrichto> oh it does support arbitrary redirection rules
+[01:46:30] <acrichto> http://docs.aws.amazon.com/AmazonS3/latest/dev/HowDoIWebsiteConfiguration.html
+[01:46:31] *** Quits: tjc (tjc@A92AED49.FD5C31A1.284344F5.IP) (Ping timeout)
+[01:46:34] <Eridius> dbaupp: if you want it to look nicer, rewrite the links to remove the index.html. Although the problem there is rustdoc can't assume there's an index document configured
+[01:46:53] <dbaupp> Eridius: yes
+[01:46:59] <Eridius> it seems odd to me to have documentation link to index.html only to have the web server turn around and redirect 
+[01:47:11] <Eridius> I suppose one could make it a configuration option for rustdoc?
+[01:47:25] * dbaupp shrugs
+[01:47:32] <dbaupp> it's just a tiny papercut
+[01:48:11] *** Joins: new_one (new_one@17378071.1DCBF251.B3C0173E.IP)
+[01:49:44] <ChrisMorgan> Making it two requests is certainly not a good thing.
+[01:50:10] <dbaupp> can't you redirect on the server side without two requests?
+[01:50:22] <dbaupp> (theoretically, not necesssarily with S3.)
+[01:50:24] <Eridius> dbaupp: that doesn't do what you think it does
+[01:50:31] * dbaupp doesn't know what it does
+[01:50:40] <Eridius> dbaupp: that's for when you have some processing done for a given URL, and you want to rewrite other URLs to point at that given one to invoke the processing
+[01:50:54] *** Joins: tjc (tjc@26A52751.870F2FA5.2370DFC3.IP)
+[01:50:54] *** ChanServ sets mode: +o tjc
+[01:51:10] <Eridius> e.g. you have a PHP script foo.php and you want to be able to invoke it as /bar/ you can rewrite /bar/ to foo.php?q=/bar/ or somesuch
+[01:51:22] <Eridius> but none of that is visible to the user
+[01:51:42] <Eridius> that's pretty much what IndexDocument does, in fact. It takes a query for a folder and rewrites it internally to point to index.html, then processes the new request
+[01:52:10] <Eridius> my vote is to configure S3 with IndexDocument so index.html is unnecessary, and then do nothing else. Let the generated docs still link to index.html. Just update the links on the front page (and the wiki)
+[01:52:59] <dbaupp> fine by me
+[01:54:18] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[01:54:33] <bjz> brson: can we get rid of std::num::Times?
+[01:55:09] *** Quits: tjc (tjc@26A52751.870F2FA5.2370DFC3.IP) (Ping timeout)
+[01:55:50] <bjz> oh woops, seems like you guys were in agreement
+[01:57:08] <bjz> (re. https://github.com/mozilla/rust/pull/11672)
+[01:58:16] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[01:58:17] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14f0f210c to 14edfb546: 02http://git.io/N3iJvQ
+[01:58:17] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[01:58:51] *** Quits: Jesse (jruderman@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: Jesse)
+[02:01:27] *** Joins: tjc (tjc@26A52751.870F2FA5.2370DFC3.IP)
+[02:01:27] *** ChanServ sets mode: +o tjc
+[02:02:38] *** Joins: Jesse (jruderman@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[02:04:39] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[02:11:40] *** Joins: gwty (gwtypc@5B29F81D.8685D03D.27560D6E.IP)
+[02:24:57] *** Quits: Jesse (jruderman@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: Jesse)
+[02:26:33] *** bstrie_target is now known as bstrie_rules
+[02:27:56] *** Joins: Jesse (jruderman@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[02:28:57] *** Quits: Jesse (jruderman@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: Jesse)
+[02:29:17] <bstrie_rules> what language is the precedent for .expect() on Option?
+[02:29:21] <bstrie_rules> the naming, rather
+[02:29:29] <bstrie_rules> always just seemed a little out of left field
+[02:30:02] *** Joins: Jesse (jruderman@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[02:34:02] <bjz> bstrie_rules: what else would it be called?
+[02:34:09] <bjz> bstrie_rules: seems reasonable to me
+[02:34:16] <cmr> it seems reasonable to me too
+[02:34:40] <bjz> actually quite a nice name as well
+[02:34:46] <bstrie_rules> I'm not saying I have any better name, it just doesn't make sense to me
+[02:34:57] <cmr> Why doesn't it make sense?
+[02:35:02] <aatch> Well I can't find a precedent in the obvious places (Haskell and OCaml).
+[02:35:15] <cmr> Hm
+[02:35:18] <cmr> I can't phrase it well in English
+[02:35:37] <cmr> But it still makes sense to me... though now I notice that it reads a bit weirdly if you look too deep into it
+[02:36:01] <bjz> aatch: well in haskell you're not really meant to
+[02:36:20] *** Joins: lpy (lpy@9248CA04.F930CE91.65042015.IP)
+[02:36:25] <bjz> aatch: they have do notation which means it's much easier to work with monads
+[02:36:39] <aatch> bjz, well yes, but Ocaml and Haskell are the only places I know that have something like Option
+[02:36:46] <bjz> Scala?
+[02:36:51] <bjz> F#?
+[02:36:51] *** Quits: gwty (gwtypc@5B29F81D.8685D03D.27560D6E.IP) (Ping timeout)
+[02:37:47] <aatch> bjz, oh yeah. Though to some extent they are JHaskell and Haskell.NET respectively. At least when looking at ML-family languages
+[02:38:03] <aatch> I mean, when including ML-family languages
+[02:38:15] *** Quits: lpy (lpy@9248CA04.F930CE91.65042015.IP) (Ping timeout)
+[02:38:33] <bjz> http://www.scala-lang.org/api/2.10.2/index.html#scala.Option
+[02:38:43] <bjz> http://msdn.microsoft.com/en-us/library/ee370544.aspx
+[02:38:52] *** Joins: gwty (gwtypc@44F364AC.572C67F9.BD94A9D5.IP)
+[02:39:07] <bjz> F# is basically ML, but with some extensions
+[02:39:17] <bjz> s/ML/OCaml
+[02:39:45] <aatch> bjz, I concede.
+[02:40:06] <bjz> Scala is most *certainly* nothing like JHaskell
+[02:40:49] *** Quits: tjc (tjc@26A52751.870F2FA5.2370DFC3.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[02:40:50] <bjz> it has orNull
+[02:41:08] <bjz> which would cause a null pointer exception I guess
+[02:41:19] <bjz> but neither has an equivalent to expect
+[02:41:43] <bjz> in scala you are also encouraged to use do notation as well
+[02:42:16] <bjz> using pattern matching is an antipattern.
+[02:42:31] *** Quits: brson (brson@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Ping timeout)
+[02:42:41] <bjz> (I know expect isn't pattern matching though)
+[02:47:21] *** Joins: erickt (Adium@moz-C07D5168.p2p.sfo1.mozilla.com)
+[02:50:17] *** Quits: Jesse (jruderman@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: Jesse)
+[02:50:32] *** Quits: gwty (gwtypc@44F364AC.572C67F9.BD94A9D5.IP) (Ping timeout)
+[02:51:43] *** Quits: jdm (jdm@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: Lost terminal)
+[02:51:43] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[02:51:43] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14080d073 to 14edfb546: 02http://git.io/N3iJvQ
+[02:51:43] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[02:51:44] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[02:51:44] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/-T5WCg
+[02:51:44] <ghrust> 13rust/06auto 1417c42db 15Daniel Micay: mk: remove -fno-omit-frame-pointer...
+[02:51:44] <ghrust> 13rust/06auto 148b0b20b 15Daniel Micay: stop disabling frame pointer elimination for Rust...
+[02:51:44] <ghrust> 13rust/06auto 14fd673a0 15bors: auto merge of #11879 : thestinger/rust/frame-pointer, r=alexcrichton...
+[02:51:46] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[03:05:47] *** Joins: lpy (lpy@9248CA04.F930CE91.65042015.IP)
+[03:20:41] *** Quits: canhtak (canhtak@moz-9E539298.wl.t.ulaval.ca) (Quit: canhtak)
+[03:24:25] *** Joins: canhtak (canhtak@moz-9E539298.wl.t.ulaval.ca)
+[03:29:35] *** Quits: zz_kimundi (kimundi@moz-D56C9025.dip0.t-ipconnect.de) (Ping timeout)
+[03:33:40] *** Joins: zz_kimundi (kimundi@moz-F50B31A7.dip0.t-ipconnect.de)
+[03:33:41] *** zz_kimundi is now known as kimundi
+[03:34:36] *** Quits: canhtak (canhtak@moz-9E539298.wl.t.ulaval.ca) (Quit: canhtak)
+[03:35:21] *** Joins: canhtak (canhtak@moz-9E539298.wl.t.ulaval.ca)
+[03:38:56] *** Quits: erickt (Adium@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: Leaving.)
+[03:42:04] *** Joins: erickt (Adium@moz-C07D5168.p2p.sfo1.mozilla.com)
+[03:46:33] <xales> acrichto: What needs to be done to fix linking to crates that link to native libs (cmr said to ask you >_>)
+[03:46:44] <cmr> (transitive linking)
+[03:51:43] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[03:51:43] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14fd673a0 to 14edfb546: 02http://git.io/N3iJvQ
+[03:51:43] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[03:51:45] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[03:51:46] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/y-ldcg
+[03:51:46] <ghrust> 13rust/06auto 144d0d3da 15David Manescu: extra: move arena to libarena...
+[03:51:46] <ghrust> 13rust/06auto 1423862fe 15David Manescu: extra: move glob to libglob...
+[03:51:46] <ghrust> 13rust/06auto 14d37059b 15bors: auto merge of #11867 : dmanescu/rust/8784-arena-glob, r=huonw...
+[03:51:48] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[03:56:17] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[03:56:17] *** ChanServ sets mode: +ao pcwalton pcwalton
+[03:57:15] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Ping timeout)
+[04:02:25] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[04:04:46] *** Quits: rocode (rocode@moz-8ACDD150.clsp.qwest.net) (Quit: Leaving)
+[04:08:11] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: pcwalton)
+[04:17:05] *** Joins: erickt_ (etryzelaar@moz-C07D5168.p2p.sfo1.mozilla.com)
+[04:26:45] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[04:26:45] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14d37059b to 14edfb546: 02http://git.io/N3iJvQ
+[04:26:45] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[04:33:09] *** Quits: ktt3ja (ktt3ja@moz-85E2770C.hsd1.va.comcast.net) (Quit: Leaving)
+[04:35:02] *** Joins: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp)
+[04:37:16] *** Quits: japaric (japaric@6EEB4A44.E90D5F40.F29ED47E.IP) (Ping timeout)
+[04:39:39] *** Joins: japaric (japaric@55D04ADF.DC1425E6.84437BC5.IP)
+[04:47:26] *** Quits: erickt_ (etryzelaar@moz-C07D5168.p2p.sfo1.mozilla.com) (Ping timeout)
+[04:47:52] *** Quits: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp) (Client exited)
+[04:48:12] *** Joins: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp)
+[04:48:38] *** Quits: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp) (Broken pipe)
+[04:48:38] *** Joins: ssira_ (ssira@moz-DC71C200.kanagawa.ocn.ne.jp)
+[04:54:47] *** Joins: erickt_ (etryzelaar@moz-C07D5168.p2p.sfo1.mozilla.com)
+[05:06:14] *** Quits: erickt (Adium@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: Leaving.)
+[05:06:19] *** Quits: erickt_ (etryzelaar@moz-C07D5168.p2p.sfo1.mozilla.com) (Ping timeout)
+[05:07:00] <bjz> nmatsakis: ping
+[05:18:47] *** Quits: canhtak (canhtak@moz-9E539298.wl.t.ulaval.ca) (Quit: canhtak)
+[05:23:18] *** Quits: new_one (new_one@17378071.1DCBF251.B3C0173E.IP) (Client exited)
+[05:27:04] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[05:37:49] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[05:41:41] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[05:41:41] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/1ZySHQ
+[05:41:41] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[05:46:37] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[05:46:37] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/VO1yAw
+[05:46:37] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[05:46:38] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[05:46:39] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/R4tVog
+[05:46:39] <ghrust> 13rust/06auto 14dea86ca 15Alex Crichton: Fix a typo in disable rpaths...
+[05:46:39] <ghrust> 13rust/06auto 142ba72fa 15bors: auto merge of #11887 : alexcrichton/rust/rpath-for-real, r=thestinger...
+[05:46:39] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[05:51:17] *** Joins: dherman (dherman@moz-43007D02.lightspeed.sntcca.sbcglobal.net)
+[05:51:17] *** ChanServ sets mode: +ao dherman dherman
+[05:52:25] *** Joins: tjc (tjc@E81F271B.CB3251F2.284344F5.IP)
+[05:52:25] *** ChanServ sets mode: +o tjc
+[06:16:01] *** Quits: bytbox (s@moz-54E13927.washdc.fios.verizon.net) (Ping timeout)
+[06:25:43] *** Quits: tjc (tjc@E81F271B.CB3251F2.284344F5.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[06:29:04] *** Joins: tjc (tjc@E81F271B.CB3251F2.284344F5.IP)
+[06:29:04] *** ChanServ sets mode: +o tjc
+[06:37:40] *** Quits: ssira_ (ssira@moz-DC71C200.kanagawa.ocn.ne.jp) (Client exited)
+[06:38:06] *** Joins: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp)
+[06:39:56] *** Quits: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp) (Ping timeout)
+[06:50:21] <Eridius> notifications? During the rust meetup? Don't people know they were supposed to be watching, not hacking?
+[06:51:21] <acrichto> xales: modify mk/crates.mk to update the deps
+[06:51:46] <dbaupp> Eridius: we had to make up for you slacking off
+[06:51:59] <dbaupp> the whole internet saw you not hacking on Rust for like 10 minutes
+[06:52:01] <dbaupp> >:(
+[06:52:07] <Eridius> :O
+[06:52:19] <dbaupp> (cool talk btw :) )
+[06:52:23] <Eridius> thanks!
+[06:52:37] <Eridius> I wasn't sure how it was going to go over, but apparently a bunch of people are now interested in playing with Lua
+[06:52:40] <Eridius> so that's awesome
+[06:53:05] <dbaupp> cool! just need to find a fix for that setjmp/exceptions thing.
+[06:53:49] <Eridius> yeah. Unfortunately there's no truly good fix, unless we want to try to make Rust resilient against C++ exceptions unwinding through it
+[06:54:21] <dbaupp> and that's probably a suboptimal design constraint
+[06:54:42] <Eridius> although I just thought of another approach I hadn't considered before, which is to wrap all Lua calls in C++ functions that catch all exceptions and return a value indicating that it did so. But that's pretty terrible too
+[06:55:37] <Eridius> there are problems with trying to use lua_pcall() to wrap every call, but if Lua is compiled as C++ then theoretically I can catch the C++ exceptions. It's just gross and a ton of work
+[06:55:57] <Eridius> (and ensuring Lua was compiled with C++ is a problem as well; the only way to do that is to build Lua as part of rust-lua, and that has its own problems)
+[06:56:29] <dbaupp> :(
+[06:57:43] <Eridius> the simplest approach right now is to require the Rust functions exposed to Lua are marked unsafe, and then to print a dire warning to the console when building rust-lua if Lua wasn't compiled as C++, but that's pretty crappy because no system installs of lua are ever compiled as C++
+[06:59:51] <dbaupp> do C++/D/$language libs binding to lua handle it?
+[07:00:49] *** Joins: eddyb (eddy@EDE07015.D51DAF03.FB866788.IP)
+[07:01:55] <ChrisMorgan> Eridius: what would have been *really* funny is if notifications had popped up over your presentation.
+[07:02:14] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[07:02:14] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/R4tVog
+[07:02:14] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[07:02:36] <Eridius> ChrisMorgan: hah, yeah. My fiancée avoided mentioning me on Twitter because she was afraid of that. But I suspect Keynote prevents that from happening
+[07:02:46] * Eridius didn't think to turn on DND mode
+[07:03:16] <Eridius> dbaupp: C++ binding to lua is fine with C++ exceptions, because it's C++ ;)
+[07:03:23] <Eridius> I have no idea what other languages (besides C) do about this
+[07:03:30] <Eridius> I suspect they don't try to be safe
+[07:03:42] <dbaupp> Eridius: right; I meant system installs of lua + C++
+[07:04:03] <Eridius> dbaupp: I'm inclined to believe that most C++ programs that want to use Lua will just pull the Lua source in and compile it as C++ instead of trying to link to a system install
+[07:04:12] <dbaupp> sounds reasonable
+[07:04:24] * ChrisMorgan doubts Keynote can do that as he has seen at least "argh! you forgot to plug me in and I'm just about to give up the ghost!" messages popping up in front of presentations done with Keynote
+[07:04:36] <Eridius> and that's one approach I could take with rust-lua, but dealing with compiling Lua properly on all platforms would be awkward (it wants different macros defined to tell it what features to enable)
+[07:04:56] <dbaupp> ah, yes; annoying
+[07:05:02] <Eridius> ChrisMorgan: well, it's possible. But I made sure my laptop screen was the "primary" screen, so I would assume the notification would have shown up on my screen
+[07:05:04] * dbaupp goes home
+[07:05:10] <Eridius> ChrisMorgan: I bet when you saw that the presenter was mirroring instead of using separate displays
+[07:05:25] * ChrisMorgan doesn't know
+[07:05:48] <Eridius> if I had thought about it I would have enabled DND mode. But I didn't
+[07:06:11] <Eridius> actually TUAW said back in 2012 that Notification Center won't show on top of Keynote (http://www.tuaw.com/2012/08/07/mountain-lion-101-silencing-notification-center-alerts/). So maybe that wasn't Keynote?
+[07:06:12] * ChrisMorgan would probably *stage* such a message and then go to a slide "(That was planned.)" and have ready a key which could be pressed to go to a "(That wasn't.)" slide
+[07:06:23] <Eridius> haha
+[07:06:35] <ChrisMorgan> Or the low battery message is higher priority, or it was far enough back that that wasn't a feature
+[07:06:40] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[07:06:40] <ghrust> 01[13rust01] 15bors pushed 12 new commits to 06auto: 02http://git.io/FbPy3Q
+[07:06:40] <ghrust> 13rust/06auto 1497fe335 15Scott Lawrence: Removing do keyword from librustdoc
+[07:06:40] <ghrust> 13rust/06auto 143bf2ce2 15Scott Lawrence: Removing do keyword from libstd and librustc
+[07:06:40] <ghrust> 13rust/06auto 146194c14 15Scott Lawrence: Remove do keyword from librustuv
+[07:06:42] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[07:06:46] <ChrisMorgan> \o/
+[07:06:46] *** Quits: dbaupp (Thunderbir@32742E97.D5A1DCF.37681C44.IP) (Ping timeout)
+[07:08:23] *** Quits: sfackler (sfackler@moz-AEECCEBA.com) (Ping timeout)
+[07:21:21] *** Quits: dherman (dherman@moz-43007D02.lightspeed.sntcca.sbcglobal.net) (Ping timeout)
+[07:30:48] *** Joins: dherman (dherman@moz-7C0F2A50.mycingular.net)
+[07:30:48] *** ChanServ sets mode: +ao dherman dherman
+[07:39:38] *** Joins: sfackler (sfackler@moz-AEECCEBA.com)
+[07:41:15] *** Joins: andrew-d_w (andrew-d_w@4CCE6E0C.339B431B.1E537B93.IP)
+[07:41:39] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[07:41:39] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 143f01a68 to 142ba72fa: 02http://git.io/N3iJvQ
+[07:41:39] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[07:41:40] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[07:41:40] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/mCxx8w
+[07:41:40] <ghrust> 13rust/06auto 148a1b4dc 15Alex Crichton: Generate rlibs by default (instead of dylibs)...
+[07:41:40] <ghrust> 13rust/06auto 142b93925 15bors: auto merge of #11706 : alexcrichton/rust/issue-11253, r=huonw...
+[07:41:41] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[07:42:10] *** Quits: andrew-d_w (andrew-d_w@4CCE6E0C.339B431B.1E537B93.IP) (Input/output error)
+[07:42:32] *** Joins: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[07:47:04] *** flaper87|afk is now known as flaper87
+[07:49:17] *** Quits: tjc (tjc@E81F271B.CB3251F2.284344F5.IP) (Quit: Textual IRC Client: www.textualapp.com)
+[07:58:41] *** Joins: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net)
+[08:00:39] *** Quits: lpy (lpy@9248CA04.F930CE91.65042015.IP) (Ping timeout)
+[08:00:41] *** Joins: lpy_ (lpy@4F2FE573.2EDA7147.E99F7FDB.IP)
+[08:02:23] *** Joins: dbaupp (Thunderbir@moz-68C83524.lns20.syd6.internode.on.net)
+[08:07:05] *** Joins: tq (tq@moz-632DBD9.ad.umu.se)
+[08:10:29] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Ping timeout)
+[08:11:47] *** Quits: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net) (Client exited)
+[08:16:43] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[08:22:36] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[08:27:38] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[08:28:26] *** Quits: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[08:28:57] *** Joins: mankyKitty (Instantbir@moz-9B898D95.enst-bretagne.fr)
+[08:37:45] *** Joins: c-a (c-a@moz-57C82A9.a163.priv.bahnhof.se)
+[08:41:47] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[08:44:16] *** Joins: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com)
+[08:44:26] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[08:49:03] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[08:52:38] <pnkfelix> dbaupp: ping
+[08:56:11] <pnkfelix> acrichto: ping
+[08:58:05] <dbaupp> pnkfelix: pong (for a bit)
+[08:59:10] <pnkfelix> dbaupp: I have some really naive Q's about visit-glue
+[08:59:24] <pnkfelix> dbaupp: (mostly in reaction to the rust mtg last night)
+[08:59:38] <eddyb> pnkfelix: you can also ask me, I guess
+[08:59:56] <dbaupp> pnkfelix: fire away
+[08:59:59] <eddyb> I'm the one screaming "we're not using it via trait objects for {:?}" :P
+[08:59:59] <pnkfelix> eddyb: sure, either of you can jump in, as you like
+[09:00:14] <pnkfelix> dbaupp: so I don't know how its currently implemented
+[09:00:20] <pnkfelix> dbaupp: but if I were doing it from scratch
+[09:00:54] <pnkfelix> dbaupp: I would make each object have some method (dynamically dispatched when necessary) to get a pointer to that object's TyDesc
+[09:01:52] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[09:01:53] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/mCxx8w
+[09:01:53] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[09:02:23] <pnkfelix> dbaupp: and then handling {:?} would be a shared interpreter over the (TyDesc, *value) combination
+[09:03:02] <eddyb> that's pretty much exactly what it is right now
+[09:03:04] <eddyb> and it's kinda bad
+[09:03:04] <pnkfelix> dbaupp: namely, i would have imagined that the code being emitted for each individual type would be the code to generate a *TyDesc
+[09:03:35] <pnkfelix> eddyb: so everyone says that the visit-glue is bad
+[09:03:46] <pnkfelix> eddyb: but there's different kinds of bad
+[09:04:09] <pnkfelix> dbaupp: eddyb: I guess my point is: Is there really that much codegen overhead here?
+[09:04:15] <eddyb> we're not using it with dynamic dispatch though we fully support that
+[09:04:47] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse)
+[09:04:56] <eddyb> and we're using dynamic-only dispatch in it so it's wasting LLVM optimization time to devirtualize that nonsense
+[09:05:14] <eddyb> pnkfelix: a better solution is like an auto-generated Encoder
+[09:05:25] <pnkfelix> eddyb: hold on, I want to understand the core problem first
+[09:05:31] <pnkfelix> eddyb: before we talk about solutions
+[09:05:33] <dbaupp> pnkfelix: how we would actually print it? check equality with the tydesc of `int` and so on?
+[09:05:43] <eddyb> the core problem is that we have a feature way more powerful than we need
+[09:05:59] <pnkfelix> dbaupp: that, or the TyDesc itself would carry a method for printing values of its type
+[09:06:09] <eddyb> casting anything to a trait object must always generate visit_glue even when it's not needed
+[09:06:17] <eddyb> pnkfelix: that's the *current* situation
+[09:06:41] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[09:06:41] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/O4rHfw
+[09:06:41] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[09:06:42] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[09:06:42] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/fCs0OA
+[09:06:42] <ghrust> 13rust/06auto 145528059 15Alex Crichton: Fix android test deps...
+[09:06:42] <ghrust> 13rust/06auto 141d80a9a 15bors: auto merge of #11903 : alexcrichton/rust/android-test-deps, r=huonw...
+[09:06:42] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[09:06:47] <pnkfelix> eddyb: I do not see that as a problem if the visit_glue is sufficiently cheap to compile.
+[09:06:53] <eddyb> we don't use visit_glue on non-statically-resolved types but we carry that weight
+[09:06:56] <pnkfelix> eddyb: the problem it sounds like is that the visit_glue is not cheap to compile
+[09:07:16] <pnkfelix> eddyb: which I can understand, if LLVM is spending time attempting to devirtualize these methods
+[09:07:33] <pnkfelix> eddyb: when it would make more sense (in my mind) to leave them as virtual calls
+[09:07:47] <eddyb> pnkfelix: everything using trait objects has to generate visit_glue
+[09:08:03] <eddyb> but we never use it for trait objects
+[09:08:19] <eddyb> see an issue?
+[09:08:23] *** Joins: rca (rcatolino@moz-27E0D9CF.adsl.proxad.net)
+[09:08:38] <pnkfelix> eddyb: yes and no
+[09:09:11] <eddyb> pnkfelix: we can design a better solution using a generic intrinsic
+[09:09:15] <pnkfelix> eddyb: its obviously silly if we're generating code that literally cannot ever be called
+[09:09:30] <dbaupp> pnkfelix: it looks like part of the problem is the visit_glue for a type like (int, (int, int)) generates the (int, int) glue directly inline in the (int, ...) glue
+[09:09:35] <eddyb> pnkfelix: that's probably the most of the visit_glue
+[09:09:37] <dbaupp> rather than calling that function to generate it once
+[09:09:40] <pnkfelix> dbaupp: see, that sounds bad
+[09:09:58] <pnkfelix> dbaupp: I would not do it that way if I were designing from scratch.  That sounds like premature inlining.
+[09:10:00] <dbaupp> (i.e. we have many copies of inlined int visit_glue and Option and so on.)
+[09:10:04] <dbaupp> pnkfelix: yes, it does
+[09:10:15] <dbaupp> dinner time, bbiab
+[09:10:21] <pnkfelix> dbaupp: Okay, thanks for the input.
+[09:10:29] <eddyb> hmm, do we always instantiate generics?
+[09:10:53] <eddyb> that is, if all the methods for Option<int> are available in libstd, do we recreate all of them?
+[09:11:28] <pnkfelix> eddyb: I would imagine so, but I do not know.
+[09:11:38] <eddyb> if we don't, I already know how to fix all of this fairly easy
+[09:12:30] *** Quits: dherman (dherman@moz-7C0F2A50.mycingular.net) (Quit: dherman)
+[09:12:30] <pnkfelix> eddyb: anyway, I do not want to jump straight to specializing on an `Encoder` based solution alone
+[09:13:06] <eddyb> not based, but similar. we may not even need to change TyVisitor that much, either
+[09:13:16] <pnkfelix> eddyb: because I think the approach of allowing generic TyDesc interpreters has value.
+[09:13:33] <eddyb> TyDesc doesn't have much information at all
+[09:14:10] <eddyb> using intrinsics to get individual pieces of information about types seems more sensible
+[09:14:16] <pnkfelix> eddyb: maybe that is part of my problem as well, let me go look at that.
+[09:14:37] <eddyb> we already have size_of, maybe even align_of
+[09:15:13] <eddyb> pnkfelix: hmm, maybe we should start by removing uses of TyDesc fields and see what we're left with
+[09:15:54] <pnkfelix> eddyb: Okay, I see, the TyDesc carries the specific GlueFn's
+[09:16:40] <pnkfelix> eddyb: which does not necessarily mean that sharing of code (e.g. the `(int, (int, int))` case is not possible
+[09:17:28] <pnkfelix> eddyb: but I would not be surprised if it fails to compile it in the "natural" (slow to run but small code size) way I was expected
+[09:17:33] *** Quits: lpy_ (lpy@4F2FE573.2EDA7147.E99F7FDB.IP) (Client exited)
+[09:19:09] <eddyb> echo 'fn main(){println!("{:?}", true);}' | ./x*/stage1/bin/rustc --emit-llvm -S -o /dev/stdout - | c++filt | grep glue_visit
+[09:19:19] <pnkfelix> eddyb: So when we compile code using e.g. `(int, (int, int))`
+[09:19:24] <eddyb> 38 occurrences, it's rather silly :P
+[09:19:43] <pnkfelix> eddyb: do we emit TyDescs for both `(int, int)` and for `(int, (int, int))` (and for `int` as well) ?
+[09:20:02] <eddyb> pnkfelix: I think so, let me check
+[09:20:18] <pnkfelix> eddyb: or is there just oen for `(int, (int, int))` [and perhaps a built-in one for `int`]
+[09:20:58] <eddyb> pnkfelix: all three and much more, I guess
+[09:21:01] <pnkfelix> eddyb: I think I'm seeing the other parts of the problem now
+[09:21:20] <eddyb> @"_$LP$int$C$$LP$int$C$int$RP$$RP$::tydesc::hbaa0a9de144034afaA"
+[09:21:23] <pnkfelix> eddyb: I was envisaging something more generic
+[09:21:24] <eddyb> @"_$LP$int$C$int$RP$::tydesc::hd07f3db1c98dc983aC"
+[09:21:55] <pnkfelix> eddyb: where there would be one visit method implementation for `(_, _)`
+[09:22:27] <pnkfelix> eddyb: and the TyDesc would carry the specific info about the particular T and U for `(T, U)`
+[09:22:39] <eddyb> nah, it's per-type
+[09:23:00] <pnkfelix> eddyb: right, I see that this is a natural consequence of our over-arching monomorphization strategy
+[09:24:21] <pnkfelix> eddyb: Okay.  This has given me some concrete things to think about.
+[09:24:38] <pnkfelix> eddyb: thanks for filling in the gaps in my knowledge.
+[09:25:13] <eddyb> np, I've been accumulating most of it during the last few weeks
+[09:25:36] <eddyb> pnkfelix: at least you don't have to care about free and take glue anymore \o/
+[09:27:16] <pnkfelix> eddyb: the code that we generate for the visit_glue
+[09:27:29] <pnkfelix> eddyb: as in, the code that ends up being passed to trans
+[09:27:39] <pnkfelix> eddyb: do you know 
+[09:27:47] <eddyb> trans actually generates that code
+[09:27:48] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[09:27:49] <pnkfelix> eddyb: if when visiting `(int, (int, int))`
+[09:28:02] <pnkfelix> eddyb: it actually calls out to the visit_glue for `(int, int)`
+[09:28:14] <pnkfelix> eddyb: or if it just emits it inline, immediately there, before LLVM even sees it?
+[09:28:40] <eddyb> dbaupp: @"_(int,int)::tydesc::hd07f3db1c98dc983aC" <3 sed but please can use something else than $ in $FOO$?
+[09:28:47] <pnkfelix> eddyb: [I guess this is sort of me repeating my earlier question/thoughts about about code sharing]
+[09:28:53] <eddyb> right, let me check
+[09:29:20] <pnkfelix> eddyb: [The other question I have, is if there is a way to tell LLVM to not bother to attempt to de-virtualize a method]
+[09:29:40] <pnkfelix> eddyb: [but that may be putting the cart before this particular horse...]
+[09:29:42] <eddyb> pnkfelix: it's actually much saner to not use virtual calls at all
+[09:30:33] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[09:30:37] <pnkfelix> eddyb: sure, but in the case where a dynamic dispatch is inherently part of the problem
+[09:30:43] <pnkfelix> eddyb: being solved
+[09:30:59] <eddyb> if we can make the visiting code generic over a TyVisitor without outputting the same code twice, it's much better and without any dynamic dispatch at all
+[09:31:28] <pnkfelix> eddyb: I'm not yet sure we can get away from having one dynamic dispatch at the outermost point of entry
+[09:31:36] <eddyb> why?
+[09:31:36] <pnkfelix> eddyb: into the visiting process
+[09:31:54] <eddyb> you're not supposed to have a myriad of TyVisitor implementations
+[09:31:56] <eddyb>   %30 = call i8 %29(i8* %23, i64 1, %"struct.std::unstable::intrinsics::TyDesc[#1]"* bitcast (%tydesc* @"_(int,int)::tydesc::hd07f3db1c98dc983aC" to %"struct.std::unstable::intrinsics::TyDesc[#1]"*))
+[09:32:02] <eddyb> dbaupp: I guess you were wrong?
+[09:32:06] <pnkfelix> eddyb: because you don't always statically know what you're looking at?  I guess it depends on how ~Trait is handled
+[09:32:14] <eddyb> rusti: ~0 as ~Clone
+[09:32:15] -rusti- ~std::clone::Clone:Send
+[09:32:25] <pnkfelix> eddyb: which I know you said earlier that its not handled
+[09:32:50] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[09:32:59] <eddyb> we should use kinds in the future to sanely allow more methods on a trait object
+[09:33:56] <pnkfelix> eddyb: so is LLVM eagerly inlining those calls?  Can we tell it not to do that?
+[09:34:14] <pnkfelix> eddyb: ("those calls" such as the one you noted to dbaupp above)
+[09:34:17] <eddyb> let me see what it does with optimizations
+[09:34:39] <eddyb> pnkfelix: btw, if you want to play along: echo 'fn main(){println!("{:?}", (0, (1, 2)));}' | ./x*/stage1/bin/rustc --emit-llvm -S -o /dev/stdout - | c++filt | sed '{s/_\$/$/g;s/\$LP\$/(/g;s/\$RP\$/)/g;s/\$C\$/,/g}' | less
+[09:35:03] <eddyb> (hmm, just realized we can have all that sed stuff in a rustfilt script)
+[09:35:22] <eddyb> pnkfelix: in less, /\(int,\(int,int\)\)
+[09:35:49] <eddyb> actually, that's an indirect call passing the tydesc for (int, int) along
+[09:36:46] <pnkfelix> eddyb: oh, not a direct call to the visit glue for (int, int) ?
+[09:37:06] <eddyb> pnkfelix: nope, notice the %29, that's a function pointer
+[09:37:50] <pnkfelix> eddyb: I'm not able to read LLVM bitcode in isolated fragments; I sort of hobble along when I have a whole block of it to look at.
+[09:38:03] <pnkfelix> eddyb: anyway thanks for clarifying
+[09:38:18] <eddyb> it's worse than I thought
+[09:38:56] <eddyb> I guess the TyVisitor methods would have to be (somewhat) generic
+[09:41:08] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Input/output error)
+[09:41:17] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[09:42:06] <eddyb> pnkfelix: turns out we always instantiate generics :/
+[09:42:23] <eddyb> (and tydescs)
+[09:42:28] <pnkfelix> eddyb: that's what I would have guessed
+[09:42:47] <pnkfelix> (gotta go afk and then probably offline after that...)
+[09:42:50] <eddyb> so we have to make sure a generic method doesn't produce worse code than what we have today
+[09:47:07] <eddyb> lol, both * and ) are mangled as $RP$
+[09:47:57] *** Joins: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP)
+[09:50:12] *** Quits: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP) (Ping timeout)
+[09:59:20] <pnkfelix> eddyb: while I was afk, I thought of the real place where my idealized solution would need to use dynamic dispatch
+[09:59:29] <pnkfelix> eddyb: its for generic types
+[09:59:43] <pnkfelix> eddyb: because in my head, for a type Foo<X>
+[10:00:09] <pnkfelix> eddyb: you would generate only *one* visit glue method, that's parameterized over another *TyDesc, that would represent the glue for X
+[10:00:34] <pnkfelix> eddyb: (and likewise, the visit glue for `Bar<Y,Z>` would be parameterized over two arguments)
+[10:00:53] <pnkfelix> eddyb: and you would use dynamic dispatch within the visit glue to call out to the implementations for specific types
+[10:01:21] <pnkfelix> eddyb: That approach would be slower than we have now, but the codegen cost would be reduced to something O(sourcecode)
+[10:01:43] <pnkfelix> eddyb: "slower" as in end running time, which we shouldn't care about for visit glue
+[10:02:16] <eddyb> it's not actually slower, but glue_visit functions can't take parameters
+[10:02:39] <pnkfelix> eddyb: yes I'm thinking in the abstract about revision to the API
+[10:02:42] <eddyb> that is, what would Bar<Y, Z>::tydesc contain?
+[10:03:19] <eddyb> a glue function and a (*Y::tydesc, *Z::tydesc) tuple?
+[10:03:26] <eddyb> this gets silly really fast
+[10:03:40] <pnkfelix> eddyb: `Bar<Y,Z>` would contain e.g. a size_of method that is itself parameterized over whatever *Y and *Z are
+[10:03:57] <eddyb> no, thanks
+[10:04:17] <pnkfelix> eddyb: the point is to avoid monomorphization here
+[10:04:22] <eddyb> strcat mentioned that rust had something like this back in the day and it was breaking all the time
+[10:05:56] <eddyb> pnkfelix: monomorphization is cheap if you do it right
+[10:06:23] <pnkfelix> eddyb: well we clearly aren't "doing it right" in this case
+[10:06:32] <pnkfelix> eddyb: visit glue should also be cheap "if you do it right"
+[10:06:38] <eddyb> the bulk of the autogenerated methods is actually doing indirect stuff right now
+[10:06:49] <eddyb> if it were using direct calls, it would be ~6 times smaller
+[10:07:25] <eddyb> s/methods/glue_visit functions/
+[10:07:31] <pnkfelix> eddyb: I'll have to see if I can dig up the history here, its useful to know that we tried something like this in the past.
+[10:08:47] <pnkfelix> eddyb: anyway, gotta go offline now. Thanks for the input.
+[10:08:55] <eddyb> np, have a nice day :)
+[10:08:56] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: rcirc on GNU Emacs 24.3.50.1)
+[10:16:49] <eddyb> turns out we inline the entire ReprVisitor stuff
+[10:16:52] <dbaupp> eddyb: oh, I think that's something else
+[10:17:09] <dbaupp> and fwiw, I was running without opts
+[10:17:22] <eddyb> and LLVM has to struggle trying to devirtualize everything
+[10:17:55] <eddyb> dbaupp: almost everything you'll ever need (updated) https://gist.github.com/eddyb/3a233c4709018e92b866
+[10:18:04] <dbaupp> eddyb: hahaha
+[10:18:05] <dbaupp> nice
+[10:19:06] <dbaupp> (re using $ in FOO, I was just copying the pre-existing behaviour, so... if you can find a better plan feel free to change it.)
+[10:19:32] <dbaupp> however, aiui, the android assembler understands very few symbols
+[10:20:16] <eddyb> ah, not you, the original code. not only do I have to escape once for sed, but twice for bash
+[10:20:29] <eddyb> and sed doesn't like newlines for some reason
+[10:21:46] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[10:21:46] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/fCs0OA
+[10:21:46] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[10:26:36] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[10:26:37] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/9si58w
+[10:26:37] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[10:26:37] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[10:26:37] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/-NF7WA
+[10:26:37] <ghrust> 13rust/06auto 149896beb 15Alex Crichton: Implement an unused_result lint...
+[10:26:37] <ghrust> 13rust/06auto 146332b6c 15Alex Crichton: Flag Result as #[must_use] and deal with fallout.
+[10:26:38] <ghrust> 13rust/06auto 14483d6e0 15bors: auto merge of #11754 : alexcrichton/rust/unused-result, r=brson...
+[10:26:39] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[10:32:37] *** Joins: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp)
+[10:34:31] *** kimundi is now known as zz_kimundi
+[10:35:01] *** Quits: vadimcn (chatzilla@FB06B64.76F9E272.DA40C4B3.IP) (Connection reset by peer)
+[10:35:26] *** Joins: vadimcn (chatzilla@FB06B64.76F9E272.DA40C4B3.IP)
+[10:38:33] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[10:49:03] *** Joins: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP)
+[10:50:49] *** Quits: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP) (Ping timeout)
+[11:01:53] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[11:01:53] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/C_xGYg
+[11:01:53] <ghrust> 13rust/06auto 14d7e4ce9 15Alex Crichton: Upgrade LLVM...
+[11:01:54] <ghrust> 13rust/06auto 14394cca4 15bors: auto merge of #11853 : alexcrichton/rust/up-llvm, r=brson...
+[11:01:54] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[11:11:01] *** zz_kimundi is now known as kimundi
+[11:27:29] <dbaupp> eurgh, tuple structs are really annoying to handle :(
+[11:28:18] <eddyb> dbaupp: for?
+[11:28:51] <dbaupp> linting etc.
+[11:29:03] <dbaupp> they have two DefIds associated with them
+[11:29:18] <eddyb> reminds me of callee_id. yuck
+[11:29:32] <dbaupp> and almost everything gives you the ctor_id (i.e. the NodeId of the constructor), but the actual useful one is the other
+[11:29:52] *** Quits: mankyKitty (Instantbir@moz-9B898D95.enst-bretagne.fr) (Ping timeout)
+[11:29:59] <dbaupp> and getting from ctor_id to the other appears to be nontrivial :(
+[11:30:43] <eddyb> feature_gate should use a HashSet :/
+[11:31:17] <eddyb> instead of an array of strings and checking it so many times
+[11:31:36] <eddyb> even better, an EnumSet
+[11:31:58] <dbaupp> HashSet may be slower, for so few small strings string
+[11:32:02] <dbaupp> maybe
+[11:32:11] <eddyb> dbaupp: we need a "naive algorithm" lint
+[11:32:31] <dbaupp> hahaha
+[11:32:56] <dbaupp> `warning: what are you doing? this is O(n^3); #[warn(youre_being_silly)] on by default`
+[11:37:23] <eddyb> "feature has added to rust"
+[11:40:45] <eddyb> acrichto: much harder to check usages of default type params than I thought, feature_gate is pretty self-contained
+[11:42:23] <dbaupp> wouldn't it have to be a lint (to check for usage), since it's not a local property of the AST
+[11:43:05] <dbaupp> ?
+[11:43:29] <eddyb> dbaupp: hmm. so the feature enables/disables a lint?
+[11:43:36] <eddyb> that seems a bit hacky
+[11:47:55] <dbaupp> no
+[11:48:06] <dbaupp> feature runs very early with on analysis
+[11:48:13] <dbaupp> and quit early too
+[11:48:26] <eddyb> dbaupp: I mean, what would your plan be?
+[11:48:33] <dbaupp> oh, Isee
+[11:49:08] <dbaupp> well I'd actually just have #[warn(default_type_param_use)] or something
+[11:49:17] <eddyb> mhmm
+[11:49:18] <dbaupp> and #[feature(default_type_param_definition)]
+[11:49:33] <eddyb> acrichto: are you okay with that ^^?
+[11:49:44] *** Joins: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP)
+[11:50:31] <eddyb> dbaupp: and I can add a lint "notice" at any time, before the lint pass runs, right?
+[11:51:43] *** Quits: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP) (Ping timeout)
+[11:51:56] <dbaupp> yeah, some how
+[11:52:49] <eddyb> feature_gate does sess.add_lint(lint::UnknownFeatures, ast::CRATE_NODE_ID, mi.span, ~"unknown feature");
+[11:55:08] <dbaupp> yeah
+[11:55:10] <dbaupp> that's it
+[11:56:07] *** Quits: rca (rcatolino@moz-27E0D9CF.adsl.proxad.net) (Ping timeout)
+[11:56:39] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[11:56:39] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/NuI-2A
+[11:56:39] <ghrust> 13rust/06auto 144d0d3da 15David Manescu: extra: move arena to libarena...
+[11:56:39] <ghrust> 13rust/06auto 1493398d1 15David Manescu: extra: move glob to libglob...
+[11:56:39] <ghrust> 13rust/06auto 14769f8ae 15bors: auto merge of #11867 : dmanescu/rust/8784-arena-glob, r=huonw...
+[11:56:40] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[12:05:26] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[12:12:14] *** Joins: andrew-__ (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[12:13:03] *** Quits: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Ping timeout)
+[12:13:42] *** Quits: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp) (Connection reset by peer)
+[12:14:03] *** Joins: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp)
+[12:14:16] *** Quits: whitglint (uid15486@moz-31ABA2C0.irccloud.com) (Ping timeout)
+[12:14:16] *** Quits: angdev (uid7041@moz-E77DEB21.irccloud.com) (Ping timeout)
+[12:14:31] *** Quits: steveklabnik (uid17044@moz-A42E5B7B.irccloud.com) (Ping timeout)
+[12:14:31] *** Quits: irving-cloud (uid24297@moz-31ABA2C0.irccloud.com) (Ping timeout)
+[12:14:39] *** Quits: ggherdov_ (sid11402@moz-E77DEB21.irccloud.com) (Ping timeout)
+[12:14:39] *** Quits: larsberg (sid16141@moz-A42E5B7B.irccloud.com) (Ping timeout)
+[12:15:09] *** Quits: Yurume (Yurume@A826BD81.8A0DEF81.38747683.IP) (Ping timeout)
+[12:16:44] *** Joins: Yurume (Yurume@A826BD81.8A0DEF81.38747683.IP)
+[12:16:48] *** Joins: whitglint (uid15486@moz-31ABA2C0.irccloud.com)
+[12:16:48] *** Joins: angdev (uid7041@moz-E77DEB21.irccloud.com)
+[12:21:54] *** Joins: rca (rcatolino@moz-27E0D9CF.adsl.proxad.net)
+[12:24:12] *** Joins: gwty (gwtypc@A4C707D5.5B1C15CD.CF29F6CE.IP)
+[12:24:59] *** Joins: larsberg (sid16141@moz-A42E5B7B.irccloud.com)
+[12:25:00] *** Joins: steveklabnik (uid17044@moz-A42E5B7B.irccloud.com)
+[12:31:15] *** Joins: andrew-d_w (andrew-d_w@4CCE6E0C.339B431B.1E537B93.IP)
+[12:32:12] *** Quits: andrew-__ (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Ping timeout)
+[12:35:01] *** Quits: andrew-d_w (andrew-d_w@4CCE6E0C.339B431B.1E537B93.IP) (Input/output error)
+[12:35:09] *** Joins: irving-cloud (uid24297@moz-31ABA2C0.irccloud.com)
+[12:35:24] *** Joins: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[12:45:06] *** Joins: ggherdov_ (sid11402@moz-E77DEB21.irccloud.com)
+[12:46:04] *** Joins: mankyKitty (Instantbir@moz-9B898D95.enst-bretagne.fr)
+[12:50:22] *** Joins: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP)
+[12:51:53] *** Quits: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP) (Connection reset by peer)
+[12:52:14] *** Joins: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP)
+[12:54:11] *** Quits: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP) (Ping timeout)
+[13:06:45] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[13:06:45] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14769f8ae to 141d80a9a: 02http://git.io/N3iJvQ
+[13:06:45] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[13:06:46] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[13:06:47] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/G5khYQ
+[13:06:47] <ghrust> 13rust/06auto 14afd8df6 15Niko Matsakis: Add test case for #3243, which was fixed as part of fix for #3511....
+[13:06:47] <ghrust> 13rust/06auto 147b1432f 15bors: auto merge of #11889 : nikomatsakis/rust/issue-3243-stack-alloc-vec, r=nikomatsakis...
+[13:06:47] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[13:24:03] <eddyb> dbaupp: any suggestions for a better description than "type provided for a generic with a default"?
+[13:24:39] <dbaupp> eddyb: "explicitly setting a default type parameter"
+[13:24:44] <dbaupp> (or "type parameter with a default")
+[13:24:46] * dbaupp shrugs
+[13:25:31] <eddyb> thanks, that's better :D
+[13:27:16] *** Joins: canhtak (canhtak@moz-9E539298.wl.t.ulaval.ca)
+[13:32:12] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[13:38:10] <strcat> acrichto: meh a test failed from the frame ptr thing
+[13:38:12] <strcat> debuginfo
+[13:38:14] <strcat> ;s
+[13:38:23] <strcat> I can never figure out what is wrong with those
+[13:42:48] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[13:44:10] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[13:46:16] *** Quits: tq (tq@moz-632DBD9.ad.umu.se) (Quit:  HydraIRC -> http://www.hydrairc.com <- Go on, try it!)
+[13:47:49] *** Quits: gwty (gwtypc@A4C707D5.5B1C15CD.CF29F6CE.IP) (Ping timeout)
+[13:48:10] *** Joins: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP)
+[13:51:41] *** Joins: rca_ (rcatolino@68C2C935.20EF280.520D6FA6.IP)
+[13:52:19] *** Quits: rca (rcatolino@moz-27E0D9CF.adsl.proxad.net) (Ping timeout)
+[14:05:21] <dbaupp> acrichto: do the std::fmt traits avoid using &self to allow invocation without importing the trait, and to avoid auto-deref?
+[14:07:12] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[14:07:44] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[14:09:28] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[14:09:39] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[14:10:25] <eddyb> dbaupp: it's so because the static method is used indirectly
+[14:10:46] <dbaupp> eddyb: ah, yes
+[14:10:48] <dbaupp> hm
+[14:10:54] * dbaupp *really* wants UFCS
+[14:11:15] <eddyb> dbaupp: std::fmt doesn't need a single transmute or unsafe block
+[14:11:16] <dbaupp> this makes deriving(Show) rather annoying to write
+[14:11:40] *** Quits: canhtak (canhtak@moz-9E539298.wl.t.ulaval.ca) (Quit: canhtak)
+[14:11:41] <eddyb> I want to rewrite all that madness
+[14:12:31] * ChrisMorgan thinks it's funny that pure functions are being discussed again after their removal
+[14:13:00] <eddyb> ChrisMorgan: I know of an interesting optimization for pure methods
+[14:13:49] <eddyb> well, pure static methods, I guess
+[14:14:00] <eddyb> ChrisMorgan: you can store the return value directly in the vtable
+[14:14:01] <dbaupp> ChrisMorgan: they were mainly removed because they sucked as a definition of 'pure', not because Rust is fundamentally against having concepts of 'purity' (although by another name)
+[14:14:32] <dbaupp> eddyb: what if they have arguments?
+[14:14:39] <eddyb> dbaupp: only if they don't
+[14:15:17] <dbaupp> i.e. methods that are acting like associated constants?
+[14:15:24] <strcat> dbaupp: rust *is* bad at that though (traits)
+[14:15:24] <dbaupp> (what about methods returning a type that moves?)
+[14:15:49] <dbaupp> strcat: ... wrt purity?
+[14:15:53] <eddyb> dbaupp: well, associated constants make more sense, but we don't have them
+[14:15:54] <strcat> yes
+[14:16:14] <strcat> dbaupp: if we didn't say functions were typeck'ed from their definition... then yes, rust could support purity well
+[14:16:15] <eddyb> something like Any could then store the TypeId directly in the vtable. the other two methods don't really need to exist at all
+[14:16:36] <strcat> but the requirement that it typeck the definition fully means rust can't really have a sane effects system
+[14:16:46] <strcat> because any generic function is going to have to assume the trait is impure
+[14:16:52] <strcat> unless you actually mark them pure
+[14:16:56] <strcat> and now it's a whole lot less generic
+[14:16:59] <dbaupp> yup
+[14:17:02] <eddyb> "the trait is impure"?
+[14:17:06] <strcat> eddyb: the trait methods
+[14:17:16] <eddyb> I would think purity would be a property of the traits' methods
+[14:17:24] <strcat> eddyb: no, it won't be
+[14:17:27] <strcat> because they're generic
+[14:17:34] <strcat> you can't sanely say no one can print from their trait methods
+[14:17:43] <eddyb> that is, you guarantee purity in the trait's method definition
+[14:17:49] <strcat> eddyb: that doesn't help
+[14:17:54] <strcat> eddyb: the generic function is not marked pure
+[14:18:26] <strcat> if you just want the compiler to do it, then no worries as LLVM already does it, but it won't be as good as the language having an effects system you can make a promise to with unsafe {}
+[14:19:20] <strcat> if you want a language able to provide better performance than C, then sure I think that is very feasible, but rust isn't it
+[14:19:44] <eddyb> I guess this is like that "returning an unboxed closure" problem
+[14:20:08] <strcat> I think it's a 'traits don't actually let you write fast, generic code' problem ;p
+[14:20:41] <strcat> if we had programmable effects, then sure
+[14:20:43] <strcat> like
+[14:20:51] <eddyb> you either add a feature that's almost threathening some of rust's principles, or you deny that sugar and have C++-like implementations
+[14:20:57] <strcat> pure(expr)
+[14:21:02] <strcat> where it is pure if expr is pure
+[14:21:05] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[14:21:05] <strcat> something that like, I dunno
+[14:21:08] <strcat> still doesn't work with traits
+[14:21:27] <strcat> eddyb: or just use another language
+[14:21:35] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[14:21:43] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[14:21:43] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/G5khYQ
+[14:21:43] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[14:21:53] <nmatsakis> I think this is inaccurate.
+[14:21:59] * nmatsakis hastily reads backscroll
+[14:22:06] <eddyb> reminds me of my effect system thoughts - something capable to model argument-dependant failure
+[14:22:08] <nmatsakis> are we talking about optimizing (in codegen) based on purity?
+[14:22:09] <strcat> nmatsakis: talking about effects
+[14:22:13] <strcat> nmatsakis: no not codegen
+[14:22:16] <strcat> user-visible effects
+[14:22:19] <strcat> that you can 'lie' to
+[14:22:24] <nmatsakis> kto what end?why user-visible effects?
+[14:22:27] <nmatsakis> *to what end?
+[14:22:32] <strcat> nmatsakis: well, for optimizations
+[14:22:36] <strcat> and for semantic reasons
+[14:22:37] <nmatsakis> i.e., in codegen.
+[14:22:46] <eddyb> strcat: though... failure might be easy to handle by checking for "nounwind" after LLVM optimizations :P
+[14:22:49] <nmatsakis> if semantic reasons, what semantic reasons? 
+[14:23:04] <nmatsakis> I think we can address many use cases
+[14:23:10] <nmatsakis> without adding purity effects or nofail effects etc
+[14:23:12] <strcat> nmatsakis: well.... you can safely make rewrite rules if you have effects
+[14:23:16] <eddyb> nmatsakis: well, my mention of purity is for an optimization which is basically associated constants in traits
+[14:23:20] <strcat> rewrite rules are really cool :P
+[14:23:21] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[14:23:45] <eddyb> strcat: optimizing before trans? or some other kind of tooling?
+[14:24:09] <strcat> eddyb: before trans
+[14:24:09] <nmatsakis> for example, I think we could optimize away a lot of the unwinding (though yes, trait objects in libraries would be harder without LTO)
+[14:24:23] <strcat> eddyb: http://www.haskell.org/ghc/docs/7.0.1/html/users_guide/rewrite-rules.html read this, you'll love it
+[14:24:26] <eddyb> or without trait bounds
+[14:24:45] <strcat> eddyb: for example you can encode optimizations for big integers as rewrite rules
+[14:24:54] <strcat> expr * 2 -> expr + expr
+[14:24:59] <strcat> well
+[14:25:03] <strcat> it'd reuse the result
+[14:25:10] <strcat> expr * 2 -> let x = expr; x + x
+[14:25:13] <strcat> ;p
+[14:25:15] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[14:25:28] <strcat> in that case you could still always do it...
+[14:25:29] * strcat shrugs
+[14:25:44] <nmatsakis> strcat: purity is only one factor there...
+[14:25:50] <strcat> I guess rewrite rules could be part of traits
+[14:25:54] <eddyb> I did reverse engineer a bigint once, the multiplication/division code is crazy
+[14:25:58] <strcat> the trait can define rules that implementations must uphold
+[14:26:03] <strcat> and then the compiler can use them as rewrite rules
+[14:26:12] <nmatsakis> however, a trait like `&Foo:Freeze` (for example) is pure
+[14:26:15] <nmatsakis> by our old def'n
+[14:26:23] <nmatsakis> (doesn't mutate state it is not given as argument)
+[14:26:23] <strcat> nmatsakis: well, the old definition is silly :)
+[14:26:27] <nmatsakis> no, it's not.
+[14:26:39] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[14:26:40] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/NKz0Ag
+[14:26:40] <ghrust> 13rust/06auto 144d0d3da 15David Manescu: extra: move arena to libarena...
+[14:26:40] <ghrust> 13rust/06auto 1493398d1 15David Manescu: extra: move glob to libglob...
+[14:26:40] <ghrust> 13rust/06auto 1487004db 15bors: auto merge of #11867 : dmanescu/rust/8784-arena-glob, r=huonw...
+[14:26:42] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[14:26:45] <eddyb> nmatsakis: well, self-pure
+[14:26:46] <strcat> nmatsakis: a function taking &mut should be possible to mark pure, the compiler just won't mark it readnone/readonly
+[14:26:55] <strcat> nmatsakis: and then a pure function can call it, and actually be pure
+[14:26:59] <nmatsakis> eddyb: "doesn't mutate state not given to it as argument"
+[14:27:03] *** Joins: canhtak (canhtak@moz-9E539298.wl.t.ulaval.ca)
+[14:27:20] <nmatsakis> strcat: that would meet the def'n I am giving
+[14:27:23] <strcat> oh
+[14:27:29] <strcat> it's not what the old definition did though
+[14:27:36] <nmatsakis> true
+[14:27:42] <nmatsakis> it's what the old def'n did in my head :)
+[14:27:46] <eddyb> nmatsakis: yeah, but not pure as in "doesn't modify global state"
+[14:27:47] <nmatsakis> what it would have done if we'd kept it, I guss
+[14:27:57] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Ping timeout)
+[14:28:22] <eddyb> nmatsakis: hmm, I think locality would come in handy in a Rust kernel
+[14:28:25] <nmatsakis> eddyb: yeah but the caller can tell precisely what they might or might not modify...
+[14:28:38] <strcat> nmatsakis: so basically... what I see as the problem is this
+[14:28:40] <nmatsakis> strcat: I wanted to ask you something
+[14:28:47] <nmatsakis> (but it can wait, carry on)
+[14:28:57] <eddyb> the only global state you need is an allocator, AFAIK
+[14:29:01] <strcat> trait Container { fn len(&self) -> uint; }
+[14:29:13] <strcat> so now a generic function has to assume this is impure, so generic functions generally won't be pure
+[14:29:21] <strcat> or you could mark len as pure, which is sensible
+[14:29:34] <eddyb> and once you localize everything and sepparate all the unsafety into a core, you can force modules to be safe, and even run use code as a kernel task
+[14:29:39] <nmatsakis> this is not entirely true
+[14:30:04] <strcat> nmatsakis: well we could have pure(expr) where it's pure if the expr is pure...
+[14:30:09] <nmatsakis> strcat: if you had e.g. `fn foo<C:Freeze>(x: &C)`...
+[14:30:23] <nmatsakis> strcat: it could be sure that len() will not mutate anything
+[14:30:29] <strcat> nmatsakis: it can still print though
+[14:30:34] *** Quits: mrmonday_ (mrmonday@moz-1E82AE75.members.linode.com) (Input/output error)
+[14:30:38] <strcat> by pure I mean 'no side effects' beyond mutating args
+[14:30:39] <eddyb> wait a second...
+[14:30:53] <strcat> I am not really sure if we used to consider I/O impure or just things that broke @mut impure
+[14:31:10] <nmatsakis> strcat: well, ok, it can print as long as we make stdio() available as a global, that's true.
+[14:31:14] <eddyb> strcat: &Container becomes... interchangeable with &[u8], I guess
+[14:31:28] <nmatsakis> at least at present, though, you can't write to a stream since that requires mutability
+[14:31:59] <strcat> hrm
+[14:32:01] * nmatsakis shrugs 
+[14:32:07] <eddyb> because &Trait with one method can store the method instead of a vtable and then you can store the result instead of the method
+[14:32:31] <eddyb> nmatsakis: we've just abstracted vectors to traits :)
+[14:33:31] <eddyb> though this is probably not the first time I come up with this
+[14:33:53] <strcat> pure(T::len) fn foo<T: Container>(x: T) -> uint { x.len() }
+[14:33:56] * strcat shrugs
+[14:34:23] <eddyb> impl<T, static N: uint> Slice<T> for [T, ..N] {fn len(&self) -> uint {N}}
+[14:34:52] <dbaupp> eddyb: if it's in the vtable that makes it much slower
+[14:35:05] <strcat> ugh why does this debug-info test fail...
+[14:35:17] <strcat> we don't output proper DWARF CFI info I guess
+[14:35:35] *** Joins: NiccosSystem (NiccosSyst@AB1AFDE.FC7B0C35.A7597CB6.IP)
+[14:35:41] <eddyb> dbaupp: vtable with one method for &Trait -> method instead of vtable -> if it's pure, store the result instead of the method
+[14:36:12] <eddyb> dbaupp: though ~Slice<T> won't work as well :(
+[14:38:11] <eddyb> unless we can get rid of the drop glue for owned traits under certain conditions
+[14:39:41] <eddyb> strcat: were you around in #rust when I thought about a NonZero<T> adaptor that would be considered different from zero when ptr-sized (or less)?
+[14:39:53] <strcat> ?
+[14:40:14] <eddyb> Ranged<T, start, end> would be better, for range metadata and whatnot, but we can't do that yet
+[14:41:25] <eddyb> also, adt doesn't reuse the tag for nested enums and other things with range metadata (I saw Option<char> and Option<u31> as examples)
+[14:49:31] <strcat>     // Clear the debug location so we don't assign them in the function prelude
+[14:49:34] <strcat>     set_debug_location(cx, UnknownLocation);
+[14:49:36] <strcat> hm
+[14:49:40] * strcat doesn't really understand debuginfo
+[14:49:57] <strcat> we aren't outputting proper info for parameters...
+[14:51:10] <eddyb> strcat: did you see this? https://gist.github.com/eddyb/3a233c4709018e92b866
+[14:51:21] <strcat> no
+[14:51:40] <eddyb> I got sick of seeing $ in my LLVM IR
+[14:52:06] <eddyb> so many dollars (I don't have :P)
+[14:52:07] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[14:58:04] *** Joins: bytbox (s@moz-54E13927.washdc.fios.verizon.net)
+[15:03:02] <eddyb> Makefile:704: /home/eddy/Projects/rust/mk/tools.mk: No such file or directory
+[15:03:05] <eddyb> what's going on?
+[15:03:39] <eddyb> don't tell me I have to configure again
+[15:06:39] *** Quits: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Ping timeout)
+[15:10:59] *** Joins: jensnockert (jensnocker@moz-988C9930.e0f8471ae7fa.afb.bredband2.com)
+[15:12:37] <strcat> eddyb: https://github.com/thestinger/rust/commit/39e8c11a1fc4e970680aac8046e7dbc5921c13a3 meh :(
+[15:17:07] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[15:21:10] <eddyb> strcat: oh, and pnkfelix asked some questions about visit_glue and I realized just how bad it is
+[15:24:12] <eddyb> strcat: the generated visit glue is so large just because it does virtual calls. and LLVM probably spends a bunch of time trying to devirtualize all that mess
+[15:24:39] <strcat> eddyb: I'm removing tydescs from traits atm
+[15:24:56] <eddyb> strcat: and making visit_glue noop?
+[15:25:01] <strcat> no
+[15:25:10] <strcat> removing tydescs from traits.
+[15:25:20] <strcat> the visit glue in traits is unused afaik
+[15:25:42] <eddyb> right... so the only way to get a tydesc is through the intrinsic
+[15:26:03] <eddyb> strcat: does @T need the tydesc information dynamically?
+[15:26:12] <strcat> don't care about @
+[15:26:17] <strcat> it needs a dtor too
+[15:26:19] <strcat> not worth fixing @
+[15:26:48] *** flaper87 is now known as flaper87|afk
+[15:26:51] <eddyb> well, the compiler still uses it, so don't break it completely
+[15:29:20] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[15:30:55] <strcat> ugh, how do you get a ptr to drop glue? without making a TyDesc...
+[15:31:25] <eddyb> strcat: you can't really
+[15:32:04] <eddyb> strcat: but I think it will just generate the drop glue, not anything else, if you do it right
+[15:32:40] <eddyb> I guess you want to take a look at the trans::glue function that drops an lvalue - drop_ty or something
+[15:32:59] *** Joins: gwty (gwtypc@A4C707D5.5B1C15CD.CF29F6CE.IP)
+[15:32:59] <strcat> meh
+[15:33:04] <strcat> I'll just ask it to stop making visit glue
+[15:33:16] <strcat> can remove the TyDesc later
+[15:33:51] <eddyb> strcat: it won't generate visit glue right now if you don't need it
+[15:34:02] <strcat> eddyb: it does, because it stores the TyDesc...
+[15:34:03] <eddyb> though the logic might be weird
+[15:34:17] <strcat> eddyb: it generates both drop and visit glue
+[15:34:24] <strcat> it stores the TyDesc so it has no choice
+[15:34:28] <strcat> it doesn't know how it's used
+[15:34:36] <eddyb> *just* creating a ~Trait doesn't generate any visit glue, I've checked. which is totally weird
+[15:34:44] <strcat> eddyb: without optimizations you checked?
+[15:34:46] <eddyb> but you want to fix it in the general case
+[15:34:48] <eddyb> strcat: yeah
+[15:35:17] *** flaper87|afk is now known as flaper87
+[15:35:46] <eddyb> echo 'fn main(){~0 as ~Clone;}' | ./x*/stage0/bin/rustc --emit-llvm -S -o /dev/stdout - | rustfilt | grep glue_
+[15:36:37] <strcat> eddyb: store it in a variable
+[15:36:46] <strcat> let x = ~0 as ~Clone;
+[15:36:48] <eddyb> that's it?
+[15:37:04] <eddyb> hah, weird
+[15:37:35] <strcat> eddyb: my 'solution' at first is simple
+[15:39:59] *** Joins: sanxiyn (tinuviel@B4104EBB.3CC170B1.1E14B209.IP)
+[15:40:49] <eddyb> strcat: only tests left and we get default type params :D
+[15:41:45] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[15:41:45] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/NKz0Ag
+[15:41:45] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[15:41:46] <strcat> eddyb: http://ix.io/abp/diff simple enough
+[15:41:57] <strcat> also stops making it for @
+[15:41:59] <strcat> anyway
+[15:42:01] <eddyb> I may want a snapshot immediately after just because bootstrapping is not fun
+[15:42:05] <strcat> next step is to stop storing the tydesc
+[15:42:08] <strcat> and store only a dtor ptr
+[15:42:13] <sanxiyn> r? https://github.com/mozilla/rust/pull/11907
+[15:42:25] <sanxiyn> (Compiles to PSRLD)
+[15:42:38] <Yurume> hmm, when the lib crate A uses std but not native, and the bin crate B uses A and std and (explicitly) native complete with #[start] override, then the A would use native as a default runtime, right?
+[15:42:38] <eddyb> strcat: at least you don't do silly things like me and end up fixing 3 trans bugs
+[15:43:12] <sanxiyn> Someone wanted to use SIMD to implement xxHash, so there you go
+[15:44:09] <sanxiyn> strcat: Thanks
+[15:44:33] *** Quits: gwty (gwtypc@A4C707D5.5B1C15CD.CF29F6CE.IP) (Ping timeout)
+[15:46:11] *** Joins: gwty (gwtypc@4014B10F.C875E086.8A00C703.IP)
+[15:46:39] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[15:46:39] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/Mp-ZrQ
+[15:46:39] <ghrust> 13rust/06auto 1417c42db 15Daniel Micay: mk: remove -fno-omit-frame-pointer...
+[15:46:39] <ghrust> 13rust/06auto 1439e8c11 15Daniel Micay: enable fp-elim when debug info is disabled...
+[15:46:39] <ghrust> 13rust/06auto 147f0c705 15bors: auto merge of #11879 : thestinger/rust/frame-pointer, r=alexcrichton...
+[15:46:42] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[15:46:44] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[15:46:44] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/NDmGow
+[15:46:44] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[15:47:22] <eddyb> sanxiyn: ooh, the shift thing is cool
+[15:48:25] <sanxiyn> eddyb: Yeah so if you ever wanted to get (x1 << 1, x2 << 2, x3 << 3, x4 << 4) from (x1, x2, x3, x4) in one instruction, there you go
+[15:49:12] <eddyb> time to see how fast xxHash is compared to C, with those
+[15:50:37] <sanxiyn> eddyb: Well in GCC C and Clang C you can get the same thing too (architecture neutral SIMD bit shift) so it would need to be compared to that
+[15:51:00] <eddyb> riiight
+[15:51:38] <sanxiyn> http://clang.llvm.org/docs/LanguageExtensions.html#vector-operations
+[15:55:33] <strcat> eddyb: http://ix.io/abq/diff part 2
+[15:55:50] <strcat> minor mistake tho
+[15:55:50] <eddyb> what is this, a diff for ants?
+[15:56:27] <strcat> eddyb: well and then I'll do closures next
+[15:56:29] <strcat> and @
+[15:56:33] <strcat> closures and @ are the same path ;\
+[15:56:48] <eddyb> strcat: I cleaned up some of the closure nonsense
+[15:57:17] <eddyb> it should eventually be no different than &Trait/~Trait
+[15:57:59] <eddyb> hmm, I don't have a node ID to put the lints on. should I put them on the crate itself?
+[15:58:13] <sanxiyn> eddyb: What lint?
+[15:58:48] *** Quits: rca_ (rcatolino@68C2C935.20EF280.520D6FA6.IP) (Ping timeout)
+[15:58:54] <eddyb> sanxiyn: new one. for providing type params in place of defaults
+[15:59:01] *** Quits: jensnockert (jensnocker@moz-988C9930.e0f8471ae7fa.afb.bredband2.com) (Input/output error)
+[15:59:11] <eddyb> hmm, "in place" is a better wording than what I have now
+[15:59:30] *** Joins: jensnockert (jensnocker@moz-988C9930.e0f8471ae7fa.afb.bredband2.com)
+[16:00:40] <sanxiyn> eddyb: Doesn't Ty have NodeId?
+[16:01:01] <eddyb> sanxiyn: not that, paths
+[16:01:20] *** Quits: jensnockert (jensnocker@moz-988C9930.e0f8471ae7fa.afb.bredband2.com) (Ping timeout)
+[16:01:20] <eddyb> like Foo::Bar::<A, B>
+[16:01:46] <sanxiyn> Yeah and A and B there are Ty's I think
+[16:03:56] <eddyb> why does it use Node IDs anyway?
+[16:04:22] *** Quits: mankyKitty (Instantbir@moz-9B898D95.enst-bretagne.fr) (Ping timeout)
+[16:05:12] <eddyb> / If we missed any lints added to the session, then there's a bug somewhere in the iteration code.
+[16:05:27] <eddyb> does it use Node IDs to preserve some kind of order?
+[16:06:35] <sanxiyn> eddyb: NodeId is used to check allow/deny settings
+[16:06:41] <eddyb> oooh
+[16:07:39] <sanxiyn> You set lint on some expression, and if that expression is within some function with #[allow], etc.
+[16:08:53] <sanxiyn> eddyb: So the needed property is to know enclosing things that can have lint attributes
+[16:10:05] *** kimundi is now known as zz_kimundi
+[16:10:20] <sanxiyn> Eh... therefore, if something doesn't have NodeId, I think it's okay to put lint on anything with NodeId that includes something
+[16:10:24] <acrichto> eddyb: yeah a lint is fine, I think we mainly just need a way to force opting-in to it
+[16:10:45] <eddyb> well, it's deny by default
+[16:10:52] <sanxiyn> (which always succeeds, because "things that can have lint attributes" always have NodeId)
+[16:11:07] <acrichto> dbaupp: nah they use &T b/c they pass the funciton as a function pointer
+[16:11:13] <acrichto> dbaupp: it could be &self when we have UFCS!
+[16:11:15] <acrichto> eddyb: that's fine
+[16:11:42] <eddyb> sanxiyn: thanks, I can take the first extra type and grab its ID
+[16:12:06] <eddyb> acrichto: or it could be &self if we wouldn't do unsafe nasty things in std::fmt :P
+[16:13:01] <eddyb> my model doesn't work well with all those transmutes, so I have a WithFmtTrait structure for each FmtTrait, holding an argument and implementing a common formatting trait
+[16:16:19] <eddyb> I guess I could make it simpler, so that WithString("foo").fmt does the right thing. I'm considering rewriting the procedural macro part of it to not virtualize anything in the first place
+[16:21:39] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[16:21:40] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 147f0c705 to 1487004db: 02http://git.io/N3iJvQ
+[16:21:40] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[16:21:40] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[16:21:41] <ghrust> 01[13rust01] 15bors pushed 12 new commits to 06auto: 02http://git.io/mNwV6A
+[16:21:41] <ghrust> 13rust/06auto 14af218d6 15Scott Lawrence: Removing do keyword from librustdoc
+[16:21:41] <ghrust> 13rust/06auto 1425e7e7f 15Scott Lawrence: Removing do keyword from libstd and librustc
+[16:21:41] <ghrust> 13rust/06auto 1493e99b8 15Scott Lawrence: Remove do keyword from librustuv
+[16:21:43] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[16:23:07] *** Joins: rca (rcatolino@68C2C935.20EF280.520D6FA6.IP)
+[16:24:46] *** Parts: sanxiyn (tinuviel@B4104EBB.3CC170B1.1E14B209.IP) (Leaving)
+[16:25:14] *** Joins: lkuper (lkuper@moz-C0CD33ED.hsd1.in.comcast.net)
+[16:26:07] *** Joins: bjz_ (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[16:26:21] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Connection reset by peer)
+[16:27:28] *** Quits: larsberg (sid16141@moz-A42E5B7B.irccloud.com) (Ping timeout)
+[16:27:28] *** Quits: steveklabnik (uid17044@moz-A42E5B7B.irccloud.com) (Ping timeout)
+[16:27:28] *** Quits: irving-cloud (uid24297@moz-31ABA2C0.irccloud.com) (Ping timeout)
+[16:27:46] *** Quits: whitglint (uid15486@moz-31ABA2C0.irccloud.com) (Ping timeout)
+[16:27:58] *** Quits: bjz_ (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[16:28:33] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[16:28:46] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[16:28:58] *** Quits: Yurume (Yurume@A826BD81.8A0DEF81.38747683.IP) (Ping timeout)
+[16:29:20] *** Joins: evan19 (evan19@A0C30603.ADBAE8EB.CD5BB34E.IP)
+[16:29:22] <evan19> make money as easy as ABC. Just click the link below to find out more http://www.theweeklypay.com/index.php?share=382489
+[16:29:23] *** Parts: evan19 (evan19@A0C30603.ADBAE8EB.CD5BB34E.IP) ()
+[16:30:36] *** Joins: Yurume (Yurume@A826BD81.8A0DEF81.38747683.IP)
+[16:30:39] *** Joins: whitglint (uid15486@moz-31ABA2C0.irccloud.com)
+[16:30:46] *** Joins: irving-cloud (uid24297@moz-31ABA2C0.irccloud.com)
+[16:31:09] *** Joins: larsberg (sid16141@moz-A42E5B7B.irccloud.com)
+[16:33:30] *** Joins: steveklabnik (uid17044@moz-A42E5B7B.irccloud.com)
+[16:34:23] *** Quits: Diamond (dick@moz-80556682.ks.ks.cox.net) (Connection reset by peer)
+[16:45:22] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[16:50:26] *** Quits: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp) (Connection reset by peer)
+[16:50:47] *** Joins: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp)
+[16:52:24] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[16:52:35] *** Joins: mankyKitty (Instantbir@moz-21AD3B58.rev.sfr.net)
+[16:52:54] *** Quits: lkuper (lkuper@moz-C0CD33ED.hsd1.in.comcast.net) (Quit: lkuper)
+[16:54:06] <flaper87> is the idea here to remove `extern mod` or just `mod` https://github.com/mozilla/rust/issues/9880 ?
+[16:54:36] <eddyb> if anyone is curious what I think... I don't like "crate" as a new keyword
+[16:54:59] <eddyb> we have enough keywords as it is. extern_crate! "foo"; anyone?
+[16:57:02] <Yurume> #[crate_map(name="extra", ...)];
+[16:57:40] <Yurume> well, that won't work with #[cfg]
+[16:57:59] *** zz_kimundi is now known as kimundi
+[16:58:33] <eddyb> #[cfg(foo)] #[extern_crate(extra)];
+[16:58:47] <flaper87> I think I'd be fine with a macron as well. I admit that `extern mod` could be confusing since it has nothing to do with importing crates
+[16:59:03] <flaper87> macro*
+[17:00:12] <flaper87> eddyb: mind mentioning the idea in the issue?
+[17:00:35] *** Quits: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP) (Connection reset by peer)
+[17:01:23] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Ping timeout)
+[17:01:28] *** Quits: Seldaek (seld@E733C546.5464C2F1.F113998C.IP) (Ping timeout)
+[17:01:33] *** Quits: kaeso (kaeso@B42A452A.36A75777.A2798B07.IP) (Ping timeout)
+[17:02:43] *** Quits: Yurume (Yurume@A826BD81.8A0DEF81.38747683.IP) (Ping timeout)
+[17:02:50] *** Joins: Seldaek (seld@moz-5DEA7688.ch)
+[17:03:00] *** Quits: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp) (Connection reset by peer)
+[17:03:03] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[17:03:17] *** Joins: kaeso (kaeso@moz-F21FF626.unstable.it)
+[17:03:21] *** Joins: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp)
+[17:04:08] *** Quits: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp) (Client exited)
+[17:04:08] *** Quits: mankyKitty (Instantbir@moz-21AD3B58.rev.sfr.net) (Quit: mankyKitty)
+[17:04:16] *** Joins: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP)
+[17:04:29] *** Joins: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp)
+[17:06:05] *** Joins: Yurume (Yurume@A826BD81.8A0DEF81.38747683.IP)
+[17:06:11] *** Quits: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp) (Ping timeout)
+[17:10:23] <strcat> eddyb: meh, it's a bit more pain for closures
+[17:10:29] <strcat> since it uses the align field...
+[17:10:37] <strcat> anyway will just change that code path yet again
+[17:10:40] <eddyb> strcat: that information can be provided statically
+[17:10:43] <strcat> yep
+[17:10:51] <eddyb> it's really aligned_alloc
+[17:11:09] <eddyb> strcat: though... can you remove the proc header?
+[17:11:22] <strcat> eddyb: well it needs a dtor
+[17:11:23] <eddyb> I somehow don't think it would need extra alignment if there's no header
+[17:11:35] <eddyb> strcat: (*{dtor, call}, *box)
+[17:12:08] * strcat shrugs
+[17:12:12] <strcat> [dtor, env] seems better
+[17:12:56] <strcat> just for vague locality reasons
+[17:13:54] <strcat> eddyb: I guess you want it that way so it matches traits
+[17:14:08] <eddyb> yeah
+[17:14:37] <strcat> I wonder how much this speeds up compile time
+[17:14:40] <strcat> oooo linux 3.13.1
+[17:16:37] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[17:18:08] *** Joins: veddan (viktor@moz-C79BC80B.csbnet.se)
+[17:18:19] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[17:18:19] *** Quits: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[17:19:10] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[17:19:20] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[17:19:25] *** Joins: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com)
+[17:20:31] *** Quits: canhtak (canhtak@moz-9E539298.wl.t.ulaval.ca) (Quit: canhtak)
+[17:26:07] <eddyb> strcat: do you have immediate usecases for allocators in stdlib?
+[17:27:56] <strcat> well generic dtors need to work
+[17:31:25] *** Quits: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net) (Input/output error)
+[17:32:21] *** Joins: canhtak (canhtak@moz-9E539298.wl.t.ulaval.ca)
+[17:35:17] *** Joins: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net)
+[17:35:18] <acrichto> strcat: do you know what https://github.com/mozilla/rust/pull/11909 does to code size?
+[17:35:23] <acrichto> just curious
+[17:35:31] <strcat> acrichto: not really, I could check
+[17:35:41] <strcat> it's better, don't know how much better
+[17:35:43] <strcat> ;p
+[17:35:53] <strcat> just looked at it on 'fn main() { let x = ~0 as ~Clone; }'
+[17:35:57] <strcat> makes visit glue not get generated
+[17:37:09] <eddyb> oh wow commits *are* tiny!
+[17:40:08] <eddyb> strcat: r? https://github.com/mozilla/rust/pull/11217
+[17:41:12] <strcat> ugh and there's barely space for the outdated diffs to be shown
+[17:41:43] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[17:41:43] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/mNwV6A
+[17:41:43] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[17:42:31] <strcat> acrichto: there are makefile races again :(
+[17:42:35] <strcat> with -j
+[17:42:40] <eddyb> strcat: if you hurry you can get it in before unused-result :P
+[17:42:41] <acrichto> strcat: log?
+[17:42:46] *** Quits: veddan (viktor@moz-C79BC80B.csbnet.se) (Client exited)
+[17:42:56] <strcat> acrichto: well it is not a very useful log
+[17:43:02] <eddyb> (because it's from last year)
+[17:43:15] <acrichto> strcat: it's more useful than "there's a race"
+[17:43:20] <strcat> acrichto: I know ;p
+[17:43:30] <strcat> I can't duplicate it
+[17:43:34] <eddyb> acrichto: that commit that referenced my name will haunt me all my life >_>
+[17:43:54] <acrichto> eddyb: haha, I got a wave of like 40 emails once when my stuff started getting merged elsewhere
+[17:44:03] <acrichto> welp, do is gone
+[17:44:12] <acrichto> rusti: do spawn {}
+[17:44:14] -rusti- ()
+[17:44:23] * acrichto takes solace in what's left
+[17:46:09] <eddyb> did bytbox also change the docs?
+[17:46:20] <eddyb> acrichto: our hello world will look a little worse
+[17:46:35] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[17:46:35] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/sqtPew
+[17:46:35] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[17:46:36] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[17:46:36] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/OtGLVQ
+[17:46:36] <ghrust> 13rust/06auto 149896beb 15Alex Crichton: Implement an unused_result lint...
+[17:46:36] <ghrust> 13rust/06auto 14c13a625 15Alex Crichton: Flag Result as #[must_use] and deal with fallout.
+[17:46:36] <ghrust> 13rust/06auto 14c3ae182 15bors: auto merge of #11754 : alexcrichton/rust/unused-result, r=brson...
+[17:46:38] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[17:46:44] <acrichto> eddyb: yeah I think the docs changed as well
+[17:46:56] <acrichto> http://www.rust-lang.org/
+[17:47:00] <acrichto> that'll need to get updated
+[17:47:10] <eddyb> for some reason I'd prefer "box |a, b| { ... }" over proc
+[17:48:40] <bytbox> eddyb: yeah, the docs have lost all do .* {s.
+[17:48:54] <acrichto> bytbox: nice work btw
+[17:48:59] <bytbox> acrichto: thanks!
+[17:51:58] <eddyb> at least we can use "do" for something smarter now
+[17:52:54] <eddyb> acrichto: thinking about my continuation-based formatting model and TyVisitor, I think I had a revelation
+[17:55:08] <nmatsakis> have others seen errors related to phased compilation? I seem to encounter random things
+[17:55:21] <eddyb> nmatsakis: running tests from stage1?
+[17:55:26] <nmatsakis> both stage1/stage2
+[17:55:29] <acrichto> nmatsakis: if you have logs I can take a look
+[17:55:29] <strcat> eddyb: can you add tests for the feature gate? to make sure it keeps gating the right thing
+[17:55:42] <eddyb> strcat: I did add tests
+[17:55:45] <strcat> oh
+[17:55:46] <acrichto> eddyb: revelation? how so?
+[17:55:47] * strcat didn't see
+[17:56:02] <eddyb> or I think I did... gated-*
+[17:56:02] <strcat> eddyb: I mean a test failing if it doesn't have #[feature(...)]
+[17:56:11] <strcat> ah I see it
+[17:56:15] <strcat> for some reason I didn't...
+[17:56:23] <eddyb> acrichto: when visiting (A, B, C) (structures with named fields are similar), the compiler could generate code like fn (A, B, C)::glue_visit(x, visitor) {visitor.visit(x.head(), A, x.tail, (B, C)::glue_visit)}
+[17:57:01] <acrichto> interesting
+[17:57:04] <eddyb> acrichto: that's pseudocode, don't mind the mistakes - what's interesting is that the last two arguments form a closure
+[17:57:27] <eddyb> so you can pack a pointer to the data and a visiting function, in a ||
+[17:58:14] <eddyb> it's not worse than what we have today, it gets rid of the bool returning logic and it allows threading repr through, without a MemWriter
+[18:00:05] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[18:07:41] *** Joins: jdm (jdm@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[18:11:32] *** Joins: lkuper (lkuper@moz-D862222C.dhcp-bl.indiana.edu)
+[18:11:39] <strcat> acrichto: alright can show stats now...
+[18:11:54] <eddyb> is it good?
+[18:12:05] <strcat> sec
+[18:12:34] <strcat> 322330 std.ll
+[18:13:04] <strcat> 317496 std.ll
+[18:13:08] <strcat> before and after
+[18:13:11] <strcat> barely a difference
+[18:13:13] <strcat> ;p
+[18:13:26] <acrichto> what's the small crate diffrence
+[18:13:41] <acrichto> let _a = ~0 as ~Clone;
+[18:13:44] <eddyb> 4.9k lines of LLVM? still good
+[18:13:58] <eddyb> strcat: also, that's... library code. I'm curious what librustc looks like
+[18:14:04] *** Quits: lkuper (lkuper@moz-D862222C.dhcp-bl.indiana.edu) (Quit: Leaving)
+[18:14:11] *** Joins: lkuper (lkuper@moz-D862222C.dhcp-bl.indiana.edu)
+[18:14:18] <strcat> acrichto: 559 -> 93
+[18:14:25] <acrichto> strcat: that's the awesome part
+[18:14:47] <strcat> acrichto: ah wait sorry I lied
+[18:14:54] <strcat> it is not an apples to apples comparison ;\
+[18:14:56] <strcat> it's different
+[18:14:58] * strcat sighs
+[18:14:59] <acrichto> aww
+[18:15:08] <strcat> cause my system rust is old
+[18:15:16] <eddyb> strcat: use stage0
+[18:15:21] *** Quits: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP) (Client exited)
+[18:15:29] <eddyb> that's what I do for before/after
+[18:17:04] <strcat> acrichto: 566 -> 490 :(
+[18:17:09] <strcat> also the cast confuses it
+[18:17:14] <strcat> need to fix that somehow
+[18:17:27] <acrichto> oh hm
+[18:17:30] <acrichto> this is optimized?
+[18:17:34] <strcat> unoptimized
+[18:20:02] <strcat> acrichto: I think it's broken in some way ;\
+[18:20:12] <acrichto> how so?
+[18:20:15] <strcat> lets see...
+[18:20:15] <acrichto> it's still emitting glue?
+[18:20:50] <strcat> acrichto: no it doesn't emit visit glue now
+[18:22:41] <eddyb> optimized should be 10 lines or so
+[18:26:13] *** Joins: TimAbraldes (quassel@125EF623.B2666F0E.66399531.IP)
+[18:27:41] *** Quits: canhtak (canhtak@moz-9E539298.wl.t.ulaval.ca) (Quit: canhtak)
+[18:29:18] *** Joins: dherman (dherman@moz-21F91504.cfw-a-gci.corp.yahoo.com)
+[18:29:18] *** ChanServ sets mode: +ao dherman dherman
+[18:29:32] <strcat>   %4 = getelementptr inbounds { %tydesc*, i8* }* %x, i32 0, i32 0
+[18:29:35] <strcat>   %5 = bitcast %tydesc** %4 to { %tydesc*, i64 (i64*)*, void (i64*, i64*)* }**
+[18:29:37] <strcat>   store { %tydesc*, i64 (i64*)*, void (i64*, i64*)* }* @vtable1301, { %tydesc*, i64 (i64*)*, void (i64*, i64*)* }** %5
+[18:29:38] <strcat>   call void @"_ZN27_$UP$std..clone..Clone.Send9glue_drop19h6476ae5c12b22304adE"({ %tydesc*, i8* }* %x)
+[18:29:40] <strcat> before
+[18:29:44] <strcat>   %4 = getelementptr inbounds { %tydesc*, i8* }* %x, i32 0, i32 0
+[18:29:45] <strcat>   %5 = bitcast %tydesc** %4 to { void ({}**)*, i64 (i64*)*, void (i64*, i64*)* }**
+[18:29:47] <strcat>   store { void ({}**)*, i64 (i64*)*, void (i64*, i64*)* }* @vtable1237, { void ({}**)*, i64 (i64*)*, void (i64*, i64*)* }** %5
+[18:29:49] <strcat>   call void @"_ZN27_$UP$std..clone..Clone.Send9glue_drop19h6476ae5c12b22304abE"({ %tydesc*, i8* }* %x)
+[18:29:51] <strcat> after
+[18:29:53] * strcat has no idea what generates this crud
+[18:30:20] <strcat> ????
+[18:31:53] <eddyb> strcat: it stores the vtable in the trait object (presumably after allocating ~0) and then it drops the trait object
+[18:32:05] <strcat> yes but look at the casts
+[18:32:22] <eddyb> looks... fine to me. does it work?
+[18:32:30] <strcat> yes but the 2nd does not optimize out
+[18:32:45] <eddyb> lol, that's funny
+[18:33:13] <eddyb> strcat: pretty sure it's my fault *sigh*. try changing {} to i8
+[18:33:34] <eddyb> (only in the places you need to, otherwise you'll start breaking things)
+[18:33:55] <strcat> which one?
+[18:34:23] <eddyb> strcat: the dtor's type
+[18:34:48] <eddyb> strcat: oh and please use my rustfilt script :P
+[18:35:27] <strcat> @vtable1237 = internal constant { void ({}**)*, i64 (i64*)*, void (i64*, i64*)* } { void ({}**)* @"_ZN13_$UP$$LP$$RP$9glue_drop19hc9dc8d30daeb2309a3E", i64 (i64*)* @"_ZN5clone9Clone$int5clone21ha61535efe591acadXoaU4v0.0E", void (i64*, i64*)* @_ZN5clone5Clone10clone_from19h3c6a78002025c006aW4v0.0E }
+[18:35:29] <cmr> rustfilt?
+[18:35:39] <eddyb> cmr: https://gist.github.com/eddyb/3a233c4709018e92b866
+[18:35:59] <cmr> much convenient, thanks
+[18:36:00] <strcat> why isn't it just 2 ptrs?
+[18:36:14] <eddyb> you must be kidding me... it actually generates virtual methods that can't be called?
+[18:36:36] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[18:36:42] *** Joins: new_one (new_one@103577DD.641FCA23.B3C0173E.IP)
+[18:36:46] <strcat> here it is before
+[18:36:49] <strcat> @vtable1301 = internal constant { %tydesc*, i64 (i64*)*, void (i64*, i64*)* } { %tydesc* @"_ZN8_$UP$int6tydesc19h7a6e7a6bea264e3caXE", i64 (i64*)* @"_ZN5clone9Clone$int5clone21h10bf1f925fb5edc0XoaU4v0.0E", void (i64*, i64*)* @_ZN5clone5Clone10clone_from19h6b5daaac33418d0aaW4v0.0E }
+[18:36:54] <strcat> what I pasted above is with my changes
+[18:36:57] <strcat> wtf is that crap?
+[18:37:00] <strcat> hm
+[18:37:02] <strcat> oh
+[18:37:05] <strcat> clone_from, I guess
+[18:37:08] <strcat> let me use a simpler trait
+[18:37:24] <eddyb> Send, I guess
+[18:41:19] <strcat> @vtable1286 = internal constant { %tydesc*, i64 (i64*)* } { %tydesc* @"_ZN9_$UP$uint6tydesc19heeffc465404c859daIE", i64 (i64*)* @"_ZN8Foo$uint3foo21h19262d0f3d232523siaj4v0.0E" }
+[18:41:22] <strcat> alright simpler one
+[18:43:04] <eddyb> strcat: so is that {} blocking optimizations?
+[18:44:56] <strcat> dunno, hold on
+[18:45:10] <eddyb> (it was an i32 originally)
+[18:45:53] <strcat> just telling brynhild to do a build
+[18:45:57] *** Joins: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP)
+[18:45:58] <strcat> comparing to stage0 is annoying
+[18:46:00] <strcat> due to the other changes
+[18:47:24] *** Quits: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP) (Connection reset by peer)
+[18:47:44] <olsonjeffery> acrichto: is the impl of Ord for Json something critical that must stay?
+[18:47:48] *** Joins: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP)
+[18:48:05] <olsonjeffery> its the only thing in json+ebml+serialize that absolutely chains it a dep on extra
+[18:48:31] <eddyb> strcat: my previous fiddling with tydesc and dbaupp's fail! changes?
+[18:48:53] <cmr> olsonjeffery: I can't imagine that possibly being useful
+[18:49:24] <strcat> olsonjeffery: how so?
+[18:49:26] <eddyb> cmr: unless it respects the ordering rules in JS :P
+[18:49:37] <olsonjeffery> it seems kind of arbitrary (comparing two boxed JSON values..)
+[18:49:41] *** Quits: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP) (Ping timeout)
+[18:49:49] <olsonjeffery> strcat: im working on pushing json, ebml and serialize into a "libserialize" crate
+[18:50:14] <strcat> isn't this just going to generate a bunch more duplicate hashtable, etc. instantiations?
+[18:50:17] <acrichto> olsonjeffery: how is that entwined with the rest of libextra?
+[18:50:20] *** Joins: Kxepal (Miranda@moz-56282A8D.pppoe.mtu-net.ru)
+[18:50:34] <olsonjeffery> and json impls Ord for the Json trait.. and one of the "json types" is Object, which is used to be a typedef for TreeMap<~str, Json>
+[18:50:42] <olsonjeffery> but i changed it to HashMap<~str, Json>
+[18:50:55] <olsonjeffery> HashMaps, unlike TreeMaps, aren't ordered
+[18:50:56] <strcat> can we move json out of the official repo completely?
+[18:51:05] <olsonjeffery> strcat: stuff in libextra depends on it
+[18:51:12] <olsonjeffery> im trying to take this one step at a time
+[18:51:12] <acrichto> olsonjeffery: hm I think that it was TreeMap for a specific reason though (to provide ordering)
+[18:51:18] <acrichto> lemme check
+[18:51:29] *** Quits: Kxepal (Miranda@moz-56282A8D.pppoe.mtu-net.ru) (Connection reset by peer)
+[18:51:31] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[18:51:31] *** ChanServ sets mode: +ao pcwalton pcwalton
+[18:51:36] <strcat> olsonjeffery: we actually do need ebml/serialize though afaik in the compiler
+[18:51:42] <olsonjeffery> yeah
+[18:51:50] <olsonjeffery> json is used in a few other crates in libextra
+[18:51:52] *** Joins: Kxepal (Miranda@moz-56282A8D.pppoe.mtu-net.ru)
+[18:51:57] <strcat> splitting it means one more whole set of generated generic fns, it's a *lot* of code
+[18:52:00] <olsonjeffery> i havent evaluated how crucial it is
+[18:52:06] <strcat> I think it needs to be thought out more
+[18:52:09] <acrichto> olsonjeffery: fa8553e4, doesn't have much explanation though
+[18:52:45] <acrichto> olsonjeffery: for now it's fine for libserialize to depend on libextra
+[18:52:52] <acrichto> or wait hm you're trying to avoid that
+[18:53:16] <strcat> meh, I just hope someone measures the compile-time before we split everything
+[18:53:24] <strcat> and the sizes
+[18:53:28] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[18:53:35] <strcat> I expect it does not work how people seem to expect...
+[18:53:51] <acrichto> strcat: time has shown that our current model is scalable and it must change
+[18:54:07] <strcat> so we should switch to a model that's going to make compile-time even slower?
+[18:54:08] <acrichto> strcat: things will not magically "all get better", we'll have work to do because this is uncharted territory for rust
+[18:54:16] <strcat> yes, it needs to be carefully thought out
+[18:54:22] <acrichto> this is not going to make things slower
+[18:54:25] <strcat> not just split everything as much as possible
+[18:54:37] <acrichto> well yeah we're not advocating crate == mod
+[18:54:38] <strcat> acrichto: how do you know? it means recompiling all of vec.rs, str.rs, hashmap.rs N more times
+[18:54:46] <acrichto> strcat: incremental compliation
+[18:55:03] <cmr> that doesn't help relieve monomorphization times
+[18:55:16] <acrichto> that's a problem for us to overcome if it actually becomes significant
+[18:55:23] <acrichto> there are pros and cons to both strategies
+[18:55:25] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[18:55:28] <strcat> so I expect there will be numbers showing it improves something
+[18:55:34] <acrichto> we believe that the cons of the "one crate" strategy outweigh the pros
+[18:55:37] <strcat> rather than just merging it because it feels like it should be faster
+[18:56:31] <acrichto> a compilation model with many crates is something that rust *must* do well
+[18:56:39] <acrichto> this is going to happen whether libextra is sharded or not
+[18:56:53] <acrichto> by sharding libextra we're going to explore the territory and what the problems actually are
+[18:57:03] <acrichto> if we do run into things like monomorphization times being super high then we can work on optimizing that
+[18:57:07] <strcat> saying it 'must' do it well is different than making my compile time slower *today*
+[18:57:21] <strcat> it 'must' work well so lets make it worse today
+[18:57:25] <acrichto> we generally have a broader vision that how code exactly runs today
+[18:57:33] *** Joins: doener (doener@moz-C68F600D.unity-media.net)
+[18:57:33] <strcat> so back it up with data
+[18:57:36] <strcat> show that it can work better
+[18:57:58] <acrichto> it's a fact that it's infeasible to rely on a model where you have a very small number of crates in a whole compilation
+[18:58:04] <strcat> I don't think it can possibly be faster to recompile the intrinsics, vec.rs, str.rs, exchange allocator, all that generic task stuff, generic failure stuff, generic formatting stuff, etc.
+[18:58:06] <acrichto> look at languages like ruby/python/node
+[18:58:07] <strcat> N times
+[18:58:19] <acrichto> these are problems to *overcome*
+[18:58:23] <acrichto> these are not problems to halt all progress
+[18:58:35] <strcat> slowing down compiles and making the docs more fragmented != progress
+[18:58:53] <strcat> it's a solution looking for a problem to solve
+[18:58:57] <acrichto> you're not understanding that we realize the world isn't perfect right now
+[18:59:05] <acrichto> one crate is *not* the right solution
+[18:59:11] <strcat> ok, so it's not the solution
+[18:59:14] <strcat> come up with a better solution
+[18:59:19] <acrichto> you can always have all your code in one crate, but we must work well with sharding
+[18:59:20] <strcat> don't just split it 'because'
+[18:59:30] <acrichto> we're not splitting it "because"
+[18:59:31] <strcat> haphazardly splitting it isn't going to speed up compiles
+[18:59:36] <strcat> you need to split out code that's not using generic code
+[18:59:37] <acrichto> we're splitting it because that's what must happen
+[18:59:48] <strcat> no, it's not what *must* happen
+[18:59:51] <acrichto> we're doing this for package management, dependency, and other related reasons
+[18:59:59] <strcat> you just think it may be better at some point in the future so it will be worse today
+[18:59:59] <acrichto> compile times are not the primary motivation factory
+[19:00:00] * strcat shrugs
+[19:00:10] <acrichto> it's already bad today
+[19:00:16] <strcat> yeah, so lets not make it worse
+[19:00:24] <acrichto> we're not making it worse
+[19:00:29] <strcat> show numbers then
+[19:00:30] *** Joins: canhtak (canhtak@moz-9E539298.wl.t.ulaval.ca)
+[19:00:31] <strcat> I think it will be worse
+[19:00:37] <acrichto> I ask you the same thing to show numbers
+[19:00:55] <strcat> you're the one pushing for changes
+[19:00:59] <acrichto> rustc compile times are already going down because they have less code to compile
+[19:01:09] <strcat> burden is on the person making a compile-time/performance related PR to justify it
+[19:01:11] <acrichto> we're removing cruft from libextra that rustc doesn't depend on
+[19:01:16] <strcat> it's not 'removed'
+[19:01:20] <strcat> it's still in the repo
+[19:01:23] <strcat> and is still being built
+[19:01:26] <acrichto> yes, but it's only built on stage2
+[19:01:30] <acrichto> not in stage0 and stage1
+[19:01:31] <strcat> remove it from the repo and I'll be happy
+[19:01:42] <strcat> drop bigints from libextra
+[19:01:44] <strcat> drop rational numbers
+[19:01:47] <strcat> drop complex numbers
+[19:02:01] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[19:02:01] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/OtGLVQ
+[19:02:01] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[19:02:02] <acrichto> your argument is "don't change anything unless it's always better than before"
+[19:02:06] <acrichto> which is a way to never make progress
+[19:02:14] <acrichto> splitting libextra is a huge change that cannot happen all at once
+[19:02:19] <acrichto> we must do this incrementally
+[19:02:19] <strcat> yes, that's my argument - don't change it unless it is better or there is a clear evidence-based reason for doing it
+[19:02:31] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[19:02:48] <acrichto> we do have clear evidence for doing this, the fact of the matter is that pulling in a huge amount of deps with one crate is becoming infeasibly
+[19:03:27] <acrichto> if you link to libextra you pull in the entire object file 
+[19:03:38] <acrichto> which is already a pain point for linking to libstd
+[19:03:50] <acrichto> by splitting things up into not monolithic crates you don't have that problem
+[19:04:19] <acrichto> additionally, incremental changes to libextra will become *much* faster
+[19:04:29] <strcat> but libextra should be gone completely
+[19:05:10] <strcat> I can just just submit a PR removing all the code in libstd and libextra that's not used in librustc if that's really what is wanted
+[19:05:19] <strcat> can be done in external repos
+[19:05:21] <strcat> that is the end result
+[19:06:05] <strcat> we don't need tasks in libstd, for sure
+[19:06:14] <strcat> can restructure librustc to not use that 1 task
+[19:06:42] <strcat> will build way faster if it's just what librustc needs
+[19:06:44] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[19:06:44] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/JGp5_A
+[19:06:44] <ghrust> 13rust/06auto 14279fe0f 15Flavio Percoco: Treat unary struct and enum variants as rvalues...
+[19:06:44] <ghrust> 13rust/06auto 14c419c05 15Flavio Percoco: Fixes temporary lifetime computation for static items...
+[19:06:45] <ghrust> 13rust/06auto 14f37a79d 15bors: auto merge of #11776 : FlaPer87/rust/issue-11681-static-lifetime, r=nikomatsakis...
+[19:06:46] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[19:07:28] <strcat> like why do we need unicode tables in libstd/libextra? I doubt most programs will use them
+[19:07:40] <strcat> have a rust-unicode repo, kick it out
+[19:07:45] <acrichto> this is not just code that can be removed
+[19:07:54] <strcat> you can do that with nearly everything
+[19:07:56] <acrichto> rust code other than the compiler depends on all this functionality
+[19:08:05] <acrichto> right now we don't have a package management solution
+[19:08:12] <acrichto> so the best thing that we can do is to just include it in the repo
+[19:08:47] <strcat> librustc uses ebml, the benchmark stuff uses json
+[19:08:53] <strcat> so it's not a path to removing it from the repo
+[19:09:11] <acrichto> we're not trying to remove everything from the repo
+[19:09:19] <strcat> ok, then I don't get it
+[19:09:21] <acrichto> some things will migrate away, some things will need to stay
+[19:09:38] <acrichto> so it has been long understood that libextra needs to be dissolved
+[19:09:39] <acrichto> right?
+[19:09:39] *** Joins: cpeterson (cpeterson@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[19:10:03] <strcat> acrichto: well it is not really clear to me what the best solution is
+[19:10:16] <acrichto> so you think that libextra should stay?
+[19:10:36] <acrichto> let's just talk about libextra right now
+[19:10:41] <acrichto> should it stay or should it go?
+[19:10:48] <strcat> but libextra doesn't exist in a vacuum
+[19:10:52] <strcat> acrichto: if rustc uses it, it should stay
+[19:10:59] <acrichto> the entire thing?
+[19:11:01] <acrichto> exactly as is?
+[19:11:04] <strcat> the parts rustc doesn't use shouldn't be in the repo
+[19:11:09] <strcat> they are poorly designed in general
+[19:11:16] <acrichto> stay focused
+[19:11:19] <acrichto> you're going on tangents
+[19:11:24] <strcat> it's not a tangent
+[19:11:25] <acrichto> should libextra stay exactly as is today?
+[19:11:33] <strcat> no, the parts rustc uses should stay
+[19:11:37] <strcat> the other parts should be git rm'ed
+[19:11:46] <eddyb> I wouldn't mind such heated discussions
+[19:11:52] <strcat> and make rust-* repos, and make an official 0install repo in rust-lang.org for them
+[19:11:55] <acrichto> ok, so you agree  that libextra needs to be broken up?
+[19:11:59] <strcat> we don't need our own pkg manager
+[19:12:03] <eddyb> but you're both the same color in my IRC client and it's hard to follow :P
+[19:12:13] <strcat> acrichto: well I agree that parts rustc doesn't use shouldn't be part of the official repo
+[19:12:19] <strcat> unless we want to standardize them and carefully write them
+[19:12:38] <acrichto> ok, so once you accept that libextra needs to be split up
+[19:12:40] <strcat> like I don't think the bigint implementation should be anywhere near the official repo at this point
+[19:12:42] <acrichto> where does everything go *right now*?
+[19:12:45] <strcat> acrichto: out, please
+[19:12:47] <acrichto> the answer is not 'remove everything"
+[19:12:52] <acrichto> no, that cannot happen *right now*
+[19:12:53] <strcat> so third party solutions that are *better* get used
+[19:12:55] <acrichto> we do not have a package manager
+[19:13:00] <strcat> yes we do
+[19:13:02] <acrichto> we *will* remove this code, but we cannot do it *right now*
+[19:13:02] <strcat> 0install works
+[19:13:10] <strcat> I can put rust-gmp in a 0install repo
+[19:13:11] <acrichto> that is completely a false statement
+[19:13:12] <strcat> cross-platform pkgs
+[19:13:17] <strcat> as an example
+[19:13:22] <acrichto> do you have it working as-is right now?
+[19:13:33] <strcat> 0install works already, yes, I have it
+[19:13:40] <strcat> it only needs to put the rlib/so files in the lib dir
+[19:13:46] <acrichto> everyone has a great visiion for package mangement and the answer is rarely "just use an external tool"
+[19:13:54] <strcat> but 0install works ;p
+[19:13:57] <acrichto> you have dependency management, versionining, dependency resolution
+[19:14:03] <acrichto> you can deal with conflicts between two projects
+[19:14:09] <acrichto> you automatically recompile when things update
+[19:14:12] <strcat> 0install does dependency management, including with native libs, and already has many native libs in packages
+[19:14:15] <acrichto> you can incrementally update only one dependency
+[19:14:25] <strcat> it can install multiple versions of any package
+[19:14:32] <strcat> it cannot have conflicts between packages
+[19:14:33] <acrichto> if this is all true, then you should write up an explanation of how to use this new package manager
+[19:14:35] <strcat> it has package signing
+[19:14:39] <strcat> it has repositories
+[19:14:48] <acrichto> if you believe that this is the path forward, then you should try to explain why
+[19:14:48] <strcat> it has source/binary support
+[19:14:58] <acrichto> "it works" is not a good reason for other people to pick it up
+[19:15:18] <acrichto> right now we do not believe there is a package management solution
+[19:15:18] <eddyb> strcat: how come you're not in #rustpkg-wg?
+[19:15:28] <strcat> didn't know it existed
+[19:15:31] <strcat> and I already in 20 irc channels
+[19:15:33] <strcat> which is a bit much
+[19:15:41] <eddyb> on this network?
+[19:15:44] <strcat> no
+[19:16:06] <acrichto> strcat: rust has not chosen an official package manager yet, we're still in the development of one, until that time comes the only place to put packages is the rust repo
+[19:16:15] * strcat strongly disagrees
+[19:16:20] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[19:16:23] <acrichto> complaining about compile times a tangent and is mostly useless until we can agree on a package manager
+[19:16:28] <strcat> if it's not absolutely amazing or used by rustc it shouldn't be in the official repo
+[19:16:42] <acrichto> we cannot just delete all code
+[19:16:48] <strcat> I don't want to be building it and third party libraries shouldn't be at a disadvantage to an existing crappy solution
+[19:16:50] <acrichto> there are a large number of crates already that depend on code in the rust repo
+[19:17:01] <acrichto> we don't *have* a solution
+[19:17:09] <acrichto> that's why we're not releasing 1.0 without a package manager
+[19:17:19] <acrichto> you don't seem to be grasping that this is a stopgap solution
+[19:17:22] <acrichto> this is not a long-term solution
+[19:17:23] <strcat> acrichto: so it can go to an official scrapheap repo as a single massive thing
+[19:17:33] * strcat shrugs
+[19:17:45] <acrichto> this is all necessary because we do not have a package manager
+[19:17:47] <eddyb> strcat: how is the review coming?
+[19:17:52] <acrichto> we will not create a scrapheap repo
+[19:17:54] <strcat> but we don't *need* our own pkg manager
+[19:18:04] <acrichto> strcat: that is your opinion, most others do not agree with you
+[19:18:41] <acrichto> you may believe that there is a sufficient package manager already available, but that isn't agreed upon yet by rust officially
+[19:18:57] <acrichto> until that time we have no option but to put existing crates into the rust repo itself
+[19:19:16] <strcat> I don't understand that conclusion at all
+[19:19:29] <strcat> if someone makes a better json library, there shouldn't be an inherent advantage to the existing one
+[19:19:36] <strcat> their json library should be as easy to use
+[19:20:05] <acrichto> you still don't seem to be grasping that this is a stopgap solution
+[19:20:11] <strcat> we don't maintain any kind of backwards compatibility anyway
+[19:20:11] <acrichto> in the future you'll be able to choose among many json implementations
+[19:20:20] <acrichto> but this all requires a pacakge manager
+[19:20:24] <strcat> which exists today
+[19:20:36] <Eridius> strcat: the ability for someone else to make a better json library does not depend on crippling the ability for everyone today to have a workable json solution
+[19:20:45] <acrichto> you don't understand that you having an opinion doens't mean that everyone else automatically agrees with you
+[19:21:08] <strcat> a cross-platform workspace-based package manager usable with rust exists today
+[19:21:13] <strcat> whether or not you like it is another story
+[19:21:16] <strcat> but you can't claim it doesn't exist
+[19:21:20] <acrichto> again, you don't understand that not everone agrees with you
+[19:21:21] <Eridius> unless we have an officially sanctioned package manager, that's irrelevant
+[19:21:30] <acrichto> there is no officially designated package manager
+[19:21:34] <Eridius> the fact that you personally can figure out how to use another package manager does not make that viable for everyone
+[19:22:00] <strcat> what does it have to do with figuring it out?
+[19:22:25] <strcat> regardless of which package management solution you want to use, whether it is written in rust or not, it has to be 'figured out'
+[19:22:28] <acrichto> you're saying that we should enter a world assuming a package manager
+[19:22:35] <acrichto> we cannot do that until we've designated an official one
+[19:23:18] <strcat> I don't understand why
+[19:23:24] <strcat> there are plenty of third-party rust libs
+[19:23:31] <strcat> we aren't going to stick them all in the official repo
+[19:23:44] <acrichto> so you're not understanding that we *want* a package manager
+[19:23:51] <Eridius> without a package manager, removing functionality from rust and telling people they have to figure out how to use third-party libs on their own is pretty bad
+[19:23:55] <acrichto> of course we're not going to make third-party libs worse than the rust libs
+[19:24:15] <acrichto> we have the usability of the *entire community* to consider, not just your use case
+[19:25:37] <strcat> makes a whole lot of sense that there's essentially an arbitrary decision to block lots of good new code but a whole pile of old code gets to be enshrined as official
+[19:26:08] <acrichto> we're *not* enshrining this code as official
+[19:26:08] <Eridius> people are already using the "old code"
+[19:26:15] <strcat> acrichto: in the official repo is officka
+[19:26:16] <acrichto> you're blowing this out of proportion what we're doing with libextra
+[19:26:17] <Eridius> breaking that is not good for the community
+[19:26:22] <strcat> official*
+[19:26:26] <acrichto> this is exactly what we have the stability attributes for
+[19:26:37] <acrichto> once they work, everything in libextra is #[unstable] until proven otherwise
+[19:26:55] <strcat> they do work afaik and it's not marked as unstable
+[19:26:56] <acrichto> your exact arguments apply to today's manifestation of libextra
+[19:27:02] <strcat> Gc<T> is #[experimental]
+[19:27:06] <strcat> almost nothing else is
+[19:27:08] <acrichto> of course they're not #[unstable] yet
+[19:27:15] <acrichto> that's b/c the stability attributes dont work that well just yet
+[19:27:22] <acrichto> they're all allow-by-default
+[19:27:24] <cmr> #[unstable] is the default
+[19:27:33] <acrichto> #[experimental] on gc is next to useless until we turn on the stability attributes
+[19:27:48] <cmr> experimental is warn by default
+[19:27:50] <acrichto> strcat: you're saying problems about tomorrow's split up libextra that all apply to today's libextra
+[19:27:58] <acrichto> we're not moving to a different place with respect to any of these arguments
+[19:28:01] <cmr> unstable is allow, but -W unstable fixes that
+[19:28:06] <acrichto> and all of these arguments are solved by a proper package manager
+[19:28:10] <acrichto> which we *will* have for 1.0
+[19:28:20] <acrichto> we're not blessing code inside of the rust repo automatically
+[19:28:34] <acrichto> we recognize that there is a very large quantity of it which is not necessarily of the highest quality
+[19:28:49] <acrichto> we will also not release 1.0 without working stability attributes
+[19:29:04] <acrichto> and once they're working the entirety of all these libraries will become #[unstable] pending further review
+[19:29:21] <cmr> Everything unmarked is considered unstable..
+[19:29:36] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[19:29:41] <acrichto> cmr: by "working" I would mean warnings turned on by default
+[19:30:01] <strcat> rusti: use std::gc::Gc; Gc::new(5)
+[19:30:04] -rusti- std::gc::Gc<int>{ptr: @5}
+[19:30:05] <acrichto> cmr: also by "working" I would intend for general usage finding bugs and such, today we don't have anyone actively using the stability attributes
+[19:33:38] *** Quits: lkuper (lkuper@moz-D862222C.dhcp-bl.indiana.edu) (Ping timeout)
+[19:35:58] <strcat> if someone wants to become the code owner of these new crates in the official repo, and they are actually going to fix the issues with them, then I am less against it
+[19:36:07] <strcat> but I expect it will just stay as rotting code holding back rust
+[19:36:43] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[19:36:43] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14f37a79d to 14c3ae182: 02http://git.io/N3iJvQ
+[19:36:43] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[19:37:02] <acrichto> strcat: you have moved on to yet another argument, but we're not going to leave these crates in the dust
+[19:37:04] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse)
+[19:37:12] <strcat> it's the same argument
+[19:37:18] <acrichto> once we have a working package manager we can revisit whether crates in the repo or not
+[19:37:24] <strcat> why should this code be in the official repo but rust-gmp should not be
+[19:37:35] <acrichto> because no one has made a PR to include rust-gmp
+[19:37:59] <acrichto> you seem to still not be  understanding that this is not *the* official distribution
+[19:38:04] <strcat> so if I make a PR to include high quality concurrent data structures, a streaming xml/json parser, etc. it will be accepted?
+[19:38:07] <strcat> in separate crates
+[19:38:09] <acrichto> this is the stopgap solution for breaking up libextra until we get a package manager
+[19:38:20] <acrichto> no, it won't be auto-accepted, it will be discussed
+[19:38:36] <acrichto> and our threshold for including new projects has been lowered now that we're able to have crates more easil
+[19:39:35] <acrichto> we've already got work going to extract libserialize, if you have a better json or xml parser, then I think we'd love to merge it
+[19:39:53] <strcat> 'better' in that it's streaming and has zero allocations
+[19:39:58] <strcat> doesn't build a tree
+[19:41:08] <strcat> which is all I think the official repo should provide as a high-level API for either is super-opinionated
+[19:41:16] <strcat> python has a dozen APIs for it in the stdlib
+[19:42:14] <Eridius> I would love to have both a streaming and a DOM-based XML parser
+[19:44:03] *** Quits: canhtak (canhtak@moz-9E539298.wl.t.ulaval.ca) (Ping timeout)
+[19:47:14] <strcat> eddyb: if you have Foo<T, A = Heap>, how does it pretty print?
+[19:47:19] <strcat> in errors
+[19:47:25] *** Quits: NiccosSystem (NiccosSyst@AB1AFDE.FC7B0C35.A7597CB6.IP) (Client exited)
+[19:47:39] <eddyb> strcat: oh, right, I didn't check that
+[19:47:51] <eddyb> most errors have spans, so they're fine
+[19:47:59] <strcat> eddyb: it'd be really nice if it didn't print the type parameters if they are set to the default
+[19:48:06] <strcat> but ofc should print them if they're not
+[19:48:22] <strcat> like Vec<T, A = Heap> should print as Vec<T>
+[19:48:32] *** Joins: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP)
+[19:48:39] <strcat> but Vec<T, A = ArenaAllocator> should print as Vec<T, ArenaAllocator>
+[19:48:40] <eddyb> rusti: let () = 0;
+[19:48:41] -rusti- <anon>:10:13: 10:15 error: mismatched types: expected `<generic integer #0>` but found `()` (expected integral variable but found ())
+[19:48:41] -rusti- <anon>:10         let () = 0;
+[19:48:41] -rusti-                       ^~
+[19:48:41] -rusti- error: aborting due to previous error
+[19:48:41] -rusti- application terminated with error code 101
+[19:48:49] <eddyb> I guess that's an easy way to test
+[19:49:03] <strcat> eddyb: you can use (get_tydesc::<T>()).name
+[19:50:28] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[19:50:30] *** Quits: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP) (Ping timeout)
+[19:53:37] <eddyb> rusti: unsafe { ::std::unstable::intrinsics::get_tydesc::<(int, bool)>().name }
+[19:53:38] -rusti- <anon>:10:18: 10:79 error: attempted access of field `name` on type `*std::unstable::intrinsics::TyDesc`, but no field with that name was found
+[19:53:38] -rusti- <anon>:10         unsafe { ::std::unstable::intrinsics::get_tydesc::<(int, bool)>().name }
+[19:53:38] -rusti-                            ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[19:53:39] -rusti- error: aborting due to previous error
+[19:53:40] -rusti- application terminated with error code 101
+[19:53:50] <eddyb> rusti: unsafe { (*::std::unstable::intrinsics::get_tydesc::<(int, bool)>()).name }
+[19:53:51] -rusti- "(int,bool)"
+[19:54:46] <strcat> rusti: let _ = (1, true);
+[19:54:49] -rusti- pastebinned 7 lines of output: http://ix.io/a6T
+[19:54:56] <cmr> lol
+[19:55:12] <strcat> ???
+[19:55:26] <cmr> the ICE
+[19:55:42] <strcat> yeah just wondering how that is still a bug
+[19:57:14] <eddyb> Vec<int,Heap> :/
+[19:58:13] <strcat> xdelta... such a pain
+[19:58:15] <strcat> takes so long
+[20:00:43] <strcat> eddyb: I'll upload the gvimdiff
+[20:01:01] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[20:02:43] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[20:02:53] <strcat> eddyb: https://paste.xinu.at/rz59
+[20:03:10] <strcat> left is master, right is with the dtor directly inside
+[20:03:14] <strcat> pre-optimization ofc
+[20:03:22] <strcat> but, the left side optimizes out completely
+[20:03:23] <eddyb> that's kinda ugly :S
+[20:03:24] <strcat> ;s
+[20:03:28] <strcat> eddyb: lol
+[20:03:40] <strcat> well I did what I had to do
+[20:03:48] <eddyb> strcat: so does {} => i8 help?
+[20:04:10] <strcat> which {}? the dtor ptr one?
+[20:04:16] <eddyb> yupp
+[20:05:33] <strcat> eddyb: no
+[20:05:48] <eddyb> so... what is it then?
+[20:06:23] <eddyb> %6 = bitcast %tydesc* %5 to void (i8*)**
+[20:08:02] <strcat> alright I can fix that
+[20:08:03] <strcat> but it's dumb
+[20:08:18] <strcat> where do trait casts happen in trans? base?
+[20:08:27] <strcat> maybe datum
+[20:11:01] <strcat> eddyb: trying this
+[20:12:19] *** Joins: mrmonday_ (mrmonday@moz-1E82AE75.members.linode.com)
+[20:13:15] <strcat> eddyb: LLVM is really dumb
+[20:13:17] <strcat> ;\
+[20:13:27] <eddyb> and trans is dumber
+[20:17:01] *** Parts: cpeterson (cpeterson@moz-DFAA4E15.p2p.sfo1.mozilla.com) ()
+[20:21:42] <eddyb> strcat: it okay if I query the tcache to get the Generics?
+[20:21:51] <strcat> dunno
+[20:22:02] <strcat> meh this is still not optimizing out
+[20:22:04] <strcat> lets see
+[20:22:08] <eddyb> well, lookup_item_type
+[20:22:09] <strcat> I think it is the classic GEPi issue
+[20:23:46] <eddyb> is parameterized a word?
+[20:23:53] <cmr> yes
+[20:23:53] <eddyb> shouldn't it be parametrized?
+[20:24:09] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[20:24:22] <eddyb> (spell checker agrees with me. does it vary for UK/US/AUS?)
+[20:24:22] <cmr> I don't know about should or shouldn'ts, but it's definitely parameterized
+[20:24:42] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[20:24:52] <eddyb> cmr: I guess it's meter vs metre?
+[20:24:54] <cmr> dictionary.com says parametrize is the british spelling
+[20:25:25] <eddyb> cmr: but my spell checker is set for US
+[20:25:28] *** Quits: blank_name (blank_name@E7821509.94CCB18F.53C6B850.IP) (Ping timeout)
+[20:25:39] <eddyb> and american spellings tend to be shorter AFAIK
+[20:26:37] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[20:27:38] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse)
+[20:28:45] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[20:36:14] <eddyb> strcat: I think I've fixed it, but I hit a new snapshot or something
+[20:36:51] <eddyb> strcat: a typedesc/ format!("{:?}") solution is okay?
+[20:37:14] <eddyb> though nevermind about the latter, it won't print type params
+[20:38:37] *** Joins: lkuper (lkuper@moz-D862222C.dhcp-bl.indiana.edu)
+[20:39:43] *** Quits: eddyb (eddy@EDE07015.D51DAF03.FB866788.IP) (Ping timeout)
+[20:40:26] *** Joins: eddyb (eddy@92C54820.41422C5E.2E5184B1.IP)
+[20:44:12] *** Quits: eddyb (eddy@92C54820.41422C5E.2E5184B1.IP) (Ping timeout)
+[20:46:29] *** Joins: eddyb (eddy@832D2DE5.66315F97.FB866788.IP)
+[20:49:26] *** Joins: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP)
+[20:49:34] <strcat> eddyb: ok I don't understand this IR
+[20:49:37] <strcat> at all
+[20:49:45] <strcat> it seems it must have been undefined imo
+[20:49:56] <strcat>   %4 = getelementptr inbounds { void (i8*)*, i8* }* %0, i32 0, i32 0
+[20:49:57] <strcat>   %5 = load void (i8*)** %4
+[20:49:59] <strcat>   %6 = bitcast void (i8*)* %5 to void (i8*)**
+[20:50:01] <strcat>   %7 = load void (i8*)** %6
+[20:50:03] <strcat>   %8 = bitcast i8** %1 to i8*
+[20:50:05] <strcat>   call void %7(i8* %8)
+[20:50:07] <strcat> so it has a vtable, the vtable has a fn ptr
+[20:50:09] <strcat> it loads it
+[20:50:17] <strcat> now it casts the fn ptr to a ptr to a fn ptr (???) and loads it (???) and calls it
+[20:50:19] <strcat> wat??
+[20:50:23] <strcat> the old IR does this too
+[20:50:29] <strcat> but has another GEP thrown in
+[20:50:41] <strcat>   %5 = load %tydesc** %4
+[20:50:42] <strcat>   %6 = bitcast %tydesc* %5 to %tydesc**
+[20:50:44] <strcat>   %7 = load %tydesc** %6
+[20:50:46] <strcat> how does that make any sense?
+[20:50:52] <strcat> how can it possibly work?
+[20:51:25] *** Quits: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP) (Ping timeout)
+[20:51:31] <eddyb> strcat: what is %0?
+[20:51:52] <strcat> the trait object
+[20:52:10] <eddyb> okay, so, %4 has the type void (i8*)**
+[20:52:17] <strcat> { %tydesc*, i8* }*
+[20:52:19] <strcat> is %0
+[20:52:29] <eddyb> right, you played with it
+[20:52:34] <strcat> eddyb: yep and it loads from it
+[20:52:45] <strcat> so it should be void (i8*)* now
+[20:52:57] <strcat> but it casts that to void (i8*)** and loads it again
+[20:53:00] <strcat> srsly wut
+[20:53:06] <strcat>   %4 = getelementptr inbounds { %tydesc*, i8* }* %0, i32 0, i32 0
+[20:53:08] <strcat>   %5 = load %tydesc** %4
+[20:53:10] <strcat>   %6 = bitcast %tydesc* %5 to %tydesc**
+[20:53:12] <strcat>   %7 = load %tydesc** %6
+[20:53:14] <strcat> that's the old IR
+[20:53:16] <strcat> the new IR is the same basically, it looks so wrong to me
+[20:53:23] <eddyb> strcat: can you... replace %tydesc with [0 x void(i8*)*]*? and stop slow-mode pasting into the channel
+[20:53:44] *** Quits: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net) (Client exited)
+[20:53:59] <strcat> eddyb: it's replaced already
+[20:54:10] *** Joins: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net)
+[20:54:38] <eddyb> you replaced it with a function pointer
+[20:54:59] <eddyb> strcat: try void (i8*)** instead of void (i8*)*, for the vtable field
+[20:55:26] <strcat> but it's not that
+[20:55:32] <strcat> it's in-place
+[20:55:43] <eddyb> huh?
+[20:55:52] <strcat> it's not a ptr to a function ptr
+[20:55:54] *** Quits: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net) (Ping timeout)
+[20:55:54] <strcat> it's a function ptr
+[20:55:59] <eddyb> strcat: what is?
+[20:56:01] <strcat> ok it seems to compile like this
+[20:56:13] <eddyb> the vtable is a pointer to function pointers
+[20:56:17] <strcat> yes
+[20:56:25] <eddyb> so it's technically void (i8*)**
+[20:56:38] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[20:56:38] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/feaD3A
+[20:56:38] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[20:56:40] <eddyb> GEP produces void (i8*)***, which is loaded to get void (i8*)**, and then loaded again to get void (i8*)*
+[20:56:46] <eddyb> mystery solved
+[20:56:54] <strcat> ah yes
+[20:56:55] <strcat> evil casts
+[20:57:12] <eddyb> %6 = bitcast void (i8*)* %5 to void (i8*)** // that would be a noop if it were using the right types
+[20:57:18] <strcat> yep
+[20:57:20] <strcat> fixed
+[20:57:27] <eddyb> does it optimize now?
+[20:58:14] <strcat> no
+[20:58:16] <strcat> no
+[20:58:18] <strcat> let me play a bit more
+[20:58:22] <strcat> ugh
+[20:58:37] <eddyb> bad strcat, playing with dragon fire
+[21:00:16] <eddyb> task 'rustc' failed at 'No def'n found for syntax::ast::DefId{crate: 0u32, node: 156705u32} in tcx.tcache', /home/eddy/Projects/rust/src/librustc/middle/ty.rs:3629
+[21:00:19] <eddyb> oh come on...
+[21:01:33] <strcat> -        Type::array(&Type::i8().ptr_to(), 1)
+[21:01:35] <strcat> +        Type::array(&Type::i8p().ptr_to(), 1)
+[21:01:36] <strcat> for vtable
+[21:01:41] <strcat> and...
+[21:01:43] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[21:01:43] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/MCc_Rg
+[21:01:43] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[21:01:47] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[21:01:47] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/y72jZA
+[21:01:47] <ghrust> 13rust/06auto 1417c42db 15Daniel Micay: mk: remove -fno-omit-frame-pointer...
+[21:01:47] <ghrust> 13rust/06auto 14fd2fc2c 15Daniel Micay: enable fp-elim when debug info is disabled...
+[21:01:47] <ghrust> 13rust/06auto 14739f1d5 15bors: auto merge of #11879 : thestinger/rust/frame-pointer, r=alexcrichton...
+[21:01:50] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[21:02:20] <strcat> hm
+[21:03:10] <strcat> eddyb: you want me to say it's an array of dtor-like fns?
+[21:03:29] <eddyb> strcat: that's the most generic way to put it
+[21:03:31] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[21:04:29] <strcat> meh ;[
+[21:07:31] <eddyb> strcat: it's better than a pointer to the vtable being represented as *tydesc
+[21:07:44] <strcat> trying without the array
+[21:09:01] *** Quits: Kxepal (Miranda@moz-56282A8D.pppoe.mtu-net.ru) (Quit: Kxepal)
+[21:09:18] *** Joins: Kxepal (Miranda@moz-56282A8D.pppoe.mtu-net.ru)
+[21:16:40] *** Joins: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net)
+[21:19:15] <bstrie_rules> the mozilla summer internships are paid internships, yeah?
+[21:19:40] <bstrie_rules> was gonna post a link to the application form on reddit, and I noticed that the page doesn't mention it
+[21:21:26] <strcat> eddyb: still doesn't optimize
+[21:21:28] <strcat> woo ;p
+[21:21:38] <eddyb> strcat: oh for crying out loud....
+[21:22:09] <strcat> can I add an extra 0 to the GEPi?
+[21:22:11] <strcat> hm
+[21:22:31] <eddyb> strcat: that's actually smart :)
+[21:22:46] <eddyb> (would it perform a load, internally?)
+[21:22:50] <strcat> no
+[21:22:55] <strcat> it doesn't seem to work anyway
+[21:25:52] <strcat> eddyb: hm
+[21:25:58] <strcat> I should be able to give it the *proper* vtable type
+[21:26:06] <strcat> shouldn't I?
+[21:26:44] <eddyb> actually, yeah
+[21:26:59] <eddyb> we need vtable.Trait - or Trait::vtable
+[21:28:02] <eddyb> this is a bit dumb, I have to go through a different path to get the generics of a trait
+[21:28:44] <eddyb> strcat: if this works, you'll be the proud owner of better-than-C++ error messages for generics with default type params :P
+[21:29:05] <eddyb> reminds me of basic_string
+[21:29:44] <bstrie_rules> eddyb: but don't we already have better-than-C++ error message for generics? :P
+[21:30:16] <eddyb> <anon>:1:97: 1:99 error: mismatched types: expected `Vec<int>` but found `()` (expected struct Vec but found ())
+[21:31:01] <bstrie_rules> curious if anyone will ever be inspired to hold a http://tgceec.tumblr.com/ but for rust
+[21:31:15] *** Joins: pnkfelix (pnkfelix@moz-B1D2E7D0.pck.nerim.net)
+[21:31:21] <strcat> eddyb: https://github.com/thestinger/rust/commit/383e3fd13b99827b5dbb107da7433bd0a70dea80#commitcomment-5218409 ;s
+[21:31:24] <strcat> anyway
+[21:31:34] <strcat> I guess I need to switch it to using the *real* vtable type
+[21:31:37] <strcat> no opaque crap
+[21:31:59] <eddyb> I hope I have time to add the test
+[21:36:42] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[21:36:42] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/VOsb8g
+[21:36:42] <ghrust> 13rust/06auto 1417c42db 15Daniel Micay: mk: remove -fno-omit-frame-pointer...
+[21:36:42] <ghrust> 13rust/06auto 14cb263e8 15Daniel Micay: enable fp-elim when debug info is disabled...
+[21:36:43] <ghrust> 13rust/06auto 141e23c5c 15bors: auto merge of #11879 : thestinger/rust/frame-pointer, r=alexcrichton...
+[21:36:45] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[21:36:46] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[21:36:46] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14739f1d5 to 14dfb6116: 02http://git.io/N3iJvQ
+[21:36:46] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[21:40:23] *** Quits: doener (doener@moz-C68F600D.unity-media.net) (Quit: leaving)
+[21:42:53] <eddyb> strcat: r? https://github.com/mozilla/rust/pull/11217 (nice errors :D)
+[21:43:03] <eddyb> good night now
+[21:43:08] <strcat> \o
+[21:44:47] *** Quits: eddyb (eddy@832D2DE5.66315F97.FB866788.IP) (Ping timeout)
+[21:49:45] *** Joins: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp)
+[21:50:00] *** Joins: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP)
+[21:50:37] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: pcwalton)
+[21:51:39] *** Quits: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP) (Connection reset by peer)
+[21:51:46] *** Joins: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP)
+[21:52:26] *** Quits: gwty (gwtypc@4014B10F.C875E086.8A00C703.IP) (Ping timeout)
+[21:53:57] *** Quits: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP) (Ping timeout)
+[21:56:33] *** Joins: gwty (gwtypc@4014B10F.C875E086.8A00C703.IP)
+[21:57:00] <dbaupp> acrichto: would it be entirely too horrible to convert the fmt traits to &self and have `#[doc(hidden)] pub fn show<T: Show>(x: &T, f: &mut Formatter) { x.show(f) }` etc. as a stop-gap for format!() until we get UFCS? (deriving isn't set up to handle fn fmt(x: &Self, ...) the same as fn fmt(&self, ...))
+[21:57:28] *** Quits: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net) (Client exited)
+[21:57:54] *** Joins: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net)
+[21:58:04] <acrichto> dbaupp: I'd be down with that
+[21:58:17] <acrichto> that's an excellent idea actually
+[21:58:24] <acrichto> I never did like taking &T
+[21:58:29] <acrichto> gotta type everything again :\
+[21:59:37] *** Quits: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net) (Ping timeout)
+[22:01:10] <strcat> we really need to get rid of these opaque types
+[22:01:18] <dbaupp> acrichto: ok, cool
+[22:01:22] <strcat> where they are unnecessary
+[22:01:30] <acrichto> dbaupp: while you're changing the signature, if you want to explore &mut => &Formatter that'd be awesome
+[22:01:49] <acrichto> dbaupp: I think that the borrowck fixes are in place to allow access of the inner &mut Writer, but I may be wrong
+[22:01:49] <dbaupp> I'll probably need a snap or two before I can actually use it, but we'll get to that when I get there.
+[22:01:55] <dbaupp> acrichto: hm?
+[22:01:55] <larsberg> bstrie_rules: yes, the Mozilla summer internships are paid. I will also send you a cookie if you find us a good Servo intern.
+[22:02:12] <dbaupp> acrichto: I thought we could only get a &Writer if it's a &Formatter?
+[22:02:25] <dbaupp> (otherwise we'd effectively have aliasing &mut's)
+[22:02:31] <acrichto> dbaupp: hm lemme check
+[22:03:12] <larsberg> bstrie_rules: if it isn't clear from the listing, we actually have several openings on each of Rust and Servo and other mozilla research projects
+[22:03:54] <acrichto> dbaupp: https://gist.github.com/8698086
+[22:04:07] <acrichto> dbaupp: interestingly enough you can't say "*a.b = 3;"
+[22:04:10] <acrichto> but you can pass it off?
+[22:04:26] * acrichto will open an issue
+[22:06:03] *** Quits: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp) (Client exited)
+[22:06:24] *** Joins: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp)
+[22:06:28] <acrichto> dbaupp: https://github.com/mozilla/rust/issues/11913
+[22:07:06] <strcat> meh, this is a big perf issue :(
+[22:07:16] * strcat can't figure out a good way to fix it
+[22:08:08] *** Quits: ssira (ssira@moz-DC71C200.kanagawa.ocn.ne.jp) (Ping timeout)
+[22:08:17] <xales> acrichto: what would need to be changed to fix needing to do things like https://github.com/cmr/hgl-rs/blob/master/examples/triangle.rs#L12-L13 - was unclear when I asked it before I think
+[22:09:06] <acrichto> xales: what's the problem you're seeing? that seems like valid code to me
+[22:13:53] *** Joins: ktt3ja (ktt3ja@moz-85E2770C.hsd1.va.comcast.net)
+[22:16:18] *** Quits: ktt3ja (ktt3ja@moz-85E2770C.hsd1.va.comcast.net) (Quit: Leaving)
+[22:16:33] <dbaupp> acrichto: that's weird
+[22:18:20] <xales> acrichto: I asked cmr if specifying the native link was necessary, he thinks rustc should pull it in from the crate it's linking to that also specifies it; is what it's doing now the intended behaviour?
+[22:18:49] <acrichto> xales: ah you shouldn't need to do that b/c "extern mod glfw" already does that
+[22:21:09] *** Quits: dbaupp (Thunderbir@moz-68C83524.lns20.syd6.internode.on.net) (Ping timeout)
+[22:24:47] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[22:28:20] *** Joins: blank_name (blank_name@E7821509.94CCB18F.53C6B850.IP)
+[22:32:27] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[22:32:27] *** ChanServ sets mode: +ao pcwalton pcwalton
+[22:33:06] *** Quits: rca (rcatolino@68C2C935.20EF280.520D6FA6.IP) (Ping timeout)
+[22:36:39] *** Quits: jdm (jdm@moz-DFAA4E15.p2p.sfo1.mozilla.com) (User has been banned from Mozilla (no spamming here))
+[22:37:34] <cmr> acrichto: this is the transitive linking problem... glfw-rs links to glfw, but my crate (which is a bin) needs to link to glfw too.
+[22:38:12] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Ping timeout)
+[22:38:27] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[22:38:51] *** Joins: jdm (jdm@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[22:38:57] *** Quits: bytbox (s@moz-54E13927.washdc.fios.verizon.net) (Ping timeout)
+[22:38:59] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[22:39:00] <cmr> or actually nevermind, my derp
+[22:39:05] <cmr> glfw-rs is using --link-args now
+[22:40:38] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[22:42:08] <acrichto> really?
+[22:42:16] <acrichto> that's not good...
+[22:42:20] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[22:42:25] <cmr> yeah, it needs to use pkg-config to get the link args.
+[22:42:37] <cmr> because linux \o/
+[22:42:42] <acrichto> on one platform they're really that different?
+[22:42:47] <acrichto> like it's called more than libglfw on linux?
+[22:42:54] <acrichto> I can imagine it at different locations yeah
+[22:42:58] <cmr> yes, it is.
+[22:43:01] <cmr> it's glfw3 on some
+[22:43:04] <cmr> glfw on others
+[22:43:05] <acrichto> oh fun
+[22:43:12] <cmr> OS X has this problem within its various package managers too ;\
+[22:43:29] <cmr> I might change it to sed the source file instead..
+[22:44:31] <acrichto> that's the bad part about link_args yeah
+[22:44:36] <acrichto> they're not propagated
+[22:45:05] <Eridius> speaking of link-args, passing -lfoo as a link arg when creating an rlib really should store that in the rlib
+[22:45:17] <Eridius> as if there was a #[link(name="foo")]extern{}; block in the source
+[22:45:32] <acrichto> link_args is a feature-gated thing
+[22:45:37] <acrichto> you're not supposed to use it
+[22:46:06] <Eridius> --link-args to rustc? o_O
+[22:46:22] <Eridius> `rustc --link-args -lfoo lib.rs`
+[22:46:37] <acrichto> that should in theory also be deprecated
+[22:46:47] <acrichto> but we definitely shouldn't be propagating those as well
+[22:47:18] <strcat> nmatsakis: around?
+[22:47:22] <Eridius> right now the only way to get the library name from pkg-config and link against it properly for an rlib is to literally write rust source to disk using #[link(...)]extern{}; 
+[22:47:27] <Eridius> that's what I did in rust-lua
+[22:47:28] <Eridius> and it's pretty crappy
+[22:47:35] * jdm hates getting transmute errors
+[22:47:42] <jdm> they're so tantalizing
+[22:47:53] <jdm> but there's often not quite enough information to make it easy to isolate
+[22:47:56] <strcat> at least they aren't LLVM asserts anymore!
+[22:47:59] <acrichto> Eridius: we may want to explore another route where the compiler invokes pkg-config then
+[22:48:04] <Eridius> that would be nice
+[22:48:06] <acrichto> jdm: different sized transmutes?
+[22:48:14] <cmr> acrichto: or just add a --transitive-link-args, which is what I would prefer.
+[22:48:17] <jdm> acrichto: yep
+[22:48:25] <Eridius> acrichto: although baking in pkg-config support might be a little inflexible. What if I use a different mechanism to determine the library name?
+[22:48:28] <cmr> I don't want to build pkg-config into the compiler
+[22:48:33] <acrichto> jdm: change everything to ::std::unstable::intrinsics::transmute and you'll get a good span
+[22:48:39] <jdm> acrichto: :o
+[22:48:42] <acrichto> cmr: we're not going to always guarantee that we're using a system linker though
+[22:48:47] <acrichto> jdm: yeah it's a weird bug :\
+[22:49:02] <strcat> acrichto: pkg-config will make us depend on mingw though, won't it? and libraries using that kind of build system
+[22:49:03] <acrichto> Eridius: it's true, just a thought
+[22:49:10] <cmr> acrichto: Ok, so --transitive-link-to foo
+[22:49:20] <cmr> that'd be even better than --link-args
+[22:49:26] <strcat> although we are going to need pkg-config...
+[22:49:31] <acrichto> strcat: you'd opt-in to using it, so you'd be telling the compiler "pkg-config is on this target"
+[22:49:33] <Eridius> acrichto: maybe a flag that lets me rename a library, so to speak? #[link(name="foo")] coupled with --rename-linked-lib foo=lua5.1
+[22:49:36] <Eridius> or something
+[22:49:37] <acrichto> cmr: that's what #[link(name)] is for
+[22:49:52] <cmr> acrichto: I can't use #[link(name)] with cli args given from cmake
+[22:49:57] <cmr> without seding the source file.
+[22:49:57] <acrichto> Eridius: perhaps
+[22:50:04] <acrichto> cmr: hmm...
+[22:50:33] <acrichto> maybe we do need to set libs from the command line
+[22:50:42] <Eridius> actually, even this isn't flexible enough. Homebrew's lua config provides `-llua -lm` from pkg-config, but Ubuntu's lua only has `-llua5.1`
+[22:50:52] <Eridius> so I need a way to request linking to extra libraries
+[22:51:02] <Eridius> perhaps rustc should just have a -l flag 
+[22:51:15] <Eridius> then I can just say `rustc $(shell pkg-config --libs-only-l lua) lib.rs` and be done with it
+[22:51:20] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[22:51:27] <acrichto> perhaps, I'd want to approach this carefully
+[22:51:37] <acrichto> we're trying to avoid the explosion of necessary command line parameters to compile a crate
+[22:51:46] <Eridius> indeed. And this doesn't solve the problem of -L flags either, when building an rlib
+[22:51:58] <Eridius> you can't bake the provided -L paths in (at least, not if they're relative paths)
+[22:52:09] <strcat> we'll also need header paths working
+[22:52:10] <acrichto> that's true
+[22:52:16] <Eridius> which is unfortunate because that means if I install liblua somewhere and another project tries to use it, it needs to know that it has to provide the proper -L for lua
+[22:52:20] <cmr> the idea is that you don't need to give them when compiling most crates, just library bindings.
+[22:52:31] *** Joins: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP)
+[22:52:56] <strcat> pcwalton: any idea if there's a sane way to get the LLVM type corresponding to a vtable? ;s
+[22:52:59] <strcat> doesn't appear like it...
+[22:53:10] <pcwalton> hmm
+[22:53:21] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Ping timeout)
+[22:53:30] <strcat> atm we use an opaque ptr for the vtable ptr even though we know the type
+[22:53:43] <strcat> and LLVM likes to play dumb around casts so it breaks devirtualization
+[22:53:48] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[22:54:09] <strcat> guess I can rip something out of this meth.rs stuff
+[22:54:27] * strcat hates trans::meth more than anything in the rust codebase
+[22:54:34] *** Quits: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP) (Ping timeout)
+[22:56:34] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[22:56:34] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/VOsb8g
+[22:56:34] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[22:57:34] <pnkfelix> pcwalton: strcat: I was asking Q's about the visit glue this morning
+[22:57:48] <pnkfelix> and there was mention of a previous version of the design
+[22:58:01] <strcat> pnkfelix: https://github.com/mozilla/rust/pull/11909 ;p
+[22:58:22] <strcat> pnkfelix: hm, I don't remember a previous design - predates me using rust, if there was
+[22:58:51] <strcat> imo, visit glue should be a -Z debug-info feature
+[22:59:02] <strcat> it should error out if you use it in a release build
+[22:59:15] <pnkfelix> that avoid monomorphization; I was suggesting that parameterized types like Foo<X> and Bar<X,Y> should have one visit method generated for them, that's parameterized over objects representing the type X for Foo and over Y and Z for Bar
+[22:59:45] <pnkfelix> strcat: hmm.  Maybe eddyb misunderstood something you had told him, he specifcally mentioned you complaining about aspects of the earlier design
+[23:00:01] <strcat> pnkfelix: well, it has/had lots of bugs
+[23:00:09] <strcat> pnkfelix: oh, I think I know
+[23:00:14] <strcat> pnkfelix: monomorphization used to be different
+[23:00:17] <strcat> it used to normalize types
+[23:00:31] <pnkfelix> ah, an attempt
+[23:00:33] <strcat> int, uint, *T, *mut T -> int
+[23:00:33] <pnkfelix> to do codesharing
+[23:00:35] <strcat> yep
+[23:00:42] <pnkfelix> yeah okay that's a rathole
+[23:00:47] <strcat> pnkfelix: it was based on size, mostly
+[23:00:51] <pnkfelix> definitely not what I was suggesting
+[23:00:54] <strcat> pnkfelix: and then if it had trait bounds it'd bail out
+[23:00:58] <strcat> and visit glue was broken
+[23:01:05] <strcat> since this concept ignored the existence of it
+[23:01:16] <strcat> so pointers printed as int despite there being code to print them as ptrs
+[23:01:17] <strcat> etc.
+[23:01:33] <strcat> anyway mergefunc is a much better way to do that
+[23:01:42] <strcat> at least for now...
+[23:01:44] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[23:01:44] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/XV5kuw
+[23:01:44] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[23:01:44] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[23:01:45] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/BKItXA
+[23:01:45] <ghrust> 13rust/06auto 14279fe0f 15Flavio Percoco: Treat unary struct and enum variants as rvalues...
+[23:01:45] <ghrust> 13rust/06auto 14cb5d723 15Flavio Percoco: Fixes temporary lifetime computation for static items...
+[23:01:45] <ghrust> 13rust/06auto 14f84b729 15bors: auto merge of #11776 : FlaPer87/rust/issue-11681-static-lifetime, r=nikomatsakis...
+[23:01:47] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[23:01:48] <pnkfelix> the thing I'm thinking of is trying to act more like a classic ML/Haskell/whatever implementation.  I guess the cool kids call it "Dictionary-passing Style" or something
+[23:02:02] <pnkfelix> this is not something you want to do for fast code
+[23:02:06] <pnkfelix> but for visit-glue, who cares
+[23:02:12] <pnkfelix> about speed
+[23:02:32] <strcat> pnkfelix: the current implementation seems easier though
+[23:02:41] <strcat> and yeah, it bloats the code, but it shouldn't be present in the release build imo ;p
+[23:02:51] <strcat> visit glue is a lot like debug info
+[23:03:01] <strcat> it's introspection stuff to print out uncooperative types
+[23:03:17] <strcat> and like debug info, it's enormous
+[23:03:32] <pnkfelix> strcat: that's right, that's my view of it too.  But if you can create it more cheaply...
+[23:04:22] <flaper87> this hasn't changed, has it? https://github.com/mozilla/rust/issues/7190
+[23:04:46] <pnkfelix> strcat: anyway, at this point I wanted to know what the history here was.  I can believe that eddyb misunderstood what I was suggesting (and/or decided to conflate it with our prior normalization hacks)
+[23:05:24] *** Quits: doomlord_ (servitor@moz-841308DB.range86-160.btcentralplus.com) (Ping timeout)
+[23:05:38] * strcat really wishes he knew what LLVM wanted for trait objects
+[23:05:42] <strcat> at least I made it better
+[23:06:51] <aatch> flaper87, not as far as I know. Adding support shouldn't be too hard though
+[23:20:59] *** Joins: doomlord_ (servitor@moz-841308DB.range86-160.btcentralplus.com)
+[23:21:35] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[23:21:35] *** ChanServ sets mode: +qo brson brson
+[23:24:06] <acrichto> strcat: how does https://github.com/mozilla/rust/pull/11917  work? it looks like we'd be codegen'ing all intrinsics to no-ops?
+[23:24:10] <strcat> sec
+[23:24:14] <strcat> I screwed it up ;p
+[23:24:22] <acrichto> ah ok
+[23:24:38] <strcat> meant to put them in another match
+[23:24:42] <strcat> messed up rebase in a weird way
+[23:25:41] *** Joins: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net)
+[23:27:22] <strcat> acrichto: I had it lying around from when it was different...
+[23:27:27] * strcat shrugs
+[23:31:20] *** Quits: lkuper (lkuper@moz-D862222C.dhcp-bl.indiana.edu) (Ping timeout)
+[23:31:22] <acrichto> dear god I/O is used like everywhere transitively
+[23:37:54] *** Quits: larsberg (sid16141@moz-A42E5B7B.irccloud.com) (Ping timeout)
+[23:44:34] <strcat> acrichto: https://github.com/mozilla/rust/pull/11917 there
+[23:45:04] <strcat> should really fix the indentation in monomorphize
+[23:45:06] <strcat> lemme do that...
+[23:45:10] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: pcwalton)
+[23:45:15] <strcat> going to make the diff a mess without -w
+[23:45:48] <acrichto> strcat: in monomorphize.rs, could you switch to 4-space tabs?
+[23:45:54] <strcat> yeah just mentioned that ;p
+[23:45:55] <acrichto> just in the spot you modified
+[23:46:02] <strcat> well I might as well fix it all
+[23:46:12] <strcat> can use ?w=1 on the commit view and it passes -w to git
+[23:46:15] <acrichto> cool
+[23:46:27] <acrichto> I wonder if we could make bools i1
+[23:46:35] <acrichto> and get some more intrinsics for free
+[23:46:36] <strcat> and by 'all' I mean 'that match'
+[23:46:40] <strcat> the whole file is messed up ;p
+[23:47:05] <strcat> acrichto: fixed
+[23:47:11] <strcat> ugh, not totally
+[23:47:13] * strcat sighs
+[23:47:27] <acrichto> ?w=1 is my new best friend
+[23:47:47] <strcat> acrichto: actually fixed.
+[23:48:25] *** Joins: larsberg (sid16141@moz-A42E5B7B.irccloud.com)
+[23:48:37] <acrichto> r+, nice cleanup
+[23:49:13] <acrichto> I'm so glad we build with -D warnings
+[23:51:43] <aatch> strcat, so if I read that correctly, for those intrinsics instead of emitting a call to our wrapper, it just emits a call to intrinsic directly?
+[23:51:55] <aatch> to the*
+[23:52:03] <nmatsakis> strcat: I'm around-ish
+[23:53:17] *** Joins: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP)
+[23:54:45] <strcat> aatch: yes
+[23:54:56] <strcat> now that the env ptr is gone
+[23:55:08] <strcat> nmatsakis: too late! I figured it out :P
+[23:55:18] <strcat> vtable weirdness stuff
+[23:55:26] *** Quits: lpy (lpy@4F2FE573.2EDA7147.E99F7FDB.IP) (Ping timeout)
+[23:55:32] <nmatsakis> strcat: oh, sorry, wasn't at my computer then :)
+[23:56:27] *** Joins: canhtak (canhtak@moz-9E539298.wl.t.ulaval.ca)
+[23:57:28] <aatch> strcat, the env pointer is gone? When did this happen?
+[23:57:40] <strcat> aatch: dunno, it's snapshotted though
+[23:57:43] <strcat> eddyb did it
+[23:58:04] <aatch> I haven't had much time for Rust stuff, so I probably just missed it.
+[23:58:46] *** Quits: c-a (c-a@moz-57C82A9.a163.priv.bahnhof.se) (Quit: Ex-Chat)

@@ -1,0 +1,369 @@
+[00:02:11] <eddyb> jroesch: I should sleep. hopefully you found the astconv ty_infer logic
+[00:03:17] <jroesch> eddyb: yeah I found it, just trying to work out the correct modification, right now it looks like its filling in ty_infer in AstConv but only for things without defaults
+[00:14:40] <nmatsakis> eddyb: good point about overflow, I forgot about that :P
+[00:18:07] *** Joins: aatch (james@moz-i1k1ks.tlms.2o1v.e006.2406.IP)
+[00:21:50] <jroesch> nmatsakis: I think I figured out how to get the defaults for type aliases working, building now do you want to support them? posted a preliminary PR still have to get the error messages looking better
+[00:23:46] <nmatsakis> jroesch: well I guess I'd like to support them, though I'm not 100% sure what that means. Can you send me an example?
+[00:24:08] <nmatsakis> eddyb: oh and I meant to remove that distinction between "LVALUE=RVALUE" and just "RVALUE", yes.
+[00:24:18] <nmatsakis> saving a temp doesn't seem worth it
+[00:24:36] <jroesch> nmatsakis: https://github.com/jroesch/rust/blob/default-typaram-fallback/src/test/compile-fail/default_ty_param_type_alias.rs
+[00:24:40] <nmatsakis> kind of like that old trans "ignore" mode
+[00:24:42] * nmatsakis shudders
+[00:25:39] <nmatsakis> jroesch: ah, right, ok. I forgot we could do that now.
+[00:25:55] <jroesch> yeah, I didn't know that was legal until Gankro sent it to me
+[00:26:09] <jroesch> I keep forgetting how much Rust has changed in the last year
+[00:38:57] *** Joins: SilverKey (SilverKey@moz-liif3j.res.rr.com)
+[00:43:32] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[00:46:16] <eternaleye> nmatsakis: might MIR be a good layer in which to do named return-value optimization, due to the "always use return pointers" thing?
+[00:46:51] <eternaleye> nmatsakis: Look for a local being assigned to the return-value pointer, and make it an alias to the return-value pointer
+[00:49:00] <eternaleye> nmatsakis: A later optimization would be to do destructuring, and make locals aliases of subelements of return-value tuples or structs
+[01:29:56] *** Quits: SilverKey (SilverKey@moz-liif3j.res.rr.com) (Quit: ZZZzzz…)
+[02:17:10] *** Quits: kimundi (kimundi@moz-q19o2l.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[02:18:14] *** Joins: kimundi (kimundi@moz-19ni9q.0bdc.4hmp.57bc.2002.IP)
+[03:13:32] *** Joins: SilverKey (SilverKey@moz-liif3j.res.rr.com)
+[03:52:47] *** Quits: Rym (uid91135@moz-n2i7qm.charlton.irccloud.com) (Quit: Connection closed for inactivity)
+[04:24:15] *** Quits: SilverKey (SilverKey@moz-liif3j.res.rr.com) (Quit: ZZZzzz…)
+[04:57:19] <eddyb> nmatsakis: we still have the ignore mode in trans
+[04:57:36] <eddyb> eternaleye: NRVO is awesome
+[04:58:41] <eddyb> nmatsakis: "saving a temporary". hmm!
+[04:59:11] <eddyb> nmatsakis: maybe the correct solution is making temporaries very cheap
+[05:00:36] <eddyb> like unnamed SSA variables in LLVM - except here, every variable is an lvalue
+[05:33:46] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[05:37:04] *** Quits: aatch (james@moz-i1k1ks.tlms.2o1v.e006.2406.IP) (Connection closed)
+[06:03:24] <eternaleye> eddyb: BTW - 'tantamount' roughly means 'equivalent'; 'paramount' roughly means 'crucial'
+[06:03:51] <eddyb> so what I knew wasn't wrong
+[06:04:12] <eddyb> nmatsakis: is there an issue with statements introducing temporaries?
+[06:05:47] <eddyb> nmatsakis: I guess you might want to process all locals/temporaries at once (for their types?)
+[06:06:33] <eddyb> nmatsakis: so LLVM does this thing where all uses of a value are tracked by the value, in an intrusive linked list
+[06:07:16] <eddyb> nmatsakis: but I'm thinking that some optimizations only need to know that only a single assignment happens, and that can be cheaply tracked with an integer in the temporary definition
+[06:18:11] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[06:27:05] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[06:46:09] <eddyb> nmatsakis: btw, it looks like it should be possible to delay borrow until their first use, in the MIR
+[06:49:56] <eddyb> nmatsakis: vec.push(vec.len()) would be translated as _0 = &mut vec; _1 = &vec; _2 = Vec::len(_1); _ = Vec::push(_0, _2);
+[06:50:23] <eddyb> nmatsakis: because _0 is not used until the second call, it can be reordered
+[06:56:01] <Elaine> eddyb: that's called a use-def chain
+[06:56:11] <eddyb> right
+[06:56:24] <Elaine> or, def-use, I cna't tell which way you mean.
+[06:56:27] <Elaine> it's one of them
+[06:58:07] <aatch> I'm pretty sure liveness analysis could do this, or could be modified fairly easily to.
+[06:58:38] <aatch> (I'm talking about liveness analysis in general, not the stuff currently in the compiler)
+[07:07:05] <jroesch> eddyb: yeah since this is essentially ANF you can control which way you unroll arguments which is nice
+[07:07:22] <eddyb> it has weird implications
+[07:07:48] <eddyb> let x = &mut vec; let y = &vec; x.push(y.len()); would also work
+[07:08:19] <eddyb> aliasing borrows with non-aliasing uses
+[07:12:42] <jroesch> this should also deal with the nested borrows problem when using methods 
+[07:12:52] <eddyb> jroesch: that is what this is fixing
+[07:12:56] <jroesch> yeah
+[07:13:01] <jroesch> I'm being dumb ;)
+[07:13:46] <eddyb> also, we get generators with MIR :D
+[07:14:08] <jroesch> in what way?
+[07:14:22] <eddyb> well, doing it from AST is hell
+[07:14:38] <eddyb> and you cannot output new definitions after typeck atm
+[07:15:03] <eddyb> (although you could pretend they're inlined from a different crate, with the way ast_map works right now. but still, terrible)
+[07:15:36] <jroesch> yeah I can see that
+[07:17:36] <eddyb> yields would be terminators. the transform would replace BB1: yield value -> BB2 with self.state = BB1State {...}; return = Some(value); return
+[07:17:55] <eddyb> actually, no, BB2State
+[07:18:37] <eddyb> and also add an entry in the state switch for BB2State, unpacking that state branching to BB2
+[07:19:25] <eddyb> jroesch: this seems so easy :D. I used to think of things like "temporaries live during the yield" and other things like that but this MIR design just does away with the distinction
+[07:19:52] <eddyb> it almost feels like you could implement generators in 100 lines of MIR manipulation code
+[07:21:23] <jroesch> have you thought about a full async/await transform
+[07:21:31] <jroesch> I've been following the recent C++ developments
+[07:21:38] <jroesch> and would be interested in a similar thing in Rust
+[07:22:35] <eddyb> jroesch: yes
+[07:22:47] <eddyb> you need generators with potentially multiple "input" types
+[07:23:23] <eddyb> (the types that would be passed down into the stepping function and which yield would produce)
+[07:23:51] <eddyb> jroesch: I should try a new sketch, I am pretty sure I know how I want to do this (it's also 100% static dispatch)
+[07:29:41] <jroesch> I had been looking over this which looks to be the newest C++ http://open-std.org/JTC1/SC22/WG21/docs/papers/2015/n4453.pdf. There is also a talk here https://www.youtube.com/watch?v=KUhSjfSbINE and they claim to be able to do 100,000,000 coroutines 
+[07:31:19] <eddyb> they use the same meaning of "coroutine" that Python does?
+[07:31:23] <eddyb> i.e. the "wrong" one :P
+[07:31:59] <jroesch> I try hard to block python out of my mind so I'll have to go check ;)
+[07:32:18] <eddyb> generators with input/output. whereas "coroutine" actually means "heavy reified stack" as opposed to "generator" aka "light state machine"
+[07:33:13] <eddyb> also the fact that coroutines automatically reify stacks of entire call chains whereas generators need manual "yield everything from"
+[07:33:27] <eddyb> jroesch: I think this is a minimal realistic example of async/await being used in Rust jroesch: I think this is the realistic https://gist.github.com/eddyb/822c658190ccf18058db
+[07:33:34] <eddyb> oops
+[07:33:39] <eddyb> copy failure
+[07:33:52] *** Joins: madmalik (uid13697@moz-lfin5p.brockwell.irccloud.com)
+[07:34:10] <jroesch> so afaik the C++ guys have both stackful/stackless flavors of coroutines 
+[07:34:40] <eddyb> the stackless ones are generators in my book (and ES)
+[07:34:56] <eddyb> jroesch: but, yeah, the buffer is owned so it kinda has to be threaded around like I show there
+[07:35:14] <eddyb> the capacity is used to determine how much to read at once
+[07:35:51] <eddyb> now, there's two types there, Vec<u8> and async::fs::Metadata
+[07:36:01] <eddyb> and I have to write the desugared version
+[07:39:14] <jroesch> so I'm refreshing my memory on the C++ stuff, the thing they do is allow for library writers to define the different datatypes with different semantics, looks like the just desugar into some special names
+[07:40:23] *** Joins: laumann (thomas@moz-3m6.3kq.109.2.IP)
+[07:42:39] *** Joins: Tobba (Tobba@moz-oecqnu.plus.com)
+[07:44:12] <eddyb> I'm having trouble describing the interface :P
+[07:50:42] <eddyb> AHH
+[07:50:53] <eddyb> there is one way...
+[07:54:13] <jroesch> that resumable function proposal is interesting 
+[07:59:09] <kimundi> Do you have links to the C++ coroutine stuff?
+[08:00:53] <jroesch> kimundi: so from my digging there appears to be 3-4 different proposals in the space and its not clear to me if they have decided on yet
+[08:00:59] <jroesch> I'll link all of the ones I know of
+[08:02:02] <jroesch> so they appear to all exist in this table
+[08:02:04] <jroesch> http://open-std.org/JTC1/SC22/WG21/docs/papers/2015/#mailing2015-05
+[08:02:12] <jroesch> if you look at the most recent mailing 
+[08:02:30] <jroesch> they are under different names coroutines, resumable functions, resumable closures
+[08:03:08] <jroesch> there is also this one http://open-std.org/JTC1/SC22/WG21/docs/papers/2015/n4453.pdf
+[08:03:30] <jroesch> "resumable expressions"
+[08:04:44] *** Quits: Tobba (Tobba@moz-oecqnu.plus.com) (A TLS packet with unexpected length was received.)
+[08:05:23] <jroesch> here are the 'stackful' coroutines http://open-std.org/JTC1/SC22/WG21/docs/papers/2014/n3985.pdf
+[08:10:11] <kimundi> jroesch: thanks, currently reading it :)
+[08:11:38] <jroesch> I still would love to get around to writing the concurrency benchmarks that I want. It would be great to have a pan-langauge comparison of different styles, and performance, etc  
+[08:15:54] <kimundi> Hm, that document just made me realize that the callstack does not contain executable code, and thus could be substituated with custom heap allocated snippets for something like coroutines. (I mean, I kinda knew that already, but I didn't realize the implications)
+[08:17:01] <jroesch> kimundi: yeah you can even do that in user code via trampolining (trade stack space for heap that is)
+[08:17:17] <kimundi> oh, interesting
+[08:18:55] <jroesch> not sure if there is a good link that exists but here is the wikipedia at least 
+[08:18:55] <jroesch> https://en.wikipedia.org/wiki/Tail_call#Through_trampolining
+[08:20:19] <jroesch> kimundi: here is a relatively thorough SO reply http://cstheory.stackexchange.com/questions/18228/trampoline-that-automatically-balances-heap-and-stack
+[08:22:24] <eddyb> nmatsakis, nrc: things like for loop desugaring could be moved to AST -> HIR, using lang items instead of paths
+[08:23:25] <eddyb> and maybe range expressions
+[08:25:35] <eddyb> non-syntactical deriving is another interesting possibility
+[08:40:59] <eddyb> mmm I'm liking the way this is headed
+[09:00:39] <jroesch> eddyb: I started cleaning up names earlier tonight any feedback https://github.com/rust-lang/rust/compare/master...jroesch:modernize-typeck-names?expand=1, I'm going to sleep 
+[09:00:53] <eddyb> jroesch: good night!
+[09:00:59] <jroesch> just thought I would send it your way as I'm headed off
+[09:01:04] <eddyb> wait
+[09:01:10] <eddyb> why did you change ty::ctxt?
+[09:01:41] <jroesch> I can easily change it back, didn't know if there was any reason we are keeping it lowercased
+[09:01:41] <eddyb> that was is supposed to be mass replaced whenever we get '_
+[09:02:03] <eddyb> doing it earlier is only going to waste both of our time
+[09:02:19] <jroesch> sounds good I'll revert that piece
+[09:02:28] <eddyb> sorry I didn't make it clearer earlier :(
+[09:02:31] <jroesch> are you going to go with TyCx
+[09:02:46] <eddyb> https://github.com/eddyb/rust/commits/tycx-3
+[09:02:48] <eddyb> yeah
+[09:02:59] <eddyb> well, feel free to bikeshed
+[09:03:08] <eddyb> as long as it's all done in one fell swoop
+[09:03:23] <jroesch> I wasn't aware when that was going to land. I'm okay with TyCx
+[09:03:25] <eddyb> and as long as it doesn't have :: in it
+[09:03:47] <eddyb> jroesch: as soon as everyone's happy with the '_ RFC
+[09:03:47] <jroesch> yeah I'm onboard with that
+[09:03:58] <eddyb> even before it's actually accepted
+[09:04:38] <jroesch> I think we might want to rename InferCtxt at some point as well since its starting to gain more responsibilities 
+[09:04:48] <eddyb> jroesch: I started writing the logic https://gist.github.com/eddyb/822c658190ccf18058db#file-await-rs-L88
+[09:04:59] <eddyb> but not the actual desugared async function
+[09:05:12] <jroesch> not sure what name we will use Niko was throwing around TypingContext but it seems redudant with TyCx
+[09:05:25] <eddyb> TypingContext is long
+[09:05:43] <eddyb> TypedEnv?
+[09:06:03] <jroesch> if we wanted to be greek using unicode hipsters I'm thinking upper case gamma ;)
+[09:06:14] <eddyb> Γ you mean?
+[09:06:22] <jroesch> yeah 
+[09:06:33] <jroesch> its the traditional typing environment in inference rules
+[09:06:37] <eddyb> ahh
+[09:07:02] <eddyb> playbot-mini: struct Γ<'tcx> { tcx: &'tcx () }
+[09:07:03] -playbot-mini- <anon>:1:1: 1:33 error: non-ascii idents are not fully supported.
+[09:07:03] -playbot-mini- <anon>:1 struct Γ<'tcx> { tcx: &'tcx () }
+[09:07:03] -playbot-mini- output truncated; full output at: http://bit.ly/1HfaHkh
+[09:07:05] <aatch> Ugh, I hate it when I fix an issue by changing multiple files and then forget to save one of them.
+[09:07:06] <jroesch> like shown in https://en.wikipedia.org/wiki/Type_rule
+[09:07:18] <eddyb> wtf
+[09:07:23] <jroesch> I don't think that would go over well with people 
+[09:07:41] <eddyb> playbot-mini: #![feature(non_ascii_idents)] struct Γ<'tcx> { tcx: &'tcx () }
+[09:07:42] -playbot-mini- error: main function not found
+[09:07:42] -playbot-mini- error: aborting due to previous error
+[09:07:42] -playbot-mini- playpen: application terminated with error code 101
+[09:07:47] <eddyb> playbot-mini: #![feature(non_ascii_idents)] struct Γ<'tcx> { tcx: &'tcx () } fn main() {}
+[09:07:48] -playbot-mini- <anon>:1:31: 1:63 warning: struct is never used: `Γ`, #[warn(dead_code)] on by default
+[09:07:49] -playbot-mini- <anon>:1 #![feature(non_ascii_idents)] struct Γ<'tcx> { tcx: &'tcx () } fn main() {}
+[09:07:49] -playbot-mini- output truncated; full output at: http://bit.ly/1HMdMyR
+[09:08:05] <eddyb> what's with the error that doesn't mention the feature gate?
+[09:08:19] <eddyb> oh, the playpen defaults to stable
+[09:08:25] <eddyb> playbot-mini runs nightly
+[09:09:01] <eddyb> jroesch: I honestly don't understand most of these notations when I try to read papers
+[09:09:18] <eddyb> they're trying too hard to be dense
+[09:09:34] <jroesch> its mostly about precision
+[09:09:38] <eddyb> (same problem I have with Haskell. or math in general. I should give up theory)
+[09:09:40] <jroesch> at least from my PoV
+[09:09:49] <jroesch> the problem is english is imprecise 
+[09:09:53] <jroesch> and leads to ambiguity 
+[09:10:05] <jroesch> then you need pages and pages to make things clear-ish
+[09:10:15] <jroesch> like ECMA or the C/C++ standards
+[09:10:35] <jroesch> the typing rules are actually pretty simple its just that no one uses consistent notation
+[09:10:40] <eddyb> lol
+[09:10:43] <jroesch> because academics are jackasses
+[09:10:50] <jroesch> and everyone has to make their own
+[09:11:01] <jroesch> or they just straight up did a bad job
+[09:11:10] <jroesch> the TLDR way to read the rules
+[09:11:16] <jroesch> is that you have a set of premises on top 
+[09:11:25] <jroesch> and a conclusion on the bottom 
+[09:11:45] <eddyb> DAE hate how gist editing is 20 lines tall and there's no way to change that?
+[09:12:07] <kimundi> eddyb: +1
+[09:12:17] <eddyb> oh wow Alt + arrow keys does something
+[09:12:24] <eddyb> Alt + right is End
+[09:12:52] <kimundi> eddyb: Though I usually have enough tabs open that editing a gist in the actual form is too slow to be tolerable, which is why I always just use ti as a copy-paste target from standalone editors :P
+[09:12:53] <eddyb> Alt + left is Home and it toggles between the start of the line and the first non-space character
+[09:13:25] <eddyb> and Alt + up/down moves a line
+[09:13:45] <eddyb> IIRC that's Ctrl+Shift + up/down in kate
+[09:14:43] <jroesch> and each judgement has a left hand side (assumptions) a turnstile (⊢) in the middle and the result on the left, anyways you shouldn't give up its not as hard as it looks 
+[09:14:45] <eddyb> oh wow Alt+space in plasma5 is krunner. been using Alt+F2 for ages now
+[09:15:23] <eddyb> jroesch: yeah but that's just one notation
+[09:15:31] <jroesch> for typing rules
+[09:15:36] <jroesch> they are all the same
+[09:15:46] <jroesch> they may use slightly different greek letters
+[09:15:49] <jroesch> but the form is identical 
+[09:16:06] <eddyb> yeah, I mean, that's just one kind of notation I end up giving up on
+[09:16:21] <jroesch> yeah in PL there are lots of others
+[09:16:31] <jroesch> semantics has at least 3 different popular styles
+[09:17:11] <eddyb> gah I need specialization
+[09:17:43] <jroesch> Rust's type system is still too weak for the past 5 things I've tried to do
+[09:17:59] <jroesch> bums me out
+[09:18:29] <kimundi> I always get mad about the fact that I'm getting taught CS by way of utterly inconsistent math notations :P
+[09:19:07] <eddyb> well, no, not really specialization. I need to write a macro
+[09:19:10] <jroesch> kimundi: yeah, I had a phase in ugrad where I thought it was all stupid but eventually I gave up and learned it
+[09:19:22] <aatch> kimundi, best I can tell, pre-requisite for any type-theory paper is to define your own notation first.
+[09:20:12] <jroesch> this is why if we made people do their work in machine checked environments they couldn't be so flippant about notations, and leaps of proof 
+[09:20:12] <kimundi> Its just a shit situation in my opinion if step one is to learn everything a new each time :P
+[09:20:51] <jroesch> At least in PL and type theory the notations are general consistent among the sub-area
+[09:21:08] <jroesch> everyone uses the sequent calculus style inference rules
+[09:21:18] <jroesch> with a type environment or typing context
+[09:21:26] <jroesch> and turnstiles
+[09:23:27] <jroesch> like if you look at http://research.microsoft.com/en-us/um/people/simonpj/papers/constraints/jfp-outsidein.pdf, and http://ecommons.library.cornell.edu/bitstream/1813/5841/1/2001-1856.pdf which are wildly different areas the general shape of the rules are the same
+[09:23:34] <jroesch> and the way you read them is similar 
+[09:24:08] <jroesch> the different parts also reflect that the rules are trying to accomplish different things
+[09:24:33] <jroesch> anyways I should actually sleep not bore people with PLT, night all
+[09:28:53] <nmatsakis> eddyb: I've got a (separate) plan to adjust the borrowck rules to permit vec.push(vec.len()), but yes that would be an alternative way to express it. The cases which I was planning to support are also always reorderable in the MIR.
+[09:29:56] <eddyb> nmatsakis: how crazy is the example where there are aliased borrows in local variables but they don't cause issues unless they have overlapping uses?
+[09:30:14] <eddyb> is it something we want to ever expose in the language?
+[09:30:24] <aatch> It's always a relief when a random LLVM assert is because I made a mistake.
+[09:30:47] <nmatsakis> (I don't particularly like the idea of basing the type rules on MIR optimziations though)
+[09:31:14] <eddyb> nmatsakis: I wouldn't call it an optimization, but rather a normalization
+[09:31:19] <nmatsakis> eddyb: I'm not sure I know what you mean (ps I have to run in a sec, so I'll be afk)
+[09:31:34] <eddyb> [10:07] <eddyb> let x = &mut vec; let y = &vec; x.push(y.len()); would also work
+[09:31:48] <eddyb> since the MIR barely distinguishes between locals and temporaries
+[09:31:49] <nmatsakis> eddyb: my main concern is that it should be 100% predictable. I agree that this could be ok, as I said it lines up with an analysis for potential interference I was planning to do a different way 
+[09:32:06] <nmatsakis> (though it wouldn't work with lets)
+[09:32:31] <eddyb> I'm not sure how you would disallow it in the MIR in certain cases
+[09:33:07] <eddyb> I guess that constructing an ADT out of a borrow counts as a non-reoderable use, hmm
+[09:33:29] <eddyb> so let x = (&mut vec,); wouldn't get reordered anyways
+[09:33:42] <eddyb> and then you can handle let x = &mut vec; as a black-list
+[09:34:38] <eddyb> (I'm fine with limiting it as long as it's not a black/white-listing mess)
+[09:35:18] <eddyb> playing whack-a-mole with edge cases is not fun
+[09:36:00] <nmatsakis> the way I was thinking of it is that in a sense you are creating a reference that will not be used until the future (reorderable, as you said)
+[09:36:05] <nmatsakis> this is analagous to the old &const borrows
+[09:36:12] <nmatsakis> because the data the reference points AT may change in the interim
+[09:36:26] <nmatsakis> that means it may still impose some limitations in the interim
+[09:36:31] <nmatsakis> e.g. if the reference points inside a box
+[09:36:35] <nmatsakis> the source of that box or enum must not change
+[09:36:47] <nmatsakis> this really only happens in method calls
+[09:37:12] <nmatsakis> so we can basically look to see if the locaiton being borrowed is "Stable" (i.e., is there anything the user can do to destroy it)
+[09:37:17] <eddyb> nmatsakis: for boxes we can assume a Deref impl IMO
+[09:37:44] <nmatsakis> and either be a bit more lax in that case, or we can go the full const route and have two loans in a sense
+[09:37:54] <nmatsakis> an immutable loan for the unstable part,
+[09:37:57] <eddyb> which would result in a non-reorderable method call
+[09:38:00] <nmatsakis> and the actual mutable loan kicks in only for the call itself
+[09:38:24] <nmatsakis> anyway I have to go but I was planning to hack around on an impl maybe this week, we'll see though, planning to do a lot of things this week, and this might be something worth waiting on MIR for
+[09:39:25] <eddyb> I'm amazed at how good the HIR and MIR proposals turned out, so many new ideas (some of which are reinventing the wheel)
+[09:40:02] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Connection closed)
+[09:41:49] <eternaleye> eddyb: Wait really? Alt-space? No wonder I've been unable to find krunner; alt-space is my IME cycle combo.
+[09:42:01] <eddyb> eternaleye: also Alt+F2
+[09:42:13] <eternaleye> eddyb: That one stopped working here, somehow
+[09:42:23] <eddyb> check your bindings
+[09:42:36] <eternaleye> eddyb: Yeah, opening systemsettings5 now
+[09:44:13] *** Joins: eddyb_ (eddyb@moz-lf4ud8.residential.rdsnet.ro)
+[09:46:40] *** Quits: eddyb (eddyb@moz-tic.sgj.26.188.IP) (Ping timeout: 121 seconds)
+[09:51:36] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[09:53:48] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[10:11:19] *** eddyb_ is now known as eddyb
+[11:19:54] <aatch> Dammit, segfault again...
+[11:21:50] <aatch> Oh wow, I somehow managed to fuck it up enough that it made Vec try and reserve enough memory that it failed to allocate.
+[11:22:07] <aatch> So it's probably trying to allocate -1 bytes.
+[12:30:19] * WindowsBunny boops nrc with https://github.com/rust-lang/rust/pull/26883
+[12:41:03] <aatch> Arrrgh. If this fixes my issue, I'm going to be so mad. I accidentally inverted a condition...
+[13:16:11] *** Quits: madmalik (uid13697@moz-lfin5p.brockwell.irccloud.com) (Quit: Connection closed for inactivity)
+[13:47:36] *** Joins: Tobba (Tobba@moz-oecqnu.plus.com)
+[14:21:23] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Ping timeout: 121 seconds)
+[14:25:27] *** Quits: laumann (thomas@moz-3m6.3kq.109.2.IP) (Ping timeout: 121 seconds)
+[14:49:28] *** Joins: SilverKey (SilverKey@moz-liif3j.res.rr.com)
+[15:57:16] *** Quits: Tobba (Tobba@moz-oecqnu.plus.com) (Ping timeout: 121 seconds)
+[17:05:30] *** Joins: Tobba (Tobba@moz-4l45on.skybroadband.com)
+[17:47:38] *** Quits: SilverKey (SilverKey@moz-liif3j.res.rr.com) (Quit: ZZZzzz…)
+[18:00:44] *** Quits: Tobba (Tobba@moz-4l45on.skybroadband.com) (A TLS packet with unexpected length was received.)
+[18:13:34] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[18:25:19] *** Joins: arielb1 (Ariel@moz-9htsn1.red.bezeqint.net)
+[18:27:38] <arielb1> nmatsakis: what are the plans to move resolution to typeck?
+[18:49:21] <eddyb> nmatsakis: resolution as in iterating ribs?
+[18:49:35] <eddyb> because that part seems reasonably reduced in scope to be moved around
+[19:33:35] *** Quits: arielb1 (Ariel@moz-9htsn1.red.bezeqint.net) (Quit: Ex-Chat)
+[19:42:18] <eddyb> nmatsakis: MIR transforms should be composable enough to allow this to work: let push = |x| vec.push(x); let len = || vec.len(); push(len());
+[19:43:18] <eddyb> reordering ADTs containing borrows
+[19:43:53] <eddyb> I want this more than the method thing, because that's just a code cleanliness issue
+[19:44:21] <eddyb> this is a "have to use a macro to reuse a few different bits of code operating on the same state" issue
+[20:13:51] <nmatsakis> eddyb: but if you are actually *reusing* it, this trick won't work, right?
+[20:15:43] <nmatsakis> jroesch: so, regarding #18937
+[20:16:07] <nmatsakis> jroesch: I am as it happens digging into regionck right now. It takes a FnCtxt, but there is no reason for that -- I think it only wants an InferCtxt right now (the tables are accessible through there, right? that was the whole idea...)
+[20:16:26] <nmatsakis> if we did this, #18937 would be much easier to fix, since the big problem I found was the code in question was in regionck and wanted a FnCtxt
+[20:16:31] <nmatsakis> probaly it can be moved around a bit but whatever
+[20:23:03] *** Joins: arielb1 (Ariel@moz-9htsn1.red.bezeqint.net)
+[20:26:13] <jroesch> nmatsakis: yeah InferCtxt has a tables
+[20:33:37] *** Joins: Rym (uid91135@moz-n2i7qm.charlton.irccloud.com)
+[20:43:44] *** Quits: blank_name (blank_name@moz-onojo8.mi.frontiernet.net) (Ping timeout: 121 seconds)
+[20:51:34] <nmatsakis> I guess I might as well post this MIR RFC
+[20:56:25] *** Joins: SilverKey (SilverKey@moz-liif3j.res.rr.com)
+[20:59:12] <jroesch> nmatsakis: +1 
+[21:01:06] <nrc> nmatsakis: you should change the name of HIR in your mir code to make it less confusing cf my HIR proposal
+[21:01:31] <nmatsakis> nrc: yeah, true. I'll ... call it something. :) It is sort of a trait version of the HIR you are proposing adding :)
+[21:01:36] <jroesch> nrc: IIR (intermediate intermediate representation) ;)
+[21:01:53] <nmatsakis> trait SIR --> SourceIR
+[21:01:54] <nmatsakis> :)
+[21:02:19] <nmatsakis> (that trait is not really part of the MIR proposal anyway... but I guess I do mention it...)
+[21:02:41] <nmatsakis> I wanted to get something more working before posting the proposal, maybe I'll try to write up at least a unit test or something :)
+[21:03:15] <nmatsakis> it is kind of sad, but I do often have this feeling when writing Rust where it's like, well, if it compiles... it'll mostly work at least... (same feeling I often got with Haskell or ML...and sort of Scala.)
+[21:03:37] <nmatsakis> well, it's not sad.
+[21:03:42] <arielb1> nmatsakis: do you have plans for mixing resolve and typeck?
+[21:04:30] <nmatsakis> arielb1: yes, but I haven't done much work beyond the detail I wrote there -- that is, I think the hard part of resolve is determining what names are in scope at each module, but the actual RESOLUTION of a path should be deferred. Most of the modeling and so forth that I've done has been on the first part of that step :)
+[21:04:41] <arielb1> nmatsakis: why?
+[21:05:07] <jroesch> nmatsakis: depending on how well design the code is, its mostly true even in the compiler if I make incremental changes and it compiles we are good to go 
+[21:05:38] <jroesch> does this solve all the issues around associated types/const resolution people were talking about sometime earlier this week (or last week)?
+[21:06:23] <nmatsakis> I don't know what issues they were referring to
+[21:06:24] <nmatsakis> it may
+[21:12:25] <arielb1> associated types resolution is quite distinct from module resolution
+[21:12:30] <arielb1> ATM at least
+[21:14:37] <nagisa> is type information (i.e. final/inferred types for all values) available in during lint stage?
+[21:14:58] <nagisa> that is, is linting stage run after or before type resolution
+[21:15:03] <arielb1> nagisa: after
+[21:15:09] <nagisa> great, thanks!
+[21:18:20] <jroesch> arielb1: there was some issue ebbyb was discussing around path resolution, don't remember the specifics 
+[21:19:38] <kimundi> Moving resolution further down sounds worrysome in regard to making macros play nicer with the module system :) (In that you'd have to combine macro expansion and resolution somewhat for it to work)
+[21:20:57] <Elaine> kimundi: That's inevitable and desirable I think.
+[21:21:09] <Elaine> At least, when I was interning and working with John on the macro system I thought it was.
+[21:21:39] <Elaine> (jclements)
+[21:27:17] <arielb1> Elaine: resolution is already somewhat mixed with macros
+[21:27:22] <arielb1> kimundi: too
+[21:27:39] <arielb1> that's another reason not to get it too close to typeck
+[21:29:03] <kimundi> Of course, if you think it through to its logical conclusion we get associated macros, and then we're doomed either way :P
+[21:30:27] *** Quits: arielb1 (Ariel@moz-9htsn1.red.bezeqint.net) (Connection closed)
+[21:56:18] <nmatsakis> kimundi: moving resolution down plays fine with the macro changes 
+[21:56:52] <kimundi> oh? I'm not aware of concrete plans there :)
+[21:57:07] <nmatsakis> well, nobody is scheduled to do the work, and I've not written it up much ;)
+[21:57:13] <kimundi> haha
+[21:57:16] <nmatsakis> but the basic model is that yes you build up the name tables 
+[21:57:21] <nmatsakis> and once you reach a steady state
+[21:57:25] <nmatsakis> you try to resolve macro names
+[21:57:30] <nmatsakis> it does mean you won't be able to have associated macros
+[21:57:33] <nmatsakis> I thikn we can live without that :)
+[21:57:54] <nmatsakis> anyway then you expand macros, then continue building up the name tables
+[21:57:56] <nmatsakis> I Should finish my prototype
+[21:58:03] <nmatsakis> I didn't get to the macro expansion nitself
+[21:58:04] <kimundi> nice! :)
+[21:58:11] <nmatsakis> I feel 80% sure it will work :)
+[21:58:19] <nmatsakis> jroesch: so I was looking at arielb1's PR
+[21:58:25] <nmatsakis> https://github.com/rust-lang/rust/pull/26324
+[21:58:36] <nmatsakis> I would like to integrate FulfillmentCtxt fully into the transactional system
+[21:58:41] <nmatsakis> but I think this probably means just a plain rewrite
+[21:58:44] <nmatsakis> anyway there are other reeasons to rewrite it
+[21:58:48] <nmatsakis> it's not like it's all that complex
+[21:58:58] <nmatsakis> in the meantime, I suppose we could consider landing that PR as an interim step
+[21:59:06] <nmatsakis> not sure if you have thoughts or opinions
+[22:10:48] <jroesch> nmatsakis: let me read it over in depth real quick
+[22:11:08] <nmatsakis> jroesch: it's fairly simple
+[22:11:19] <jroesch> yeah I was thinking it was larger
+[22:11:24] <nmatsakis> it sounds like more than it is ;)
+[22:12:12] <jroesch> if this fixes an ICE we should probably land it, and we can just refactor it when the time comes 
+[22:12:52] <nmatsakis> yeah, that was sort of the conclusion I came to
+[22:12:58] <nmatsakis> I was in the process of closing the PR when I changed my mind :)
+[22:48:03] <Elaine> > That said, I think it is imperative that we be able to link rustc such that it and LLVM use the same allocator. (https://github.com/rust-lang/rfcs/pull/1183#issuecomment-119741420)
+[22:52:32] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[22:52:36] <Elaine> LLVM has two allocators, one that uses malloc and one that's a bump allocator (that gets large regions from malloc) -- how often is the latter used, comparatively? Is there actually a huge benefit to using the same allocator?
+[23:10:07] *** Joins: blank_name (blank_name@moz-i7g.dq5.36.50.IP)
+[23:42:48] *** Quits: Rym (uid91135@moz-n2i7qm.charlton.irccloud.com) (Quit: Connection closed for inactivity)
+[23:51:34] <eternaleye> "<eddyb> nmatsakis: resolution as in iterating ribs?" You know, a lot of the steps involved in compilation would fit right in with a "reticulating splines" or Sburb-style sequence

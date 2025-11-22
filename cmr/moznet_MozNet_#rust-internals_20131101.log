@@ -1,0 +1,1114 @@
+[00:00:00] <strcat> there are 3-4 broken things about dtors, this is an isolated fix for the smallest issue
+[00:00:11] <strcat> it has 3 branches - generic, local, external
+[00:00:22] <strcat> and it ignores that external fns can be #[inline]
+[00:00:26] <acrichto> oh I don't doubt that, but there are so many minute details in trans where ordering is incredibly important and I want to see if we can prevent this sort of error from happening in the future (or detect more of them now)
+[00:00:43] <strcat> acrichto: this code path shouldn't exist
+[00:00:55] <strcat> but I have no idea how to get rid of it
+[00:00:59] <strcat> we could insert dtor calls in the AST
+[00:01:01] <strcat> that'd work
+[00:01:05] <strcat> but I don't want to deal with it atm ;p
+[00:02:49] <acrichto> strcat: can you paste a backtrace of where the compiler dies (before your patch)? I have literally no idea how to work lldb
+[00:02:52] <acrichto> I can't even start a process
+[00:03:09] <strcat> sec
+[00:03:22] <strcat> acrichto: __cxa_throw
+[00:03:26] <strcat> try that ;p
+[00:03:32] <acrichto> my gdb is so broken
+[00:03:44] <strcat> #6  0x00007ffff61869fa in metadata::loader::load_library_crate::hd2bd323bbb8a68b9aN::v0.9$x2dpre ()
+[00:03:53] <strcat> where it goes looking for the AST
+[00:03:56] <acrichto> it refuses to set a breakpoing on __cxa_throw and rust_begin_unwind
+[00:03:57] <strcat> and doesn't find it
+[00:03:59] <strcat> or actually
+[00:04:03] <strcat> I guess it's looking for a function
+[00:04:18] <strcat> it happens in the external branch, it should be taking the internal branch for an inline fn
+[00:04:33] <acrichto> strcat: is that form csearch::get_symbol ?
+[00:05:25] <strcat> acrichto: no it dies earlier
+[00:05:36] <strcat> the crate metadata is actually invalid because it never instantiated the inline fn
+[00:05:52] <strcat> it needs the instantiation in both the local path (for inline fns) and the external path (for foreign inline fns)
+[00:06:03] <strcat> #12 0x00007ffff6197712 in driver::driver::compile_input::h8115fb692ce64e22a1::v0.9$x2dpre ()
+[00:06:05] <strcat> #11 0x00007ffff619396f in driver::driver::phase_3_run_analysis_passes::hfab8bf13788da739aH::v0.9$x2dpre ()
+[00:06:06] <strcat> #9  0x00007ffff617b4ff in metadata::creader::read_crates::h635ba450616b7bb8af::v0.9$x2dpre ()
+[00:06:43] <strcat> maybe_instantiate_inline isn't a great name
+[00:06:51] <acrichto> strcat: hm well as is I don't feel like I can investigate this problem enough to warrant an r+ on that, I believe you in that it fixes it, but I have no understanding of why it fixes it
+[00:06:59] <strcat> maybe_output_an_ast_or_get_an_ast_and_direct_the_did_to_it
+[00:07:18] <strcat> acrichto: because before it wasn't a) outputting and AST and b) fetching an AST
+[00:07:25] <strcat> it assumes all foreign fns have a foreign symbol
+[00:07:33] <acrichto> brson: is there a reason that you didn't nominate the static linking by default bug?
+[00:07:37] <strcat> you can see it only calls it in the generic path
+[00:07:40] <brson> reedlepee: this is easy https://github.com/mozilla/rust/issues/2675
+[00:08:01] <acrichto> strcat: but you didn't fix anything related to outputting an ast
+[00:08:07] <strcat> acrichto: yes I did
+[00:08:16] <strcat> acrichto: maybe_instantiate_inline will output an AST
+[00:08:24] <strcat> the name is a lie
+[00:08:43] <acrichto> strcat: by output an ast do you mean to the metadata?
+[00:08:46] <strcat> acrichto: yes
+[00:09:25] <strcat> I dunno, look in inline::maybe_instantiate_inline
+[00:09:28] <strcat> it does everything
+[00:09:31] <brson> acrichto: i don't think it's critical for 1.0, but i can nominate it so we can triage
+[00:09:53] <acrichto> brson: hm I suppose you're right in that it wouldn't block 1.0 b/c we could still have a working system without it
+[00:09:57] <strcat> it fetches ASTs, it outputs ASTs, it redirects DefIds to local equivalents
+[00:10:53] <brson> reedlepee: fixing broken benchmarks in src/test/bench is a good task
+[00:11:05] <brson> https://github.com/mozilla/rust/issues/2776
+[00:11:21] <acrichto> strcat: so when the inline_dtor crate is compiled, it actually emits a symbol for "Foo::drop", right?
+[00:11:27] <strcat> no
+[00:11:38] <strcat> #[inline] means no symbol is output if it's a library
+[00:11:59] <strcat> (well, it makes an internal one)
+[00:12:54] <acrichto> strcat: I don't understand why it's not emitting a symbol, where is that guard?
+[00:13:11] <brson> reedlepee: this one you volunteered for about XXX is ok too https://github.com/mozilla/rust/issues/3303
+[00:13:27] <strcat> acrichto: maybe_instantiate_inline compiles the function
+[00:13:40] <acrichto> strcat: but maybe_instantiate_inline isn't called when you're compiling the library crate
+[00:13:45] <strcat> yes it is
+[00:14:00] <strcat> I moved it outside of the loop
+[00:14:02] <strcat> er
+[00:14:04] <strcat> s/loop/branches/
+[00:14:24] <acrichto> strcat: no this is before your patch, and only when compiling the library crate
+[00:14:29] <strcat> if you're saying *before*, then yes, before my patch it outputs a symbol
+[00:14:34] <strcat> and never serializes an AST
+[00:14:45] <strcat> get_item_val will lazily translate the function if necessary
+[00:14:46] <acrichto> how does get_res_dtor every get called in the library crate?
+[00:14:52] <acrichto> you never translate a destructor
+[00:15:00] <strcat> that's not where the failure happens
+[00:15:12] <acrichto> yes, but that means that a symbol should exist
+[00:15:20] <acrichto> and if a symbol exists then it should work today
+[00:15:34] <strcat> the symbol only exists if it calls it
+[00:15:37] <reedlepee> brson: as tim said  https://github.com/mozilla/rust/issues/3303  won't strengthen my application
+[00:16:05] <reedlepee> I should work on something that will strengthen my application
+[00:16:14] <acrichto> strcat: trans_crate looks at everything and translates everything, so it should still iterate over the destructor and emit it
+[00:16:35] <strcat> acrichto: *shrug*, it doesn't work, is all I can say
+[00:16:59] <strcat> I don't have an absolutely full picture of trans... I do know this was wrong before and I know why it works now
+[00:17:00] <acrichto> I'm worries that this is just pasting over a real problem
+[00:17:04] <strcat> it's not
+[00:17:08] <acrichto> or rather over another problem
+[00:17:25] <strcat> this isn't the usual code path and it is broken in several ways
+[00:17:27] <strcat> I know that
+[00:17:39] <strcat> I can't fix that in one go
+[00:18:01] <strcat> I have another branch trying to fix generic dtors, and then I will try to make it use the regular code path
+[00:18:10] <strcat> get_res_dtor shouldn't exist
+[00:18:19] <strcat> but if it does exist, it should work
+[00:18:33] <brson> reedlepee: how did the ebml change go?
+[00:18:49] <strcat> I don't really know how to go about inserting dtor calls into the AST
+[00:18:58] <strcat> or better, making the regular code path not want a NodeId for the call site
+[00:19:58] <acrichto> strcat: ah ok I see, tag 13 is tag_items_data_item_symbol and becuause of this https://github.com/mozilla/rust/blob/master/src/librustc/metadata/encoder.rs#L937 line the symbol is never emitted to the ast
+[00:20:03] <Sharp> So I know that replacing AST nodes is (currently) a no-no, but what about refining them?  E.g., a "wrapper" around another AST node that retains the same information but is more specific, since we have additional type information?
+[00:20:08] <acrichto> to the metadata*
+[00:20:48] <acrichto> strcat: so then in trans later on when we didn't instantiate the function locally we attempted to look up the symbol name in the metadata for this item but it was never encoded
+[00:20:54] <strcat> yes
+[00:21:04] <strcat> so you compile inline_dtor.rs
+[00:21:12] <strcat> and it puts the function there as something that should be available
+[00:21:14] <strcat> but it's not
+[00:21:20] <acrichto> yes, but inline_dtor does actually have a compiled version of the function
+[00:21:26] <acrichto> it's just that the metadata doesn't point to it
+[00:21:32] <reedlepee> brson : I looked into it but i don't really how vunit functions are used  to make a variable length number
+[00:21:38] <reedlepee> understand*
+[00:23:04] <Sharp> I want to annotate tuple structs as such during type checking, since currently I think they are parsed and interpreted throughout as ordinary functions and that means that if we want to do additional optimizations on them we have to keep reverifying that, but in fact the very first time we look it up and discover that it's not a function we have the opportunity to replace it with a more meaningful node.
+[00:23:49] <acrichto> strcat: so why can't this use trans_fn_ref_with_vtables ?
+[00:23:56] <strcat> acrichto: doesn't work
+[00:24:21] <acrichto> it seems to me that the function is explicitly intended for use with this purpose
+[00:24:22] <strcat> acrichto: trans_fn_ref isn't an entry point
+[00:24:27] <strcat> it's halfway through the translation
+[00:24:39] <strcat> if you want to call that, you have to make the vtables
+[00:24:54] <strcat> and that code expects a node id for a call site
+[00:25:02] <strcat> node_vtables
+[00:25:03] <strcat> and so on
+[00:25:04] <acrichto> hm, I don't even know what the vtables are for
+[00:25:14] <strcat> trait bounds
+[00:25:40] <strcat> acrichto: it's out of the scope of this fix, either way it needs to do this
+[00:26:00] <strcat> acrichto: http://sprunge.us/RNLH my attempt at fixing generics so far
+[00:26:12] <acrichto> strcat: so I have a fairly limited understanding of this, but this is an entirely separate code path from another code path which is correct, and I don't understand why we don't just use the other code path
+[00:26:14] <strcat> it can call trans_fn_ref_with_vtables instead, but neither works
+[00:26:26] <strcat> acrichto: the other code path wants a call site
+[00:26:29] <strcat> there is no call site
+[00:26:52] <strcat> I'm sure this is why someone wrote this N years ago
+[00:26:55] <acrichto> by call site what do you mean?
+[00:27:03] <strcat> a node id corresponding to a method call
+[00:27:18] <strcat> where a function ValueRef to call is expected
+[00:27:39] <strcat> we only translate generics as-needed
+[00:27:46] <strcat> a call site triggers the generation of a generic fn
+[00:27:50] <strcat> and then it's cached
+[00:28:03] <strcat> in those monomorphic_fn tables
+[00:28:56] <strcat> pub fn node_vtables(bcx: @mut Block, id: ast::NodeId)
+[00:28:58] <strcat>                  -> Option<typeck::vtable_res> {
+[00:29:05] <strcat> that's not useful to me - I don't have a node id
+[00:29:45] <acrichto> strcat: I would be far more comfortable deleting get_res_dtor and refactoring trans::callee to allow trans::glue to call into it
+[00:29:55] <strcat> I don't know how to do that
+[00:30:04] <strcat> I've spent hours trying to just make generic dtors work
+[00:30:32] <strcat> I don't understand how vtables are supposed to work with type substitutions
+[00:30:40] <strcat> it doesn't make sense to me that they get erased and then it wants them again
+[00:30:50] <strcat> but if you don't erase them via the resolve thing it doesn't work
+[00:31:08] * strcat shrugs
+[00:31:27] *** Joins: lkuper (lkuper@moz-BC815DFC.lightspeed.sntcca.sbcglobal.net)
+[00:31:37] <acrichto> well it seems like you should be able to calculate node_id_type_params manually
+[00:31:44] <strcat> there's no node id
+[00:31:47] <strcat> it's xcrate
+[00:32:43] <acrichto> so if you can call trans_fn_ref_with_vtables, you don't need a node id
+[00:32:49] <acrichto> or so a comment next to ref_id claims
+[00:32:52] <strcat> but then you need vtables
+[00:33:02] <acrichto> you need vtables and type_params
+[00:33:07] <strcat> which I have
+[00:33:09] <strcat> and it doesn't work
+[00:33:27] <acrichto> that seems to be the bug then, not patching get_res_dtor to be less broken than it currently is
+[00:33:52] <strcat> there are a lot of things that need refactoring in trans
+[00:34:19] <strcat> but I don't have any understanding of callee.rs
+[00:34:27] <acrichto> I agree, but this isn't really blocking anything right this red hot second, so it seems like it would make more sense to take the time to work it out
+[00:34:41] <strcat> it's blocking allocators in rust-core
+[00:34:59] <strcat> otherwise I would have given up at fixing it by now
+[00:35:02] <acrichto> not really, you can just not mark them as #[inline]
+[00:35:08] <strcat> I don't mean this fix
+[00:35:10] <strcat> I mean the generics fix
+[00:35:16] <strcat> this fix is just a precursor to that
+[00:35:27] <strcat> I found this issue along the way
+[00:35:31] <acrichto> hm, then I'd rather see how that plays out than merge this in the meantime
+[00:36:54] <acrichto> strcat: looks like this vtable_map is encoded/decoded in astencode, so you may be able to look it up manually
+[00:37:03] <strcat> I have the vtable
+[00:37:10] <acrichto> (I know very little about all this as well)
+[00:37:23] <strcat> I don't know what to do to it to make it a vtable in the format it wants
+[00:39:51] <Sharp> General question: what is folding used for?
+[00:40:01] <strcat> it would be helpful if one or two of these types/functions had documentation
+[00:40:06] <strcat> but as is, I am just grasping at straws
+[00:40:19] <strcat> there's zero documentation on how this is supposed to work ;\
+[00:40:22] <dbaupp> strcat: git blame has nothing useful?
+[00:40:37] <strcat> well I know that sully must have figured some of this out to fix default methods...
+[00:40:49] <strcat> ;p
+[00:41:30] <strcat> *shrug*
+[00:41:52] <Sharp> Anyone?  Is it just a mystery? :)
+[00:42:17] <dbaupp> Sharp: as in `syntax::fold`?
+[00:42:19] <Sharp> Yeah.
+[00:42:32] <Sharp> It's kind of a tough term to grep.
+[00:42:35] <dbaupp> making a new AST out of an old one
+[00:42:51] <Sharp> Oh.  So we do actually do that/
+[00:42:52] <Sharp> *?
+[00:42:57] <dbaupp> e.g. macro expansion will replace some AST nodes with the result of a macro expansion
+[00:43:08] <Sharp> I see.
+[00:43:19] <dbaupp> yeah, the AST is immutable and we just make a new one each time.
+[00:43:37] <Sharp> Is there extra information available during folding that wasn't available during the initial parse, usually?
+[00:43:57] <Sharp> E.g., can I look up types at that point?
+[00:44:44] <dbaupp> no
+[00:45:01] *** Quits: reedlepee (Mibbit@9B9315E1.A6025CA.1C37C358.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[00:45:26] <Sharp> Oh well…  I guess that would have been too easy :)
+[00:45:31] <dbaupp> well, depends when you are folding, but if it's before typeck, then no, and if it's after, then I imagine that folding and making a new AST will make the compiler unhappy.
+[00:45:48] <Sharp> So my best option is when?  During?
+[00:46:30] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[00:46:30] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/efDHQw
+[00:46:30] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[00:46:35] *** Quits: lkuper (lkuper@moz-BC815DFC.lightspeed.sntcca.sbcglobal.net) (Quit: lkuper)
+[00:46:52] <Sharp> Actually, I guess this ties into another question I have.  I imagine that you can reference a struct declared outside of a function after it is first used; is the same true of a struct declared within a function?
+[00:47:53] <Sharp> Er, s/reference/define
+[00:48:29] <dbaupp> yes
+[00:49:08] <dbaupp> (and I don't know the answer to when's best.)
+[00:49:11] <Sharp> So I guess the type checker always fills in the types of structs / other items before it handles expressions, then?  If so I think I could do this within the type checker.
+[00:49:44] <Sharp> (That, or the types of expressions are references to something that gets filled in, which isn't quite as nice but could still work).
+[00:51:27] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[00:51:27] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/TB2_Zg
+[00:51:27] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[00:51:34] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[00:51:34] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/GBLp-g
+[00:51:34] <ghrust> 13rust/06auto 14a49e65c 15Alex Crichton: Implement a concat!() format extension...
+[00:51:34] <ghrust> 13rust/06auto 14d04a58c 15bors: auto merge of #9740 : alexcrichton/rust/concat, r=cmr...
+[00:51:35] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[00:52:35] *** jdm|f00ding is now known as jdm
+[00:55:04] <Sharp> Anyway, thanks for the help :)  I'll figure it out.
+[00:58:59] <acrichto> brson: why does the strict version hash need to include upstream crates?
+[01:02:46] *** Joins: tjc (tjc@moz-BBE3ABD.mv.mozilla.com)
+[01:02:46] *** ChanServ sets mode: +o tjc
+[01:02:52] *** Quits: tjc (tjc@moz-BBE3ABD.mv.mozilla.com) (Client exited)
+[01:07:32] <dbaupp> https://github.com/mozilla/rust/pull/10211 r?
+[01:08:40] <cmr> I'd like to say r-
+[01:09:05] <cmr> Once rustpkg is working-enough that `extern mod` is reliable, we should introduce the extra conglomerate.
+[01:09:15] <cmr> but we aren't there ye.
+[01:09:17] <cmr> t
+[01:12:24] <strcat> I think it makes sense to add an LRU cache to libstd but it should be minimal
+[01:13:58] *** Quits: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com) (Quit: Jesse)
+[01:13:58] <brson> acrichto: it may not have to. the only things that i think have to happen is that the crate resolver needs to verify that the binaries that were originally linked against are still the same binaries, and any two imports of crate foo are only the same crate if they have the same hash
+[01:14:40] <brson> acrichto: i didn't put a lot of thought into it
+[01:15:02] <acrichto> brson: I agree, it seems like SVH = Hash(ast) and Metadata = {SVH, {crate0 name, crate0 SVH}, ...}
+[01:15:12] <acrichto> but yeah that's pretty minor
+[01:18:11] <strcat> cmr: I'm a bit worried about it having correctness issues since it's unsafe code, and I don't think it should have ToStr - other than that I think it would be okay
+[01:18:34] <strcat> I think we're moving away from ToStr?
+[01:18:37] <strcat> I could be wrong
+[01:19:14] *** Joins: tjc (tjc@moz-BBE3ABD.mv.mozilla.com)
+[01:19:14] *** ChanServ sets mode: +o tjc
+[01:19:47] <cmr> From ToStr to fmt::Default?
+[01:19:51] <acrichto> I think it seems to generally make sense to move away from ToStr
+[01:20:08] <acrichto> I'd love to see "impl<T: fmt::Default> ToStr for T { ... }"
+[01:20:11] * dbaupp definitely wants to flee from ToStr
+[01:20:45] <cmr> Once we can derive fmt::Default like we can ToStr, I would be pleased with that.
+[01:20:52] <cmr> it'd just use a string writer?
+[01:21:10] *** Quits: tikue_ (tikue_star@30C9EC33.F3E8A984.689607DE.IP) (Ping timeout)
+[01:21:48] <acrichto> fn to_str(&self) -> ~str { format!("{}", *self) }
+[01:22:15] <acrichto> I've tried to resist deriving(Default) though
+[01:22:22] <acrichto> I would much rather deriving(String)
+[01:22:27] <acrichto> fn to_str(&self) -> ~str { format!("{:s}", *self) }
+[01:23:19] <cmr> Ok.
+[01:23:24] <cmr> How is that different than ToStr
+[01:23:39] <acrichto> you're not building strings incrementally
+[01:23:49] <acrichto> with lots of intermediate allocations
+[01:23:55] <acrichto> and "the way" to do it is to implement fmt::String
+[01:25:17] * dbaupp much prefers Default to String
+[01:25:40] * kimundi still thinks the name Default is horrible though
+[01:25:52] * dbaupp agrees
+[01:27:05] *** nrc is now known as nrc|afk
+[01:30:29] *** Quits: tjc (tjc@moz-BBE3ABD.mv.mozilla.com) (Quit: zzzzzzzzzz)
+[01:30:53] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[01:31:20] <strcat> meh, I don't like that failure is using reflection now
+[01:31:41] <strcat> I don't really understand why we support dynamic linking if we don't support exposing a stable ABI
+[01:33:32] <cmr> strcat: ABI compat is what keeps *me* up at night.
+[01:33:39] <cmr> (as opposed to composability, which keeps nmatsakis up)
+[01:36:11] <dbaupp> is there a reason that https://github.com/mozilla/rust/issues/7889 is both E-easy and E-hard?
+[01:37:11] *** Joins: ktt3ja (Mibbit@moz-6B6EE8C0.hsd1.va.comcast.net)
+[01:39:34] <cmr> good question
+[01:39:51] <cmr> no part of that issue seems E-easy to me :p
+[01:40:06] <pcmattman> E-easy could have been an accidental add perhaps?
+[01:41:40] <strcat> cmr: I don't have a good solution though
+[01:41:53] <cmr> strcat: neither do I
+[01:41:59] <strcat> I would like for reflection to not be used outside of debug builds, except the very limitation dtor glue needs of traits
+[01:42:11] <strcat> but rust seems to be going to opposite direction from that
+[01:42:53] <strcat> tbh I don't really see rust-core ever going away
+[01:43:02] <strcat> I should probably remove that from the README
+[01:43:53] <strcat> the stdlib isn't hitting the "C replacement" target at all
+[01:45:25] *** Joins: mr_novalike (Mibbit@2BA86FD0.C2F352E7.60F45537.IP)
+[01:45:34] <strcat> struct Foo { impl: ~FooImpl }
+[01:45:35] *** Parts: mr_novalike (Mibbit@2BA86FD0.C2F352E7.60F45537.IP) ()
+[01:45:38] <strcat> is what you could do to do PIMPL
+[01:45:44] <strcat> except reflect then lets you walk that type
+[01:46:29] <strcat> struct Foo { priv impl: ~FooImpl } *
+[01:46:46] <pcwalton> so you plan to fork the standard library?
+[01:46:48] <strcat> or you could settle on a stable ABI for a struct, like the linux kernel does, by adding padding
+[01:46:52] *** Joins: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net)
+[01:47:33] <strcat> pcwalton: *shrug*
+[01:48:12] <acrichto> dbaupp: https://github.com/mozilla/rust/pull/10213
+[01:48:30] <strcat> I don't think adding a complicated configuration system where we expose multiple profiles is going to work
+[01:48:34] <strcat> it's going to be way too complex
+[01:48:51] <pcwalton> I think it's a bit of a stretch to say that we aren't a C replacement because we call typeid on fail
+[01:49:01] <pcwalton> fail is already slow
+[01:49:06] <pcwalton> if you don't want slow don't call fail, call abort
+[01:49:14] <strcat> pcwalton: I don't mean because of that
+[01:49:23] <strcat> I mean because if someone writes a library in rust, it can't have a stable ABI
+[01:49:34] <strcat> there is no support for hiding implementation details of a type
+[01:49:37] <pcwalton> oh, because of generics. it's the same problem as C
+[01:49:43] <strcat> even if you don't have generics
+[01:49:50] <strcat> std::reflect lets you want any type
+[01:50:06] <strcat> since std::repr needs that
+[01:50:11] <pcwalton> ohh, you're talking about parametricity
+[01:50:17] <strcat> well I mean
+[01:50:18] <pcwalton> *shrug* you can walk a type in C, can't you?
+[01:50:24] <pcwalton> at the bit level
+[01:50:37] <strcat> pcwalton: yes, you could
+[01:50:46] <strcat> but you have to actually copy-paste an implementation detail
+[01:50:54] <pcwalton> sure
+[01:51:03] <pcwalton> I don't think reflect should be what we do unless you absolutely need it
+[01:51:07] <pcwalton> we aren't Go :)
+[01:51:13] <strcat> we don't lint/warn when you use it
+[01:51:27] <pcwalton> it's pretty miserable to use ;)
+[01:51:34] <strcat> well, {:?} is easy to use
+[01:51:35] <pcwalton> I don't think that'll be an issue in practice
+[01:51:49] <pcwalton> sure
+[01:52:07] <pcwalton> but I don't think people will rely on the exact representation of {:?}
+[01:52:25] <strcat> pcwalton: but {:?} spits out code into your crate walking the internal structure of a foreign type
+[01:52:37] <dbaupp> does anyone else have an opinion about the correctness of this change https://github.com/mozilla/rust/pull/10167 ?
+[01:52:43] <pcwalton> ah I see, that makes sense
+[01:52:54] <pcwalton> yeah, we should probably fix that to allow private "can't walk me" things
+[01:53:15] <strcat> if we don't draw some kind of privacy lines, I think we are going to be stuck with the inability to support making a specific ABI
+[01:53:27] <pcwalton> yeah, that is a hazard. I would file an issue
+[01:53:56] <strcat> I'm tempted to say only debug!()/info!() should use repr and it should be hidden
+[01:54:04] <strcat> so you won't be able to use it in a non-debug build
+[01:54:09] * strcat shrugs
+[01:55:08] <cmr> I use info!() for general tracking of progress, and debug!() for printing out values useful for debugging (because yay configurable printf-debugging)
+[01:55:36] <cmr> so imo info!() shouldn't be able to use repr either
+[01:55:52] <strcat> pcwalton: there are lots of other issues though, like I don't really think there would be support for adding an allocator type parameter to containers
+[01:55:52] <pcwalton> maybe it should use DWARF
+[01:56:10] <strcat> I have a bug open saying we should investigate removing visit glue in favour of debug info
+[01:56:26] <pcwalton> it would be nice to have an allocator on containers
+[01:56:26] <strcat> but debug info is really lossy, so we'd have to output a lot of weird attributes
+[01:56:33] <pcwalton> I'm fine with :? being lossy
+[01:56:47] <cmr> As am I
+[01:57:01] <pcwalton> when I designed the predecessor to it 3 years ago
+[01:57:04] <strcat> pcwalton: I would add unnecessary complexity for people not interested in allocators
+[01:57:07] <pcwalton> it was designed to be like the OCaml extlib
+[01:57:17] <strcat> TreeSet<T> -> TreeSet<T, A>
+[01:57:21] <pcwalton> strcat: of course, there should be a way to not surface that complexity unless you need it
+[01:57:27] <pcwalton> optional type parameters or something
+[01:57:32] <pcwalton> or just different types of containers
+[01:57:53] <pcwalton> CustomAllocatorTreeSet<T,A> or something
+[01:58:02] <strcat> and now it's really painful when you do want to use them ;p
+[01:58:48] <pcwalton> really painful? you just call another function
+[01:58:51] <pcwalton> another constructor
+[01:59:51] *** Quits: Kxepal (Miranda@moz-D17F72BD.pppoe.mtu-net.ru) (Ping timeout)
+[02:01:06] <Sharp> Ugh, okay
+[02:01:08] <strcat> let mut xs = TreeSet::new(); xs.insert(5);
+[02:01:18] <strcat> let mut xs = TreeSet::with_alloc(allocator); xs.insert(5);
+[02:01:23] <Sharp> I figured out why https://github.com/mozilla/rust/issues/10200 is happening
+[02:01:24] <strcat> is how I implemented it
+[02:01:31] * pcwalton likes that
+[02:01:32] <strcat> but everything is going to gain a type parameter
+[02:01:56] <strcat> and you end up needing a Unique type because ~T can't do that
+[02:01:58] <Sharp> Looks like you can give it *any* function that returns type Foo, it's not checking anything but the result
+[02:02:02] <strcat> and ~[T] can't do that
+[02:02:05] <Sharp> *result type
+[02:02:08] <Sharp> But it doesn't calculate the result
+[02:02:17] * Sharp isn't sure why functions are even allowed there.
+[02:02:49] *** Joins: Kxepal (Miranda@moz-B0668C07.pppoe.mtu-net.ru)
+[02:02:51] <pcwalton> yeah, the ability to make custom uniquely owned things is going to be a point of weakness for Rust 1.0
+[02:02:54] <pcwalton> we'll fix it later
+[02:04:11] <strcat> although maybe allocators will be more common than I think because it's somewhat convenient to be able to profile allocations of a specific container
+[02:04:22] <Sharp> Is the intention for functions to be allowed in patterns?
+[02:04:29] <Sharp> Or is this just wrong?
+[02:04:45] <pcwalton> oh sure, we want that for Servo too, but I'd probably just override the default allocator for all ~s in that case
+[02:05:48] *** Quits: pcwalton (pcwalton@moz-7B0110AD.mv.mozilla.com) (Quit: pcwalton)
+[02:06:10] <strcat> Sharp: hm?
+[02:07:14] <Sharp> strcat: https://github.com/mozilla/rust/blob/master/src/librustc/middle/resolve.rs#L4438
+[02:07:33] <strcat> aren't those enum variants?
+[02:07:43] <strcat> or tuple structs
+[02:07:49] <Sharp> That isn't enforced.
+[02:08:00] <Sharp> That is, in a match expression
+[02:08:03] <strcat> so what does it do if you use a function? are they even in scope?
+[02:08:05] <Sharp> They (presumably) get parsed as enum variants
+[02:08:14] <Sharp> Then any function that returns the correct type (if it's a tuple struct) can be used
+[02:08:17] <strcat> I thought functions weren't in the type scope
+[02:08:22] <Sharp> They aren't
+[02:08:32] <Sharp> But it's looking in the value scope
+[02:08:36] <Sharp> self.resolve_path(pat_id, path, ValueNS, false)
+[02:08:36] <strcat> ;s
+[02:08:43] <strcat> well, it should look in the type scope
+[02:08:49] <strcat> and only then should it do anything else
+[02:09:06] <Sharp> I would tend to agree (though I think variants are in the value scope?)
+[02:09:25] <Luqman> afaik, variants are in ValueNS
+[02:09:50] <Sharp> Rather hackily, tuple structs are in both scopes :(
+[02:10:22] <strcat> Luqman: we could put them in the type ns too
+[02:10:29] <strcat> and then use that to implement matching properly
+[02:10:34] <Sharp> I think variants actually are values though
+[02:10:48] <Sharp> They can be used as values everywhere.
+[02:11:12] <Sharp> And their type has to be the type of the enum, at least it seems that way to me
+[02:11:54] <strcat> acrichto: I hate get_res_dtor :(
+[02:13:06] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Quit: ZZZzzz…)
+[02:13:12] <strcat> task '<unnamed>' failed at 'vtable_id', /home/strcat/projects/rust/src/librustc/middle/trans/meth.rs:527
+[02:13:31] <strcat> that means I didn't erase the substs properly
+[02:14:06] <Sharp> Anyway… I'm still kind of confused about why Fns are allowed at all, can I just get rid of them?  Does anyone know why they're there?
+[02:14:46] <Luqman> Sharp: where exactly?
+[02:14:53] <Sharp> I linked it above.
+[02:14:55] <benh> Does it actually call the fn and compare the scrutinee against the return value?
+[02:14:58] <Sharp> Nope.
+[02:15:01] <Sharp> It does not.
+[02:15:18] <benh> Just treats it as a synonym for the value constructor?
+[02:15:18] <benh> wel
+[02:15:19] <benh> p
+[02:15:22] <Sharp> Yup :)
+[02:15:45] <Sharp> Actually, I know that's what happens in the simple case, I haven't tried it with more complex values
+[02:15:58] <Sharp> I'm pretty sure the one thing it won't do is properly eval though :D
+[02:16:35] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[02:16:35] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/GBLp-g
+[02:16:35] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[02:19:27] <Sharp> Ah, traced it back through git blame
+[02:19:34] <Sharp> b50aa827a07f398d1a9bd81cc66eebe220006f73
+[02:19:58] <Sharp> https://github.com/mozilla/rust/commit/b50aa827a07f398d1a9bd81cc66eebe220006f73
+[02:20:13] <Luqman> oh yay, my fault :P
+[02:20:16] <Sharp> :P
+[02:20:29] * Sharp <3 git
+[02:20:58] <Sharp> I see… so it couldn't resolve it to a struct ahead of time cross crate?
+[02:21:27] <Sharp> And therefore assumed it was a function?
+[02:21:32] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[02:21:33] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/1WF98Q
+[02:21:33] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[02:21:40] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[02:21:40] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/JUEpLg
+[02:21:40] <ghrust> 13rust/06auto 14a38c515 15Marvin Löbel: Rearranged the methods in std::Option and std::Result
+[02:21:40] <ghrust> 13rust/06auto 142decfd2 15bors: auto merge of #10119 : Kimundi/rust/option_and_generic, r=alexcrichton...
+[02:21:41] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[02:22:49] * Sharp wonders if that's actually fixed sufficiently that this can be removed.
+[02:23:40] <Luqman> Sharp: `struct Foo(int, u8);` actually creates a function
+[02:23:43] <Sharp> I know.
+[02:23:49] <Sharp> But it also creates a type.
+[02:23:58] <Sharp> I'm not sure if it did when that commit was written.
+[02:24:32] <Sharp> Or if the type was exported properly.
+[02:32:59] <strcat> acrichto: monomorphic_fn calls trans_fn per set of functions anyway
+[02:33:02] * strcat shrugs
+[02:33:09] <strcat> per set of type parameters*
+[02:33:32] <strcat> anyway I might have figured out the issue
+[02:33:45] <strcat> resolve_vtables_under_param_substs and resolve_param_vtables_under_param_substs are separate
+[02:35:32] *** Quits: lbergstrom (Adium@moz-5D8E4B14.lightspeed.cicril.sbcglobal.net) (Quit: Leaving.)
+[02:39:04] *** Joins: Jesse_ (jruderman@moz-537BCF9.hsd1.ca.comcast.net)
+[02:39:16] *** Quits: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net) (Ping timeout)
+[02:46:13] <brson> restarting the botmaster again to try to get them using the new configure flags
+[02:49:05] *** Joins: tjc (tjc@moz-6E64A536.tmodns.net)
+[02:49:05] *** ChanServ sets mode: +o tjc
+[02:57:27] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[02:57:47] *** Quits: jdm (jdm@moz-AFF897B8.dsl.teksavvy.com) (Ping timeout)
+[03:00:16] *** Quits: tjc (tjc@moz-6E64A536.tmodns.net) (Quit: Places to go, people to annoy)
+[03:01:37] <Sharp> Oh crap… turns out, it doesn't even respect the type of the parameter to the function :)  If I define foo as accepting a uint and bind x in a match pattern for which foo matches, x is not bound to a uint and the typechecker doesn't complain :D
+[03:01:52] *** Joins: brson (brson@981AA104.E81F12CD.76F66111.IP)
+[03:01:52] *** ChanServ sets mode: +qo brson brson
+[03:03:02] *** Joins: tjc (tjc@moz-6E64A536.tmodns.net)
+[03:03:02] *** ChanServ sets mode: +o tjc
+[03:03:15] *** Quits: tjc (tjc@moz-6E64A536.tmodns.net) (Quit: Places to go, people to annoy)
+[03:15:53] <acrichto> brson: oh man these task names are so much fun
+[03:18:45] <brson> :)
+[03:19:26] <dbaupp> Name all the tasks!
+[03:21:55] *** Quits: brson (brson@981AA104.E81F12CD.76F66111.IP) (Quit: leaving)
+[03:22:09] <pcmattman> the unnamed task is no more?
+[03:24:04] <dbaupp> pcmattman: not quite, just a lot of the most common tasks are getting names (e.g. the main one, all the tests, rustc)
+[03:24:09] <cmr> coolio
+[03:24:31] <pcmattman> ahh
+[03:24:38] <pcmattman> sorry when I said unnamed I meant main
+[03:27:01] <dbaupp> yeah after https://github.com/mozilla/rust/pull/10204 lands fail!() in main will print "task <main> failed: ..."
+[03:27:13] <pcmattman> awesome!
+[03:31:47] <benh> are the <> part of the name?
+[03:31:59] <dbaupp> benh: yes
+[03:32:24] <benh> odd convention, why not put quotes around the task name in the message instead?
+[03:32:30] <benh> (or string-escape it i guess)
+[03:32:39] <cmr> benh: so you can tell it's generated by the runtime/compiler and not user-provided.
+[03:33:05] <benh> hm, ok
+[03:33:46] <dbaupp> benh: oh, I was imprecise, it will print `task '<main>' failed: ...
+[03:33:54] <benh> :D
+[03:36:19] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[03:36:19] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 142decfd2 to 14d04a58c: 02http://git.io/N3iJvQ
+[03:36:19] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[03:55:22] *** Joins: kimundi_ (kimundi@moz-F8D99315.dip0.t-ipconnect.de)
+[03:56:04] *** Quits: kimundi (kimundi@moz-3999E347.dip0.t-ipconnect.de) (Ping timeout)
+[03:56:04] *** kimundi_ is now known as kimundi
+[03:57:06] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[04:01:41] <dbaupp> hmm, the docs for std::rand would be dramatically improved by some sort of mathematics rendering... is there any scope for inline images and/or MathJax support?
+[04:02:32] <cmr> pandoc supports both latex and mathjax
+[04:02:52] <dbaupp> we don't use pandoc
+[04:02:58] <cmr> ...oh yeah
+[04:03:03] <cmr> I totally forgot about that
+[04:04:20] *** kimundi is now known as zz_kimundi
+[04:11:27] *** zz_kimundi is now known as kimundi
+[04:28:58] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Quit: ZZZzzz…)
+[04:37:53] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[04:50:27] *** nrc|afk is now known as nrc
+[04:54:14] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Quit: ZZZzzz…)
+[05:08:33] *** Quits: aatch (James@moz-B437F499.pocketrent.com) (Client exited)
+[05:12:41] *** Quits: ktt3ja (Mibbit@moz-6B6EE8C0.hsd1.va.comcast.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[05:19:48] *** Joins: ktt3ja (Mibbit@moz-6B6EE8C0.hsd1.va.comcast.net)
+[05:21:23] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[05:21:23] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/oaKAWw
+[05:21:23] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[05:22:06] <cmr> acrichto: it's really hard to review your PRs when they mix actually changing things with updating all the code that used said things
+[05:23:02] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[05:23:08] <acrichto> :(
+[05:23:39] <acrichto> I need to do a better job of splitting those up
+[05:23:56] <acrichto> I tend to focus more on making each commit compile
+[05:24:00] <cmr> yeah
+[05:24:09] <cmr> there's a school of thought that every commit should pass the testsuite
+[05:24:21] <cmr> which is noble, but it makes large changes hard to review.
+[05:25:02] <cmr> it's easy to miss the forest for the trees when half of the changed lines are s/file/File :P
+[05:26:25] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[05:26:25] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/2MbClg
+[05:26:25] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[05:26:31] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[05:26:32] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/_mIIuQ
+[05:26:32] <ghrust> 13rust/06auto 14f27272d 15Patrick Walton: librustc: Implement `|A| -> B` syntax for closures and make bare `fn`...
+[05:26:32] <ghrust> 13rust/06auto 14a6f776d 15Patrick Walton: libstd: Remove mocks.
+[05:26:32] <ghrust> 13rust/06auto 1441ffc90 15bors: auto merge of #10187 : pcwalton/rust/remove-mocks, r=pcwalton...
+[05:26:34] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[05:26:44] * cmr cross fingers for closure reform
+[05:27:09] <pcmattman> cmr: big squashed commits can be better for history too, but usually it's a "looks good, squash and r"
+[05:30:14] <Luqman> :( the configure script changes broke configuring for multiple targets
+[05:35:37] *** Joins: lkuper (lkuper@9CD1AD84.3778D849.1D6E592A.IP)
+[05:48:00] *** Joins: eddyb (eddy@FE23D96E.F33C1089.FB866788.IP)
+[05:55:25] *** nrc is now known as nrc|mfbt
+[05:59:58] *** Quits: ktt3ja (Mibbit@moz-6B6EE8C0.hsd1.va.comcast.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[06:22:32] <Sharp> Can you write "extern struct"?
+[06:22:47] <cmr> Sharp: No. What would it do?
+[06:22:51] <Sharp> I have no idea.
+[06:22:54] <Sharp> Just making sure you can't do it :)
+[06:22:59] <cmr> heh
+[06:23:27] * Sharp wants to make tuple structs trait method signatures with a new purity type.
+[06:25:08] <Sharp> Purity type: constructor, that makes it easy to distinguish them from regular functions.  So we can disallow all functions that aren't of purity type constructor.
+[06:25:37] <Sharp> We can similarly deny the ability to define a body and generate code for it based on that flag.
+[06:31:53] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[06:31:53] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/_mIIuQ
+[06:31:53] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[06:33:20] *** Quits: km (quassel@moz-777F24DE.kevinmehall.com) (Ping timeout)
+[06:34:48] *** Joins: km (quassel@moz-777F24DE.kevinmehall.com)
+[06:36:49] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[06:36:49] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/pSrvCw
+[06:36:49] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[06:36:57] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[06:36:57] <ghrust> 01[13rust01] 15bors pushed 6 new commits to 06auto: 02http://git.io/hGkjiQ
+[06:36:57] <ghrust> 13rust/06auto 14a9cd415 15Alex Crichton: Move rt::io traits into the prelude...
+[06:36:57] <ghrust> 13rust/06auto 1499c07f7 15Alex Crichton: Modify IoFactory's fs_mkdir, and add fs_rename...
+[06:36:58] <ghrust> 13rust/06auto 14ee13278 15Alex Crichton: Remove all blocking std::os blocking functions...
+[06:37:00] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[06:38:57] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Connection reset by peer)
+[06:39:01] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[06:39:02] <Sharp> Wait… we *are* exporting trait method signatures right?
+[06:40:07] *** Quits: lkuper (lkuper@9CD1AD84.3778D849.1D6E592A.IP) (Quit: lkuper)
+[06:44:18] <Luqman> huh? why does --host set CFG_BUILD and --target sets CFG_HOST ?
+[06:45:34] *** Quits: km (quassel@moz-777F24DE.kevinmehall.com) (Ping timeout)
+[06:47:30] *** Joins: km (quassel@moz-777F24DE.kevinmehall.com)
+[06:49:50] <dbaupp> Luqman: repull? https://github.com/mozilla/rust/pull/10206
+[06:51:26] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[06:51:26] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14159c9c0 to 1441ffc90: 02http://git.io/N3iJvQ
+[06:51:26] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[06:51:34] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[06:51:34] <ghrust> 01[13rust01] 15bors pushed 6 new commits to 06auto: 02http://git.io/fvYIgw
+[06:51:34] <ghrust> 13rust/06auto 14a9cd415 15Alex Crichton: Move rt::io traits into the prelude...
+[06:51:34] <ghrust> 13rust/06auto 1499c07f7 15Alex Crichton: Modify IoFactory's fs_mkdir, and add fs_rename...
+[06:51:35] <ghrust> 13rust/06auto 14ee13278 15Alex Crichton: Remove all blocking std::os blocking functions...
+[06:51:37] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[06:54:41] <Luqman> dbaupp: actually, what i said is wrong. but in any case passing multiple triples to --host/target/host-triples/target-triples is broken
+[06:55:01] <acrichto> that's not good, that means we can't make a snapshot :(
+[06:56:40] *** Quits: km (quassel@moz-777F24DE.kevinmehall.com) (Ping timeout)
+[07:00:46] <Luqman> acrichto: any idea how long we're gonna keep around the now deprecated flags? --{host,build,target}-triples?
+[07:01:51] *** Joins: km (quassel@moz-777F24DE.kevinmehall.com)
+[07:11:49] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[07:24:39] <acrichto> Luqman: brson would be the one to ask about that, I haven't been following that change at all
+[07:25:24] <acrichto> I would imagine not long though
+[07:35:12] <Luqman> i think i discovered why switching the buildbots to use the new ones was failing
+[07:35:35] <Luqman> acrichto: it seems like the rules you added for librustuv didn't get updated
+[07:36:29] <acrichto> rules for which part?
+[07:36:59] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[07:36:59] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 140a62ea3 to 1441ffc90: 02http://git.io/N3iJvQ
+[07:36:59] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[07:37:01] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[07:37:01] <ghrust> 01[13rust01] 15bors pushed 6 new commits to 06auto: 02http://git.io/gRNOuA
+[07:37:01] <ghrust> 13rust/06auto 14a9cd415 15Alex Crichton: Move rt::io traits into the prelude...
+[07:37:01] <ghrust> 13rust/06auto 1499c07f7 15Alex Crichton: Modify IoFactory's fs_mkdir, and add fs_rename...
+[07:37:01] <ghrust> 13rust/06auto 14ee13278 15Alex Crichton: Remove all blocking std::os blocking functions...
+[07:37:03] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[07:37:09] <Luqman> acrichto: in mk/stage0.mk
+[07:37:19] <acrichto> I thought I updated them
+[07:37:32] <dbaupp> https://github.com/mozilla/rust/issues/10221 ... seems like the new rules broke a pile of things
+[07:37:49] <Luqman> acrichto: no but afaik the configure changes landed after your changes i think?
+[07:38:00] <acrichto> *sigh*
+[07:38:18] <Luqman> but anyways, should be fixed now r? https://github.com/mozilla/rust/pull/10220
+[07:38:52] <acrichto> I'm gonna defer to brson on that
+[07:42:14] <Luqman> dbaupp: huh, the DESTDIR stuff hasn't changed in a long while so i don't think it's that
+[07:51:23] * pcmattman 's weekend has now begun, work day is over and commute is done!
+[07:51:34] <Sharp> Time to work on Rust!
+[07:51:35] * pcmattman kicks off a rust build
+[07:51:39] <cmr> heh
+[08:00:16] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[08:16:25] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[08:16:25] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 141f7de42 to 1441ffc90: 02http://git.io/N3iJvQ
+[08:16:25] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[08:59:39] *** Quits: nrc|mfbt (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[09:03:11] *** Joins: nrc|mfbt (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[09:03:26] *** nrc|mfbt is now known as nrc
+[09:16:23] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Quit: ZZZzzz…)
+[09:21:21] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[09:21:22] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/V2Twzg
+[09:21:22] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[09:26:25] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[09:26:25] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/EEOITQ
+[09:26:25] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[09:26:30] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[09:26:30] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/jMDPtw
+[09:26:30] <ghrust> 13rust/06auto 145864ad9 15kud1ing: add target triple arm-apple-darwin
+[09:26:30] <ghrust> 13rust/06auto 14fa8a202 15bors: auto merge of #10203 : kud1ing/rust/ios, r=alexcrichton...
+[09:26:31] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[09:30:38] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[09:36:58] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[09:41:30] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[09:50:37] <pcmattman> acrichto: interestingly, spawn() already returns a Result<(stuff), IoError>, just needs the libuv stuff, more or less
+[09:52:24] <pcmattman> (the return from uvll::spawn is shoved into a UvError if it is not zero)
+[09:54:13] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[10:31:30] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[10:31:30] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/jMDPtw
+[10:31:30] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[10:36:24] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[10:36:24] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/IBoXLw
+[10:36:24] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[10:55:06] *** Joins: jdm (jdm@moz-AFF897B8.dsl.teksavvy.com)
+[11:03:38] *** Quits: Kxepal (Miranda@moz-B0668C07.pppoe.mtu-net.ru) (Connection reset by peer)
+[11:04:11] *** Joins: Kxepal (Miranda@moz-B0668C07.pppoe.mtu-net.ru)
+[11:06:27] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[11:06:27] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14689ee82 to 14fa8a202: 02http://git.io/N3iJvQ
+[11:06:27] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[11:41:45] *** Joins: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP)
+[11:42:51] *** Quits: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP) (Quit: Leaving.)
+[11:42:56] *** Joins: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP)
+[12:16:24] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[12:16:24] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/734gOg
+[12:16:24] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[12:21:08] *** Quits: jdm (jdm@moz-AFF897B8.dsl.teksavvy.com) (Quit: Lost terminal)
+[12:21:26] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[12:21:26] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/vptKXQ
+[12:21:26] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[12:21:26] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[12:21:26] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/KFSsQA
+[12:21:26] <ghrust> 13rust/06auto 1496589e7 15Robert Irelan: Fix infinite recursion in `fill_bytes()`...
+[12:21:26] <ghrust> 13rust/06auto 14a300314 15bors: auto merge of #10213 : telotortium/rust/rand-fill_bytes-stack-overflow, r=huonw...
+[12:21:27] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[12:44:50] <dbaupp> How does one go from NodeId -> (preferably) a string like `foo::bar::baz`?
+[12:49:28] <Sharp> Where are you in the process?
+[12:50:21] <Sharp> Most of the time you can do ccx.tcx.sess.str_of
+[12:50:31] <Sharp> Or, sorry, NodeId.  I think there's an additional lookup.
+[12:50:48] <Sharp> ast_map::node_id_to_str
+[12:52:25] <dbaupp> ah, node_id_to_str is a little too low-level, but it shows me what I need, thanks.
+[12:52:44] <Sharp> NP.
+[13:17:55] <dbaupp> cmr: ping
+[13:20:10] *** Joins: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP)
+[13:26:26] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[13:26:26] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/KFSsQA
+[13:26:26] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[13:31:32] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[13:31:32] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/6vHDdQ
+[13:31:32] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[13:31:33] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[13:31:33] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/aNIuFA
+[13:31:33] <ghrust> 13rust/06auto 14c874e64 15Brian Anderson: Name the rustc task 'rustc'
+[13:31:33] <ghrust> 13rust/06auto 14b4ce735 15bors: auto merge of #10215 : brson/rust/rustctask, r=thestinger
+[13:31:34] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[13:37:24] <Sharp> nmatsakis: It's not how it works now because tuple structs are exported as external functions, so this is the hack to make them work cross crate
+[13:37:29] <Sharp> (Re: https://github.com/mozilla/rust/issues/10200)
+[13:38:35] <Sharp> I'm in the process of converting them to use a more appropriate encoding (like trait method signatures, but without self and with a "constructor" purity type, so they don't have bodies etc.)
+[13:39:25] <Sharp> Then we can represent them as functions all the way through without having to generate a body and we can easily enforce only constructors in pattern matches.
+[13:47:44] *** Joins: steveklabnik (steveklabn@moz-5EF6C37C.socal.res.rr.com)
+[13:50:43] <nmatsakis> Sharp: we...can easily enforce only constructors in pattern matches
+[13:50:55] <nmatsakis> Sharp: I guess I don't quite get what you mean
+[13:51:20] <Sharp> Not currently.  We don't actually export tuple structs cross crate in a way that makes them distinguishable from ordinary functions.
+[13:51:32] <Sharp> My proposed change is basically, do that, and while we're at it fix them to work with generics :)
+[13:52:37] <Sharp> (And don't bother generating a body).
+[13:53:11] <Sharp> Then go the extra step and stop interpreting them as structs at all, anywhere, so we have exactly one way of talking about a tuple struct.
+[13:55:36] <nmatsakis> Sharp: they are distinguishable in the metadata...?
+[13:55:45] <Sharp> How?
+[13:55:58] <Sharp> Unless something changed recently.
+[13:56:18] <nmatsakis> perhaps not
+[13:56:48] <nmatsakis> yeah, I guess you're right, the type has its own id but not the ctor
+[13:56:49] <nmatsakis> curious
+[13:56:53] <Sharp> Yep.
+[13:57:07] <Sharp> I think purity is the best way to go since it lets us label the function definition as special.
+[13:57:14] <nmatsakis> I don't what you mean by "purity"
+[13:57:17] <Sharp> And it doesn't overlap with any existing fields.
+[13:57:23] <nmatsakis> oh, wait, you meant the ast::purity field?
+[13:57:26] <Sharp> Yeah.
+[13:57:52] <nmatsakis> how does it work for enum variants
+[13:58:22] *** Quits: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP) (Broken pipe)
+[13:58:26] <Sharp> I want to say they are also exported as functions but I'm not positive
+[13:58:26] *** Joins: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP)
+[13:58:53] <nmatsakis> no, there is a distinct family, variant
+[13:58:57] <Sharp> Hrm.
+[13:59:20] <nmatsakis> which is what I expected for tuple structs
+[13:59:36] <Sharp> Yeah, you're right.
+[14:00:15] * Sharp would personally rather unify all data constructors.
+[14:29:44] <nmatsakis> pnkfelix: btw have you had any time to start the review on PR #10153 (I would totally understand if not :)
+[14:30:02] <pnkfelix> nmatsakis: I've done a little of it
+[14:30:11] <pnkfelix> nmatsakis: but not enough to feel like I can r+
+[14:30:26] <pnkfelix> nmatsakis: despite the obvious excitement from the surrounding community.  :(
+[14:30:39] <nmatsakis> pnkfelix: not to worry
+[14:31:02] <nmatsakis> pnkfelix: I still have to go make some new tests, actually,
+[14:31:18] <pnkfelix> nmatsakis: have you fixed the search-and-replace naming issue yet?
+[14:31:19] <nmatsakis> pnkfelix: and I wnated to go through all those assertion failures related to rp.is_none() and see what happens now
+[14:31:31] <nmatsakis> pnkfelix: locally but I didn't push it because I didn't want to mess up any in-progress reading your were doing
+[14:31:38] <pnkfelix> nmatsakis: no, please put that up
+[14:31:41] <nmatsakis> pnkfelix: ok
+[14:31:59] <pnkfelix> nmatsakis: I do a lot of review locally
+[14:32:06] <nmatsakis> pnkfelix: done
+[14:32:14] <pnkfelix> nmatsakis: (especially for a big thing like this, with multiple commits)
+[14:33:06] <nmatsakis> pnkfelix: it's a good idea
+[14:33:11] <nmatsakis> pnkfelix: if nothing else you get etags :)
+[14:33:15] <pnkfelix> +1
+[14:42:30] <nmatsakis> time to rebase some of my other branches
+[14:42:35] * nmatsakis afraid
+[15:03:34] *** Quits: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP) (Ping timeout)
+[15:07:52] *** Quits: eddyb (eddy@FE23D96E.F33C1089.FB866788.IP) (Ping timeout)
+[15:13:14] *** Quits: steveklabnik (steveklabn@moz-5EF6C37C.socal.res.rr.com) (Ping timeout)
+[15:24:47] *** Quits: doomlord_ (servitor@moz-B44A6624.range86-160.btcentralplus.com) (Ping timeout)
+[15:25:55] *** Quits: kaeso (kaeso@moz-F21FF626.unstable.it) (Ping timeout)
+[15:26:11] *** Joins: kaeso (kaeso@moz-F21FF626.unstable.it)
+[15:26:25] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[15:26:25] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14b4ce735 to 14a300314: 02http://git.io/N3iJvQ
+[15:26:25] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[15:26:32] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[15:26:32] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/lbdHaQ
+[15:26:32] <ghrust> 13rust/06auto 148f258ab 15Alex Crichton: Provide a sound method of flushing stdout...
+[15:26:32] <ghrust> 13rust/06auto 143a15482 15bors: auto merge of #10218 : alexcrichton/rust/stdio-flush-safe, r=cmr...
+[15:26:33] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[15:29:19] <dbussink> acrichto: around?
+[15:33:11] *** Joins: jdm (jdm@FCCEA34F.7672369.D8E68FF6.IP)
+[15:34:37] *** Joins: jdm_ (jdm@13F2CEC5.7672369.D8E68FF6.IP)
+[15:35:04] *** Quits: jdm (jdm@FCCEA34F.7672369.D8E68FF6.IP) (Ping timeout)
+[16:04:48] *** jdm_ is now known as jdm
+[16:05:59] <Luqman> nmatsakis: r? https://github.com/mozilla/rust/pull/10064 
+[16:07:46] <acrichto> dbussink: now I am
+[16:08:36] <dbussink> acrichto: ah, i was playing with that thread stuff, but i'm not sure how to do the passing of the unsafe structures properly
+[16:08:51] <acrichto> how so?
+[16:09:12] <dbussink> acrichto: well, i was binding to pthread_create for example
+[16:09:34] <dbussink> but it needs an environment passed down to get the rust env and code out of i assume
+[16:09:53] <dbussink> i know am passing it a pointer to the thread object, but i suspect that's not really safe considering it crashes hard ;)
+[16:10:16] <acrichto> dbussink: this is getting the ~fn() to run on the other side of the thread creation?
+[16:10:19] <dbussink> acrichto: the current implementation uses a c++ allocated object that has pointers into it
+[16:10:26] <dbussink> acrichto: basically yeah
+[16:11:08] <acrichto> hm well an easy solution would just be to use ~~fn(), silly though that may look
+[16:11:33] <acrichto> a more restrictive solution would be returning ~Thread and storing the ~fn() inside it (the pointer won't change at that poitn)
+[16:11:58] <dbussink> acrichto: return ~Thread from the start method you mean?
+[16:12:01] <dbussink> instead of Thread now?
+[16:12:06] <acrichto> I think it's probably fine to just allocate ~~fn() though, although it's silly it's the easiest way
+[16:12:15] <acrichto> yeah with ~Thread you can return pointers internal to the structure
+[16:12:21] <dbussink> right
+[16:12:23] <acrichto> or rather you can reference pointers into the structure
+[16:13:37] *** Quits: jxs (joaoxsouls@moz-A7EE0DAF.compute-1.amazonaws.com) (Quit: bye)
+[16:14:06] <dbussink> acrichto: right, because it's heap allocated then and not stack right?
+[16:14:25] <dbussink> acrichto: not sure what you mean with using ~~fn() though
+[16:14:42] <acrichto> dbussink: sizeof(~fn()) == 2 words, sizeof(~T) = 1 word
+[16:14:51] <acrichto> and T can be ~fn()
+[16:15:01] <dbussink> acrichto: ah, right
+[16:15:03] <acrichto> just as the data pointer you pass to the child function
+[16:15:23] <dbussink> acrichto: does that work with the c calling conventions that pthread_create() calls back into?
+[16:15:33] <dbussink> acrichto: or does that need a special trampoline function somehow?
+[16:15:43] <acrichto> you'd create "extern fn my_thread_start(data: *c_void) { ... }"
+[16:15:45] <acrichto> in rust
+[16:15:57] <acrichto> and then you'd transmute data to ~~fn() and then call it
+[16:16:17] <dbussink> acrichto: alright, makes sense :)
+[16:16:30] <dbussink> acrichto: does it need to be extern since it's only also referenced from the rust code there?
+[16:16:59] <acrichto> the extern part flags it as by-default having the C abi instead of the Rust abi (which is what we want here anyway)
+[16:17:08] <dbussink> acrichto: ah ok, right :)
+[16:17:24] <dbussink> acrichto: what would be the best place to find docs about this stuff?
+[16:17:29] <acrichto> the signature for pthread_create in rust would be "extern { fn pthread_create(extern "C" fn(*c_void), *c_void) -> c_int; }" or something like that
+[16:17:37] <dbussink> since most what i can find is about rust itself, not about doing this kind of stuff :)
+[16:17:51] <acrichto> most of it is somehow linked on rust-lang.org
+[16:18:02] <acrichto> http://static.rust-lang.org/doc/master/tutorial-ffi.html may have more though
+[16:18:05] <acrichto> it's specifically about FFI
+[16:20:05] <dbussink> acrichto: alright, thanks :)
+[16:20:11] <acrichto> np
+[16:20:16] <dbussink> time for making dinner first now :)
+[16:20:28] <acrichto> heh i just woke up
+[16:22:23] <kimundi> acrichto: Morning! \o
+[16:22:29] <acrichto> morning!
+[16:23:24] <kimundi> acrichto: I woke up 8 hours ago, noticed that my Option PR failed because of something unrelated, and kept updating it with more cleanup :P
+[16:23:36] <acrichto> just looked it over and I'm ok w/ it for now
+[16:23:44] <acrichto> we have lots of barely used traits which could probably just go away
+[16:24:38] <nmatsakis> Luqman: I'll take a look
+[16:26:21] <kimundi> acrichto: Yeah, and we could remove even more traits if we'd be able to implement methods on compiler-build in types :)
+[16:26:46] <acrichto> kimundi: how many times do you actually call into_option(), like ever
+[16:28:45] <kimundi> acrichto: Yeah. That touches on my ok(self) -> ... Proposal, which I'm currently writing a lengthy email about. Those conversion traits would become mostly unnecessary with that.
+[16:29:06] <kimundi> But for now I wanted to clean up what exists :P
+[16:29:38] * kimundi can't work with a messy virtual workspace
+[16:29:56] <acrichto> kimundi: yeah I don't think that there's too much contention on just moving things around internally
+[16:31:54] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[16:31:54] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/lbdHaQ
+[16:31:54] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[16:36:26] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[16:36:26] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/PwGbCg
+[16:36:26] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[16:36:33] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[16:36:34] <ghrust> 01[13rust01] 15bors pushed 5 new commits to 06auto: 02http://git.io/QP9fHA
+[16:36:34] <ghrust> 13rust/06auto 140d92c53 15Marvin Löbel: Reordered the methods in std::Option and std::Result...
+[16:36:34] <ghrust> 13rust/06auto 14c22e7f0 15Marvin Löbel: Cleaned up the option and result module in more detail...
+[16:36:34] <ghrust> 13rust/06auto 1445fe205 15Marvin Löbel: Removed legacy implementations
+[16:36:36] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[16:38:20] *** Quits: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP) (Quit: Leaving.)
+[16:46:25] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[16:54:20] *** Joins: tjc (tjc@moz-6EB4E533.dsl.tsoft.com)
+[16:54:21] *** ChanServ sets mode: +o tjc
+[16:55:28] <nmatsakis> acrichto: are you going to add the 'static bound to the type hashing function?
+[16:56:05] <acrichto> nmatsakis: hm I got distracted by other things in the meantime, but I worry that it reduces the utility of the Any type
+[16:56:25] <acrichto> I also just couldn't figure out how to actually call type_id if it had a static bound
+[16:57:04] <nmatsakis> acrichto: that may be a separate bug; trait Any : 'static should in theory work
+[16:57:16] <nmatsakis> acrichto: as for reducing the utility of the Any type, I fear that's just what it is
+[16:57:41] <acrichto> nmatsakis: if we do accept that, then is there a way to work around not being able to write "trait Any: 'static" right now?
+[16:57:49] <acrichto> accept that it's not as useful as it might be
+[16:58:29] <kimundi> Why does Any need : 'static?
+[16:58:30] <nmatsakis> acrichto: maybe, has Any landed?
+[16:58:34] <acrichto> nmatsakis: it has 
+[16:58:35] <kimundi> Yes
+[16:58:41] <nmatsakis> ok let me go look at the def'n
+[16:58:42] <acrichto> kimundi: type_id() can't really be defined unless it's 'static
+[16:59:00] <acrichto> kimundi: the type_id of two types only differing in regions can be unsound
+[16:59:01] <nmatsakis> kimundi: because we don't distinguish lifetimes at runtime, so we can't reliably dynamically test for types that make use of them
+[16:59:34] <kimundi> Can't we just say that lifetimes do not differentiate types?
+[16:59:58] <acrichto> kimundi: you could create Any<&str> and then pull out Any<&'static str> or something like that possibly then I think
+[17:00:01] <acrichto> (in compeltely safe code)
+[17:00:19] <kimundi> acrichto: Ah, that would be bad, that's true
+[17:01:07] <kimundi> And not normalizing lifetimes to 'static would also not be an option, right?
+[17:01:37] <nmatsakis> acrichto: I would probably change Any so that it doesn't use default methods,
+[17:01:40] <acrichto> that's a codegen thing I believe, if you have 'fn foo<'a, T>(a: &'a T)' then we only emit one version of that
+[17:01:44] <nmatsakis> acrichto: and then change impl<T> Any for T {} to impl<T:'static> Any for T {}
+[17:01:57] <nmatsakis> acrichto: there's really no reason to use default methods in that case, since there can only be one impl
+[17:02:02] <acrichto> nmatsakis: hm that makes sense, progress!
+[17:02:21] <kimundi> Well, there is one reason
+[17:02:46] <kimundi> Not using default methods made as_void_ptr return bogus values last time I tried it :P
+[17:02:58] <nmatsakis> huh
+[17:03:07] <kimundi> (Might just been an error on my side though)
+[17:03:18] <nmatsakis> maybe
+[17:03:27] <nmatsakis> i'd like to re-read the default methods code. the summer went by in a blur. :)
+[17:04:21] <acrichto> nmatsakis: so with the 'static bound, it's safe to sess.bug() if a non-static Region is found in a type, right?
+[17:06:05] <nmatsakis> acrichto: yes. I am still confused why you saw anything else in the first place, tbh
+[17:06:25] <nmatsakis> acrichto: I think that's a bug too but... maybe not. or maybe a harmless one.
+[17:06:28] <acrichto> nmatsakis: it was pulling the type out of some weird subst.tys[0], so that my just be different than the rst of trans
+[17:06:49] <acrichto> (I barely understand what's going on, mostly just copying surrounding code)
+[17:06:51] <nmatsakis> acrichto: yes I expect it's an artifact of intrinsics taking a different path
+[17:07:01] <acrichto> probably not too bad then
+[17:07:24] <nmatsakis> maybe harmless, seems wrong nonetheless, but I'm not 100% certain of that, maybe there's a reason
+[17:07:39] <nmatsakis> so I'm inclined to wait until an issue arises.
+[17:07:51] <nmatsakis> just store this bit of knowledge in my back pocket so that I can appear omniscient at the right time ;)
+[17:08:25] <acrichto> you must have a very full back pocket
+[17:09:36] *** Quits: dbaupp (Thunderbir@moz-B3C9E9E8.lns20.syd6.internode.on.net) (Ping timeout)
+[17:36:47] *** Quits: tjc (tjc@moz-6EB4E533.dsl.tsoft.com) (Quit: zzzzzzzzzz)
+[17:41:29] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[17:41:29] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/QP9fHA
+[17:41:29] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[17:46:07] *** Joins: nielsle (nielsle@moz-C46DA772.boa.fiberby.dk)
+[17:46:34] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[17:46:34] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/Xwz_eg
+[17:46:34] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[17:46:37] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[17:46:37] <ghrust> 01[13rust01] 15bors pushed 6 new commits to 06auto: 02http://git.io/M7eJ4A
+[17:46:37] <ghrust> 13rust/06auto 14a9cd415 15Alex Crichton: Move rt::io traits into the prelude...
+[17:46:37] <ghrust> 13rust/06auto 1499c07f7 15Alex Crichton: Modify IoFactory's fs_mkdir, and add fs_rename...
+[17:46:37] <ghrust> 13rust/06auto 14ee13278 15Alex Crichton: Remove all blocking std::os blocking functions...
+[17:46:39] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[17:53:57] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[17:53:57] *** ChanServ sets mode: +qo brson brson
+[17:56:49] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[17:56:49] *** ChanServ sets mode: +ao pcwalton pcwalton
+[17:59:33] <mrmonday> brson: hey, I've been informed that you're the guy to talk to about networking internals?
+[18:00:00] <mrmonday> I'm looking at implementing raw sockets in Rust and wanted some input if possible
+[18:00:54] <mrmonday> my initial plan was to wrap the missing libuv functions taht are needed and build up similar abstractions to what's done for udp/tcp - it seems master is moving away from libuv though, do I need to worry about that much?
+[18:03:53] <acrichto> mrmonday: the libuv bindings are all in a state of large flux right now
+[18:03:58] <brson> mrmonday: don't fear, master is still in love with libuv
+[18:04:06] <acrichto> I'm actually currently completely rewriting all of them to remove ~fn() usage
+[18:04:27] <acrichto> mrmonday: were you interested in working with native libc apis or extending the existing functionality built on libuv?
+[18:05:52] <acrichto> brson: I was also gonna try to make a snapshot today, but I have a feeling #10220 may block it
+[18:07:27] <mrmonday> my eventual plan is to make it possible to implement user-space data link/network/transport layer protocols in Rust
+[18:08:03] <acrichto> that'd be awesome! I'm not entirely sure if libuv exposes the ability to do that natively
+[18:08:10] <acrichto> although I haven't looked into libuv that much at all
+[18:08:43] <mrmonday> acrichto: from what I can gather, libuv allows you to use arbitrary file descriptors with it, so my current plan is to set up the socket/fd as required, then hand over to libuv
+[18:08:54] <acrichto> mrmonday: now that would be truly awesome
+[18:09:22] <acrichto> mrmonday: what I would suggest for that is starting to get familiar with the code in src/librustuv
+[18:09:29] <mrmonday> obviously the other way to support that would be to add support to libuv directly, I'd rather tspend the time writing Rust though :)
+[18:09:34] <acrichto> mrmonday: or even just add blocking support first
+[18:10:05] <mrmonday> already got working blocking support
+[18:10:12] <acrichto> oh wow!
+[18:10:22] <mrmonday> my next step was to get it working non-blocking with libuv
+[18:10:32] <mrmonday> then put a nice API on top of it
+[18:10:39] <acrichto> that'd be pretty sweet
+[18:11:17] <acrichto> I've been starting to take over much of the I/O work recently, and I'd be more than happy to help you and review everything
+[18:11:32] <mrmonday> just wanted some input from you guys (the people actually working on Rust) to see if you had any better ideas for approaches/if there were any noticable flaws in my plan :p
+[18:11:57] <mrmonday> obviously I'd hope to get my work integrated at some point so it's important you like where I'm going with it
+[18:12:20] <acrichto> I think that this is definitely the best way to start (adding blocking support, then adding libuv binding support for async action)
+[18:12:42] <acrichto> I'm not entirely familiar with that portion of libuv's api
+[18:12:48] <acrichto> adding arbitrary file descriptors into it
+[18:13:59] <mrmonday> cool
+[18:15:21] <mrmonday>  well I'll keep you informed about where I'm at with it and maybe see about getting some input from you once I've made a bit more progress :)
+[18:15:21] <acrichto> brson: so I'm looking into removing ~fn() from uv bindings, do you have a sec to talk about it design-wise?
+[18:18:00] <Sharp> nmatsakis: When you store a pattern-matching enum or tuple struct in a variable, do you ever actually use it in a pattern match?  Or just as a data constructor?
+[18:18:47] <brson> acrichto: ok
+[18:18:57] <acrichto> brson: a sketch of what I'd like is at https://github.com/alexcrichton/rust/blob/uv-less-alloc/src/librustuv/timer.rs
+[18:19:11] <Sharp> s/enum/variant/
+[18:19:15] <acrichto> brson: I'd like to remove a layer of indirection, right now we have UvTimer -> TimerWatcher -> uv_timer_t
+[18:19:33] <acrichto> brson: this would expose TimerWatcher directly, and you could only allocate ~TimerWatcher
+[18:19:45] <brson> we really need to establish our package incubator strategy soon. there's a bunch of code that keeps wanting to come into libextra, and it's going to end up going back out again
+[18:19:47] <acrichto> brson: the data field of all uv handles would point to their equivalent ~ object
+[18:19:52] <brson> maybe that's what i'll do next
+[18:20:37] <nmatsakis> Sharp: just as a fn to call
+[18:21:04] <brson> acrichto: looking
+[18:21:07] <Sharp> nmatsakis: Cool.  So it needn't (necessarily) carry forward any special 'constructor' bit.
+[18:21:14] <Sharp> (Or whatever).
+[18:21:20] <acrichto> brson: https://github.com/alexcrichton/rust/blob/uv-less-alloc/src/librustuv/rustuv.rs#L123 is also the main trait which would be used to wrap uv handles
+[18:21:29] <acrichto> (an implementation can be seen on the timer watcher)
+[18:21:45] <kimundi> acrichto: Btw, the wrong-positive unused import warning I had yesterday? Turned out I confused the module imports with the test module imports :|
+[18:21:47] <acrichto> brson: but the main goal is to put all data on the I/O objects themselves, instead of sharing the same "watcher data" among all handles
+[18:22:03] <acrichto> kimundi: oh good! well good in the sense that it may not be a bug
+[18:23:38] <brson> acrichto: yeah the watcher data god-type is bad, it just kind of happened that way
+[18:24:33] <acrichto> brson: I wanted to make the transition from sync to async apis a very small surface area because it's a fairly unsafe thing to do to leave lots of stack-allocated things in the structure
+[18:24:45] <acrichto> brson: so that was another reason for pretty much axing everything in vuio
+[18:24:48] <acrichto> uvio*
+[18:26:30] <brson> acrichto: i see this removes the watcher allocations. does it remove others?
+[18:26:47] <acrichto> brson: how so? which watcher?
+[18:26:54] <kimundi> "god type"? I didn't know we had a deus ex ferrugo
+[18:27:42] <kimundi> acrichto: I made a post to the mailing list about the option/result API
+[18:27:43] <brson> acrichto: well it removes the Uv* allocations
+[18:28:12] <acrichto> brson: yes, the returned ~RtioTimer is a ~TimerWacher instead of a ~UvTimer
+[18:28:14] <brson> so this formulation has 1/2 the allocations of the old system
+[18:28:24] <acrichto> kimundi: I saw! excellent, I shall read it soon
+[18:28:33] <acrichto> brson: yes, plus no allocations on any I/O operation at all
+[18:28:38] <acrichto> brson: except for a new handle
+[18:28:59] <acrichto> and in theory if we can define uv types as structs in rust (so we don't have to malloc them), then allocating an I/O handle would involve one and only one allocation
+[18:29:16] <acrichto> although that would require some finesse
+[18:29:22] <acrichto> it's way easier to just malloc the handles now
+[18:29:42] <brson> acrichto: yeah, i was thinking we can do it on a case-by-case basis to solve critical perf issues
+[18:30:02] <acrichto> and I highly doubt that creating an I/O handle is every going to be the perf bottleneck
+[18:30:17] <acrichto> each I/O handle involes getting a handle to the current scheduler which means that libuv makes a pipe
+[18:30:35] <brson> so the only thing that makes me sad about this is that the core libuv api is no longer general-purpose; it is tied intimately to the scheduler
+[18:30:58] <brson> i had hoped that these would end up as high-quality libuv bindings that anybody could use
+[18:31:02] <acrichto> I realized that this morning on my way in, but I also thought that the old api was a very thin wrapper around the actual libuv functions
+[18:31:25] <brson> and aren't actually memory-safe yet
+[18:31:30] <acrichto> it is a legitimate concern though
+[18:31:33] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[18:31:33] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14fc5e51c to 147cff3c7: 02http://git.io/N3iJvQ
+[18:31:33] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[18:31:41] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[18:31:41] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/ma9yzg
+[18:31:41] <ghrust> 13rust/06auto 14e2a68b6 15Alex Crichton: Give test and main tasks better names...
+[18:31:41] <ghrust> 13rust/06auto 14fa2bb97 15bors: auto merge of #10204 : alexcrichton/rust/better-names, r=brson...
+[18:31:42] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[18:31:49] <brson> rust perf is more important though :(
+[18:32:00] <brson> maybe we can type-parameterize away the scheduler field someday
+[18:32:16] <brson> oh, and all the fields that implement the Rtio stuff
+[18:32:21] <brson> that'll be rough
+[18:32:22] <acrichto> it really only uses two functions (block/unblock)
+[18:32:40] <acrichto> well and homing I suppose
+[18:34:42] <brson> maybe you can at least consider that as you redesign the libuv handles. make sure there's a way forward to seperate the types back out again
+[18:35:16] <acrichto> hm ok I'll think about this
+[18:35:47] *** Joins: matthewbot (user@moz-C6814817.ga.at.cox.net)
+[18:36:21] <brson> acrichto: what do you plan to do with the ~fn?
+[18:36:25] <brson> -s
+[18:36:44] <acrichto> all of the extern fn callbacks become much more specialized
+[18:36:58] <acrichto> so the extern fns just take care of everything
+[18:37:12] <acrichto> the "environment" is whatever state you stored in the handle itself
+[18:37:21] <acrichto> so TimerWatcher's environment is the 'action' field
+[18:40:20] <mrmonday> oh, another question - I notice all the libuv stuff is currently calling C++ wrapper methods  - is this necessary?
+[18:40:45] <acrichto> mrmonday: not entirely, there are possibly weird linker issues if they're removed, but it's not clear what the issues are
+[18:41:05] <acrichto> right now I'm trying to land something without a wrapper method and I haven't seen any linker problems (although it's failing for other reasons
+[18:43:27] *** Quits: StarLight (StarLight@moz-20877D28.dynamic.avangarddsl.ru) (Ping timeout)
+[18:43:33] <mrmonday> alright, I'll do without then and see how it goes, thanks!
+[18:45:35] <brson> the windows build doesn't link correctly if the wrappers are removed
+[18:45:51] <brson> the libuv build probably just needs to be configured differently
+[18:45:59] <acrichto> brson: I got it to work locally, somehow
+[18:46:03] <acrichto> with no extra changes
+[18:47:26] *** Joins: StarLight (StarLight@moz-501842FE.dynamic.avangarddsl.ru)
+[18:47:35] <brson> you've got the magic touch. let's see what the bots say
+[18:47:47] <acrichto> nmatsakis: updated the type_id intrinsic branch, it requires 'static and I've also migrated everything that was waiting on 9913 to get resolved
+[18:48:05] <acrichto> brson: I can't say for sure though, I'm trying this in my rt-improvements request, and it keeps failing with a segfault on linux (which baffles me)
+[18:48:23] <acrichto> I'm running locally 1k times with 2 instances of the test in parallel and nothing is ever dying
+[18:48:35] <acrichto> but it appears to fail reliably on the bots
+[18:48:37] <nmatsakis> acrichto: nice
+[18:49:42] <acrichto> brson: kimundi: the fruit of the ~Any labors: https://github.com/alexcrichton/rust/blob/typeid-intrinsic/src/libstd/rt/task.rs#L652
+[18:52:01] <kimundi> acrichto: Heh, nice, that is what I had in mind once typeid works :)
+[18:55:51] <nmatsakis> acrichto: neat
+[18:56:14] <kimundi> acrichto: I see you added a enum LinkedFailure in rt::kill. There also is a unit struct LinkedFailure in std::task though :)
+[18:56:30] <cmr> I wonder if it could someday be possible to match on type, ala instanceof
+[18:56:43] <kimundi> cmr: That's what any provied more or less
+[18:56:50] <acrichto> kimundi: oh that's what I want
+[18:56:55] <cmr> kimundi: well it provides instanceof, but not matching :p
+[18:57:09] <Sharp> kimundi: How is Any implemented, then?  From what I've read such matching can't be reliably performed at compile time.
+[18:57:14] <kimundi> cmr: Pff, that's just one macro declaration removed ;)
+[18:57:20] <cmr> kimundi: Ohhh, good point!
+[18:57:29] <cmr> I always forget about macros at the most inopportune times.
+[18:57:55] <kimundi> Sharp: It uses trait objects
+[18:58:00] <Sharp> Ah, okay
+[18:58:03] <Sharp> That works.
+[18:58:08] * Sharp will avoid Any, then :)
+[18:58:24] <kimundi> Sharp: Every ~Any exposes a get_type_id() method, which returns the TypeId of the underlying type inside the ~Any
+[18:59:01] <kimundi> Sharp: And on &Any there is a generic method defined: is<T>(self) -> bool
+[18:59:15] <Sharp> Sure… but in general trait objects are not fully handled at compile time
+[18:59:23] <Sharp> I prefer to only not do things at compile time if I have to.
+[18:59:25] <cmr> Right, that's their point.
+[18:59:33] <Sharp> Yeah
+[18:59:50] <kimundi> Sharp: is() then simply compares the typeid of the trait object with the typeid of the generic type T
+[18:59:52] <Sharp> It definitely has a use case, I just personally now that Any falls into that category :)
+[19:00:30] <Sharp> kimundi: Yeah, I understand that the actual check is quick, what's not quick (relatively speaking) is actually carrying around all the information that makes the check possible.
+[19:00:43] <kimundi> Sharp: And if they match, there are other methods that internally perform casts of raw pointers to get your the right type back
+[19:00:45] <Sharp> (Matches can be implemented quickly if you have bounded subtype depth).
+[19:01:26] <kimundi> Well, it's a call through an function pointer and a equality comparison
+[19:01:42] <kimundi> Doesn't seem like it would be too slow
+[19:01:49] <kimundi> But I have no idea ;)
+[19:01:56] <Sharp> Matches on Any can (with a sufficiently knowledgable compiler) be made quite a bit faster than that, the problem is the actual trait objects :D
+[19:02:00] <Sharp> Well, not problem
+[19:02:39] <Sharp> It's just intrinsically slower having to look into a vtable (which even very fast matching algorithms effectively have to do) than just knowing their types ahead of time.  That's all :)
+[19:02:45] <sfackler> has Any merged?
+[19:03:44] <kimundi> Sharp: Fair enough
+[19:03:47] <kimundi> sfackler: Yes
+[19:03:50] <cmr> Sharp: What? No it isn't. The tydesc is in the vtable.
+[19:04:06] <kimundi> sfackler: However, it's still a bit useless cross crate unless acrichto's PR lands :)
+[19:04:21] <Sharp> cmr: How does that contradict what I said?
+[19:04:37] <cmr> Sharp: Oh, I read it wrong, sorry.
+[19:04:50] <cmr> I thought you wrote instrinsically slower /than/ having to...
+[19:05:02] <Sharp> Oh, gotcha :)
+[19:06:32] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[19:32:25] <Sharp> @pcwalton What was this for?  https://github.com/mozilla/rust/commit/4da58a5bd6f921b446e46cf65790975598289308#diff-da9d34ca1d0f6beee2838cf02e07345cR2725
+[19:34:20] <Sharp> (The expression is completely different now, and no longer even calls a function, so I'm guessing it can be removed :)  But I want to make sure).
+[19:41:26] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[19:41:26] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/ma9yzg
+[19:41:26] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[19:46:23] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[19:46:23] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/ol4tJA
+[19:46:23] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[19:46:30] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[19:46:30] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/w2u-qA
+[19:46:30] <ghrust> 13rust/06auto 1412222f9 15Luqman Aden: configure: Fix passing multiple target and host triples.
+[19:46:30] <ghrust> 13rust/06auto 14d9decf3 15Luqman Aden: configure: Remove legacy triple flags.
+[19:46:30] <ghrust> 13rust/06auto 148ea2123 15bors: auto merge of #10220 : luqmana/rust/con, r=brson...
+[19:46:32] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[19:51:57] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[19:51:57] <ghrust> 01[13rust01] 15alexcrichton merged 06auto into 06snap-stage3: 02http://git.io/zTnUVA
+[19:51:57] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[19:53:58] <acrichto> brson: hm so thinking about these libuv bindings, our current non UvXXXX wrappers are pretty much translations from ~fn() to async callbacks
+[19:54:30] <acrichto> brson: but we're removing ~fn(), and ~fn() isn't the appropriate types for all of these, so it would probably involve making traits for each type of callback that libuv has
+[19:55:23] <acrichto> I think right now it would be really messy to define all the types like that, but perhaps in the future it'd be nicer
+[19:55:54] *** Joins: tikue_ (tikue_star@B5E62AAE.8F253A2B.689607DE.IP)
+[19:57:03] <acrichto> it's pretty orthogonal to the direction that I'm going though. I think that the direction I'm going in basically means that rustuv is for rust and rust alone, which is actually kinda sad
+[20:50:30] *** Joins: reedlepee (Mibbit@9B9315E1.A6025CA.1C37C358.IP)
+[20:51:10] <Sharp> I think I asked this before, but are there any plans to implement type-parameterized modules?
+[20:51:58] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[20:51:59] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/w2u-qA
+[20:51:59] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[20:52:43] <cmr> Sharp: that would be awesome
+[20:54:37] <Sharp> I mean, has it been proposed?  Are there reasons we're not doing it right now?  I can't really think of anything bad you could do with type-parameterized modules that you can't already do with individual generics, but maybe I'm not thinking about it the right way.
+[20:55:53] <sfackler> what's the use case?
+[20:56:32] <Sharp> Lots of use cases… similar to defining / using abstract types in ML signatures.
+[20:56:42] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[20:56:42] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/Fse1mQ
+[20:56:42] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[20:56:49] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[20:56:49] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/1n4j4Q
+[20:56:49] <ghrust> 13rust/06auto 147bba3f6 15berleon: capitalized std::int::min_value, max_value Closes #10010
+[20:56:49] <ghrust> 13rust/06auto 1487fcc23 15bors: auto merge of #10075 : berleon/rust/master, r=alexcrichton
+[20:56:49] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[21:06:17] *** Quits: tikue_ (tikue_star@B5E62AAE.8F253A2B.689607DE.IP) (Ping timeout)
+[21:11:44] <Sharp> Also, right now there are only four item types that don't allow generics: statics (which could in theory be type-parameterized in a sane way if we used the type parameters of the mod), mods and foreign mods (which this would be addressing), and macros (for which type parameters don't really make sense).  So unless people strongly object to type parameters in statics it would be equivalent to convenient shorthand without loss of 
+[21:11:45] <Sharp> readability.
+[21:16:05] <acrichto> Sharp: type parameters in statics is a tricky problem
+[21:16:30] <acrichto> Sharp: see https://github.com/mozilla/rust/issues/9186 for some details, but the TLS module currently relies on addresses of statics being unique
+[21:16:59] <Sharp> Wouldn't type-parameterized modules make this a nonissue by giving them all unique addresses, though?
+[21:17:02] * Sharp will read the issue.
+[21:17:17] <Sharp> Oh, I see.
+[21:17:36] <acrichto> I've heard of type-parameterize modules in the past, but I don't think that the opinion towards them has been generally favorable
+[21:17:47] <Sharp> I rather like ML signatures :)
+[21:17:51] <acrichto> I think that we all keep holding out for associated items, but I'm not sure that it's going to happen any time soon
+[21:18:04] <Sharp> Yeah, I don't feel strongly about it, I was just curious--it would make the AST a bit neater.
+[21:19:17] <Sharp> Hm, doesn't that bug just refer to inner statics?
+[21:20:05] <acrichto> that one particularly does, but type-generic statics might have similar issues
+[21:20:23] <acrichto> I also don't quite understand how statics can be generic because they only have one value and you explicitly list it
+[21:20:42] <Sharp> Yeah, that was actually the issue I thought you were going to raise :)
+[21:21:53] <Sharp> I think you would probably have to have constexprs to make them work, then they could be parameterized based on value parameters handed to modules (which would themselves have to be constexprs).
+[21:23:11] *** Joins: tikue_ (tikue_star@6A4FE76F.2ACBBF24.689607DE.IP)
+[21:23:13] <pcwalton> Sharp: I don't remember, try removing it
+[21:23:20] <Sharp> I will, thanks.
+[21:24:29] <Sharp> Anyway, I hate everything about what I just said so yeah, probably not a good idea :P
+[21:26:07] <Sharp> You could still do parameterized modules without statics of course, but then we're still inconsistent--if a change is being made for consistency you can't do things halfway.
+[21:36:41] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[21:36:41] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1487fcc23 to 148ea2123: 02http://git.io/N3iJvQ
+[21:36:41] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[21:36:45] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[21:36:45] <ghrust> 01[13rust01] 15bors pushed 6 new commits to 06auto: 02http://git.io/2K4BrQ
+[21:36:45] <ghrust> 13rust/06auto 14c8e119f 15Alex Crichton: Move rt::io traits into the prelude...
+[21:36:45] <ghrust> 13rust/06auto 14469bfad 15Alex Crichton: Modify IoFactory's fs_mkdir, and add fs_rename...
+[21:36:45] <ghrust> 13rust/06auto 14aa1a0fb 15Alex Crichton: Remove all blocking std::os blocking functions...
+[21:36:47] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[22:17:45] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[22:21:32] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[22:21:33] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 144831594 to 148ea2123: 02http://git.io/N3iJvQ
+[22:21:33] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[22:21:40] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[22:21:40] <ghrust> 01[13rust01] 15bors pushed 6 new commits to 06auto: 02http://git.io/goIfhg
+[22:21:40] <ghrust> 13rust/06auto 14a9cd415 15Alex Crichton: Move rt::io traits into the prelude...
+[22:21:40] <ghrust> 13rust/06auto 1499c07f7 15Alex Crichton: Modify IoFactory's fs_mkdir, and add fs_rename...
+[22:21:40] <ghrust> 13rust/06auto 14ee13278 15Alex Crichton: Remove all blocking std::os blocking functions...
+[22:21:42] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[23:05:48] *** Quits: tikue_ (tikue_star@6A4FE76F.2ACBBF24.689607DE.IP) (Ping timeout)
+[23:06:36] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[23:06:37] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14ff52b78 to 148ea2123: 02http://git.io/N3iJvQ
+[23:06:37] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[23:06:41] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[23:06:41] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/WDUglQ
+[23:06:41] <ghrust> 13rust/06auto 14d228896 15Alex Crichton: Stop propagating link arguments across crates...
+[23:06:41] <ghrust> 13rust/06auto 144c8b01f 15Alex Crichton: Statically link sundown to librustdoc...
+[23:06:41] <ghrust> 13rust/06auto 14186c82f 15Alex Crichton: Statically link libuv to librustuv...
+[23:06:43] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[23:09:21] *** Quits: reedlepee (Mibbit@9B9315E1.A6025CA.1C37C358.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[23:13:30] *** Quits: jdm (jdm@13F2CEC5.7672369.D8E68FF6.IP) (Quit: Lost terminal)
+[23:16:27] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[23:16:27] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 146512a53 to 148ea2123: 02http://git.io/N3iJvQ
+[23:16:27] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[23:16:30] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[23:16:30] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/cz2bvg
+[23:16:30] <ghrust> 13rust/06auto 14c874e64 15Brian Anderson: Name the rustc task 'rustc'
+[23:16:30] <ghrust> 13rust/06auto 14894c1f6 15bors: auto merge of #10215 : brson/rust/rustctask, r=thestinger
+[23:16:31] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[23:23:29] *** Joins: dbaupp (Thunderbir@moz-B3C9E9E8.lns20.syd6.internode.on.net)
+[23:24:16] <dbaupp> r? https://github.com/mozilla/rust/pull/10223
+[23:41:13] *** Joins: jeffdb (jeff@moz-ED35AD97.hsd1.ca.comcast.net)
+[23:44:49] <dbaupp> any comments re my comment on ^ ?
+[23:59:16] <brson> dbaupp: no opinion really, though i'd rather not go overboard with esoteric maths in std

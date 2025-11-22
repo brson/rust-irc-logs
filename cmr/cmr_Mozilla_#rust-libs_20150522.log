@@ -1,0 +1,245 @@
+[00:16:58] <cmr> carllerche: ping
+[00:17:04] <carllerche> sup
+[00:17:24] <cmr> carllerche: how intent are you on pool allocating its entries out of a preallocated pool?
+[00:17:45] <carllerche> hmmm?
+[00:17:59] <carllerche> I feel like I am missing context
+[00:18:07] <cmr> sorry, https://github.com/carllerche/pool
+[00:18:12] <carllerche> ah
+[00:18:21] <carllerche> this is the problem w/ simple names :P
+[00:18:24] <cmr> right? :P
+[00:19:05] <carllerche> So... I would be fine if there were multiple options
+[00:19:09] <cmr> My usecase doesn't want a fixed upper limit on number of checkouts, and while I could maintain my own list of pools, that becomes expensive.
+[00:19:28] <cmr> Although I guess I really just want a free list, wouldn't be that bad.
+[00:19:42] <carllerche> cmr: I think one option would be to allow pool to grow out in chunks
+[00:19:46] <eternaleye> carllerche: Sooner or later someone will ask about your eventual IO library, and you'll reply "But I alread have two!"
+[00:19:57] <eternaleye> carllerche: And then you'll realize they meant eventual_io :P
+[00:19:58] <carllerche> eternaleye: pretty much
+[00:20:40] <carllerche> cmr: what do you think about about allowing the pool to grow in segments?
+[00:20:57] <cmr> carllerche: would it be shrinkable as well?
+[00:21:06] <carllerche> cmr: well.. that gets trickier :P
+[00:21:09] <cmr> Yeah...
+[00:21:14] <carllerche> you would have to "compact"
+[00:21:30] <carllerche> there is a certain point where you might as well just allocate
+[00:21:32] <cmr> I'm thinking I'll just maintain an internal linked list cache and prune it.
+[00:21:39] <eternaleye> carllerche: I think a cool option might be for a Pool.checkout_capacity(usize) that gets a buffer with at-least capacity, and if none exists creates a new one with that capacity
+[00:21:40] <carllerche> cmr: what is the usecase?
+[00:21:41] <cmr> Instead of trying to do fanciness with Pool.
+[00:22:02] <carllerche> cmr: how important is shrinking?
+[00:22:10] <carllerche> cmr: because, you can have a pool of Box<Val>
+[00:22:25] <carllerche> in which case, the pool only grows by ptr size
+[00:22:54] <cmr> carllerche: glutin needs to hand out vectors of various input data for certain input devices (ie multitouch, joysticks with multiple axes), and I'd rather not be hitting the allocator every time they poll for input, when in most usecases you're going to free the vector it previously returned before polling again.
+[00:23:05] <carllerche> eternaleye: not sure I follow
+[00:23:26] <cmr> eternaleye: isn't that just malloc?
+[00:23:30] <cmr> eternaleye: at that point?
+[00:23:42] <eternaleye> carllerche: Sorry, my brain had crossed wires between your Pool and someone else's allocation pool lib (reem?)
+[00:24:08] <eternaleye> carllerche: Specifically, that one has naming for its elements that puts me in mind of your bytes crate
+[00:24:14] <reem> I haven’t written an allocation pool lib that I’m aware of :P
+[00:24:17] <eternaleye> carllerche: So they hybridized
+[00:24:37] <cmr> carllerche: shrinking isn't super important for this usecase I guess, but I'd like to not "leak" too much.
+[00:26:00] <cmr> In practice I expect *very* few concurrent checkouts, so I might just use an enum with FromPool(Checkout<Vec<T>>) and New(Vec<T>)
+[00:26:08] <cmr> that's probably better, thinking about it.
+[00:26:14] <eternaleye> Ah, I see. No less than four libraries got mixed up in my head. carllerche's Bytes and Pool, reem's MemBuf, and frankmcsherry's Recycler
+[00:26:39] <eternaleye> So many crossed wires XP
+[00:26:49] <carllerche> cmr: cool, anyway i am always open to improvements :)
+[00:26:57] <carllerche> eternaleye: many different libs w/ simple names
+[00:27:49] <reem> ah, MemBuf is just nice wrappings around std::rt::heap to make it less painful to do manual allocs, it doesn’t do any pooling
+[00:36:22] <bstrie> Gankro: how would I do http://is.gd/YpXr60 today without resorting to skip
+[00:37:42] <bluss> never skip if you can slice instead, I think
+[00:38:34] <bstrie> bluss: I'm trying to slice, I can't figure out how
+[00:38:42] <Gankro> bstrie: http://is.gd/raWbMO
+[00:39:17] <cmr> heh, that's what I ended up with too.
+[00:39:40] <Gankro> It's not the nicest, granted
+[00:39:43] <cmr> ie, "don't bother", since the slice iterator returns references.
+[00:39:53] <bluss> I usually write &bar[1..].iter() before I realize the & has to go
+[00:40:35] <Gankro> Oh yeah derp
+[00:40:41] <Gankro> into_iter -> iter for this case
+[00:40:55] * Gankro really needs to write some more Rust
+[00:40:59] <bluss> it worked, doesn't matter
+[00:41:03] <bstrie> Gankro: not sure I understand the objection that warrants closing that RFC, I don't think that using Extend as a bound will be as common as usage of extend
+[00:41:33] <Gankro> bstrie: If you do it, it can do some spooky things, though
+[00:41:35] <bluss> yes I wanted to ask, why did you say there are still many issues Gankro?
+[00:41:45] <bluss> I thought we had resolved much of it
+[00:47:15] <bstrie> Gankro: can you elaborate on spooky things?
+[00:50:03] <bluss> Regarding ASAP, what I think we need to solve is a method call to append to vectors easily. Like push_all or Extend<&T>. A lot of people will be hitting this with just slices of bytes
+[00:50:20] <bluss> and secondly something like .clone_from_slice i.e. overwriting from one slice to another
+[00:50:31] <bluss> again the most common use case probably for &[u8]
+[00:50:51] <cmr> there is http://static.rust-lang.org/doc/master/std/slice/bytes/fn.copy_memory.html at least.
+[00:50:58] <Gankro> bstrie: bluss: posted on the RFC
+[00:51:04] <bluss> cmr: unstable just like clone_from_slice
+[00:51:06] <cmr> could be generalized to T: Copy easily.
+[00:51:52] <bluss> cmr: we should probably do that
+[00:51:55] *** Joins: aatch (james@moz-8r6eer.orns.ubhm.e000.2406.IP)
+[00:54:29] <Gankro> aturon: How does the associated type work? Extend is stable, can you even do that?
+[00:56:06] <aturon> Gankro: we'd need defaulted assoc types to be implemented -- but good point
+[00:56:20] <aturon> (i doubt it would be *too* hard to impl)
+[00:57:01] <Gankro> aturon: Can you sketch what it would look like *with* an AT?
+[00:57:10] <bstrie> deprecate extend! new methods all around!
+[01:00:23] <aturon> Gankro: bah, needs HKT to capture your pair example :( sorry
+[01:00:37] <aturon> stupid lifetimes!
+[01:00:48] <Gankro> aturon: Alright, that's what I thought :)
+[01:01:13] <aturon> https://github.com/rust-lang/rfcs/pull/839#issuecomment-104463161
+[01:02:07] <bluss> Gankro: implementing Cloned for both &T and (&T, &U), there's no reason those impls should conflict
+[01:02:10] <bluss> but they do
+[01:03:18] <Gankro> bluss: Yes I reckon that's the "semi-intentional" limits I ran into when talking to nmatsakis about a blanket
+[01:03:39] <bluss> yeah ok
+[01:07:04] <Gankro> bluss: Like I said in the comment: if people feel strongly I'm fine with any of the strategies. I'm just pretty ambivalent about the whole thing.
+[01:23:18] *** Quits: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se) (Ping timeout: 121 seconds)
+[01:50:39] *** Joins: blank_name (blank_name@moz-o85.lq9.107.50.IP)
+[01:58:17] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[01:58:18] *** ChanServ sets mode: +qo brson brson
+[02:07:11] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[02:07:15] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[02:11:27] *** Joins: blank_na1e (blank_name@moz-qk4b1t.mi.frontiernet.net)
+[02:14:50] *** Quits: blank_name (blank_name@moz-o85.lq9.107.50.IP) (Ping timeout: 121 seconds)
+[02:16:24] *** Quits: blank_na1e (blank_name@moz-qk4b1t.mi.frontiernet.net) (Ping timeout: 121 seconds)
+[02:16:27] *** Joins: blank_name (blank_name@moz-v1i.38r.183.192.IP)
+[02:21:19] *** Quits: blank_name (blank_name@moz-v1i.38r.183.192.IP) (Ping timeout: 121 seconds)
+[02:21:28] *** Joins: blank_name (blank_name@moz-se4mfq.mi.frontiernet.net)
+[02:33:07] *** Joins: Rym_ (y@moz-c2u.sd4.38.217.IP)
+[02:35:28] *** Joins: annodomini (lambda@moz-qgii5v.ma.comcast.net)
+[02:38:28] <cmr> carllerche: r? https://github.com/carllerche/pool/pull/4
+[02:38:30] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[02:39:42] *** Joins: Rym_ (y@moz-c2u.sd4.38.217.IP)
+[02:53:11] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[03:01:46] *** Quits: zz_kimundi (kimundi@moz-uvfh0m.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[03:03:24] *** Joins: zz_kimundi (kimundi@moz-l6kkds.dip0.t-ipconnect.de)
+[03:03:26] *** zz_kimundi is now known as kimundi
+[03:06:05] *** Joins: p1start (p1start@moz-nftjhe.org)
+[03:17:59] *** Joins: quantheory (quantheory@moz-ki0q9g.b7ng.glnu.0001.2601.IP)
+[03:19:01] *** Quits: quantheory (quantheory@moz-ki0q9g.b7ng.glnu.0001.2601.IP) (Quit: Leaving)
+[03:48:27] *** Joins: blank_na1e (blank_name@moz-kbg.iv2.183.192.IP)
+[03:49:42] *** Quits: blank_name (blank_name@moz-se4mfq.mi.frontiernet.net) (Ping timeout: 121 seconds)
+[04:02:04] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[04:23:20] *** Joins: Rym_ (y@moz-c2u.sd4.38.217.IP)
+[04:27:34] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[04:38:45] *** Joins: Rym_ (y@moz-c2u.sd4.38.217.IP)
+[04:42:59] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[04:55:53] *** Quits: annodomini (lambda@moz-qgii5v.ma.comcast.net) (Client exited)
+[05:26:47] *** Joins: Rym_ (y@moz-c2u.sd4.38.217.IP)
+[05:31:01] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[05:48:54] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[05:57:45] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[06:01:36] *** Quits: aatch (james@moz-8r6eer.orns.ubhm.e000.2406.IP) (Quit: Leaving)
+[06:06:11] *** Quits: ryanhiebert (ryanhiebert@moz-nsd5kl.ks.cox.net) (Ping timeout: 121 seconds)
+[06:20:56] *** Joins: Rym_ (y@moz-c2u.sd4.38.217.IP)
+[06:25:10] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[06:48:24] *** Joins: ryanhiebert (ryanhiebert@moz-nsd5kl.ks.cox.net)
+[07:15:03] *** Joins: Rym_ (y@moz-c2u.sd4.38.217.IP)
+[07:19:19] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[07:30:41] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[07:57:53] *** Joins: killercup (killercup@moz-qj5qhi.dip0.t-ipconnect.de)
+[08:09:15] *** Joins: Rym_ (y@moz-c2u.sd4.38.217.IP)
+[08:13:29] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[08:16:11] *** Quits: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au) (Ping timeout: 121 seconds)
+[08:17:51] *** Quits: killercup (killercup@moz-qj5qhi.dip0.t-ipconnect.de) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[08:32:15] *** Joins: killercup (killercup@moz-qj5qhi.dip0.t-ipconnect.de)
+[08:32:46] *** Joins: bluss (bluss@moz-ec5o68.cust.bredbandsbolaget.se)
+[09:03:05] <mitsuhiko> so i'm trying to build global variables similar to lazy_static that however are backed by a thread local stack
+[09:03:21] <mitsuhiko> but i'm not sure what a good api is to push new values onto those variables in one go
+[09:03:25] <mitsuhiko> so obviously one could do this:
+[09:03:26] *** Joins: Rym_ (y@moz-c2u.sd4.38.217.IP)
+[09:03:45] <mitsuhiko> LANGUAGE.push("en_US".to_string(), || { code here sees the language code })
+[09:03:57] <mitsuhiko> but then it gets ugly to push two variables at once
+[09:04:16] <mitsuhiko> say you want to set LANGUAGE and something else
+[09:07:40] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[09:57:36] *** Joins: Rym_ (y@moz-c2u.sd4.38.217.IP)
+[10:01:48] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[10:21:40] *** Joins: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP)
+[10:21:40] *** ChanServ sets mode: +ao pnkfelix pnkfelix
+[10:51:43] *** Joins: Rym_ (y@moz-c2u.sd4.38.217.IP)
+[10:55:57] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[10:59:04] <bstrie> mitsuhiko: how about a chained API? `LANGUAGE.push("foo").push("bar").run(|| {...})`
+[11:03:35] <bluss> I thought that too but the queestion was actually about separate variables
+[11:05:23] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[11:08:47] <bstrie> ah
+[11:12:50] <bstrie> so the idea is that you want to set some values on some global variables such that those values are only visible for a certain scope
+[11:17:18] <bstrie> mitsuhiko: I remember a long time ago you were asking for dynamically scoped variables, is this related to that?
+[11:17:38] *** Joins: aatch (james@moz-is4j4r.cable.telstraclear.net)
+[11:19:26] <bluss> someone is going to mumble something about monads in response to this mitsuhiko 
+[11:19:48] <mitsuhiko> bstrie: i'm actually running into mutability problems now
+[11:19:53] <mitsuhiko> so api is not yet my concern as it turns out :-/
+[11:20:19] <bstrie> mitsuhiko: if so, then perhaps the end-user API could be defined by a macro: `context! { FOO: "foo", BAR: "bar", some_expression_here() }`
+[11:20:47] <mitsuhiko> bstrie: that's very close to what i had
+[11:21:07] <mitsuhiko> context_scope!((FOO => "foo", BAR => "bar"), function_call_here());
+[11:21:11] <mitsuhiko> but that's just odd
+[11:22:35] <bstrie> mitsuhiko: what would you do in other languages?
+[11:22:57] <mitsuhiko> well, in python i used the with statement for that with a dict
+[11:23:10] <mitsuhiko> with context_update({"foo": 1, "bar": 2}): ...
+[11:39:48] <bstrie> mitsuhiko: currently I'm using a few rust libs where I am quite dissatisfied with their APIs, I think we need a hero like you to show everyone how it's done
+[11:39:57] <mitsuhiko> :P
+[11:40:04] <bstrie> and if even you can't do it, then all is lost :P
+[11:43:35] <bstrie> mitsuhiko: if you don't want to go the macro route, perhaps you could go `scope(|| { FOO.push("foo"); BAR.push("bar"); the_rest() })`, where the `push` functions also set some TLS flag so that `scope` knows to pop them after running the closure
+[11:45:53] *** Joins: Rym_ (y@moz-c2u.sd4.38.217.IP)
+[11:47:33] <bstrie> but afaict the macro I described above seems like it wouldn't be too hard, `$($ident: $expr)+, $expr`
+[11:50:05] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[11:52:32] *** Quits: aatch (james@moz-is4j4r.cable.telstraclear.net) (Ping timeout: 121 seconds)
+[12:40:03] *** Joins: Rym_ (y@moz-c2u.sd4.38.217.IP)
+[12:44:17] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[13:07:24] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[13:34:11] *** Joins: Rym_ (y@moz-c2u.sd4.38.217.IP)
+[13:35:10] *** Quits: p1start (p1start@moz-nftjhe.org) (Ping timeout: 121 seconds)
+[13:38:25] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[13:58:26] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[14:28:22] *** Joins: Rym_ (y@moz-c2u.sd4.38.217.IP)
+[14:32:36] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[14:41:36] *** Joins: annodomini (lambda@moz-hceqmj.hfc.comcastbusiness.net)
+[14:52:56] *** Joins: Rym_ (y@moz-c2u.sd4.38.217.IP)
+[14:57:41] <bstrie> so, this is peculiar
+[14:58:06] <bstrie> TcpStream::connect() accepts anything that that implements FromSocketAddr, which includes &str
+[14:58:28] <bstrie> but you can't pass it a &String, which normally I expect to be coerced into a &str
+[14:58:33] <bstrie> it's like it's dereferencing it
+[14:58:43] <bstrie> before the coercion happens
+[14:59:00] <bluss> deref coercion doesn't happen until a trait impl is selected I think
+[14:59:14] <bluss> so it simply doesn't trigger?
+[15:00:17] <bstrie> but what it means is that `let x = &func_that_returns_string(); connect(x)` doesn't work, but `let x: &str = &func_that_returns_string(); connect(x)` does
+[15:01:19] <bluss> yep. it's annoying with highly generic stuff
+[15:03:05] <bstrie> bluss: but here's the thing: the error message doesn't mention `&String`, which is the actual type when you don't annotate it directly. it mentions `String`
+[15:03:09] <bstrie> so that's super confusing
+[15:04:13] <bluss> the type parameter is probably used as &T then and T=String doesn't fit
+[15:04:28] <bluss> I know this not interacting with trait selection was a conscious choice
+[15:20:22] <bstrie> bluss: I wonder if this means we should make a conscious effort to implement these things on both `&str` and `String` if we can't rely on the coercion
+[15:21:31] <bluss> I don't know. I'm a bit unhappy with all the conversion traits you have to implement
+[15:21:37] <bluss> but sure
+[15:22:22] <bluss> I created a new vector-like type, deref to [T], and you get tons of methods for free. that's great
+[15:22:33] <bluss> but then you still have to wrap a million traits just for the type to act natural
+[15:23:20] <bluss> no idea what we want to do though, I still have to little experience with the From and similar traits
+[15:23:25] <bluss> and AsRef
+[15:31:13] <bstrie> bluss: sounds like a good idea for a blog post
+[15:49:35] *** Quits: tekacs (tekacs@moz-q64vt8.com) (Quit: Disappearing... *poof*)
+[15:49:54] *** Joins: tekacs (tekacs@moz-q64vt8.com)
+[16:06:01] *** Quits: pnkfelix (pnkfelix@moz-6v5.3nd.202.89.IP) (Quit: rcirc on GNU Emacs 24.5.1)
+[16:13:31] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[16:13:31] *** ChanServ sets mode: +qo brson brson
+[16:50:10] *** Quits: blank_na1e (blank_name@moz-kbg.iv2.183.192.IP) (Ping timeout: 121 seconds)
+[16:56:11] *** Joins: blank_name (blank_name@moz-0n5.mnm.36.50.IP)
+[17:20:44] *** Joins: simukis (nagisa@moz-8t068g.static.zebra.lt)
+[18:03:33] *** Quits: vadimcn (uid46608@moz-0d43u8.highgate.irccloud.com) (Quit: Connection closed for inactivity)
+[18:04:05] *** Quits: blank_name (blank_name@moz-0n5.mnm.36.50.IP) (Ping timeout: 121 seconds)
+[18:26:11] *** Joins: blank_name (blank_name@moz-7ph.o91.79.172.IP)
+[18:31:08] *** Quits: killercup (killercup@moz-qj5qhi.dip0.t-ipconnect.de) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[18:52:17] *** Quits: blank_name (blank_name@moz-7ph.o91.79.172.IP) (Ping timeout: 121 seconds)
+[19:09:39] *** Joins: Rym (y@moz-c2u.sd4.38.217.IP)
+[19:10:51] *** Quits: Rym_ (y@moz-c2u.sd4.38.217.IP) (Connection closed)
+[19:14:39] *** Joins: blank_name (blank_name@moz-65r.bos.183.192.IP)
+[19:34:57] *** Joins: killercup (killercup@moz-qj5qhi.dip0.t-ipconnect.de)
+[19:41:53] *** Quits: blank_name (blank_name@moz-65r.bos.183.192.IP) (Ping timeout: 121 seconds)
+[20:14:38] *** Joins: blank_name (blank_name@moz-ap6g3h.mi.frontiernet.net)
+[20:40:26] *** Quits: blank_name (blank_name@moz-ap6g3h.mi.frontiernet.net) (Ping timeout: 121 seconds)
+[20:40:33] *** Joins: blank_name (blank_name@moz-cefn8b.mi.frontiernet.net)
+[20:51:31] *** Quits: blank_name (blank_name@moz-cefn8b.mi.frontiernet.net) (Ping timeout: 121 seconds)
+[20:57:53] *** Joins: blank_name (blank_name@moz-kibgs5.mi.frontiernet.net)
+[21:02:23] *** Quits: Rym (y@moz-c2u.sd4.38.217.IP) (Ping timeout: 121 seconds)
+[21:03:26] *** Joins: Rym (y@moz-c2u.sd4.38.217.IP)
+[21:07:50] *** Quits: blank_name (blank_name@moz-kibgs5.mi.frontiernet.net) (Ping timeout: 121 seconds)
+[22:13:04] *** Joins: vadimcn (uid46608@moz-0d43u8.highgate.irccloud.com)
+[22:14:38] *** Quits: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua) (Ping timeout: 121 seconds)
+[22:22:54] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[22:35:47] *** Quits: simukis (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[23:09:39] *** Joins: brson (brson@moz-f3o.2li.56.172.IP)
+[23:09:39] *** ChanServ sets mode: +qo brson brson
+[23:10:04] *** Quits: killercup (killercup@moz-qj5qhi.dip0.t-ipconnect.de) (Quit: Bye)
+[23:20:37] *** Joins: p1start (p1start@moz-nftjhe.org)
+[23:27:35] *** kimundi is now known as zz_kimundi
+[23:43:19] *** Joins: blank_name (blank_name@moz-c1o.u62.79.172.IP)
+[23:48:19] *** Quits: annodomini (lambda@moz-hceqmj.hfc.comcastbusiness.net) (Client exited)
+[23:52:46] *** Quits: blank_name (blank_name@moz-c1o.u62.79.172.IP) (Ping timeout: 121 seconds)

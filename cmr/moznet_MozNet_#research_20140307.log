@@ -1,0 +1,388 @@
+[00:36:21] *** Joins: ecr (chatzilla@7C463196.5BB0586B.11F8506F.IP)
+[00:57:13] <cjones> roc, did you pay ehsan to do that set-up? :)
+[00:57:32] <roc> what?
+[00:59:44] <cjones> 955888
+[01:00:48] <roc> haha
+[01:01:09] *** Joins: tobytailor (tobytailor@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[01:04:00] *** Quits: tobytailor (tobytailor@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: tobytailor)
+[01:04:08] <roc> my plan is perhaps a bit too obvious :-)
+[01:07:14] <mccr8> but doesn't that kind of counter your argument that it is safe to open the bug. ;)
+[01:09:43] <roc> how so?
+[01:10:15] <roc> my main argument is that you can't take a failing chaos-mode testcase and weaponize it directly.
+[01:10:24] <mccr8> yeah that's true
+[01:10:36] <roc> you have to understand the Gecko bug and then figure out how to make it happen in a regular non-chaos build
+[01:11:07] <roc> it's probably more efficient fuzzing regular Gecko builds
+[01:11:24] <mccr8> yeah, I guess each chaos-mode thing would require some level of de-chaosing akin to heap feng shui...
+[01:11:43] <mccr8> like, oh, we set up this weird gadget, and it lets us control X or something.
+[01:12:27] <roc> but then you'd have to disentangle which chaos-mode choices were actually relevant to your bug
+[01:15:03] *** Quits: mccr8 (mccr8@moz-BBE3ABD.mv.mozilla.com) (Quit: )
+[01:18:27] *** Quits: mbx (mbebenita@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: mbx)
+[01:19:12] *** Joins: mbx (mbebenita@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[01:21:06] *** Quits: dherman (dherman@F16146EB.9D3722BB.58DC3EE6.IP) (Quit: dherman)
+[01:21:16] *** Quits: mbx (mbebenita@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: mbx)
+[01:24:19] *** Joins: mbx (mbebenita@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[01:30:30] *** Quits: eholk (eholk@moz-BA312F07.crest.iu.edu) (Quit: eholk)
+[01:31:00] <nmatsakis> roc: ping
+[01:31:08] <roc> hi
+[01:31:33] <nmatsakis> there is some discussion about whether mutex poisoning should occur
+[01:31:43] <nmatsakis> I am arguing that we should propagate failure between tasks for all inter-task communication
+[01:31:57] <nmatsakis> meaning: pipes, mutexes, any other concurrent data structures we may add
+[01:32:13] <nmatsakis> anyway, I remember you mentioning at one point that you liked the poisoning in an off-hand comment
+[01:32:32] <nmatsakis> and I was curious whether you had a specific opinion or just thought it seemed nifty
+[01:32:54] <nmatsakis> (the counter argument is basically: with pipes there is nothing to do *but* fail, but for some use cases code using mutexes could continue)
+[01:33:21] <roc> I think it's very very important that task failure be recoverable
+[01:33:31] <roc> more precisely
+[01:33:47] <roc> that it's easy for developers to make task failure recoverable
+[01:34:23] <nmatsakis> that sounds like a good thing :)
+[01:34:25] <roc> This would be a huge advantage for Servo. HTML parser task crashes? No problem, we just pretend the network load exited early. Image decoder crashes? No problem, treat it as a corrupt image. Etc.
+[01:35:44] <roc> Mutex poisoning is essential because without it, mutexes are unsafe to use in any task whose failure you might want to recover from.
+[01:36:16] <nmatsakis> acrichto: ^
+[01:36:33] <nmatsakis> just bringing alex in to the conversation :)
+[01:36:49] <nmatsakis> I guess my feeling is that poisoning makes mutexes (closer to) "safe by default"
+[01:36:58] <roc> I agree
+[01:37:03] <roc> what are the arguments against it?
+[01:37:19] <roc> would those arguments be satisfied by having poisoning be an option that's statically configurable?
+[01:37:25] <nmatsakis> I think I will let acrichto and/or brson make his case, because I will of course make it less well
+[01:37:26] <acrichto> it seems like an odd thing to add to mutexes because you can still make progress once a locked mutex has failed
+[01:37:52] <acrichto> I'd be fine with a configurable option, but it seems like a different use case than channels where there is no option to make progress
+[01:38:05] *** Quits: brson (brson@F16146EB.9D3722BB.58DC3EE6.IP) (Ping timeout)
+[01:38:09] <acrichto> I figured that the integrity of the wrapped data structure on failure is guaranteed by the type not the mutex
+[01:38:15] <roc> I don't know what you mean by "make progress once a locked mutex has failed"?
+[01:38:37] <acrichto> if one task has failed writing to a hash map inside of a mutex, I could continue using the hashmap in another task (in the same mutex)
+[01:38:45] <roc> I don't know how you can guarantee the integrity of the locked data if something failed while holding the lock
+[01:39:02] <acrichto> in general you can't, but that's also a general problem that's not specific to mutexes
+[01:39:36] <acrichto> we could enforce integrity on all data structures in all task failure, but we're just currently only enforcing it on the mutex boundaries
+[01:40:28] <roc> why is it a general problem? Mutexes are the only way I know of in safe code for one task's failure to leave data accessible to another task in a bad state
+[01:40:33] <nmatsakis> (but: all other data is local to a task, and the task is dying)
+[01:40:46] <nmatsakis> (what roc said)
+[01:41:20] <acrichto> I suppose I consider the same task viewing its failure to be the same as other tasks viewing others' failure
+[01:41:27] <roc> not at all
+[01:41:45] <acrichto> how do you see them as different?
+[01:41:48] <roc> It doesn't matter a bit that memory private to a dying task is in an inconsistent state
+[01:42:00] <roc> because it's going away
+[01:42:18] <roc> I don't know what sort of unwinding code is allowed to run in a dying task these days
+[01:42:19] <acrichto> hm that's a good point
+[01:42:38] <roc> so there is perhaps the issue that unwinding code can see an inconsistent state
+[01:42:54] <acrichto> so it's more of that a task can see its own inconsistent data, but it will never see inconsistent data from other tasks?
+[01:43:52] <roc> the point is more that a task that's dead isn't observing its own data
+[01:44:31] <acrichto> a dying task can view its own data though, and that's different?
+[01:44:43] <roc> because of unwind handlers or some other reason?
+[01:45:01] <acrichto> you can basically run arbitrary code on unwinding
+[01:45:05] <acrichto> through implementations of the Drop trait
+[01:46:10] <roc> ok, well
+[01:46:32] <roc> unwinding code is evil and has to be written very carefully
+[01:46:59] <acrichto> so in the case of a hash map, if you fail during insertion you can then continue to query the hashmap during unwinding
+[01:47:11] <acrichto> so long as the destructors have access to the hash map
+[01:48:21] <roc> I feel very strongly that unwinding code needs to be minimized for exactly this reason. You have no idea what state you're in.
+[01:49:27] <roc> what does it get used for these days? Releasing FFI resources is the only good use that springs to mind.
+[01:49:52] <acrichto> we have lots of RAII pointers as well now
+[01:49:56] *** Quits: mbx (mbebenita@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: mbx)
+[01:49:56] <acrichto> lots of smart pointers
+[01:50:10] <acrichto> a "guard" structure for mutexes
+[01:50:16] <acrichto> Drop is becoming quite common
+[01:50:27] <acrichto> I/O objects closing themselves, etc.
+[01:51:39] <roc> those are all low level and local.
+[01:52:15] <acrichto> true
+[01:52:57] <roc> I don't know about the smart pointers. I assume you only need unwinding code for things that will survive the task, which must involve unsafe code or FFI. Is that true?
+[01:53:42] <acrichto> in the case of things like file descriptors or network handles, they don't need to outlive the task?
+[01:53:55] *** Quits: azita (Azita@F16146EB.9D3722BB.58DC3EE6.IP) (Quit: azita)
+[01:54:05] <roc> I meant, "you need unwinding code for things that would otherwise survive the task"
+[01:54:31] <acrichto> ah yes, indeed
+[01:54:48] <acrichto> that's not necessarily the only use case
+[01:54:56] <acrichto> but I believe it is one of the most predominant use cases
+[01:55:05] <acrichto> channels are an exception to that rule
+[01:55:18] <acrichto> whenever the receiving half of a channel is dropped, it drains the entire channel of its contents
+[01:56:07] <roc> are there any good uses of Drop for objects that don't use any unsafe code?
+[01:56:43] <roc> anyway that's probably a distraction, sorry.
+[01:56:44] <acrichto> I had one on a splay tree
+[01:56:55] <roc> what>
+[01:56:57] <roc> ?
+[01:56:57] <acrichto> it would iteratively destroy the tree instead of recursively destroy the tree
+[01:57:04] <roc> ah
+[01:57:08] <roc> interesting
+[01:57:18] <acrichto> bit contrived though
+[01:57:21] <acrichto> but plausible
+[01:57:28] <roc> wait
+[01:57:30] <roc> hmm
+[01:57:43] <roc> ok
+[02:00:04] <roc> Back to your hashmap example: what would cause failure during a hashmap insertion? what makes you think that would leave the hashmap in an OK state for reading?
+[02:00:23] <acrichto> the hashmap would have to be written to be defensive about this case
+[02:00:39] <acrichto> but if it was something like find a slot, if empty, call a thunk to fill it
+[02:00:45] <acrichto> calling the thunk could fail in the middle of some hashmap code
+[02:01:09] <roc> fail how? OOM?
+[02:01:23] <acrichto> out of bounds indexing
+[02:01:27] <acrichto> in the thunk
+[02:01:28] <roc> is "the thunk" part of the hashmap?
+[02:01:28] <acrichto> not the hashmap code
+[02:01:35] <roc> hmm
+[02:01:44] <acrichto> fn find_or_insert(&mut self, k: Key, thunk: || -> Value) -> Value
+[02:01:52] <acrichto> something like that
+[02:02:04] <roc> ok
+[02:02:06] <roc> well
+[02:02:13] *** Quits: pcwalton (pcwalton@F16146EB.9D3722BB.58DC3EE6.IP) (Quit: pcwalton)
+[02:02:18] <roc> you should not be calling out to user code while holding a mutex
+[02:02:38] <acrichto> this might be the user code though
+[02:02:46] <acrichto> MutexArc<HashMap<int, int>>
+[02:04:02] <nmatsakis> (I'm only half following due to other conversations, but my 2c: the POINT of poisoning and failing-the-entire-task is to spare programmers from having to reason super hard about the order of writes in the hashmap etc)
+[02:05:28] <nmatsakis> (but is also winds up, as currently done, preventing them from reasoning super hard somehow, because it forces you to fail)
+[02:05:29] *** terrence is now known as terrence-afk
+[02:07:57] <roc> acrichto: so am I summarizing you argument correctly that you want people to be able to write code that, within a mutex acquisition, has program points where failure can be tolerated because it leaves the protected data in a known good state?
+[02:08:23] *** Joins: azita (Azita@F16146EB.9D3722BB.58DC3EE6.IP)
+[02:09:11] *** Joins: mbx (mbebenita@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[02:09:21] <acrichto> basically yeah, it seems unfortunate to assume that all data is inconsistent on failure when only some of it is
+[02:10:25] <roc> one problem with supporting that is, can the programmer really be sure that failure does not occur where the protected data is in a bad state
+[02:10:52] <acrichto> not in general I don't believe
+[02:13:07] <roc> maybe a good way to support this would be to extend the mutex so you can lock the mutex without actually getting access to the data and risking poisoning. Then you have another operation that lets you acquire the data and risk poisoning for an already-locked mutex.
+[02:13:38] <acrichto> how would you then get access to the data?
+[02:13:42] <acrichto> via an unsafe method?
+[02:15:00] *** Joins: brson (brson@F16146EB.9D3722BB.58DC3EE6.IP)
+[02:15:00] *** ChanServ sets mode: +o brson
+[02:15:11] <roc> that would support your find_or_insert pattern in a safe way. You would lock the mutex, temporarily access the data to check if the key exists, and release access. If you didn't find the key, you run your thunk; if the thunk fails, we don't poison since you don't have access to the data. After the thunk runs, reacquire data access, update the hashmap, drop data access and finally release the lock.
+[02:16:27] <acrichto> I'm a little concerned about this in general though, we're doing this poisioning on mutexes but not on any other data of thi form
+[02:16:39] <roc> what other data is of this form?
+[02:16:50] *** Quits: brson (brson@F16146EB.9D3722BB.58DC3EE6.IP) (Quit: leaving)
+[02:16:52] <acrichto> we have something called RefCell
+[02:17:00] <acrichto> which is kinda like an rwarc, but not atomic
+[02:17:09] <acrichto> from a &RefCell<T> you can get &mut T
+[02:17:11] *** Joins: brson (brson@4A08E125.708C0A12.C7EEF3A2.IP)
+[02:17:11] *** ChanServ sets mode: +o brson
+[02:17:17] <acrichto> which is dynamically checked that there's only one &mut T at a time
+[02:17:31] <acrichto> but we don't poision if you fail while a borrow is active
+[02:17:34] <roc> RefCells can be shared between tasks?
+[02:17:47] <acrichto> no
+[02:18:00] <acrichto> were you around for the @mut phase of rustc?
+[02:18:07] <acrichto> with dynamic borrow check flags
+[02:18:15] <roc> sort of/not really
+[02:18:32] <roc> I'm not really around now either, TBH :-)
+[02:18:38] <acrichto> ah oh well
+[02:18:47] <acrichto> it's very similar to the mutex in terms of usage
+[02:18:53] <acrichto> you have a thing, through which you get access to the inner thing
+[02:19:07] <acrichto> you can fail while holding the inner thing, but during destruction you can continue to get access to the inner thing
+[02:19:14] <acrichto> and with mutexes all future access is prevented
+[02:19:20] <acrichto> but with this RefCell future access is allowed
+[02:19:30] <roc> yeah but it seems unlikely that unwind code will actually reach out and get access to the inner thing
+[02:19:52] <roc> and if it does, the damage is still limited to the dying task
+[02:20:01] <acrichto> it'd be a double failure though
+[02:20:04] <acrichto> which would abort the whole process
+[02:20:11] <roc> er really?
+[02:20:20] <acrichto> sadly yeah
+[02:20:26] <acrichto> the first failure would trigger unwinding
+[02:20:29] <roc> still
+[02:20:31] <acrichto> and the second access would be the second failure
+[02:20:31] <roc> there's much narrower scope for things to go wrong
+[02:20:49] <acrichto> a mutex is much more reasonable for this case though
+[02:20:49] <roc> unwind code is dangerous and hard to write
+[02:20:52] <roc> maybe it should be unsafe
+[02:21:06] <acrichto> that would be sad :(
+[02:21:20] <roc> if it can cause the entire system to go down, it probably should be
+[02:21:28] *** Quits: mbx (mbebenita@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: mbx)
+[02:22:13] <roc> maybe you could support both safe and unsafe Drop variants
+[02:22:40] <roc> failure during a "safe" variant would just cause all safe Drops to be ignored from then on
+[02:22:57] <acrichto> it's not really sound though to ignore Drop implementations
+[02:23:05] <acrichto> you'd leak memory/files/resources/etc
+[02:23:05] <roc> why not?
+[02:23:11] <roc> they would be unsafe
+[02:23:22] <acrichto> not necessarily
+[02:23:27] <roc> how so?
+[02:23:29] <acrichto> some of them can be implemented safely
+[02:23:44] <acrichto> I don't think we'll get away with making drop unsafe
+[02:23:47] <roc> surely safe code can only touch things that will not outlive the task
+[02:23:49] <acrichto> it's so crucial to writing correct code
+[02:23:57] *** Joins: mbx (mbebenita@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[02:24:41] <roc> your splay tree example was for performance, not correctness. Have you got another one?
+[02:25:27] <acrichto> well technically it wasn't just for performance
+[02:25:32] <acrichto> it was because I was overflowing the stack on large trees
+[02:25:39] <acrichto> where stack overflow is also a process abort
+[02:25:47] *** Quits: mbx (mbebenita@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: mbx)
+[02:25:50] <roc> that is also wrong :-(
+[02:25:54] <nmatsakis> note:
+[02:25:59] <nmatsakis> we are restrictive about what we permit drop to be defined on
+[02:26:11] <nmatsakis> though not so much as to prevent you from ever seeing partially mutated things at present
+[02:26:22] <acrichto> we don't want stack overflow to be an abort but doing it correctly (a task failure that triggers unwinding) is quite difficult
+[02:26:22] <nmatsakis> (and I want to loosen the rules too because they are too tight to be useful)
+[02:26:31] * nmatsakis jumps in without reading all backscroll
+[02:27:01] <nmatsakis> but I do feel like RefCell / RwArc are analogous, but the task boundary is meaningful
+[02:30:16] <roc> The original Rust design with task failure and no shared writeable data between tasks is/was much better than exception handling because exceptions have this problem of leaving you in an unknown state --- or rather, one of an infinite variety of possible unknown states
+[02:30:37] <roc> c.f. the problem of trying to test all your exception paths
+[02:31:08] <nmatsakis> I feel like our current design (w/ poisoning) is true to original spirit 
+[02:32:14] *** Joins: mbx (mbebenita@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[02:32:23] <roc> unwinding code chips away at that design by exposing unknown states, but as long as the unwinding code is minimal, the impact is minimal
+[02:33:15] <roc> mutexes blow a big hole in that design, but poisoning closes the hole
+[02:34:27] <acrichto> hmm
+[02:41:03] *** Quits: sunfish (chatzilla@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[02:41:48] <larsberg> Looking at all of the current Servo Drop methods, all but one of them are either removing native resources or are debug code for "destructor bombs", which are our pattern for identifying objects that lived until task termination but we expected to have been disposed
+[02:42:13] <roc> what's the other one?
+[02:42:15] <larsberg> The one exception is an object that wraps all of our active timers (registered from javascript code) that cancels those timers if we're tearing down the process
+[02:42:35] <larsberg> s/process/task
+[02:42:53] <roc> interesting OK
+[02:43:30] <roc> could the task that manages the timers detect that your task has died and clean up the timers itself?
+[02:44:36] <larsberg> yes, I think it could - in this case it's the DOM window object that we've implemented Drop on for this case
+[02:45:33] <larsberg> oh, now I remember the problem
+[02:45:39] <larsberg> if the timers are particularly long and the task dies
+[02:45:57] <larsberg> the task that manages the timers won't notice until a timer fires and it attempts to send a message
+[02:46:51] <roc> so there's no way for a task to be notified immediately on another task's death?
+[02:47:42] <acrichto> each task has a channel that you can receive a message on when task failure happens
+[02:47:55] <roc> so you could use that
+[02:49:07] <larsberg> yeah, it sounds like we could spin up a small task that just listens to that channel and sends a cancel message if the task dies and just exits cleanly if the script task exits normally
+[02:50:04] *** Quits: mchang (mchang@BE99BE02.84BCE52A.BCAEBB33.IP) (Quit: mchang)
+[02:50:56] *** Quits: brson (brson@4A08E125.708C0A12.C7EEF3A2.IP) (Quit: leaving)
+[02:52:24] <roc> Given that every line of code you write in a Drop method runs the risk of blowing the entire system away, I do think it's a good idea to keep that to a minimum.
+[02:52:54] <larsberg> Agreed; I've opened an issue to make that change and sort out the edge cases
+[02:55:13] *** Joins: brson (brson@981AA104.E81F12CD.76F66111.IP)
+[02:55:13] *** ChanServ sets mode: +o brson
+[02:55:20] *** Quits: faramarz (faramarz@moz-BBE3ABD.mv.mozilla.com) (Quit: faramarz)
+[03:11:49] *** Quits: nrc (nrc@F16146EB.9D3722BB.58DC3EE6.IP) (Quit: ChatZilla 0.9.90.1 [Firefox 30.0a1/20140304030204])
+[03:12:25] *** Quits: azita (Azita@F16146EB.9D3722BB.58DC3EE6.IP) (Quit: azita)
+[03:18:14] *** Quits: pnkfelix (pnkfelix@F16146EB.9D3722BB.58DC3EE6.IP) (Ping timeout)
+[03:20:18] *** Quits: brson (brson@981AA104.E81F12CD.76F66111.IP) (Quit: leaving)
+[03:26:04] *** Quits: SimonSapin (simon@moz-9A1FE870.exyr.org) (Ping timeout)
+[03:33:34] *** Joins: SimonSapin (simon@moz-9A1FE870.exyr.org)
+[03:37:10] *** jorendorff is now known as jorendorff_away
+[03:40:29] *** Quits: roc (chatzilla@34E8ECDF.DC2C3734.616A18A6.IP) (Ping timeout)
+[03:44:21] *** Quits: mbx (mbebenita@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: mbx)
+[03:51:02] *** Joins: tobytailor (tobytailor@moz-CBD810C7.hsd1.ca.comcast.net)
+[04:00:07] *** Quits: gal (gal@moz-BBE3ABD.mv.mozilla.com) (Quit: gal)
+[04:07:34] *** Quits: cjones (cjones@moz-45913895.socal.res.rr.com) (Quit: Ex-Chat)
+[04:19:43] *** Joins: gal (gal@moz-D6B8E762.hsd1.ca.comcast.net)
+[04:25:21] *** Joins: tangahlot (user@1C0FDB32.E8C65AB2.1C37C358.IP)
+[04:28:25] *** Parts: tangahlot (user@1C0FDB32.E8C65AB2.1C37C358.IP) ()
+[04:33:31] *** Quits: gal (gal@moz-D6B8E762.hsd1.ca.comcast.net) (Quit: gal)
+[04:35:03] *** Joins: gal (gal@moz-D6B8E762.hsd1.ca.comcast.net)
+[04:35:28] *** Quits: gal (gal@moz-D6B8E762.hsd1.ca.comcast.net) (Quit: gal)
+[04:45:26] *** Joins: cjones (cjones@moz-45913895.socal.res.rr.com)
+[05:42:15] *** Joins: gal (gal@moz-D6B8E762.hsd1.ca.comcast.net)
+[05:58:09] *** Joins: brson (brson@C0FA739D.99DDF6F0.4329AE1A.IP)
+[05:58:09] *** ChanServ sets mode: +o brson
+[06:11:43] *** Joins: cmr (moznet@moz-EC676DFE.members.linode.com)
+[06:14:06] *** Joins: azita (Azita@F16146EB.9D3722BB.58DC3EE6.IP)
+[06:30:54] *** Quits: gal (gal@moz-D6B8E762.hsd1.ca.comcast.net) (Quit: gal)
+[06:42:16] *** Quits: brson (brson@C0FA739D.99DDF6F0.4329AE1A.IP) (Ping timeout)
+[06:45:56] *** Joins: mbx (mbebenita@moz-B45FE61C.hsd1.ca.comcast.net)
+[06:47:40] *** Joins: brson (brson@F16146EB.9D3722BB.58DC3EE6.IP)
+[06:47:40] *** ChanServ sets mode: +o brson
+[06:51:01] *** Joins: jdm (jdm@moz-AC9499B2.cable.teksavvy.com)
+[06:54:59] *** Quits: azita (Azita@F16146EB.9D3722BB.58DC3EE6.IP) (Ping timeout)
+[06:55:23] *** Joins: pcwalton (pcwalton@F16146EB.9D3722BB.58DC3EE6.IP)
+[06:55:23] *** ChanServ sets mode: +o pcwalton
+[06:55:33] *** Quits: pcwalton (pcwalton@F16146EB.9D3722BB.58DC3EE6.IP) (Quit: pcwalton)
+[06:57:30] *** Joins: azita (Azita@F16146EB.9D3722BB.58DC3EE6.IP)
+[07:25:06] *** Quits: jdm (jdm@moz-AC9499B2.cable.teksavvy.com) (Quit: Lost terminal)
+[07:25:54] *** Quits: azita (Azita@F16146EB.9D3722BB.58DC3EE6.IP) (Quit: azita)
+[07:28:24] *** Joins: sunfish (chatzilla@moz-BBE3ABD.mv.mozilla.com)
+[07:28:30] *** Quits: sunfish (chatzilla@moz-BBE3ABD.mv.mozilla.com) (Quit: ChatZilla 0.9.90.1 [Firefox 27.0.1/20140218135856])
+[07:52:14] *** Joins: dherman (dherman@F16146EB.9D3722BB.58DC3EE6.IP)
+[07:52:14] *** ChanServ sets mode: +qo dherman dherman
+[08:13:17] *** lth|away is now known as lth
+[08:26:40] *** Quits: ecr (chatzilla@7C463196.5BB0586B.11F8506F.IP) (Quit: ChatZilla 0.9.90.1 [Firefox 27.0.1/20140212131424])
+[08:27:07] *** Joins: ecr (chatzilla@7C463196.5BB0586B.11F8506F.IP)
+[08:32:23] *** Quits: dherman (dherman@F16146EB.9D3722BB.58DC3EE6.IP) (Quit: dherman)
+[08:56:13] *** Joins: gds (user@moz-5C7307D6.wlan.ic.ac.uk)
+[09:06:41] *** Quits: brson (brson@F16146EB.9D3722BB.58DC3EE6.IP) (Quit: leaving)
+[09:33:06] *** Quits: cjones (cjones@moz-45913895.socal.res.rr.com) (Quit: Ex-Chat)
+[09:34:10] *** Quits: yury (yury@moz-86474802.ok.ok.cox.net) (Ping timeout)
+[09:35:58] *** Joins: yury (yury@moz-86474802.ok.ok.cox.net)
+[10:05:22] *** Quits: ecr (chatzilla@7C463196.5BB0586B.11F8506F.IP) (Quit: ChatZilla 0.9.90.1 [Firefox 27.0.1/20140212131424])
+[10:15:26] *** Quits: gds (user@moz-5C7307D6.wlan.ic.ac.uk) (Ping timeout)
+[10:15:37] *** cmr is now known as unsafe
+[10:16:16] *** unsafe is now known as cmr
+[10:16:27] *** Joins: gds (user@moz-5C7307D6.wlan.ic.ac.uk)
+[10:35:11] *** Quits: gds (user@moz-5C7307D6.wlan.ic.ac.uk) (Ping timeout)
+[10:49:07] *** Quits: yury (yury@moz-86474802.ok.ok.cox.net) (Ping timeout)
+[10:57:50] *** Joins: yury (yury@moz-86474802.ok.ok.cox.net)
+[11:26:36] *** Quits: san (anirudh@57DDC4C1.F2DEA9A7.1C37C358.IP) (Input/output error)
+[11:26:51] *** Joins: san (anirudh@57DDC4C1.F2DEA9A7.1C37C358.IP)
+[11:55:37] *** Quits: bblum (bblum@moz-2B41ACB5.andrew.cmu.edu) (Ping timeout)
+[11:55:48] *** Quits: acrichto (acrichto@moz-B63D64BD.res.cmu.edu) (Ping timeout)
+[12:01:06] *** Quits: mbx (mbebenita@moz-B45FE61C.hsd1.ca.comcast.net) (Quit: mbx)
+[12:01:24] *** Joins: bblum (bblum@moz-2B41ACB5.andrew.cmu.edu)
+[12:01:32] *** Joins: acrichto (acrichto@moz-B63D64BD.res.cmu.edu)
+[12:15:51] *** jorendorff_away is now known as jorendorff
+[12:36:21] *** Quits: lth (lth@C3CF3668.251DEEED.18DB33F7.IP) (Quit: leaving)
+[12:40:08] *** jorendorff is now known as jorendorff_away
+[13:15:07] *** Joins: system64 (uid17738@moz-A42E5B7B.irccloud.com)
+[13:19:22] *** jorendorff_away is now known as jorendorff
+[13:35:42] *** Quits: azakai|2_ (alon@moz-8D0CC798.lightspeed.sntcca.sbcglobal.net) (Ping timeout)
+[13:39:05] *** Joins: azakai|2_ (alon@moz-8D0CC798.lightspeed.sntcca.sbcglobal.net)
+[14:00:46] *** Joins: gal (gal@moz-D6B8E762.hsd1.ca.comcast.net)
+[14:01:00] *** jorendorff is now known as jorendorff_away
+[14:03:33] *** jorendorff_away is now known as jorendorff
+[14:05:47] *** Joins: gds (user@4C06FFD8.A52D2979.FCF08374.IP)
+[14:13:27] *** jorendorff is now known as jorendorff_away
+[14:15:05] *** Joins: jdm (jdm@moz-AC9499B2.cable.teksavvy.com)
+[15:20:05] *** jorendorff_away is now known as jorendorff
+[15:54:25] *** Quits: gal (gal@moz-D6B8E762.hsd1.ca.comcast.net) (Quit: gal)
+[16:28:43] *** Joins: jclements (jclements@moz-E7143D62.wireless.calpoly.edu)
+[16:39:42] *** Joins: tobytailor (tobytailor@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[16:46:29] *** Joins: mccr8 (mccr8@moz-BBE3ABD.mv.mozilla.com)
+[16:49:24] *** Joins: dherman (dherman@F16146EB.9D3722BB.58DC3EE6.IP)
+[16:49:24] *** ChanServ sets mode: +qo dherman dherman
+[16:56:00] *** Joins: mchang (mchang@BE99BE02.84BCE52A.BCAEBB33.IP)
+[16:59:19] *** Joins: azita (Azita@F16146EB.9D3722BB.58DC3EE6.IP)
+[17:01:19] *** Joins: cjones (cjones@moz-45913895.socal.res.rr.com)
+[17:04:31] *** Quits: gds (user@4C06FFD8.A52D2979.FCF08374.IP) (Ping timeout)
+[17:08:20] *** Joins: gal (gal@moz-D6B8E762.hsd1.ca.comcast.net)
+[17:14:47] *** Joins: mbx (mbebenita@moz-B45FE61C.hsd1.ca.comcast.net)
+[17:17:06] *** Quits: jclements (jclements@moz-E7143D62.wireless.calpoly.edu) (Quit: jclements)
+[17:19:35] *** Quits: system64 (uid17738@moz-A42E5B7B.irccloud.com) (Quit: Connection closed for inactivity)
+[17:23:49] *** terrence-afk is now known as terrence
+[17:37:41] *** Quits: jdm (jdm@moz-AC9499B2.cable.teksavvy.com) (Quit: Lost terminal)
+[17:41:18] *** Joins: nrc (nrc@F16146EB.9D3722BB.58DC3EE6.IP)
+[17:44:21] *** Joins: brson (brson@F16146EB.9D3722BB.58DC3EE6.IP)
+[17:44:21] *** ChanServ sets mode: +o brson
+[17:51:34] *** jorendorff is now known as jorendorff_away
+[18:14:43] *** Joins: jclements (jclements@moz-E7143D62.wireless.calpoly.edu)
+[18:18:56] *** Quits: jclements (jclements@moz-E7143D62.wireless.calpoly.edu) (Ping timeout)
+[18:23:15] *** Quits: azita (Azita@F16146EB.9D3722BB.58DC3EE6.IP) (Quit: azita)
+[18:25:59] *** Joins: jclements (jclements@moz-E7143D62.wireless.calpoly.edu)
+[18:26:05] *** Quits: jclements (jclements@moz-E7143D62.wireless.calpoly.edu) (Quit: jclements)
+[18:27:18] *** Joins: jclements (jclements@moz-E7143D62.wireless.calpoly.edu)
+[18:32:18] *** Joins: azita (Azita@F16146EB.9D3722BB.58DC3EE6.IP)
+[18:36:25] *** Quits: azakai (alon@moz-BBE3ABD.mv.mozilla.com) (Quit: Ex-Chat)
+[18:36:31] *** Joins: azakai (alon@moz-BBE3ABD.mv.mozilla.com)
+[18:44:12] *** Joins: jdm (jdm@13F2CEC5.7672369.D8E68FF6.IP)
+[18:45:44] *** Quits: azakai (alon@moz-BBE3ABD.mv.mozilla.com) (Quit: Ex-Chat)
+[18:45:50] *** Joins: azakai (alon@moz-BBE3ABD.mv.mozilla.com)
+[18:56:44] *** Quits: azita (Azita@F16146EB.9D3722BB.58DC3EE6.IP) (Quit: azita)
+[18:57:13] *** Quits: mbx (mbebenita@moz-B45FE61C.hsd1.ca.comcast.net) (Quit: mbx)
+[19:00:47] *** Quits: jclements (jclements@moz-E7143D62.wireless.calpoly.edu) (Quit: jclements)
+[19:03:37] *** Joins: jclements (jclements@moz-E7143D62.wireless.calpoly.edu)
+[19:06:39] *** jorendorff_away is now known as jorendorff
+[19:20:09] *** Quits: jclements (jclements@moz-E7143D62.wireless.calpoly.edu) (Quit: jclements)
+[19:22:54] *** Joins: azita (Azita@F16146EB.9D3722BB.58DC3EE6.IP)
+[19:27:31] *** Joins: jclements (jclements@moz-E7143D62.wireless.calpoly.edu)
+[19:33:53] *** Joins: mbx (mbebenita@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[19:34:37] *** Joins: sunfish (chatzilla@moz-42DA0C69.dsl.dynamic.sonic.net)
+[19:55:34] *** Quits: azita (Azita@F16146EB.9D3722BB.58DC3EE6.IP) (Quit: azita)
+[19:59:13] *** Quits: tobytailor (tobytailor@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: tobytailor)
+[20:05:10] *** Joins: int3_ (int3_@moz-F9C0ECEB.subnet-224.amherst.edu)
+[20:11:18] *** Quits: mbx (mbebenita@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: mbx)
+[20:26:49] *** Quits: jclements (jclements@moz-E7143D62.wireless.calpoly.edu) (Quit: jclements)
+[20:39:06] *** jorendorff is now known as jorendorff_away
+[20:40:46] *** Joins: azita (Azita@F16146EB.9D3722BB.58DC3EE6.IP)
+[20:56:37] *** Joins: jclements (jclements@moz-E7143D62.wireless.calpoly.edu)
+[21:13:09] *** Quits: int3_ (int3_@moz-F9C0ECEB.subnet-224.amherst.edu) (Client exited)
+[21:24:50] *** Joins: int3_ (int3_@moz-F9C0ECEB.subnet-224.amherst.edu)
+[21:38:42] *** Quits: azita (Azita@F16146EB.9D3722BB.58DC3EE6.IP) (Quit: azita)
+[21:39:53] *** jorendorff_away is now known as jorendorff
+[21:40:02] *** Joins: pnkfelix (pnkfelix@F16146EB.9D3722BB.58DC3EE6.IP)
+[21:42:15] *** Quits: int3_ (int3_@moz-F9C0ECEB.subnet-224.amherst.edu) (Client exited)
+[21:42:48] *** Joins: int3_ (int3_@moz-F9C0ECEB.subnet-224.amherst.edu)
+[21:44:29] *** Quits: int3_ (int3_@moz-F9C0ECEB.subnet-224.amherst.edu) (Ping timeout)
+[21:45:00] *** Joins: tobytailor (tobytailor@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[21:45:30] *** Joins: mbx (mbebenita@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[21:50:13] *** Quits: gal (gal@moz-D6B8E762.hsd1.ca.comcast.net) (Quit: gal)
+[21:50:21] *** Joins: gal (gal@moz-D6B8E762.hsd1.ca.comcast.net)
+[21:50:28] *** Quits: gal (gal@moz-D6B8E762.hsd1.ca.comcast.net) (Quit: gal)
+[22:18:22] <nmatsakis> pnkfelix: http://en.wikipedia.org/wiki/Weak_ordering#Strict_weak_orderings
+[22:19:08] <pnkfelix> nmatsakis: looks like a fun article!
+[22:29:32] *** Quits: mbx (mbebenita@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: mbx)
+[22:38:26] *** Joins: mbx (mbebenita@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[23:01:18] *** Quits: brson (brson@F16146EB.9D3722BB.58DC3EE6.IP) (Ping timeout)
+[23:02:00] *** Quits: tobytailor (tobytailor@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: tobytailor)
+[23:07:06] *** Quits: jclements (jclements@moz-E7143D62.wireless.calpoly.edu) (Quit: jclements)
+[23:14:12] *** Joins: jclements (jclements@moz-E7143D62.wireless.calpoly.edu)
+[23:40:24] *** Joins: int3_ (int3_@moz-F9C0ECEB.subnet-224.amherst.edu)
+[23:53:48] *** Quits: int3_ (int3_@moz-F9C0ECEB.subnet-224.amherst.edu) (Client exited)
+[23:54:09] *** Joins: int3_ (int3_@moz-F9C0ECEB.subnet-224.amherst.edu)
+[23:56:02] *** Quits: int3_ (int3_@moz-F9C0ECEB.subnet-224.amherst.edu) (Ping timeout)
+[23:59:13] *** Quits: pnkfelix (pnkfelix@F16146EB.9D3722BB.58DC3EE6.IP) (Ping timeout)

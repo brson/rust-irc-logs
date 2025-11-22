@@ -1,0 +1,1003 @@
+[00:05:44] *** Quits: jdm (jdm@moz-AC9499B2.cable.teksavvy.com) (Quit: Lost terminal)
+[00:10:26] <strcat> acrichto: aligning to 8 bytes also means padding to a multiple of that
+[00:10:32] <strcat> because of arrays
+[00:12:55] <acrichto> strcat: it would alleviate segfault issues though?
+[00:13:04] <acrichto> this is just an array type that I don't think matters that much
+[00:13:07] <acrichto> thread type*
+[00:13:40] <strcat> acrichto: it still needs to be safe, someone might put 4 in an array for a thread-pool
+[00:13:53] <strcat> building it out of u64 and u8 would work
+[00:14:03] <strcat> start with a u64, fill the rest in with u8
+[00:14:09] *** Quits: tikue (tikue_star@1BE4CCA6.CD72397.689607DE.IP) (Ping timeout)
+[00:14:21] <dbaupp> from memory, all the sizes are multiples of 8
+[00:14:40] <strcat> then we can use use u64
+[00:20:15] *** Joins: notmatt (notmatt@CC62CF7E.1E7FDFDB.A82DBDDB.IP)
+[00:21:40] <strcat> acrichto: the only reason it's a union in C is to make the alignment right
+[00:21:49] <strcat> they're just working out the lack of alignas in pre-C11
+[00:21:51] <strcat> union pthread_attr_t
+[00:21:52] <strcat> {
+[00:21:54] <strcat>   char __size[__SIZEOF_PTHREAD_ATTR_T];
+[00:21:56] <strcat>   long int __align;
+[00:21:58] <strcat> };
+[00:22:00] <strcat> so it seems important.
+[00:22:27] <acrichto> hm, I may just avoid working on this then
+[00:22:57] <strcat> it's 56 bytes on x86_64, 32 bytes on x32, 36 bytes... everywhere else?
+[00:23:21] <strcat> well, the size part
+[00:23:34] <strcat> I guess the alignment ends up resulting in padding, I forget how unions work
+[00:26:56] <strcat> I don't really understand why x32 is unique and why only x86_64 would use that section
+[00:26:59] * strcat doesn't get it at all
+[00:30:21] *** Quits: blank_name (blank_name@FAB53C88.7071B2C8.31EC03F3.IP) (Ping timeout)
+[00:31:18] *** Joins: blank_name (blank_name@FAB53C88.7071B2C8.31EC03F3.IP)
+[00:32:00] <sfackler> strcat: the union has to have the most restrictive alignment of any of its variants, so the __size variant requires 1 byte alignment but the __align variant requires 8 (or maybe 4 on some platforms?) byte alignment so it'll align to 8 or 4
+[00:32:27] <strcat> yes, I know that, but thinking about padding (these are all evenly divisible by the align without any padding anyway)
+[00:32:46] <sfackler> ah
+[00:32:46] <dbaupp> strcat: 36 isn't :P
+[00:33:01] <strcat> dbaupp: it is, the align is 4
+[00:33:03] <strcat> at least on x86
+[00:33:28] <strcat> I don't know why the x32 one is smaller than the x86 one
+[00:33:37] <dbaupp> strcat: oh, right. of course.
+[00:33:47] *** Joins: tikue (tikue_star@1BE4CCA6.CD72397.689607DE.IP)
+[00:33:50] <strcat> but the x32 mutex is bigger
+[00:34:21] <strcat> well
+[00:34:27] <strcat> I think [u64, ..7] works for x86_64
+[00:34:34] <strcat> and [u32, ..9] works for x86
+[00:34:56] <strcat> but who knows what it wants on other platforms. especially 64-bit ones... this header doesn't make sense for those unless they have 32-bit long?
+[00:35:45] *** Quits: tikue (tikue_star@1BE4CCA6.CD72397.689607DE.IP) (Ping timeout)
+[00:36:27] <strcat> acrichto: I'll send a PR to fix it later 
+[00:36:35] <strcat> need to understand what it wants on ARM and so on first...
+[00:39:43] *** Quits: notmatt (notmatt@CC62CF7E.1E7FDFDB.A82DBDDB.IP) (Quit: Leaving...)
+[00:45:37] *** Quits: tjc (tjc@moz-BBE3ABD.mv.mozilla.com) (Quit: zzzzzzzzzz)
+[00:55:54] <strcat> acrichto: https://github.com/thestinger/rust-core/commit/d71e98a07a76728d207c32bfde314d8161e67fb4 like that is fine
+[00:55:57] * strcat will make a PR now
+[00:58:06] <strcat> hrm
+[00:58:34] <strcat> I can't fix them for other platforms
+[01:00:25] <strcat> acrichto: can you check what the definition is of pthread_attr_t on OS X?
+[01:02:29] <strcat> (or someone else)
+[01:05:41] <Luqman> strcat: seems like it's: struct _opaque_pthread_attr_t { long __sig; char __opaque[__PTHREAD_ATTR_SIZE__]; };
+[01:05:49] <Luqman> from http://www.opensource.apple.com/source/xnu/xnu-1456.1.26/bsd/sys/_types.h?txt
+[01:05:59] <strcat> ok good, so sig takes care of the alignment
+[01:06:07] <strcat> https://github.com/mozilla/rust/pull/10305 r?
+[01:06:11] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[01:06:12] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 145d16ed3 to 147fb583b: 02http://git.io/N3iJvQ
+[01:06:12] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[01:06:20] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[01:06:20] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/YhpXOg
+[01:06:20] <ghrust> 13rust/06auto 144e54828 15sh8281.kim: Add make check support(arm-linux-androideabi debuginfo)
+[01:06:20] <ghrust> 13rust/06auto 1499e8663 15bors: auto merge of #10261 : ksh8281/rust/makecheck_debuginfo_arm-linux-androideabi, r=brson...
+[01:06:20] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[01:11:48] *** Joins: pcwalton (pcwalton@moz-B51927E9.hsd1.ca.comcast.net)
+[01:11:48] *** ChanServ sets mode: +ao pcwalton pcwalton
+[01:44:35] *** Joins: tikue (tikue_star@moz-FEADCD38.hsd1.pa.comcast.net)
+[01:46:19] *** Quits: tikue (tikue_star@moz-FEADCD38.hsd1.pa.comcast.net) (Ping timeout)
+[02:04:58] *** Joins: strobegen (Adium@A75B6238.EACE1F8D.A133900E.IP)
+[02:24:52] <klutzy> does buildbot use PST timezone?
+[02:25:24] *** Joins: jeffdb_ (jeff@moz-ED35AD97.hsd1.ca.comcast.net)
+[02:25:38] <klutzy> I'm investigating extra::time test failure on my windows machine, and it seems that `setenv("TZ", "America/Los_Angeles")` does not work at all on windows
+[02:26:08] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[02:26:08] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/YhpXOg
+[02:26:08] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[02:26:08] <brson> klutzy: they are all in pst, yes
+[02:31:10] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[02:31:11] <ghrust> 01[13rust01] 15bors pushed 1 new commit to 06auto: 02http://git.io/FlcOYg
+[02:31:11] <ghrust> 13rust/06auto 14b17d4e3 15bors: auto merge of #10299 : alexcrichton/rust/osx-loader-path-fix, r=brson...
+[02:31:11] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[02:31:15] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[02:31:15] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/R01x8w
+[02:31:15] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[02:37:56] <klutzy> brson: thanks! I've posted an issue regarding it https://github.com/mozilla/rust/issues/10307
+[02:38:11] *** Joins: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net)
+[02:43:49] *** Quits: geoffhill (geoffhill@moz-244CF33A.amazon.com) (Ping timeout)
+[02:55:20] <acrichto> jld: ping
+[02:55:55] *** Quits: jeffdb_ (jeff@moz-ED35AD97.hsd1.ca.comcast.net) (Quit: jeffdb_)
+[02:55:57] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: leaving)
+[03:07:22] *** Joins: jeffdb_ (jeff@moz-ED35AD97.hsd1.ca.comcast.net)
+[03:10:11] *** Parts: strobegen (Adium@A75B6238.EACE1F8D.A133900E.IP) ()
+[03:12:54] <dbaupp> acrichto: a backtrace for https://github.com/mozilla/rust/issues/10308 seems useful?
+[03:13:28] <acrichto> dbaupp: there's no backtrace b/c it corrupts the stack
+[03:13:38] <acrichto> I'm not entirely sure where the codgen gets wrong, but it's corrupting the return addresses
+[03:13:42] <dbaupp> acrichto: oh, ick.
+[03:13:50] <acrichto> it will call foo() and then die returning from main
+[03:13:57] <acrichto> b/c main's return address is corrupted
+[03:14:04] <dbaupp> acrichto: (you could say that in the bug report :P )
+[03:14:15] *** Joins: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net)
+[03:14:50] <acrichto> hm, probably should!
+[03:25:00] *** Quits: ktt3ja (Mibbit@moz-6B6EE8C0.hsd1.va.comcast.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[03:34:11] *** Quits: jeffdb_ (jeff@moz-ED35AD97.hsd1.ca.comcast.net) (Quit: jeffdb_)
+[03:36:09] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[03:36:10] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/RYrIjg
+[03:36:10] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[03:41:10] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[03:41:10] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/qYvbbA
+[03:41:10] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[03:41:19] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[03:41:19] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/Q3W1oQ
+[03:41:19] <ghrust> 13rust/06auto 1413c6fc2 15Daniel Micay: fix alignment of pthread_attr_t...
+[03:41:19] <ghrust> 13rust/06auto 1420a87dc 15bors: auto merge of #10305 : thestinger/rust/align, r=alexcrichton...
+[03:41:19] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[03:48:04] *** Quits: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net) (Client exited)
+[03:48:30] *** Joins: StarLight (StarLight@moz-93E2906B.dynamic.avangarddsl.ru)
+[03:50:11] *** Quits: zz_kimundi (kimundi@moz-A0D07E3E.dip0.t-ipconnect.de) (Ping timeout)
+[03:53:33] *** Joins: zz_kimundi (kimundi@moz-4392BF18.dip0.t-ipconnect.de)
+[03:53:35] *** zz_kimundi is now known as kimundi
+[03:56:12] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[03:56:12] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1420a87dc to 14b17d4e3: 02http://git.io/N3iJvQ
+[03:56:12] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[03:56:18] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[03:56:19] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/bKgfxA
+[03:56:19] <ghrust> 13rust/06auto 142fc337a 15Alex Crichton: Clarify which errors are format string errors...
+[03:56:19] <ghrust> 13rust/06auto 149ecc07c 15bors: auto merge of #10306 : alexcrichton/rust/issue-9970-better, r=huonw...
+[03:56:19] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[04:06:46] *** Quits: pcwalton (pcwalton@moz-B51927E9.hsd1.ca.comcast.net) (Quit: pcwalton)
+[04:10:14] *** Joins: notmatt (notmatt@moz-152F21B7.vc.shawcable.net)
+[04:11:04] *** Quits: notmatt (notmatt@moz-152F21B7.vc.shawcable.net) (Connection reset by peer)
+[04:11:21] *** Joins: notmatt (notmatt@moz-152F21B7.vc.shawcable.net)
+[04:29:01] <jld> Okay, having annoyed everyone on that mailing list a little more...
+[04:29:02] <jld> acrichto: pong
+[04:29:42] *** Joins: jeffdb_ (jeff@moz-ED35AD97.hsd1.ca.comcast.net)
+[04:30:00] <jld> acrichto: #10308?
+[04:30:16] <acrichto> jld: yeah, just curious if you knew anything about it
+[04:31:12] <jld> ...let me guess.  The return type is an aggregate, so it's passed in memory instead of in %rax.
+[04:31:21] <jld> Or %eax.
+[04:31:53] <acrichto> the codegen looked like it did something with memory, but I idn't investigate too much
+[04:31:59] <acrichto> not sure why, but it looked like %eax wasn't used
+[04:35:41] <jld> ``If a function returns a structure or union, then the caller provides space for the
+[04:35:45] <jld> return value and places its address on the stack as argument word zero.''
+[04:37:05] <jld> What's interesting is that it doesn't break on x86_64.
+[04:41:09] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[04:41:09] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 149ecc07c to 14b17d4e3: 02http://git.io/N3iJvQ
+[04:41:09] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[04:41:10] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[04:41:10] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/oosL6A
+[04:41:10] <ghrust> 13rust/06auto 141c6ae5c 15Daniel Micay: fix alignment of pthread_attr_t...
+[04:41:10] <ghrust> 13rust/06auto 14efaf730 15bors: auto merge of #10305 : thestinger/rust/align, r=alexcrichton...
+[04:41:10] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[04:42:18] <jld> Well, the amd64 ABI doesn't actually say to pass the return value as MEMORY if you run out of registers, the way it does for arguments, but that's what GCC does.
+[04:46:16] <jld> I wonder if this means we're passing them wrong on i386, too... but we can't be, because that would break the build.  Wouldn't it?
+[04:46:24] *** Joins: eddyb (eddy@2C8F2179.17CB6122.FCAAE698.IP)
+[04:46:36] <strcat> jld: we pass/return small structs run everywhere, for sure
+[04:46:42] <strcat> pretty sure a bug is open about it
+[04:46:56] <strcat> it'd be really nice if we could just leverage libclang for this...
+[04:47:54] <jld> strcat: I mean an FFI function that takes a C-like repr(C) enum as argument.  Which we have in rustllvm.
+[04:48:00] <strcat> ah
+[04:48:01] <jld> (Which is the reason I added repr(C) in the first palce.)
+[04:48:07] <jld> s/alc/lac/
+[04:48:10] <strcat> I used repr(C) :)
+[04:48:20] <strcat> https://github.com/thestinger/rust-seccomp/blob/master/seccomp.rs
+[04:48:31] <strcat> could have used statics.... but meh! ;p
+[04:48:55] <strcat> anyway that library is far from done... or from being a library
+[04:50:21] *** Quits: jeffdb_ (jeff@moz-ED35AD97.hsd1.ca.comcast.net) (Quit: jeffdb_)
+[04:54:59] <jld> Speaking of seccomp... ..and mochitest-2 is broken because of MockFilePicker.  Grumble.
+[05:05:46] *** Joins: pcwalton (pcwalton@moz-5B4F0F15.dsl.dynamic.sonic.net)
+[05:05:46] *** ChanServ sets mode: +ao pcwalton pcwalton
+[05:05:52] *** Quits: pcwalton (pcwalton@moz-5B4F0F15.dsl.dynamic.sonic.net) (Quit: pcwalton)
+[05:21:57] <strcat> acrichto: still around?
+[05:35:59] *** Quits: notmatt (notmatt@moz-152F21B7.vc.shawcable.net) (Client exited)
+[05:36:42] *** Joins: geoffhill (geoffhill@moz-32C21DC2.amazon.com)
+[05:56:05] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[05:56:06] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/oosL6A
+[05:56:06] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[06:12:27] *** Joins: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net)
+[06:33:35] *** kimundi is now known as zz_kimundi
+[06:41:31] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[06:47:16] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Quit: ZZZzzz…)
+[06:49:10] <strcat> dbaupp: pushed the port of local_ptr (which local_data uses) to that
+[06:49:33] <strcat> will have to ask brson if he wants to keep rt::thread_local_storage after a snapshot is done (it'll be unused)
+[06:50:25] <strcat> afaict there's no sane way to use the POSIX/win32 TLS APIs directly... you need a babysitter like std::rt if you don't have #[local_data]
+[06:54:38] <dbaupp> strcat: cool; yeah, letting LLVM handle that for us is nice. (Is it deferring to them, where appropriate?)
+[06:54:55] <strcat> dbaupp: it's better this way
+[06:55:00] <strcat> it's much faster than setspecific/getspecific
+[06:55:11] <strcat> dbaupp: there's local data support in ELF
+[06:55:13] <strcat> it's magic
+[06:55:17] <dbaupp> sounds like it
+[06:55:20] * strcat has no idea how it works, but it does, and it's fast
+[06:55:38] <dbaupp> I guess windows doesn't have that level of support?
+[06:55:54] <strcat> dunno
+[06:55:55] <strcat> we'll see
+[06:55:58] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[06:56:01] <strcat> it won't be slower... ;p
+[06:56:07] <dbaupp> obviously
+[06:56:16] * strcat likes being able to drop a bunch of code
+[06:56:21] <strcat> and I really need it for rust-core
+[06:56:42] <strcat> couldn't think of a way to do the pthread_create/pthread_{set,get}_specific dance safety :(
+[06:57:02] <strcat> only way I could think of was removing the dtor
+[06:57:11] <strcat> so you get a permanent bit of TLS data
+[06:57:13] <strcat> but...
+[06:57:13] <dbaupp> "can't write this code... might as well modify the compiler." haha
+[06:57:18] <strcat> then it might as well be #[thread_local]
+[06:57:53] <strcat> no point of silly dynamic APIs until there's some reason to want it ;p
+[06:57:54] <dbaupp> yeah, using LLVM's built-in stuff is much nicer than ugly hacks.
+[06:58:24] *** Quits: geoffhill (geoffhill@moz-32C21DC2.amazon.com) (Ping timeout)
+[06:58:59] <dbaupp> is support for thread_local(localdynamic), thread_local(initialexec), etc. useful?
+[06:59:12] <strcat> maybe but it doesn't seem safe
+[06:59:15] <dbaupp> also, "Not all targets support thread-local variables".
+[06:59:33] <strcat> dbaupp: if they don't, they probably don't have pthread_setspecific
+[06:59:36] <strcat> we'll see 
+[06:59:46] <dbaupp> does windows come under that, I mean.
+[06:59:55] <strcat> dunno
+[07:00:02] <strcat> the tests will fail horribly though if it doesn't believe me :)
+[07:00:03] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Quit: ZZZzzz…)
+[07:00:17] <dbaupp> push it to try :P
+[07:00:47] * strcat thinks brson will be happy about this
+[07:00:58] <strcat> he was complaining about TLS via the POSIX APIs being slow a while ago
+[07:01:14] <dbaupp> "At this point, however, my fixes to TLS support have arrived in the upstream versions of both mingw-w64 and LLVM, so no custom patches are required any longer (this is also the reason why LDC requires a very recent version of both)." http://klickverbot.at/blog/2013/05/the-state-of-ldc-on-windows/ so it probably works, assuming they're using thread_local
+[07:01:15] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[07:01:15] <ghrust> 01[13rust01] 15thestinger 04force-pushed 06try from 1415a7c6e to 14b3b3f51: 02http://git.io/k471pw
+[07:01:15] <ghrust> 13rust/06try 14fccdf22 15Daniel Micay: add `#[thread_local]` attribute...
+[07:01:15] <ghrust> 13rust/06try 14b3b3f51 15Daniel Micay: port the runtime to `#[thread_local]`
+[07:01:15] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[07:01:28] <strcat> dbaupp: but we don't use mingw-w64
+[07:01:35] <dbaupp> strcat: oh, I thought we did?
+[07:01:38] <strcat> we use mingw
+[07:01:45] <strcat> mingw-w64 is the much less crappy fork
+[07:02:01] <dbaupp> gah, they're not just wordsize variants? :/
+[07:02:04] *** Quits: tautologico (lymph@703660AA.CFE755C8.C27E1635.IP) (Quit: tautologico)
+[07:02:06] <strcat> dbaupp: nope
+[07:02:17] <strcat> dbaupp: it's a properly maintained fork that's not totally broken and slow
+[07:02:40] <dbaupp> so... why aren't we using it?
+[07:02:52] * strcat shrugs
+[07:03:01] <strcat> no windows contributors who have ported rust to it? ;p
+[07:03:46] <klutzy> actually mingw-w64 is not even a fork
+[07:04:26] <acrichto> strcat: now I'm around
+[07:04:37] <strcat> ahhh, unresolved name :(
+[07:05:00] * strcat missed a not(stage0)
+[07:05:12] <klutzy> mingw-w64 author initially made w64 work but mingw refused to accept it for some reason
+[07:05:29] <klutzy> it partially explains why mingw-w64 even supports for 32-bit
+[07:05:42] <strcat> er, actually I didn't forget
+[07:05:51] <strcat> I'm just an idiot and checked out master in the wrong dir
+[07:06:51] <klutzy> I think we support for mingw-w64 on win32; I've cross-built it some months ago and it worked
+[07:07:00] <klutzy> but it was horribly slow
+[07:07:23] <strcat> hm, why was it slow?
+[07:08:05] <klutzy> I didn't looked it deeply, so I can only give a link for now: https://github.com/mozilla/rust/issues/8996#issuecomment-24292739
+[07:08:07] <strcat> acrichto: https://github.com/mozilla/rust/pull/10312 r? going through try right now... may or may not work on mingw
+[07:08:17] <strcat> will just cfg it for windows if it's broken there, for now
+[07:08:27] <acrichto> strcat: I'm a little wary of that, I'd want to talk it over with brson first
+[07:08:31] <strcat> kay
+[07:08:46] <acrichto> it sounds pretty cool, but LLVM stating that it's not supported on all targets worries me
+[07:08:59] <strcat> acrichto: well, lots of things aren't supported on all targets :)
+[07:09:02] <strcat> we could check
+[07:09:07] <acrichto> I'd also want to understand the semantics of how it works
+[07:09:16] * strcat knows how it works on linux
+[07:09:38] <strcat> acrichto: http://www.akkadia.org/drepper/tls.pdf
+[07:09:46] <dbaupp> 17:55:20 * strcat has no idea how it works, but it does, and it's fast
+[07:09:55] <dbaupp> :P
+[07:09:57] <strcat> dbaupp: but since then I read part of a pdf!
+[07:10:12] <strcat> and looked at the asm ;p
+[07:11:08] <strcat> acrichto: FWIW it's part of C11/C++11
+[07:11:12] <strcat> so it's far more portable than rust
+[07:11:24] <acrichto> I would be tempted to say yes
+[07:11:29] <strcat> it's probably about as portable as the atomics stuff
+[07:11:32] <acrichto> do you have a benchmark for what the performance would look like?
+[07:11:42] <strcat> well I made one in C :)
+[07:11:46] <acrichto> just out of curiosity
+[07:12:14] <acrichto> I've seen TLS accesses high up in profiles, and we might be able to eliminate some unsafe operations if the access is super-fast
+[07:12:44] <acrichto> hm, arm isn't supported, that's a bit of a concern
+[07:12:53] <acrichto> at least in that document that's what they say
+[07:13:40] <strcat> acrichto: LLVM's thread-local storage works on ARM
+[07:13:53] <acrichto> nice
+[07:13:55] <strcat> it looks like the JIT probably doesn't support it everywhere...
+[07:14:23] <strcat> acrichto: thread_local works on ARM, MIPS, x86, x86_64, PowerPC, for sure, because it's in the tests
+[07:14:34] <strcat> also AArch64
+[07:14:36] <acrichto> that's probably all we really care about
+[07:14:45] <strcat> I'm guessing by 'all targets' they mean 'it doesn't work on R600' ;p
+[07:15:27] <strcat> and SystemZ, Thumb2, SPARC
+[07:15:29] <strcat> (works on them)
+[07:15:35] <acrichto> that'd be pretty amazing if this "just worked"
+[07:15:49] <strcat> acrichto: well, in C++11 there's a thread_local keyword
+[07:15:51] <strcat> so I expect it to ;p
+[07:16:01] <strcat> acrichto: http://en.cppreference.com/w/cpp/language/storage_duration
+[07:16:16] <acrichto> it certainly looks reasonable enough
+[07:16:17] <strcat> acrichto: I actually started this by seeing what thread_local compiled to
+[07:16:25] <strcat> and then saw thread_local in the IR and was happy
+[07:16:27] <acrichto> I'd almost rather see it implemented in the pull request
+[07:16:34] <acrichto> (implemented in the runtime that is)
+[07:16:39] <strcat> acrichto: it is now
+[07:16:47] <strcat> passes tests locally at least
+[07:17:00] <strcat> it put the other commit under the comments
+[07:18:50] <acrichto> jeez that api is incredibly unsafe
+[07:18:56] <strcat> acrichto: http://ix.io/8Vh global vs. http://ix.io/8Vi thread local at an asm level
+[07:19:00] <strcat> with thread_local in C++
+[07:19:08] <strcat> pretty awesome
+[07:19:20] <acrichto> %fs:foo@TPOFF
+[07:19:20] <acrichto> magic
+[07:19:27] <strcat> magic elves
+[07:19:38] <acrichto> I'm impressed that it's the exact same code
+[07:19:41] <acrichto> with some extra metadata
+[07:19:46] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Ping timeout)
+[07:20:31] <strcat> acrichto: so, I think the overhead occurs at thread spawning this way, and not much at access
+[07:20:33] <strcat> need to benchmark
+[07:20:47] <acrichto> that's fine
+[07:20:50] <acrichto> we only spawn threads once
+[07:20:57] <strcat> yeah and it's not much overhead
+[07:20:58] <acrichto> or rather incredibly infrequently
+[07:21:10] <strcat> it's *tiny* for one variable, which is all the rt needs
+[07:21:44] <acrichto> does this have any runtime dependencies at all?
+[07:21:51] <acrichto> or is it all elf loader/dynamic linker magic?
+[07:21:55] <strcat> not anything we didn't need before
+[07:22:04] <strcat> acrichto: it's likely dynamic linker magic if you have dynamic libs
+[07:22:13] <strcat> it definitely works with static linking too
+[07:22:32] <dbaupp> surely there's a catch somewhere... this is far too good to be true
+[07:22:35] <strcat> it needs indirection with dynamic libs, thus the unsafe ways of restricting it (like external vs internal)
+[07:22:40] <strcat> dbaupp: the catch is that it's not as flexible
+[07:22:44] <strcat> you need to define them all in advance
+[07:22:52] <strcat> pthread_key_create/setspecific/getspecific is dynamic
+[07:22:53] <acrichto> I would love to see a cast::transmute codegen'd as a bitcast
+[07:23:16] <dbaupp> strcat: ah I see. (of course, for a single pointer, this is perfect.)
+[07:23:18] <strcat> (and you can *delete* pthread_key stuff)
+[07:23:32] <strcat> but it's undef behaviour to set/get before creation or after deletion so...
+[07:23:40] <strcat> it would be impossible to expose the flexibility in safe rust
+[07:24:01] <acrichto> strcat: does this pass stdtest?
+[07:24:14] <strcat> acrichto: we'll see, I screwed up and checked out master last time ;p
+[07:24:30] <acrichto> we had special wizardry to use the realstd tls key
+[07:24:34] <strcat> acrichto: it fails on windows.... :(
+[07:24:35] <acrichto> looks like this doesn't use that
+[07:24:38] <strcat> I think we'd need mingw-w64
+[07:24:44] <acrichto> ?
+[07:24:49] <strcat> acrichto: http://buildbot.rust-lang.org/builders/try-win/builds/638/steps/compile/logs/stdio
+[07:24:52] <strcat> don't know what that means
+[07:25:07] <acrichto> just a segfault
+[07:25:26] <strcat> so yeah, can't use it on windows til we move from mingw
+[07:25:30] <strcat> there's a catch.
+[07:25:38] <acrichto> why?
+[07:25:52] <strcat> acrichto: apparently it's one of the things mingw-w64 fixed
+[07:26:17] <acrichto> hm, that's concerning
+[07:26:18] <strcat> win32 is the windows cfg, right?
+[07:26:27] <strcat> acrichto: it needs the linker to work
+[07:26:30] <strcat> mingw's linker is really broken
+[07:26:40] <dbussink> strcat: ah, thanks for fixing that pthread_attr_t alignment, forgot about the actual alignment :(
+[07:27:12] <dbaupp> strcat: cfg(windows) works, I think.
+[07:29:40] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[07:29:40] <ghrust> 01[13rust01] 15thestinger 04force-pushed 06try from 14b3b3f51 to 14a44d1f8: 02http://git.io/k471pw
+[07:29:40] <ghrust> 13rust/06try 14a44d1f8 15Daniel Micay: port the runtime to `#[thread_local]`
+[07:29:40] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[07:31:52] <cmr> strcat: whoa, sweet!
+[07:31:55] * cmr just read the log
+[07:31:56] <dbussink> strcat: and indeed, x86 is so forgiving this works, arm is much less
+[07:32:03] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[07:32:12] <strcat> acrichto: our mingw might just be too old... we're on gcc 4.5 or something? it didn't have threads then
+[07:32:21] <strcat> as in C++11 threads
+[07:32:31] <strcat> and they still might not have it on windows like mingw-w64 does
+[07:32:42] * strcat thinks support for this is entirely tied to C++11 support
+[07:33:13] <strcat> acrichto: http://gcc.gnu.org/projects/cxx0x.html yep
+[07:33:24] <strcat> thread-local data, gcc 4.8 - hrm.
+[07:33:56] <cmr> What was __thread, then?
+[07:34:07] <strcat> cmr: same thing without dtor support
+[07:34:11] <cmr> oh
+[07:34:15] <strcat> but... apparently it never worked in mingw
+[07:34:47] <strcat> hrm
+[07:36:07] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[07:36:07] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/xAoq0g
+[07:36:07] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[07:36:14] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[07:36:14] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/LxpSnw
+[07:36:14] <ghrust> 13rust/06auto 142fc337a 15Alex Crichton: Clarify which errors are format string errors...
+[07:36:14] <ghrust> 13rust/06auto 14a66b372 15bors: auto merge of #10306 : alexcrichton/rust/issue-9970-better, r=huonw...
+[07:36:15] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[07:38:03] <dbaupp> strcat: I thought we're up to 4.8 for 0.8+?
+[07:38:04] * dbaupp checks
+[07:38:11] <strcat> dbaupp: doubt it
+[07:38:17] <strcat> I could be wrong...
+[07:38:41] <dbaupp> yeah, I'm wrong
+[07:38:46] <strcat> which are we at?
+[07:38:49] <strcat> for windows
+[07:38:59] <dbaupp> https://github.com/mozilla/rust/wiki/Note-Building-Rust-Before-0.8-on-Windows-Systems allows 4.8, but that's pre 0.8
+[07:39:25] * strcat has a feeling it still won't work without mingw-w64
+[07:39:34] <dbaupp> we're at 4.5
+[07:39:40] <klutzy> the title just means it was written before 0.8 :p
+[07:39:59] <dbaupp> klutzy: oh
+[07:40:05] <strcat> acrichto: definitely works on linux and OS X, at least ;p
+[07:40:30] <klutzy> I've been using gcc 4.6; I installed it by accident but there was no problem for months
+[07:40:37] <strcat> acrichto: http://klickverbot.at/blog/2013/05/the-state-of-ldc-on-windows/
+[07:41:18] <klutzy> mingw gcc 4.8 should work well
+[07:41:54] <acrichto> interesting
+[07:42:00] <klutzy> we even have a test disabled to make `make check-fast` pass on 4.8
+[07:42:34] <strcat> acrichto: so it seems thread-local probably didn't work on windows until... LLVM 3.3 and mingw-w64 4.8? :(
+[07:42:39] <acrichto> klutzy: #[mutable_doc]  hahahaha
+[07:42:46] <strcat> wait really?
+[07:42:54] <acrichto> strcat: that's sad :(
+[07:43:15] <klutzy> acrichto: there's also #[init] #[should_fail] :)
+[07:43:40] <acrichto> #[should_fail] is legit?
+[07:44:33] <klutzy> not without #[test]
+[07:44:43] <dbaupp> hah, auto_encode was still around with its deprecation warning?
+[07:45:09] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[07:45:09] <ghrust> 01[13rust01] 15thestinger 04force-pushed 06try from 14a44d1f8 to 14f538fb5: 02http://git.io/k471pw
+[07:45:09] <ghrust> 13rust/06try 14f538fb5 15Daniel Micay: port the runtime to `#[thread_local]`
+[07:45:09] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[07:45:17] <acrichto> no_main is a crate attribute?
+[07:45:36] <strcat> apparently
+[07:45:47] <strcat>     // If the user wants no main function at all, then stop here.
+[07:45:49] <strcat>     if attr::contains_name(crate.attrs, "no_main") {
+[07:45:54] <sfackler> what was mutable_doc supposed to do?
+[07:46:08] <dbaupp> sfackler: you're allowed to modify the documentation through a &
+[07:46:09] <strcat> I bet it was a search and replace gone wrong
+[07:46:35] <cmr> dbaupp: wut
+[07:46:45] <cmr> is that a joke?
+[07:46:48] <klutzy> or you may edit doc via online wiki
+[07:46:52] <strcat> 5fb254695b4db9af3d8e33577fae28ae9f7006c5 adds mutable_doc
+[07:46:54] <strcat> ;p
+[07:47:07] * strcat thinks pcwalton was just tired
+[07:47:14] <dbaupp> cmr: no never :P https://github.com/mozilla/rust/pull/10316/files#diff-4b6329d238cbb757d5646fc56ecbe267L16
+[07:52:06] <strcat> acrichto: so, thread_local is free
+[07:52:09] <strcat> apparently?
+[07:52:29] <strcat> it only costs at thread creation time compared to a global
+[07:52:48] <acrichto> strcat: that's awesome
+[07:52:50] <strcat> or... it hoisted the load
+[07:52:52] <strcat> acrichto: nvm
+[07:52:54] <strcat> it's evil
+[07:52:56] <strcat> it hoisted the load.
+[07:53:06] <strcat> ok if it's volatile it doesn't hoist the load
+[07:53:27] <strcat> acrichto: ok, confirmed that it's 'free'
+[07:53:35] <strcat> at least in this test
+[07:54:05] <strcat> acrichto: http://ix.io/8Vk global, http://ix.io/8Vl thread_local
+[07:54:17] <strcat> clang -std=c++11 -O3 foo.cc && time ./a.out
+[07:55:25] * strcat isn't sure why he included stdio
+[07:55:26] <acrichto> same time?
+[07:55:30] <strcat> yes
+[07:55:32] <acrichto> nice
+[07:55:38] <acrichto> what if you call pthread stuff?
+[07:55:53] <strcat> well, it would be hard to do that and measure this
+[07:55:54] <strcat> hm
+[07:56:22] <strcat> acrichto: I can see in the ASM that it's using that thread local magic though
+[07:56:31] <strcat> movl%fs:i@TPOFF, %ecx
+[07:56:55] <strcat> vs
+[07:56:57] <strcat> movl$1000000000, %eax       # imm = 0x3B9ACA00
+[07:57:13] <acrichto> I would hope so lol
+[07:57:24] <strcat> acrichto: well, just to verify that it didn't optimize out
+[07:57:57] <strcat> acrichto: so, it seems like what happens is that spawning a thread copies the thread-local data section, and it's all basically 1 level of ptr indirection
+[07:58:06] <strcat> but gdb confuses me so...
+[07:58:34] *** Quits: dbaupp (Thunderbir@moz-9879E359.lns20.syd6.internode.on.net) (Ping timeout)
+[07:59:04] <strcat> acrichto: is there a scheduler benchmark I could run?
+[07:59:11] <strcat> where setspecific has been in the profiles
+[07:59:24] * strcat would like to add benchmark data to the commit msg ;]
+[08:00:21] <acrichto> strcat: brson would know more about that, I'm unaware of any benchmarks we have
+[08:00:25] <acrichto> other than just using the scheduler a lot
+[08:02:02] <strcat> acrichto: well, it removes the 5% setspecific/getspecific from rt-spawn-rate ;p
+[08:02:16] *** Joins: dbaupp (Thunderbir@moz-DDA7CEB8.lns20.syd6.internode.on.net)
+[08:06:31] <strcat> acrichto: meh, it's *barely* faster
+[08:06:48] <strcat> due to dynamic linking ;[
+[08:07:27] <strcat> maybe I *should* expose those local things
+[08:10:57] <strcat> acrichto: well, so... it's ~60% faster than pthread_getspecific
+[08:11:10] <strcat> but... it seems we allocate on every local_data set/get...
+[08:11:34] <strcat>  22.08%  foo  libc-2.18.so                          [.] _int_free                                                                ▒
+[08:11:36] <strcat>  19.45%  foo  libc-2.18.so                          [.] malloc                                                                   ▒
+[08:11:38] <strcat>  16.32%  foo  libc-2.18.so                          [.] _int_malloc                                                              ▒
+[08:11:46] <strcat>   2.26%  foo  ld-2.18.so                            [.] __tls_get_addr                                                           ▒
+[08:11:48] <strcat> ;[
+[08:12:29] <strcat> the same thing with getspecific is 4%
+[08:12:38] <strcat> yay useless microbenchmark
+[08:12:42] <strcat> TLS needs work elsewhere
+[08:13:04] * dbaupp "loves" how `_int_free` is almost always at the top of every non-trival rust profile he's seen :/
+[08:17:13] <strcat> http://buildbot.rust-lang.org/builders/try-linux/builds/615/steps/test/logs/stdio yay
+[08:17:15] <strcat> ;p
+[08:17:30] <strcat> I think I screwed up porting one of the functions
+[08:18:07] <strcat> ah or in the test harness it somehow ends up with two of these? ;\
+[08:21:31] *** Quits: Sharp (Sharp@moz-7B61DF4.dsl.static.sonic.net) (Ping timeout)
+[08:21:38] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[08:21:38] <ghrust> 01[13rust01] 15thestinger 04force-pushed 06try from 14f538fb5 to 14eb2166f: 02http://git.io/k471pw
+[08:21:38] <ghrust> 13rust/06try 14eb2166f 15Daniel Micay: port the runtime to `#[thread_local]`
+[08:21:38] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[08:21:42] <strcat> acrichto: ughhhhh
+[08:23:32] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[08:23:33] <ghrust> 01[13rust01] 15thestinger 04force-pushed 06try from 14eb2166f to 14394e3eb: 02http://git.io/k471pw
+[08:23:33] <ghrust> 13rust/06try 14394e3eb 15Daniel Micay: port the runtime to `#[thread_local]`
+[08:23:33] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[08:27:30] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[08:27:36] *** Joins: Sharp (Sharp@moz-7B61DF4.dsl.static.sonic.net)
+[08:28:06] *** Quits: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net) (Client exited)
+[08:51:11] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[08:51:11] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/LxpSnw
+[08:51:11] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[08:56:11] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[08:56:12] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/gHbGww
+[08:56:12] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[08:56:16] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[08:56:16] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/d33UXg
+[08:56:16] <ghrust> 13rust/06auto 1465d35ac 15sh8281.kim: fix some cfail test cases for arm
+[08:56:16] <ghrust> 13rust/06auto 14dda67df 15bors: auto merge of #10314 : ksh8281/rust/fix_some_cfail_test_cases_for_arm, r=yichoi...
+[08:56:17] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[08:56:45] *** Quits: Sharp (Sharp@moz-7B61DF4.dsl.static.sonic.net) (Ping timeout)
+[09:06:40] <strcat> acrichto: expected `*mut std::libc::types::common::c95::c_void` but found `*mut libc::types::common::c95::c_void`
+[09:06:41] <strcat> great!
+[09:06:43] <strcat> ;p
+[09:06:51] <acrichto> wheeeeee
+[09:07:13] <strcat> I could use transmute... :(
+[09:08:37] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[09:08:37] <ghrust> 01[13rust01] 15thestinger 04force-pushed 06try from 14394e3eb to 14dc03c8b: 02http://git.io/k471pw
+[09:08:37] <ghrust> 13rust/06try 14dc03c8b 15Daniel Micay: port the runtime to `#[thread_local]`
+[09:08:37] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[09:10:44] *** Joins: mib_bh366w (Mibbit@moz-E841EA3A.hsd1.wa.comcast.net)
+[09:10:57] * strcat thinks it will work this time ;[
+[09:11:15] *** Quits: mib_bh366w (Mibbit@moz-E841EA3A.hsd1.wa.comcast.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[09:17:35] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Ping timeout)
+[09:21:01] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[09:35:36] *** Joins: Sharp (Sharp@moz-7B61DF4.dsl.static.sonic.net)
+[09:38:32] *** Joins: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net)
+[09:39:06] *** Quits: Sharp (Sharp@moz-7B61DF4.dsl.static.sonic.net) (Ping timeout)
+[09:40:18] *** Quits: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net) (Ping timeout)
+[09:49:13] <strcat> acrichto: yay, it worked
+[09:49:27] <strcat> well, it failed on windows
+[10:00:28] *** zz_kimundi is now known as kimundi
+[10:00:59] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[10:11:07] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[10:11:08] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/d33UXg
+[10:11:08] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[10:16:12] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[10:16:12] <ghrust> 01[13rust01] 15bors pushed 5 new commits to 06auto: 02http://git.io/nhd5xw
+[10:16:12] <ghrust> 13rust/06auto 14c71d344 15kud1ing: remove /usr/include
+[10:16:12] <ghrust> 13rust/06auto 14b9a3faf 15kud1ing: _NSGetEnviron() is not available on iOS
+[10:16:12] <ghrust> 13rust/06auto 14c5943f6 15kud1ing: .algin fix for ios
+[10:16:13] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[10:58:00] *** kimundi is now known as zz_kimundi
+[11:07:04] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[11:40:38] *** Joins: Sharp (Sharp@moz-7B61DF4.dsl.static.sonic.net)
+[11:43:48] *** Joins: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP)
+[11:47:27] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[11:50:20] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[13:17:39] *** Quits: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP) (Quit: Leaving.)
+[13:18:34] *** Joins: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP)
+[13:40:58] *** Quits: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP) (Connection reset by peer)
+[13:41:04] *** Joins: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP)
+[13:49:20] *** Joins: nuts (tii@822A8E7E.6AD15BF5.75D3BBDB.IP)
+[14:07:04] *** Joins: jdm (jdm@moz-AC9499B2.cable.teksavvy.com)
+[14:21:40] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Ping timeout)
+[14:27:58] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[14:30:10] *** Joins: samnardoni (Mibbit@F889EF52.38924046.A86B7D63.IP)
+[14:45:01] *** Quits: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP) (Quit: Leaving.)
+[15:38:56] *** Joins: Kxepal832 (Miranda@moz-37B13CF.pppoe.mtu-net.ru)
+[15:39:28] *** Quits: Kxepal (Miranda@moz-CB85EBA8.pppoe.mtu-net.ru) (Ping timeout)
+[15:50:40] *** zz_kimundi is now known as kimundi
+[15:58:38] *** Quits: nuts (tii@822A8E7E.6AD15BF5.75D3BBDB.IP) (Connection reset by peer)
+[16:10:39] *** Quits: samnardoni (Mibbit@F889EF52.38924046.A86B7D63.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[17:29:59] *** Joins: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net)
+[17:31:01] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Ping timeout)
+[17:32:43] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[17:32:49] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[17:34:24] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[17:34:24] *** ChanServ sets mode: +o pnkfelix
+[17:59:02] *** Joins: tjc (tjc@moz-BBE3ABD.mv.mozilla.com)
+[17:59:02] *** ChanServ sets mode: +o tjc
+[17:59:13] *** Joins: andrew-__ (andrew-d_w@moz-5A92CAFF.dsl.static.sonic.net)
+[17:59:20] *** Quits: andrew-__ (andrew-d_w@moz-5A92CAFF.dsl.static.sonic.net) (Input/output error)
+[17:59:43] *** Joins: andrew-__ (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[18:00:11] *** Quits: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Ping timeout)
+[18:16:08] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Quit: ZZZzzz…)
+[18:16:27] *** Quits: Sharp (Sharp@moz-7B61DF4.dsl.static.sonic.net) (Quit: Sharp)
+[18:27:21] *** Quits: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net) (Client exited)
+[18:47:20] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[18:50:46] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[18:50:46] *** ChanServ sets mode: +ao pcwalton pcwalton
+[18:54:13] *** Quits: Jesse (jruderman@moz-537BCF9.hsd1.ca.comcast.net) (Quit: Jesse)
+[18:55:53] *** Joins: Sharp (Sharp@1710C26.8381A41.8725677B.IP)
+[19:09:27] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Quit: ZZZzzz…)
+[19:14:51] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[19:15:10] <nmatsakis> pcwalton: so I've spent today thinking over a couple of things re: Rust, i.e., HKT, placement new, deref trait
+[19:15:17] <pcwalton> ok
+[19:15:24] <pcwalton> would be curious to hear what you came up with
+[19:15:28] <nmatsakis> pcwalton: haven't gotten very far into the deref trait yet
+[19:15:39] <nmatsakis> yeah I was thinking maybe we can schedule some time to talk it over, or perhaps this afternoon w/ brson
+[19:16:37] <pcwalton> well, we have the regularly scheduled rust planning meeting
+[19:17:00] <nmatsakis> that's what I meant
+[19:17:07] <pcwalton> is that a good time? 1PM
+[19:17:23] <nmatsakis> yeah it's fine here
+[19:17:29] <nmatsakis> I mean I have it in my calendar already :)
+[19:18:26] <nmatsakis> dherman and I had a frustrating session yesterday wherein I failed to explain lots of details re: lifetimes,
+[19:18:53] <nmatsakis> making me fear that everything is too horribly complex, though I think that the fault truly lay in the teacher not so much the material
+[19:19:35] <nmatsakis> anyway
+[19:26:59] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[19:27:00] *** ChanServ sets mode: +qo brson brson
+[19:27:23] <kmc> nmatsakis: do you have links to some papers I could read about typechecking for region pointers?
+[19:28:05] *** Joins: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[19:29:13] *** Quits: andrew-__ (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Ping timeout)
+[19:29:30] <nmatsakis> kmc: not preassembled, Tofte and Talpin are often cited as laying the foundations, http://en.wikipedia.org/wiki/Region-based_memory_management has some links
+[19:29:48] <nmatsakis> kmc: Cyclone's system has similarities with ours http://en.wikipedia.org/wiki/Cyclone_%28programming_language%29
+[19:30:16] <nmatsakis> kmc: http://www.eecs.harvard.edu/~greg/cyclone/papers/cyclone-regions.pdf in particular
+[19:30:49] <kmc> thanks
+[19:33:51] <pcwalton> nmatsakis: I don't really worry about Rust being too complex much these days, honestly
+[19:34:11] <pcwalton> the ease with which even moderately seasoned systems programmers pick it up means that it works
+[19:34:35] <pcwalton> and the fact that we have enough of servo written to work, and that it's faster than webkit/gecko at block reflow, means that it's fast enough to work
+[19:35:01] <pcwalton> I think in order to realistically argue that Rust "doesn't work" you have some pretty serious empirical evidence to counter
+[19:35:42] <pcwalton> it's different, sure, but it works
+[19:35:52] <nmatsakis> pcwalton: I try sometimes to imagine what Rust would be if we had not done lifetimes and stuck with modes. It's...kind of hard to imagine, really.
+[19:36:21] <pcwalton> I think we would probably have ended up with concurrent GC
+[19:36:23] <nmatsakis> Seems like most of modern Rust couldn't really work. i.e., iterators, the collection libraries, etc
+[19:36:34] <nmatsakis> or at least it would require a lot more copying
+[19:36:36] <nmatsakis> and closures
+[19:36:44] <pcwalton> I don't think it would really work
+[19:36:52] <pcwalton> outside of concurrent GC
+[19:37:08] <nmatsakis> certainly we'd lean a lot more on GC
+[19:37:09] <kmc> yeah the fact that we're able to hire interns and have them learn Rust and then contribute useful work to Servo within the space of a few months is pretty good evidence
+[19:37:10] <pcwalton> I don't think concurrent GC is as evil as when I started this project
+[19:37:16] <pcwalton> kmc: right
+[19:37:34] <pcwalton> there may well be a place for concurrent GC in Rust, as heretical as that may be
+[19:37:42] <tjc> kmc: Yup -- also the fact that at least a few of the people applying to OPW have gotten from not knowing Rust at all to submitting a patch in the span of about a month (or less)
+[19:37:47] <nmatsakis> I don't have a problem with it, exactly, but I still want to keep it at arm's length until we are happy with the system without it, basically.
+[19:37:53] <pcwalton> yes
+[19:37:56] <kmc> yeah
+[19:38:21] <pcwalton> it would have been a lot easier in hindsight if we had realized that the only way to make it work would be to take the C++11 system and make it safe by adding regions
+[19:38:33] <pcwalton> but then if we had realized a lot of things in hindsight Rust would have been easier :)
+[19:38:34] *** Joins: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com)
+[19:39:02] <kmc> hooray for research!
+[19:39:11] <pcwalton> nmatsakis: on a different note, I am thinking that T::size_of() is probably inevitable./
+[19:39:25] <pcwalton> making :: magic is likely unavoidable
+[19:39:28] <pcwalton> it's just too sugary
+[19:39:51] <pcwalton> I'm scared too but I think we can't avoid it
+[19:41:02] <nmatsakis> pcwalton: I agree :) however, my thought was this
+[19:41:12] <nmatsakis> we probably still want an explicit system
+[19:41:14] <nmatsakis> *syntax
+[19:41:23] <nmatsakis> that is, TraitName::<for T>::method()
+[19:41:30] <nmatsakis> particularly for the multiparam type class case
+[19:41:47] <nmatsakis> since otherwise you need something like Self::(Trait::<A,B,C>::Item)
+[19:41:51] <pcwalton> yes
+[19:41:59] <pcwalton> I think we need the "for" syntax as well as the sugar
+[19:42:02] <nmatsakis> so basically my plan was to let you implement the lexical `for` syntax,
+[19:42:04] <nmatsakis> then agitate for the magical one
+[19:42:04] <pcwalton> that's exactly what I was thinking
+[19:42:04] <nmatsakis> :)
+[19:42:15] <pcwalton> just not in "use" statements please
+[19:42:22] <nmatsakis> no, not in use statements
+[19:42:29] <pcwalton> I think the slippery slope of allowing them in "use" was what had me scared
+[19:42:50] <nmatsakis> that is frightening
+[19:43:02] <pcwalton> but "use" is already different
+[19:43:30] <nmatsakis> is this still the bors page? http://buildbot.rust-lang.org/bors/bors.html
+[19:43:32] <pcwalton> back in a bit
+[19:43:34] <nmatsakis> is bors running?
+[19:44:02] <nmatsakis> trying to figure out why https://github.com/mozilla/rust/pull/10289 is marked as unreviewed
+[19:44:27] <acrichto> nmatsakis: sometimes the last commit on github isn't the head of the pull
+[19:44:37] <acrichto> in your local branch is the tip 3d1f3f4?
+[19:44:37] <nmatsakis> oh, that could be
+[19:44:56] <nmatsakis> it's prob 71acc54, yeah
+[19:45:04] <nmatsakis> I've heard people complain about this but never had it bite me personally before
+[19:45:08] <nmatsakis> how annoying!
+[19:45:17] <acrichto> github think that chronological is the way to go
+[19:45:18] <acrichto> not topological
+[19:45:31] <nmatsakis> yes github is wrong but whatever
+[19:45:36] <pnkfelix> pcwalton: do you have a plan and/or notes for a hypothetical smart-pointer system would interoperate with match clauses?
+[19:45:50] <pnkfelix> sed -e s/for a/for how a/
+[19:45:51] <nmatsakis> pnkfelix: my thought is that we prob have to move to a generic "deref" pattern
+[19:46:06] <pnkfelix> nmatsakis: is that sufficiently expressive?
+[19:46:28] <nmatsakis> I don't know, what is insufficient?
+[19:46:36] <nmatsakis> I'm not sure what you mean
+[19:46:51] <kimundi> Trait lookup on T:: gets blessed after all? hooray! \o/
+[19:46:59] *** jdm is now known as jdm|f00ding
+[19:47:03] <pnkfelix> nmatsakis: mm, maybe I should compose my thoughts more carefully
+[19:47:45] <nmatsakis> pnkfelix: I haven't put a ton of thought into this, not saying there isn't a prob somewhere. Clearly we'd have to know the type of the thing being matched to do it (yay, even less HM compatible) -- but we actually already impose that constraint on patterns today
+[19:48:38] <nmatsakis> pnkfelix: but there are other options too
+[19:49:07] <pnkfelix> nmatsakis: well, maybe I just don't know how a "deref" pattern would look
+[19:49:18] <nmatsakis> well, I envisioned `*P` where P is a pattern
+[19:49:58] <nmatsakis> but actually we could add new pattern forms too, this kind of ties in with all the stuff I've been thinking about
+[19:50:07] <nmatsakis> I have to gather up these thoughts in some comprehensible form
+[19:50:10] <pnkfelix> nmatsakis: so, let me be concrete
+[19:50:22] <pnkfelix> nmatsakis: I was musing about sigil-sugar last week
+[19:50:48] <pnkfelix> nmatsakis: and as I was doing this, when I reached the question of "what to do about match", I got stuck
+[19:51:00] <pnkfelix> nmatsakis: so lets take your `*P` where P is a pattern
+[19:51:10] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[19:51:11] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14d879bc2 to 14dda67df: 02http://git.io/N3iJvQ
+[19:51:11] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[19:51:11] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[19:51:11] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/cd6eSQ
+[19:51:11] <ghrust> 13rust/06auto 14f3191a4 15Niko Matsakis: Refactor TypeContents to be more scrutable. In particular, create coarser bits...
+[19:51:11] <ghrust> 13rust/06auto 143d1f3f4 15Niko Matsakis: Rename misleading contains_managed to owns_managed
+[19:51:12] <ghrust> 13rust/06auto 1471acc54 15Niko Matsakis: Make TypeContents consider the type `T` to be reachable via `*T` pointers...
+[19:51:14] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[19:51:17] <pnkfelix> nmatsakis: if I have some SmartPointer type Smaht<T>
+[19:51:24] <nmatsakis> (for the record, I'm actually not wild about a deref pattern in some respects -- I rather like doing things like "let &~ref foo = self" vs "let foo = &**self", prevents accidental errors 
+[19:51:39] <nmatsakis> acrichto: looks like that was it, thanks
+[19:52:01] <acrichto> nmatsakis: np
+[19:52:03] <pnkfelix> nmatsakis: where Smaht<T> is presumably some struct that hides the meta-data it carries in order to manage an object of type T
+[19:52:31] <pnkfelix> nmatsakis: in this context, when you say the deref pattern looks like `*P` where P is a pattern
+[19:53:04] <pnkfelix> nmatsakis: *which* pattern do you mean for the programmer to write for Smaht<T> ?  Just a &T ?
+[19:53:40] <pnkfelix> nmatsakis: (or actually, I guess I should say either `t` for a copy of T, or `ref t` for a `&T` ?)
+[19:54:11] <nmatsakis> pnkfelix: let x: Smaht<T> = ...;
+[19:54:26] <nmatsakis> pnkfelix: let *ref y = x;
+[19:54:30] <nmatsakis> pnkfelix: that'd be equivalent to:
+[19:54:35] <nmatsakis> pnkfelix: let y = &*x;
+[19:55:19] <nmatsakis> pnkfelix: the * matches a `Smaht<T>`, peels away the Smaht and matches against a T, just as `&` today matches an `&T`, peels away the `&`, and matches against a T
+[19:55:23] <pnkfelix> nmatsakis: And there is some trait that Smaht<T> implements that provides methods that expose either copying or providing a ref to the T ?
+[19:55:31] <nmatsakis> pnkfelix: well yes I'm presuming a deref trait
+[19:55:40] <nmatsakis> pnkfelix: basically overloading the `*` operator
+[19:55:58] <nmatsakis> actually there will be multiple traits, Deref and DerefMut 
+[19:56:26] <kimundi> You'd need multiple traits, to allow moving out or only borrowing, I think.
+[19:56:29] <pnkfelix> nmatsakis: so, part of what I was worried about here
+[19:56:40] <pnkfelix> nmatsakis: is that a refutable pattern can fail
+[19:56:47] <pnkfelix> nmatsakis: in some unrelated part of the pattern
+[19:57:13] <nmatsakis> pnkfelix: irrefutable
+[19:57:27] <nmatsakis> kimundi: I hadn't intended to allow moving out.
+[19:57:34] <pnkfelix> nmatsakis: … no I meant to say refutable
+[19:57:47] <pnkfelix> nmatsakis: this terminology is used inconsistently in rustc
+[19:57:59] <nmatsakis> pnkfelix: really? 
+[19:58:06] <nmatsakis> pnkfelix: refutable == can fail, irrefutable == cannot, no?
+[19:58:23] <nmatsakis> kimundi: I'm not clear on when moving out would be safe -- only with unique pointers, far as I can tell
+[19:58:28] <pnkfelix> nmatsakis: okay, so your interpretation of these words matches mine
+[19:58:29] <kimundi> AH, I though it would make sense to also allow destructuring of smartpointers in the pattern
+[19:58:45] <pnkfelix> nmatsakis: but why did you say "irrefutable" in response to what I said?
+[19:58:53] <kimundi> nmatsakis: Well, we have Arc.unwrap() for example
+[19:58:54] <nmatsakis> pnkfelix: because the * operator is an irrefutable pattern
+[19:58:59] <pnkfelix> nmatsakis: Are you asserting that the Deref trait would only be allowed to be used for irrefutable patterns
+[19:59:01] <pnkfelix> nmatsakis: aah
+[19:59:16] <pnkfelix> nmatsakis: but if it occurs as a subpattern of a refutable pattern
+[19:59:25] <nmatsakis> kimundi: true, but this is basically an unsafe op (from my POV)
+[19:59:33] <nmatsakis> kimundi: so I'm fine with making it be an explicit method call 
+[19:59:37] <nmatsakis> kimundi: or a function
+[19:59:48] <kimundi> yeah, fair enough
+[19:59:59] <nmatsakis> pnkfelix: i'm not sure what your point is -- in that case, yes, the pattern as a whole is refutable
+[20:00:01] <pnkfelix> nmatsakis: (I guess we can delay calling the associated method until all of the refutable parts of the pattern have been passed)
+[20:00:19] <nmatsakis> pnkfelix: well, I wouldn't define when we will call the method. if that method has side effects, oh well.
+[20:00:28] <nmatsakis> or at least not overly define it :)
+[20:00:37] <nmatsakis> but it's an interesting point
+[20:00:48] <kimundi> If you ever get a effect system, you could put a no-fail bound on it ;)
+[20:00:49] <pnkfelix> nmatsakis: My main point was that I had thought that in general, we would need to be able to do deref on smart pointers within cases of a match, and in particular in refutable patterns
+[20:01:16] <pnkfelix> nmatsakis: and so I thought the API would need to be able to handle some sort of transaction like semantics
+[20:01:31] <pnkfelix> nmatsakis: where we allow effect-free inspection of the structure
+[20:01:39] <pnkfelix> nmatsakis: until the whole pattern has been confirmed
+[20:01:49] <pnkfelix> nmatsakis: and then you get to commit to the deref 
+[20:02:21] <pnkfelix> nmatsakis: but your statement that Deref would only be allowed for irrefutable patterns has given me pause
+[20:02:27] <nmatsakis> pnkfelix: that's not what I meant
+[20:02:49] <nmatsakis> pnkfelix: so it's an interesting question whether the Deref trait would give you notice when the "borrow" expires
+[20:02:55] <nmatsakis> pnkfelix: I guess that in general it must
+[20:03:11] <nmatsakis> pnkfelix: certainly if we want it to be compatible with Mut<T> it must
+[20:03:22] <nmatsakis> pnkfelix: but probably also for various esoteric GC systems (pinning, etc)
+[20:03:34] <pnkfelix> nmatsakis: oh I think that might be a different level of transaction semantics than what I was actually trying to describe
+[20:03:44] <nmatsakis> pnkfelix: that said, I don't think we need special treatment for matches --
+[20:03:59] <pnkfelix> nmatsakis: (I was thinking of a very domain-specific transaction just for how match cases are handled)
+[20:05:02] <nmatsakis> pnkfelix: though I guess we might want a kind of "const borrow" 
+[20:05:14] <pnkfelix> nmatsakis: I think an example of what I'm worried about is Pair<Smaht<T>, SomeEnum>
+[20:05:21] <nmatsakis> pnkfelix: certainly easier not to permit smart pointers in match for now :)
+[20:05:31] <nmatsakis> pnkfelix: well more troublesome is certainly Smaht<SomeEnum>
+[20:05:40] <nmatsakis> pnkfelix: because then you *must* deref to get to the refutable part
+[20:05:41] <pnkfelix> nmatsakis: right, that's another case of interest
+[20:05:52] <pnkfelix> Pair<Smaht<T>, Smaht<SomeEnum>>
+[20:05:56] <pnkfelix> and so on
+[20:06:05] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[20:06:09] *** jdm|f00ding is now known as jdm
+[20:06:13] <nmatsakis> but it all boils down to:
+[20:06:23] <pnkfelix> so yeah, there's a question of how much of the machinery of match is the smart-pointer allowed/expected to observve
+[20:06:37] <nmatsakis> I don't feel like we have to protect against that
+[20:07:07] <nmatsakis> still, I *think* we permit things like this today:
+[20:07:32] <nmatsakis> let x = @mut 5; let y = &mut *x; match x { @z => { ... } } 
+[20:07:52] <nmatsakis> point being that *borrowing* `*x` would be illegal, but matching and copying out doesn't trigger any errors
+[20:08:04] <nmatsakis> but in general moving to `Mut<T>` removes this, as we discussed previously
+[20:08:10] <nmatsakis> since just to read you must borrow
+[20:08:10] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Quit: ZZZzzz…)
+[20:08:48] <nmatsakis> bigger point being: if we wanted to keep on permitting this,
+[20:08:51] <nmatsakis> we'd need a const borrow,
+[20:08:54] <nmatsakis> but I don't know if we do
+[20:09:00] *** Quits: tjc (tjc@moz-BBE3ABD.mv.mozilla.com) (Quit: zzzzzzzzzz)
+[20:09:20] <nmatsakis> and I guess there's an interesting memory safety question that is opened up,
+[20:09:30] <pnkfelix> nmatsakis: so, instead, what, we either disallow smart-pointers in match,
+[20:09:32] <nmatsakis> where if your deref trait could cause pointers to be invalidated,
+[20:09:44] <nmatsakis> but we assume in match that we can delve deeply through const borrows,
+[20:09:50] <pnkfelix> nmatsakis: or we pin down an exact semantics for evaluation-order of match pattersn
+[20:09:52] <nmatsakis> and in particular trigger other deref traits,
+[20:09:54] <nmatsakis> it's scary
+[20:10:00] <nmatsakis> pnkfelix: I don't think we HAVE to do either,
+[20:10:06] <pnkfelix> nmatsakis: or we tell people "all bets are off if you play with fire" ?
+[20:10:07] <nmatsakis> pnkfelix: we could just say that match takes an immutable borrow 
+[20:10:19] <nmatsakis> pnkfelix: or rather takes the borow it will eventually need, I guess,
+[20:10:32] <nmatsakis> pnkfelix: and that means that code like the one above would fail dynamically
+[20:10:38] <pnkfelix> nmatsakis: but it does this even for clauses that didn't actually match ?
+[20:10:48] <nmatsakis> pnkfelix: basically moving to `Mut<T>` removes the ability to read from a mut-borrowed thing already, so that's consistent
+[20:11:13] <nmatsakis> pnkfelix: I see your point, but yes, potentially. It's not wonderful.
+[20:11:41] *** Joins: geoffhill (geoffhill@moz-244CF33A.amazon.com)
+[20:11:44] <nmatsakis> pnkfelix: I guess we can also just define the eval order,
+[20:11:47] <pnkfelix> nmatsakis: well, if we don't support smart pointers in match
+[20:11:49] <nmatsakis> pnkfelix: just as we do with `if` guards,
+[20:11:57] <pnkfelix> nmatsakis: it will make it easier for me to specify a sigil-sugr
+[20:11:57] <nmatsakis> pnkfelix: and just be more aggressive when no smart pointers are present
+[20:12:13] <nmatsakis> pnkfelix: (incidentally, the same situation DOES arise with if guards actually)
+[20:12:20] <nmatsakis> pnkfelix: and I doubt we've rigorously defined that
+[20:12:28] <pnkfelix> nmatsakis: hmm.  I guess that is true
+[20:12:29] <nmatsakis> pnkfelix: certainly I don't understand the trans code well enough to know
+[20:12:44] <nmatsakis> pnkfelix: well I'm not sure the situation is as bad
+[20:12:49] <pnkfelix> nmatsakis: I spent some time last night reading over the "Run your Research" paper on Redex
+[20:13:22] <pnkfelix> nmatsakis: The comparison they provide between Redex and other tools puts the K framework in a pretty positive light
+[20:13:34] <nmatsakis> pnkfelix: how so?
+[20:14:30] <nmatsakis> pnkfelix: in specific do they say that there are things K can do that Redex doesn't handle well, etc?
+[20:14:36] <pnkfelix> nmatsakis: they gave a list of "features" that lightweight semantics engineriing tools might offer
+[20:14:52] <pnkfelix> nmatsakis: and according to their grid, K provides a strict superset of Redex
+[20:15:22] <pnkfelix> nmatsakis:  the thing that they said K (and many other tools) provides that Redex does not
+[20:15:41] <pnkfelix> nmatsakis: is built-in support for binding constructs in the object language
+[20:16:35] <pnkfelix> nmatsakis: (The feature list is "Execution; Unit Tests; Automated Tests; Typesetting; Binding; Visualization".  K has check marks in all six.)
+[20:19:59] <nmatsakis> pnkfelix: I wonder how readily adaptable K's binding constructs would be to rust
+[20:20:35] <strcat> I think we need 3 deref traits ;\
+[20:20:50] <strcat> immutable, mutable (for unique ptrs), by-move (for unique ptrs)
+[20:20:57] <strcat> so making that work with patterns will be "fun" ;p
+[20:21:39] <strcat> at first I didn't think custom unique ptrs would be very useful, but since you can't give ~ an allocator parameter it's necessary for something like a tree with an allocator parameter
+[20:23:06] <nmatsakis> strcat: perhaps. by-move doesn't seem esp hard to me, if we do decide we want it.
+[20:26:49] *** Quits: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com) (Quit: Jesse)
+[20:27:34] <kimundi> ping @ anyone who wants to talk with me about issues I have with the changes to the Result API I laid out on the mailing list. ;)
+[20:30:27] <nmatsakis> kimundi: ?
+[20:30:51] <kimundi> nmatsakis: He, okay.
+[20:32:06] *** Joins: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com)
+[20:33:07] <kimundi> So, I had planned to make a Result<T, E> composable by providing as_ref() -> Result<&T, &E> and as_mut() -> Result<&mut T, &mut E> adapters just like Option, and to provide ok() -> Option<T> and err() -> Option<E> adapters to convert each possible variant into an option, so that you could for example do res.as_ref().err() instead of res.get_err_ref()
+[20:33:26] <nmatsakis> ok
+[20:33:58] <kimundi> That works so far, but it clashes with another design aspect of Result as currently implemented
+[20:34:45] <kimundi> CUrrently, Result as a ToStr bound on it's Error type. The idea behind that is to enable stuff like unwrap() or get_ref() to provide a useful error message in case of an error result
+[20:36:01] <nmatsakis> I see
+[20:36:19] <nmatsakis> well actually I don't quite --
+[20:36:30] <nmatsakis> I guess we don't have a def of ToStr for &T where T:ToStr?
+[20:36:35] <kimundi> NOw this causes two problems: 1. Introducing the ok() and err() Option adapters would mean you would loose the useful error message unless you call unwrap() or unwrap_err() directly (both would still be implemented on Result directly because they are used far to much)
+[20:36:51] <kimundi> ANd 2. As you said, there is not &T impl of ToStr
+[20:37:26] <kimundi> We could add the latter one, but that would mean calling to_str() on & &T values would start printing & prefixes
+[20:37:41] <kimundi> I think we had such an impl before, and it got removed for that reason
+[20:38:25] <nmatsakis> I'd probably impl &T:ToStr as just called (*self).tostr()
+[20:38:29] <nmatsakis> rather than prepending &
+[20:39:19] <nmatsakis> it's unclear what the purpose of ToStr is really
+[20:39:34] <strcat> brson: did you see https://github.com/mozilla/rust/pull/10312 ?
+[20:39:36] <nmatsakis> speaking personally I'm not sure that it should be the job of Result to provide nice error messages
+[20:39:44] <nmatsakis> it could even use {:?}
+[20:39:56] <kimundi> nmatsakis: Hm, now that's an idea
+[20:40:51] <kimundi> nmatsakis: So, I could just remove the ToStr bound on Result
+[20:41:05] <kimundi> It would have the least fallout :P
+[20:41:40] <nmatsakis> kimundi: it'd be fine with me
+[20:42:40] <strcat> if Result doesn't do something special with the error type, I don't really see a point in having it
+[20:43:26] <kimundi> strcat: Would Result using format :? on the error value be fine?
+[20:43:32] <strcat> not imo
+[20:43:36] *** Quits: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com) (Quit: Jesse)
+[20:43:42] <strcat> I don't want :? outside of debug builds though ;p
+[20:44:01] <strcat> we can't have API or ABI stability if it uses :?
+[20:44:12] <strcat> not that libstd will ever provide ABI stability...
+[20:44:57] <kimundi> nmatsakis, strcat so the other solution I have is to ditch as_Ref and as_mut, and have ok() -> Option<T>, ok_ref() -> Option<&T>, ok_mut() -> Option<&mut T>, ... err(), err_ref() and err_mut() instead
+[20:45:46] <nmatsakis> kimundi: or just ditch nice error messages.
+[20:46:09] * nmatsakis shrugs 
+[20:46:18] <nmatsakis> probably you should summarize and mail rust-dev I guess
+[20:46:22] <nmatsakis> I have to run for a bit
+[20:46:37] <kimundi> ell, I already did that kinda, three days ago :P
+[20:46:54] <kimundi> Might not worded the mail strong enough as an issue though
+[20:47:03] *** Joins: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com)
+[20:49:03] <kimundi> strcat: The issue is kinda: Either ditch the error messages, or duplicate all methods of Option on Result, _twice_
+[20:49:22] <kimundi> I still haven't found a solution that prevents both :|
+[20:52:56] * strcat wishes the github issue tracker had tag hierarchies
+[20:53:55] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: Leaving.)
+[21:01:19] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[21:01:19] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/cd6eSQ
+[21:01:19] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[21:01:24] *** Quits: eddyb (eddy@2C8F2179.17CB6122.FCAAE698.IP) (Ping timeout)
+[21:02:55] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: pcwalton)
+[21:03:52] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[21:03:52] *** ChanServ sets mode: +ao pcwalton pcwalton
+[21:04:13] <brson> strcat: no, i haven't seen it
+[21:04:22] <pcwalton> nmatsakis: brson: joining.
+[21:05:34] *** Joins: a_m0d (dschoof@moz-A861BB8.coyotecorp.com)
+[21:05:50] <strcat> brson: sadly rust's std::local_data spends 80% of the time in malloc/free because it needs to use ~Trait
+[21:06:22] <strcat> (it's a great argument for making ~T not allocate for types no larger than a ptr ;p)
+[21:07:50] <strcat> thread_local itself is comparable in performance to accessing a global
+[21:11:03] *** Joins: tjc (tjc@moz-BBE3ABD.mv.mozilla.com)
+[21:11:03] *** ChanServ sets mode: +o tjc
+[21:15:52] <kmc> strcat: isn't ~Trait already two pointers?
+[21:16:43] <strcat> kmc: yes
+[21:16:49] <strcat> kmc: talking about the ~ ptr that's in there
+[21:16:56] <kmc> ah
+[21:17:08] <strcat> ~T has two representations atm
+[21:17:25] <strcat> one for managed data (should go away when a real GC is implemented) and one for non-managed data
+[21:17:33] <strcat> *T
+[21:17:36] <strcat> and
+[21:17:55] <strcat> *{ { ref_count, tydesc, *prev, *next }, T }
+[21:18:05] <strcat> ~int could just be T, no ptr
+[21:18:35] <strcat> would make trait objects much faster in certain cases
+[21:53:39] *** Quits: Sharp (Sharp@1710C26.8381A41.8725677B.IP) (Quit: Sharp)
+[21:57:41] *** Quits: geoffhill (geoffhill@moz-244CF33A.amazon.com) (Quit: geoffhill)
+[21:58:09] *** Quits: jdm (jdm@moz-AC9499B2.cable.teksavvy.com) (Quit: Lost terminal)
+[22:01:15] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[22:01:15] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/boLjbw
+[22:01:15] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[22:01:25] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[22:01:25] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/tVK20g
+[22:01:25] <ghrust> 13rust/06auto 142a333ed 15kud1ing: Fixes for compilation to iOS:...
+[22:01:25] <ghrust> 13rust/06auto 1422eb11c 15bors: auto merge of #10227 : kud1ing/rust/ios, r=alexcrichton
+[22:01:26] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[22:01:30] <dbaupp> acrichto: how'd you managed to kill 2000 lines *and* make rustuv 60% faster? o_O
+[22:01:48] <acrichto> we had an extra layer of indirection which was most of the lines and most of the slowdown
+[22:02:02] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[22:02:07] <acrichto> which made the library usable from any perspective other than libstd, but removing that also makes things lean and mean
+[22:02:16] <dbaupp> ah, of course.
+[22:02:24] <dbaupp> (that PR needs a rebase too, fwiw.)
+[22:02:34] <acrichto> haha, it's going to always neeed a rebase
+[22:02:57] <dbaupp> you love your mega-patches :P
+[22:03:26] <acrichto> I have a bad habit
+[22:03:33] <acrichto> everything just snowballs into one another
+[22:03:52] * dbaupp is fine with acrichto fixing everything in a single patch
+[22:04:34] *** Joins: geoffhill (geoffhill@moz-738DC0DB.org)
+[22:04:55] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[22:04:55] *** ChanServ sets mode: +qo brson brson
+[22:10:29] *** Joins: Sharp (Sharp@1710C26.8381A41.8725677B.IP)
+[22:25:32] <benh> "how'd you manage to make the plane 200 tons lighter *and* make it 60% faster?" ;)
+[22:27:37] <kimundi> "Easy: I ignited all the rocket fuel we where carrying as cargo"
+[22:32:06] *** Joins: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net)
+[22:36:36] <acrichto> strcat: do you still have that C program that just sends 0s from a server to a client?
+[22:36:48] <strcat> yes
+[22:38:04] *** Joins: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP)
+[22:39:29] <strcat> acrichto: it sends 4200MiB/s
+[22:39:50] <acrichto> strcat: can you paste it? The numbers are pretty useless to me b/c they're all relative per system
+[22:40:22] <strcat> acrichto: http://ix.io/8VI server, http://ix.io/8Ne client
+[22:40:23] *** Joins: tikue (tikue_star@61D9B7A5.CD72397.689607DE.IP)
+[22:40:27] <acrichto> woo thanks
+[22:40:28] <strcat> it doesn't handle errors properly in the server...
+[22:40:35] <strcat> could probably be faster too
+[22:41:03] <strcat> acrichto: it considers disconnecting the client to be an error ;p
+[22:53:35] <strcat> acrichto: we could also just update our mingw
+[22:53:41] <strcat> do they still do releases?
+[22:53:53] <strcat> their site is totally unmaintained ;\
+[22:54:05] <Luqman> i want to try porting to mingw64 soon
+[22:54:09] <strcat> hrm
+[22:54:11] <acrichto> I think that's one of those things that's easier said than done
+[22:54:14] <acrichto> but certainly plausible
+[22:54:45] <Luqman> i had it sorta working last i tried
+[22:54:54] <strcat> acrichto: mingw has gcc 4.8.1
+[22:55:18] <strcat> that's the version picking up C++11 thread_local support, rather than just __thread, although *both* work already on linux and OS X so...
+[22:55:33] <strcat> (4.8.0 picked it up, I just mean the major release)
+[22:57:54] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[22:57:54] <ghrust> 01[13rust01] 15alexcrichton 04force-pushed 06snap-stage3 from 145d16ed3 to 14fdc830d: 02http://git.io/f3Qwfg
+[22:57:54] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[22:58:28] <strcat> acrichto: https://github.com/mozilla/rust/pull/10322 r?
+[22:58:35] <brson> i'd also like to get the windows toolchain improved for 0.9
+[23:01:20] <acrichto> strcat: that change made Rc have the same sendability properties of T, right?
+[23:01:39] <strcat> acrichto: yes, added a test to verify (it passes)
+[23:01:48] <strcat> er
+[23:01:52] <strcat> no
+[23:01:52] <acrichto> it still has the #[no_send] attribute?
+[23:01:54] <strcat> yes
+[23:01:59] <strcat> I thought you meant freeze
+[23:02:16] <acrichto> why are two constructors still needed?
+[23:02:26] <strcat> because it needs to require Freeze or Send
+[23:02:36] <acrichto> but Rc is never sendable
+[23:03:07] <strcat> the requirement isn't there due to that
+[23:03:14] <acrichto> hm I'm confused
+[23:04:02] <strcat> if it's Send, it can't contain an Rc
+[23:04:12] <strcat> if it's Freeze, it respects the immutability
+[23:04:20] <strcat> so either one prevents cycles
+[23:04:42] <strcat> lets say you take some @ and put them in Rc
+[23:04:48] <strcat> and make a cycle
+[23:05:04] <strcat> the cycle collector run at the end of the task will go to collect the @, but there will be cycles that's it's unaware of
+[23:05:08] <strcat> I don't think it will be sound
+[23:05:29] <strcat> also, we have that #[unsafe_destructor] thing because of cycles afaik
+[23:05:41] <strcat> and I would like for it to not be required if you're not using @
+[23:06:08] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[23:06:09] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/tVK20g
+[23:06:09] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[23:06:44] <acrichto> hm ok, so the Freeze bound is there to prevent cycles?
+[23:06:52] <strcat> yes
+[23:07:08] <acrichto> and the thing that's Send and not Freeze is a Cell?
+[23:07:20] <strcat> Freeze applies to almost everything so it's the gate for 'new', and from_send is a workaround for things that are Send but not Freeze
+[23:07:23] <strcat> acrichto: yes
+[23:07:43] <strcat> and Mut<T> would be non-Freeze
+[23:07:45] <acrichto> but you still can't make cycles wiht Send?
+[23:07:52] <strcat> acrichto: Rc is #[no_send] :)
+[23:08:08] <acrichto> no, but why can you not make a cycle with contents that are Send and not Freeze
+[23:08:18] <strcat> because Rc isn't Send
+[23:08:24] <strcat> and a cycle implies it contains an Rc
+[23:09:16] <strcat> you can put an Rc in another Rc via new
+[23:09:29] <strcat> you just can't make a cycle, because it's immutable
+[23:09:34] <strcat> so it can never be made to reference itself
+[23:10:05] <benh> the wonders of not having lazy evaluation
+[23:11:21] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Connection reset by peer)
+[23:11:25] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[23:11:26] *** ChanServ sets mode: +ao pcwalton pcwalton
+[23:26:14] *** Quits: notmatt (notmatt@moz-9FB2565E.vc.shawcable.net) (Client exited)
+[23:29:45] <acrichto> brson: I'm removing you r+ on the uv-rewrite, still testing locally and I'm 99% certain that rustpkg is going to die
+[23:30:08] <brson> ok
+[23:30:09] * acrichto should run tests without benchmarks
+[23:31:08] <acrichto> argh rustpkg failed :(
+[23:33:49] <acrichto> brson: oh dear, something was transplanted during a homing operation
+[23:34:00] <acrichto> that would explain all the segfaults
+[23:41:33] <brson> strcat: i think you said that 0-INT_MIN is undefined in Rust? do you know why? does llvm explicitly say it is somewhere?
+[23:41:44] <strcat> brson: INT_MIN / -1
+[23:41:54] <brson> ah, right. thanks
+[23:42:03] <strcat> brson: http://llvm.org/docs/LangRef.html#sdiv-instruction
+[23:42:07] <strcat> only an issue for signed division
+[23:42:33] <strcat> brson: multiplication/subtraction/addition are the same operators for signed/unsigned ints at a hw level
+[23:42:38] <strcat> operations*
+[23:43:23] <strcat> it's probably not handled consistently across platforms, so they like to just make it undefined and leverage it for optimizations
+[23:43:46] <strcat> (since abs(INT_MIN) can't be a sensible value)
+[23:46:27] <acrichto> brson: so one thing I've done in this rewrite is to remove as many task::unkillable blocks as possible
+[23:46:50] <acrichto> brson: I tried to scrutinize as many locations as possible to make sure that unwinding on scheduling operations were all handled reasonable as well
+[23:47:17] <acrichto> brson: I guess I just wanted to let you know b/c there will likely be issues (like the one I'm currently seeing) coming soon
+[23:48:39] <acrichto> apparently you can't cancel an in-flight uv_fs_t
+[23:48:50] <acrichto> I think this mean's we're uninterruptable during fs operations
+[23:48:56] <acrichto> which I suppose isn't too bad, network is the big one
+[23:49:09] <brson> acrichto: you removed them and made them handle killing correctly?
+[23:49:31] <acrichto> brson: I did as much as possible, I don't know how to systematically inject linked failure though to test it
+[23:49:56] <acrichto> it mostly just involved adding lots of "if status == uvll::ECANCELED { return }" and adding destructors
+[23:50:16] <acrichto> we really need a way of testing this 
+[23:50:38] <strcat> brson: __get_tls_addr dates from ~2001, but it seems like it has always been broken on mingw :(
+[23:51:01] <strcat> I booted up a windows VM and confirmed that it totally doesn't work across library boundaries with mingw
+[23:52:20] <strcat> it works if you just make a variable and then access it from multiple threads, but... not if you pass the addr into another lib...
+[23:55:26] *** kimundi is now known as zz_kimundi
+[23:58:59] <brson> acrichto: ok ... i don't love having code that isn't known to be correct, and I want to redo linked failure from the ground up anyway

@@ -1,0 +1,756 @@
+[00:00:06] <eddyb> strcat: and your favorite, meth: // self is passed as an opaque box in the environment slot
+[00:00:16] <strcat> ;[
+[00:00:36] <eddyb> so that's what @? is?
+[00:00:39] <strcat> rusti: struct Foo; impl Foo { fn bar(mut self) {} }
+[00:00:41] -rusti- ()
+[00:00:58] <strcat> eddyb: no, the opaque one doesn't know the type inside
+[00:01:07] <eddyb> strcat: it's printed as @?
+[00:01:23] <strcat> eddyb: the repr case for opaque boxes is never hit anymore
+[00:01:31] <strcat> they are always actual @T or @mut T
+[00:01:38] <strcat> afaik.
+[00:01:52] <eddyb> I thought it wouldn't be something that looks like @ or sounds like it's specific to @, for that crazy env thing
+[00:02:17] <eddyb> strcat: so I need to fix that stupid thing to remove the opaque box ;_;
+[00:02:29] <strcat> eddyb: ~, @, closures, vectors, etc. all used to have that same box representation
+[00:03:07] <eddyb> ty_opaque_closure_ptr(Sigil), // ptr to env for ||, @fn, ~fn
+[00:03:13] <eddyb> okay, that makes sense
+[00:03:29] <eddyb> though closure_env_ptr would make more sense
+[00:06:39] <cmr> pcwalton: can you take a quick poke at https://github.com/mozilla/rust/blob/master/src/librustc/middle/check_match.rs#L676 ? It looks right to me.
+[00:06:42] <cmr> (triage for https://github.com/mozilla/rust/issues/4731)
+[00:07:05] <pcwalton> yes, I think it's right
+[00:07:19] <cmr> I'm going to remove the fixme then
+[00:07:29] <pcwalton> sure
+[00:08:04] <eddyb> I'm tempted to s/ty_box/ty_gc/
+[00:08:11] <eddyb> this is awfully unreadable
+[00:08:33] <pcwalton> GcTy :)
+[00:12:03] <eddyb> ty_opaque_closure_ptr is actually ty_unboxed_closure_ptr. heh
+[00:13:21] <eddyb> free glue for @T calls drop on @T and free on @T? doesn't make sense
+[00:13:57] <eddyb> or does it call drop on T (the user-defined dtor)?
+[00:16:01] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Connection reset by peer)
+[00:16:29] <eddyb> wait, what? I think this is noop anymore: make_free_glue(bcx, v, tvec::expand_boxed_vec_ty(bcx.tcx(), t))
+[00:16:49] <eddyb> nvm I'm thinking wrong >_>
+[00:16:59] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[00:17:00] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/Xa5tXA
+[00:17:00] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[00:18:13] *** Joins: tikue_ (tkuehn@moz-C55F9DFF.hsd1.pa.comcast.net)
+[00:21:56] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[00:21:56] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/6rA3Kw
+[00:21:56] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[00:21:57] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[00:21:57] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/Be7KIw
+[00:21:57] <ghrust> 13rust/06auto 14bba78a2 15Alex Crichton: Implement native UDP I/O
+[00:21:57] <ghrust> 13rust/06auto 1409a561a 15bors: auto merge of #11186 : alexcrichton/rust/native-udp, r=brson...
+[00:21:57] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[00:23:58] <eddyb> strcat: why is there a branch on IsNull on every ~T free?
+[00:24:08] <cmr> eddyb: so it doesn't need a drop flag
+[00:24:16] <eddyb> huh?
+[00:24:26] <eddyb> (free(0) is noop AFAIK btw)
+[00:24:38] *** Quits: tikue_ (tkuehn@moz-C55F9DFF.hsd1.pa.comcast.net) (Quit: tikue_)
+[00:31:42] <eddyb> strcat, cmr: so make_drop_glue calls free_ty instead of make_free_glue, for ty_uniq and friends
+[00:33:36] <eddyb> would that cause indirection?
+[00:35:41] <eddyb> lines 4338-4363/4363 (END) HOLY WHAT?
+[00:35:58] <eddyb> strcat: I just wanted to test the indirection with #[deriving(ToStr)]struct Foo(~str);fn main(){~Foo(~"foo") as ~ToStr;}
+[00:36:51] <eddyb> just 400 lines when it's my own dummy trait
+[00:38:23] <eddyb> mkay, there is a call, but it's not through a pointer (so it might get inlined)
+[00:39:41] <cmr> r? https://github.com/mozilla/rust/pull/11250
+[00:40:00] <dbaupp> eddyb: 400 lines of IR?
+[00:40:05] <eddyb> yes
+[00:40:09] <cmr> actually hold off on an r+
+[00:40:13] <eddyb> dbaupp: and 4k if I use ToStr
+[00:40:51] <eddyb> &mut ~[@str] haha
+[00:41:51] <cmr> updated; unhold (added test to the struct matching one)
+[00:42:15] <eddyb> hmpf, I can remove a lot of cruft by just generating the free glue instead of *calling* it
+[00:42:22] <eddyb> and maybe drop free altogether
+[00:44:55] <dbaupp> eddyb: I see 4k for just #[deriving(ToStr)] struct Foo(~str); fn main() {}
+[00:44:57] <dbaupp> fwiw
+[00:45:06] <eddyb> oh. that's fun
+[00:45:15] <dbaupp> and 700 for deriving(Eq)
+[00:45:24] <dbaupp> the problem is ToStr is super ugly :P
+[00:48:16] <eddyb> woo, only closures call free_ty now
+[00:48:25] <eddyb> everything else goes through the glue
+[00:48:34] <eddyb> (i.e. it gets inlined)
+[00:51:41] <eddyb> yay going to break ABI
+[00:52:24] <eddyb> strcat: this was easier than I thought. the thing to note is that I didn't need to remove the free glue, just inline it
+[00:52:36] <eddyb> and right now it's only used by the drop glue
+[00:54:49] <eddyb> / NB: this has to be kept in sync with `type_desc` in `rt`
+[00:54:54] <eddyb> ^ is that valid anymore?
+[00:55:22] <dbaupp> it probably has to be kept in sync with type_desc in std::unstable::intrinsics
+[00:55:29] <dbaupp> or whereever it is now
+[00:55:37] <cmr> oops, forgot to update the comment when I moved it out of rt.
+[00:55:46] <cmr> but yes, it is, I just wrote it not long ago :p
+[00:55:55] <cmr> eddyb: can you update the comment while you're at it?
+[00:56:29] <eddyb> dbaupp: it *is* std::unstable::intrinsics::TyDesc
+[00:56:41] <eddyb> it has to be kept in sync with the compiler :P
+[00:57:08] <dbaupp> oh
+[00:57:15] * dbaupp thought you were reading something in the compiler
+[00:57:21] <eddyb> heh
+[00:58:30] <eddyb> not even sure how I should structure a PR
+[00:58:43] <dbaupp> cmr: re-r? https://github.com/mozilla/rust/pull/11137
+[01:06:41] <eddyb> should I stack more things here, or get this merged first? https://github.com/mozilla/rust/pull/11252
+[01:07:05] <eddyb> I'm dropping the free glue on top of that. I need better local workspaces :/
+[01:08:30] <eddyb> dammit, I can't do that, still. didn't notice a sneaky call
+[01:08:39] <sfackler> has anyone seen linker errors not being able to resolve _rust_crate_map_extra::...?
+[01:09:06] <sfackler> i'm adding something to crate metadata so that may have broken something
+[01:09:21] <eddyb> ~Trait needs to work with ~@T
+[01:16:25] <eddyb> does it?
+[01:16:39] <eddyb> pcwalton, strcat, cmr: can we even have @T inside ~Trait?
+[01:16:49] <strcat> eddyb: yes
+[01:16:56] <eddyb> pffffft
+[01:17:02] <eddyb> strcat: how do I construct such a thing?
+[01:17:05] <cmr> well it'd need to be ~Trait:
+[01:17:24] <eddyb> <anon>:1:83: 1:110 error: cannot pack type `~@Bar:Send`, which does not fulfill `Send`, as a trait bounded by Send
+[01:17:26] <eddyb> cmr: hehe
+[01:17:38] <sfackler> it actually needs to be ~Trait:'static
+[01:17:49] <sfackler> I think
+[01:17:57] <eddyb> nope
+[01:18:21] <sfackler> oh, maybe that was because I was trying to put it in a @ box
+[01:18:38] *** Joins: gwty (gwtypc@45FAED15.3D6E65B3.27560D6E.IP)
+[01:20:44] <eddyb> sed 's/\$UP\$/~/g' | sed 's/\$SP\$/@/g' | sed 's/\$x27/\'/'
+[01:20:47] <dbaupp> rusti: trait Foo {} impl Foo for @uint {} ~@1u as ~Foo:
+[01:20:57] <eddyb> _~@Bar.'static::glue_free // close enough
+[01:21:26] -rusti- timeout triggered!
+[01:21:37] *** Quits: gwty (gwtypc@45FAED15.3D6E65B3.27560D6E.IP) (Ping timeout)
+[01:23:28] <eddyb> great, I can't tell what's going on by looking at the generate PR
+[01:23:31] <eddyb> *IR
+[01:24:41] <eddyb> are there tests for dtors? I want to make sure I didn't nuke anything
+[01:26:20] <brson> i'm trying to extract new crates out of libextra and I can hardly comprehend the makefiles anymore. it's pretty dispiriting
+[01:26:20] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: pcwalton)
+[01:26:40] <brson> there's too much that needs to be copy-pasted for every new crate
+[01:27:20] <cmr> add yet another layer of makefile indirection!
+[01:27:30] <eddyb> hmm. so what I see is ~Trait calling free instead of drop
+[01:28:04] <eddyb> oh, I just need Drop on something, not necessarily @T inside
+[01:28:43] *** Joins: gwty (gwtypc@45FAED15.3D6E65B3.27560D6E.IP)
+[01:28:43] <eddyb> rusti: struct Foo; impl Drop for Foo {fn drop(&mut self) {println!("hai from dtor")}} Foo
+[01:28:47] -rusti- main::Foo
+[01:28:47] -rusti- hai from dtor
+[01:29:08] <eddyb> rusti: struct Foo; impl Drop for Foo {fn drop(&mut self) {println!("hai from dtor")}} trait Bar {} impl Bar for Foo{} ~Foo as ~Bar
+[01:29:09] -rusti- ~main::Bar:Send
+[01:29:09] -rusti- hai from dtor
+[01:29:17] <eddyb> how on earth does that work at all?
+[01:29:42] <dbaupp> the vtable includes the drop glue
+[01:29:53] <dbaupp> which is called when the trait object is dropped?
+[01:30:24] <eddyb> ah, because glue and free are identical for ~T. and you can only cast ~T to ~Trait
+[01:30:36] <eddyb> s/glue/drop
+[01:30:39] <eddyb> dbaupp: it was actually calling free instead of drop
+[01:30:46] <dbaupp> oh
+[01:30:57] <eddyb> I was expecting it to free the memory and not call the dtor. but it does that because there's extra indirection
+[01:31:00] <eddyb> yay nonsense
+[01:31:16] <eddyb> at least it means I can truly remove it now
+[01:32:17] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[01:32:17] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/Be7KIw
+[01:32:17] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[01:33:28] <acrichto> brson: in the light of that plus https://github.com/mozilla/rust/commit/d830fcc6eb5173061888d4b128c0670a49515f58, it may be time to completely redesign the build system...
+[01:34:41] <brson> acrichto: >_< it's such a huge task
+[01:37:00] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[01:37:00] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/Fer1ow
+[01:37:00] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[01:37:00] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[01:37:01] <ghrust> 01[13rust01] 15bors pushed 16 new commits to 06auto: 02http://git.io/YuAbnQ
+[01:37:01] <ghrust> 13rust/06auto 14b311649 15Patrick Walton: libsyntax: Make the parser mutable
+[01:37:01] <ghrust> 13rust/06auto 14f203c56 15Patrick Walton: libsyntax: De-`@mut` `quote_depth` in the parser
+[01:37:01] <ghrust> 13rust/06auto 140f2e8f0 15Patrick Walton: libsyntax: De-`@mut` `token` in the parser
+[01:37:03] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[01:40:43] <sfackler> bors seems to think that nothing is stale (?)
+[01:47:52] <ChrisMorgan> acrichto: we all love the makefiles :-)
+[01:48:32] * ChrisMorgan agrees that they're just a little incomprehensible at present
+[01:48:51] <sfackler> "just a little"? :P
+[01:49:34] <ChrisMorgan> sfackler: if you're determined, it's not *enormously* difficult to work out what's going on. You've just got to keep track of what $(1) &c. are at present…
+[01:57:06] *** Quits: geoffhill (geoffhill@moz-738DC0DB.org) (Quit: )
+[02:06:46] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[02:06:46] *** ChanServ sets mode: +ao pcwalton pcwalton
+[02:06:53] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[02:12:39] <eddyb> oops, forgot some imports (heh. I did that twice today, didn't I?) https://github.com/mozilla/rust/pull/11252 r?
+[02:13:17] <eddyb> or I could wait to get the removal of free_glue in, too
+[02:14:23] <cmr> are you in a rush? :)
+[02:16:57] <eddyb> I know how long it takes to test these things in bors, if you're referring to packing items in a single PR
+[02:17:39] <eddyb> and it's also late, I can barely afford compiling rustc
+[02:18:07] <cmr> I meant to get the PR landed
+[02:18:17] <cmr> ie, do you want this to land before you get in the free_glue change?
+[02:18:18] <dbaupp> eddyb: live life on the edge: submit PRs without even compiling, let alone running any tests :P
+[02:18:33] * cmr has never done that not even once nope
+[02:18:49] <eddyb> cmr: ah, no. it's actually easier if I get both of them in. I just have to find a good name for the PR
+[02:19:02] <eddyb> dbaupp: I rarely run *all* the tests
+[02:19:20] <eddyb> they can easily burn a hole through my laptop
+[02:20:05] *** Quits: Axord (xord@moz-C0D5F15A.lsanca.dsl-w.verizon.net) (Quit: I'm sure it's perfectly safe)
+[02:21:28] <eddyb> rustc: /home/eddy/Projects/rust/src/llvm/lib/IR/Constants.cpp:876: static llvm::Constant* llvm::ConstantStruct::get(llvm::StructType*, llvm::ArrayRef<llvm::Constant*>): Assertion `(ST->isOpaque() || ST->getNumElements() == V.size()) && "Incorrect # elements specified to ConstantStruct::get"' failed.
+[02:21:29] * dbaupp can occasionally bring himself to run `check-stage2-std NO_REBUILD=1`, or `check-stage2-cfail`...
+[02:21:41] <eddyb> stage2? wow ur brave
+[02:22:08] <eddyb> anyways, LLVM assertions are always fun
+[02:28:17] <eddyb> is "// NOTE remove after next snapshot" the right thing to put before the #[cfg(stage0)] item?
+[02:28:52] <cmr> yes
+[02:29:09] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[02:31:00] <eddyb> I'll try to remove the ugly self hack in this PR. if I can, opaque_box will die
+[02:32:20] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[02:32:20] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 148ab9cf7 to 1409a561a: 02http://git.io/N3iJvQ
+[02:32:20] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[02:32:20] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[02:32:21] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/1ugiwg
+[02:32:21] <ghrust> 13rust/06auto 149f1adf0 15g3xzh: Add more benchmark tests to path/posix...
+[02:32:21] <ghrust> 13rust/06auto 1402cec05 15bors: auto merge of #11137 : g3xzh/rust/benchm, r=cmr...
+[02:32:21] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[02:33:55] <dbaupp> eddyb: you mean pass self as a normal argument?
+[02:34:27] <eddyb> at least have i8* instead of that madness
+[02:34:42] <eddyb> I'm still not sure if it's required in any way, I'm afraid to try and replace it
+[02:34:57] <cmr> it's already a pointer, why replace it with i8*?
+[02:35:22] <cmr> oh you mean for self.
+[02:35:25] <cmr> duh
+[02:35:27] <dbaupp> eddyb: do it properly! :)
+[02:35:29] <dbaupp> please
+[02:35:38] <cmr> eddyb: make it type* :P
+[02:36:07] <cmr> why do we hav ethe ton of declars for the LLVM intrinsics?
+[02:36:30] <eddyb> no idea
+[02:36:57] <eddyb> I remember strcat saying we can do extern "llvm" in Rust for llvm intrinsics and stop exposing them through Rust
+[02:37:20] <cmr> that was turned down, to not tie us to llvm
+[02:39:08] <eddyb> oh, okay
+[02:39:43] <eddyb> opaque_box is used for typeck::method_static and typeck::vtable_static - what do those mean?
+[02:43:11] <eddyb> nvm, that means every method call
+[02:46:29] <eddyb> there's nothing special about that slot, it could have whatever type it wanted to
+[02:48:05] <eddyb> cmr: I might have sped up LLVM passes
+[02:48:37] <cmr> eddyb: oh?
+[02:48:41] <cmr> by removing free glue?
+[02:48:45] <eddyb> std: time: 35.442 s  LLVM passes -> time: 33.817 s  LLVM passes
+[02:49:34] <eddyb> cmr: yeah, nothing more
+[02:49:48] <cmr> does that change bootstrap?
+[02:49:51] <eddyb> it makes the small libs slightly faster, otherwise I wouldn't have noticed
+[02:50:07] <dbaupp> eddyb: \o/
+[02:50:12] <cmr> sounds like yes, so sweet :)
+[02:50:12] <dbaupp> that's pretty cool
+[02:50:20] <eddyb> cmr: it's one removed field in std::unstable::intrinsics::TyDesc
+[02:50:39] <dbaupp> does it pass tests?
+[02:54:35] <eddyb> there is still indirection, ~Foo::drop_glue calls Foo::drop_glue, but I think that's natural (and trivially inlineable), so it shouldn't be an issue
+[02:54:51] <eddyb> I mean, we don't want to generate too much IR, either
+[02:55:07] <eddyb> dbaupp: we'll have to see :)
+[03:02:16] <eddyb> I see why strcat loves meth so much
+[03:05:59] <dbaupp> heh
+[03:06:32] <dbaupp> does anyone happen to have to hand a short example of an impl/method symbol that has __extensions__ in it?
+[03:08:18] <eddyb> dbaupp: nm --defined-only ./x*/stage1/lib/r*/x*/l*/libstd-*.so | grep '__extensions__' | c++filt
+[03:09:48] <dbaupp> good idea
+[03:11:59] <eddyb> I have an &Expr. how can I obtain its llty? wait wait I should be able to get it's ty::t. I'm really dumb
+[03:18:58] <eddyb> // Create a _rust_main(args: ~[str]) function which will be called from the runtime rust_start function
+[03:19:31] <benh> should start typechecking comments
+[03:19:52] <eddyb> not only that... but I'm sure we haven't had _rust_main in a long while
+[03:20:02] <eddyb> thought there's a string with that symbol in it. dead code?
+[03:25:25] <eddyb> dbaupp: the type of self is erased o_O
+[03:25:30] <eddyb> this is really annoying
+[03:25:58] <eddyb> it's so special, you can't find it anywhere
+[03:38:39] <dbaupp> bleh, wtf is trans doing
+[03:39:06] <dbaupp> default methods are a completely different code path to normal ones
+[03:39:22] <cmr> yeah
+[03:39:32] <cmr> that's why they were broken for so long
+[03:39:34] <cmr> <3 sully 
+[03:40:07] *** Quits: kimundi (kimundi@moz-B14500D7.dip0.t-ipconnect.de) (Ping timeout)
+[03:41:24] <eddyb> dbaupp: are we competing now?
+[03:42:17] <eddyb> okay, I have to change decl_rust_fn to use the proper self
+[03:42:37] <eddyb> right now it does let llfty = type_of_rust_fn(ccx, inputs, output);
+[03:42:57] <eddyb> which uses the opaque_box for self
+[03:43:31] *** Joins: zz_kimundi (kimundi@moz-AA8877D1.dip0.t-ipconnect.de)
+[03:43:32] *** zz_kimundi is now known as kimundi
+[03:44:06] <Luqman> eddyb: trying to make self be handled like other args?
+[03:44:14] <eddyb> Luqman: yeah, it's a PITA
+[03:44:37] <eddyb> and I only want to do it to remove ty_opaque_box
+[03:45:16] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[03:45:16] *** ChanServ sets mode: +ao pcwalton pcwalton
+[03:45:28] <dbaupp> eddyb: no, I'm looking at removing the __extensions__
+[03:45:37] <dbaupp> anyway, I didn't need to be looking in trans
+[03:45:44] * dbaupp found the culprit
+[03:47:18] <Luqman> eddyb: yea, i tried doing it awhile back but only got as far as building a broken stage1 rustc
+[03:47:51] <eddyb> why is the middle::ty of a method stripped of self?
+[03:48:53] <eddyb> FnSig to be precise
+[03:50:25] <Luqman> FnSig isn't only for methods
+[03:51:06] <eddyb> yes, but it never contains "self"
+[03:51:36] <eddyb> you have to go through typeck or something ridiculous like that to get the self type
+[03:51:57] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[03:51:57] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/1ugiwg
+[03:51:57] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[03:53:27] <Luqman> eddyb: yea, but there's Method which afaik has self
+[03:54:22] <eddyb> transformed_self_ty: Option<ty::t> oh I'm blind
+[03:54:30] <eddyb> must be trans being really stupid again and not using that
+[03:54:33] <eddyb> Luqman: thanks :D
+[03:56:56] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[03:56:57] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/LsQZzA
+[03:56:57] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[03:56:58] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[03:56:58] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/6JzxgQ
+[03:56:58] <ghrust> 13rust/06auto 143051ba8 15Alex Crichton: Convert relevant static mutexes to Once
+[03:56:58] <ghrust> 13rust/06auto 1472c943b 15bors: auto merge of #11187 : alexcrichton/rust/once, r=brson...
+[03:56:58] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[03:57:46] <eddyb> but I don't know what to trust :(
+[03:58:05] <eddyb> this is a web of information I'm looking at
+[03:59:06] <dbaupp> eddyb: trust nothing
+[03:59:51] <cmr> words to live by!
+[04:00:15] <dbaupp> eddyb: what does 'transformed' mean there?
+[04:00:37] <eddyb> dbaupp: where exactly?
+[04:00:50] <dbaupp> eddyb: 'transformed_self_ty'
+[04:00:59] <eddyb> I have no idea
+[04:06:57] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[04:06:58] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 1472c943b to 1402cec05: 02http://git.io/N3iJvQ
+[04:06:58] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[04:06:58] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[04:06:58] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/MYuZPA
+[04:06:58] <ghrust> 13rust/06auto 143da2620 15Alex Crichton: Move task count bookeeping out of libstd...
+[04:06:58] <ghrust> 13rust/06auto 141b6d838 15bors: auto merge of #11212 : alexcrichton/rust/local-task-count, r=brson...
+[04:06:58] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[04:07:24] <Luqman> dbaupp: so the untransformed self ty is the type of the trait or foo in impl Trait for foo
+[04:07:44] <Luqman> whereas the transformed bit refers to whether it's &/~/@
+[04:11:04] <Luqman> see transform_self_ty typeck::astconv
+[04:13:59] <eddyb> so what I have should compile. but I have no idea if it can compile the most trivial #[no_std]; crate :P
+[04:14:12] <Luqman> baby steps
+[04:15:25] <eddyb> my guess is that it will work for non-generic methods
+[04:17:50] <eddyb> can I go NodeId -> DefId?
+[04:18:40] <eddyb> well, I have an ast_map::node_method and I want to get a DefId :S
+[04:20:09] <eddyb> ast_util::local_def(m.id) - I guess that would work
+[04:30:31] <eddyb> rustc: /home/eddy/Projects/rust/src/llvm/lib/IR/Instructions.cpp:281: void llvm::CallInst::init(llvm::Value*, llvm::ArrayRef<llvm::Value*>, const llvm::Twine&): Assertion `(i >= FTy->getNumParams() || FTy->getParamType(i) == Args[i]->getType()) && "Calling a function with a bad signature!"' failed.
+[04:30:33] <eddyb> of course
+[04:31:09] <Luqman> welp, time to whip out the gdb and debug!'s
+[04:32:36] <eddyb> define internal void @Foo::bar::he8cc2563a121a86af3d133cbddc51e4c4a4da8c0c2265de7a5ee01c529cb863eDFaf::v0.0(%struct.Foo*) unnamed_addr #4 {
+[04:32:49] <eddyb> define internal void @Foo::bar::he8cc2563a121a86af3d133cbddc51e4c4a4da8c0c2265de7a5ee01c529cb863eDFaf::v0.0({ i64, %tydesc*, i8*, i8*, i8 }*) unnamed_addr #4 {
+[04:33:03] <eddyb> &self. first is mine, second is previous
+[04:34:21] <Luqman> oh, are you also removing the hidden environment slot?
+[04:34:42] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[04:35:05] <eddyb> Luqman: I'm not removing it, I'm giving it the right type :P
+[04:35:22] <eddyb> okay, self doesn't work, LLVM complains
+[04:35:50] <Luqman> oh, i thought you were changing self to not be passed via the environment ptr
+[04:36:55] <eddyb> it's not the env ptr when you have methods
+[04:41:59] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[04:42:00] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/ZW9Jxw
+[04:42:00] <ghrust> 13rust/06auto 14c22fed9 15Alex Crichton: Convert relevant static mutexes to Once
+[04:42:00] <ghrust> 13rust/06auto 14e61937a 15bors: auto merge of #11187 : alexcrichton/rust/once, r=brson...
+[04:42:00] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[04:42:01] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[04:42:01] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 141b6d838 to 1402cec05: 02http://git.io/N3iJvQ
+[04:42:01] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[04:57:51] <eddyb> ty::SelfMode is gone
+[05:01:23] <cmr> eddyb: do you want to remove the environment slot now too? <3
+[05:01:37] <cmr> need to generate wrappers on coercion, though
+[05:02:06] <eddyb> cmr: I'll settle on making it the right type for methods
+[05:04:21] <dbaupp> cmr: btw there's some subtlety, e.g. in `let f: fn() = if foo { some_func } else { another_func }; takes_a_closure(f)`, creating the wrapper sensibly might be hard...
+[05:04:28] <dbaupp> eddyb: does this fix self-by-value?
+[05:05:08] <eddyb> I would force the coercion earlier in that case, btw
+[05:05:39] <eddyb> dbaupp: yes
+[05:06:54] <dbaupp> eddyb: forcing the coercion earlier would break typing
+[05:07:07] <dbaupp> the f that is apparently a plain fn() pointer, would be come a fat closure pointer
+[05:07:14] <dbaupp> weird as. :P
+[05:07:26] <eddyb> dbaupp: your code would become a type error
+[05:07:38] <eddyb> you can't coerce an unknown fn() to ||
+[05:07:39] <dbaupp> eddyb: why?
+[05:07:50] <dbaupp> that's pretty weird
+[05:07:59] <eddyb> or it could create a temporary closure. idk
+[05:08:01] <dbaupp> a constraint that's not expressible in the type system
+[05:08:01] <cmr> dbaupp: is that subtle? there'd be a single wrapper for fn() -> ||
+[05:08:27] <dbaupp> cmr: so every coerced fn() would involve a virtual call?
+[05:08:31] <dbaupp> that seems suboptimal
+[05:09:03] <dbaupp> (e.g. one would assume the above is equivalent to `takes_a_closure(|| f())`, which is a virtual call of the captured `f`.)
+[05:09:19] <dbaupp> but we would want to avoid the virtual calls as much as possible, I assume.
+[05:10:12] <cmr> that's true
+[05:10:14] <eddyb> dbaupp: it's a virtual call anyway
+[05:10:26] <cmr> eddyb: well it'd be an extra layer of it, which is no fun.
+[05:10:29] <eddyb> nope
+[05:10:38] <eddyb> cmr: the closure would call the function directly
+[05:10:46] <cmr> eddyb: that's not what I was proposing.
+[05:10:46] <eddyb> oh, I see. heh
+[05:11:03] <cmr> A single wrapper for every *function type* that is coerced, rather than every value.
+[05:11:21] <cmr> for value, it does become subtle.
+[05:11:47] <eddyb> I wonder if it causes code bloat if you do it per value
+[05:15:26] <eddyb> I also wonder what my neighbors think when I start this big fan just to keep my laptop from melting while compiling rustc, in the middle of the night
+[05:15:50] <eddyb> define internal void @main::Foo::bar::h5d19032e7a51678c050fe2ebc5d68b3b96693262553d420037148fbcc6c059d3xgaf::v0.0(%"struct.main::Foo") unnamed_addr #4 {
+[05:15:54] <eddyb> that's by value :D
+[05:18:54] <eddyb> now... to make calls work again
+[05:19:11] <eddyb> (I really wish LLVM would print some IR before dying)
+[05:20:42] <dbaupp> eddyb: have you been awake since last year?
+[05:20:52] <eddyb> haha, yes
+[05:21:08] * cmr has been too
+[05:21:38] <eddyb> trans looks like bad C IMO
+[05:21:39] <dbaupp> cmr: isn't that only 20 minutes or so?
+[05:21:50] <cmr> 21, but at least I'm in the future now too!!!
+[05:23:26] <dbaupp> is there a good way to only run a command in Make if a certain executable exists? (I've got a run-make tests in which I want to run `nm`)
+[05:24:35] <eddyb> casting actual type (%"struct.main::Foo"*) to match formal (%"struct.main::Foo" = type {})
+[05:24:41] <eddyb> oh, hehe, see what it's doing?
+[05:26:29] <eddyb> because I'm just doing ty::expr_ty(bcx.tcx(), base). and magic is happening on "base" (the receiver)
+[05:29:28] <eddyb> hmm, there's multiple places with a self type, actually. ty::method and typeck::method_map_entry
+[05:29:38] <eddyb> I hope I won't break anything by using both
+[05:32:05] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[05:35:52] *** Joins: Kxepal (Miranda@moz-B7DB05D8.pppoe.mtu-net.ru)
+[05:40:33] <dbaupp> https://github.com/mozilla/rust/pull/11254 r?
+[05:56:07] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[06:02:12] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[06:02:12] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/ZW9Jxw
+[06:02:12] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[06:06:57] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[06:06:57] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/dRxzvQ
+[06:06:57] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[06:07:01] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[06:07:01] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/IJvSRw
+[06:07:01] <ghrust> 13rust/06auto 145b88f92 15Brian Anderson: Don't allow single-variant enums to be dereferenced. #6246...
+[06:07:01] <ghrust> 13rust/06auto 1409744c6 15Brian Anderson: Don't allow newtype structs to be dereferenced. #6246
+[06:07:01] <ghrust> 13rust/06auto 14f54e9c8 15Brian Anderson: rustc: Add error about obsolete struct deref
+[06:07:03] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[06:26:56] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[06:26:56] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14afdfd85 to 14e61937a: 02http://git.io/N3iJvQ
+[06:26:56] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[06:26:57] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[06:26:57] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/XKKLuA
+[06:26:57] <ghrust> 13rust/06auto 14fe30087 15Alex Crichton: Add metadata from a tempdir instead of a build dir...
+[06:26:57] <ghrust> 13rust/06auto 1403b5102 15bors: auto merge of #11215 : alexcrichton/rust/metadata-filename, r=pcwalton...
+[06:26:58] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[07:40:46] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Quit: Leaving.)
+[07:41:40] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: leaving)
+[07:41:57] *** Joins: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP)
+[07:41:57] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/ne8WJA
+[07:41:57] *** Parts: ghrust (ghrust@24260B07.6A2AE50.F3114085.IP) ()
+[07:41:59] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[07:41:59] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/jJ5MOQ
+[07:41:59] <ghrust> 13rust/06auto 148894525 15Brian Anderson: Don't allow single-variant enums to be dereferenced. #6246...
+[07:41:59] <ghrust> 13rust/06auto 14f69fd78 15Brian Anderson: Don't allow newtype structs to be dereferenced. #6246
+[07:41:59] <ghrust> 13rust/06auto 149d3e5eb 15Brian Anderson: rustc: Add error about obsolete struct deref
+[07:42:01] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[08:02:12] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[08:02:12] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/8fZRHg
+[08:02:12] <ghrust> 13rust/06auto 147a8ca91 15a_m0d: Update documentation to remove reference to ::rt logging
+[08:02:12] <ghrust> 13rust/06auto 14b1d4ce6 15bors: auto merge of #11235 : am0d/rust/doc_update, r=brson...
+[08:02:13] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[08:02:16] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[08:02:16] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 144f7cc20 to 1403b5102: 02http://git.io/N3iJvQ
+[08:02:16] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[08:30:40] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[08:31:42] *** Quits: dbussink (dbussink@moz-E0A5568C.bussink.me) (Ping timeout)
+[08:35:03] *** Joins: dbussink (dbussink@moz-E0A5568C.bussink.me)
+[08:41:00] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[08:41:32] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[08:47:23] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[08:52:22] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[08:54:09] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[09:02:29] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[09:02:29] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14b1d4ce6 to 1403b5102: 02http://git.io/N3iJvQ
+[09:02:29] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[09:02:29] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[09:02:29] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/clYKJg
+[09:02:29] <ghrust> 13rust/06auto 148271ba8 15John Louis Walker: Fix rust-align-to-expr-after-brace, closes #11239....
+[09:02:29] <ghrust> 13rust/06auto 147fc4df3 15bors: auto merge of #11244 : johnwalker/rust/issue-11239, r=brson...
+[09:02:30] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[09:20:15] *** Quits: gwty (gwtypc@45FAED15.3D6E65B3.27560D6E.IP) (Ping timeout)
+[09:48:53] *** Joins: gwty (gwtypc@199540EF.6E448401.27560D6E.IP)
+[09:49:37] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[09:51:49] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[10:09:47] <eddyb>    arg datum: Datum { val=%"struct.main::Foo" = type {}, ty=main::Foo, mode=ByValue }
+[10:10:20] <eddyb> define internal void @main::Foo::bar::h5d19032e7a51678c050fe2ebc5d68b3b96693262553d420037148fbcc6c059d3xgaf::v0.0(%"struct.main::Foo") unnamed_addr #4 {
+[10:10:34] <eddyb> and yet it can't call the function with that argument
+[10:12:01] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[10:12:01] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/clYKJg
+[10:12:01] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[10:16:23] *** Joins: Axord (xord@moz-C0D5F15A.lsanca.dsl-w.verizon.net)
+[10:16:55] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[10:16:55] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/UJZplA
+[10:16:55] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[10:16:56] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[10:16:56] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/MjRs3w
+[10:16:56] <ghrust> 13rust/06auto 140daaeab 15Alex Crichton: Conservatively export all trait methods and impls...
+[10:16:56] <ghrust> 13rust/06auto 141dbd4a6 15Alex Crichton: Don't leave lingering files in doc tests...
+[10:16:56] <ghrust> 13rust/06auto 14821caf5 15bors: auto merge of #11245 : alexcrichton/rust/issue-11225, r=pcwalton...
+[10:16:58] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[10:28:11] <eddyb> can I pretty-print a LLVM value?
+[10:39:28] <eddyb> I think this works, at least to give me the type - bcx.val_to_str(val)
+[10:43:22] <eddyb> dbaupp: who needs tests when std doesn't compile?
+[10:51:56] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[10:51:56] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/qQfrnA
+[10:51:56] <ghrust> 13rust/06auto 144e75265 15Eduard Burtescu: Truncate symbol hashes to 64 bits.
+[10:51:56] <ghrust> 13rust/06auto 14736f5a8 15bors: auto merge of #11247 : eddyb/rust/symbol-cleanup, r=alexcrichton
+[10:51:57] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[10:51:58] *** Joins: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP)
+[10:51:58] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14821caf5 to 147fc4df3: 02http://git.io/N3iJvQ
+[10:51:58] *** Parts: ghrust (ghrust@DE823A67.6A2AE50.F3114085.IP) ()
+[11:00:01] <eddyb> oh, I see, I have to update trans_fn_ref_with_vtables
+[11:00:23] <dbaupp> eddyb: meh, compiling std is overrated
+[11:23:44] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[11:28:53] <eddyb> dbaupp: methods really need to be added to the type system
+[11:29:59] <eddyb> self is missing all over the place, and the way I'm adding it now it's hacky
+[11:32:36] <eddyb> any ideas why we need to copy arguments into allocas for debug info? can't we just stick the debug info on the arguments themselves?
+[11:34:10] * dbaupp doesn't know anything at all about LLVM's implementation of debug-info
+[11:34:16] <ChrisMorgan> Talk to Michael Woerister about it.
+[11:34:47] <eddyb> ChrisMorgan: I wish I knew enough to find that funny (because it sounds like a joke)
+[11:35:30] <ChrisMorgan> Joke? He's the one that's implemented a lot of the debug stuff, so he is probably the most readily equipped to assist you.
+[11:36:27] <dbaupp> (he appears on irc as mw occasionally.)
+[11:36:47] <eddyb> oh, nevermind
+[11:43:45] <eddyb> calls work again :D
+[11:44:23] <dbaupp> std compiles?
+[11:46:07] <eddyb> nah, but I didn't fix generic methods
+[11:46:39] <eddyb> dbaupp: there's one less bitcast *for every method and method call*
+[11:46:53] <dbaupp> \o/
+[11:47:41] <dbaupp> there was a noticable slowdown on IRFY when I methodised all of str and vec, so hopefully this will fix that (and more! since we'd be no longer wasting a register on the env parameter for method calls)
+[11:47:55] <dbaupp> i.e. method calls would be faster than normal function calls
+[11:48:49] <eddyb> there's still some load/store cruft, but I didn't add any, it seems
+[11:53:42] <eddyb> datum::appropriate_mode(bcx.ccx(), t).is_by_value() // why does that return true for a pointer type t?
+[11:55:44] <eddyb> oh, right, the *pointer* itself is passed "by value". but I think base is using that function wrong
+[11:57:03] <eddyb> it will return true most of the time (for both struct and &struct, for example), while base wants to use it to determine whether that argument is *passed* by value (only struct and not &struct)
+[12:11:55] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[12:11:55] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/qQfrnA
+[12:11:55] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[12:16:56] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[12:16:56] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/4ZZmgw
+[12:16:56] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[12:16:58] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[12:16:59] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/uzBYUg
+[12:16:59] <ghrust> 13rust/06auto 1463b0ea5 15Brian Anderson: Update RELEASES.txt for 0.9
+[12:16:59] <ghrust> 13rust/06auto 14adf2fd3 15bors: auto merge of #11248 : brson/rust/0.9relnotes, r=alexcrichton
+[12:16:59] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[12:25:57] <ChrisMorgan> Ooh, release notes. Yummy. Someone want to update the man pages too?
+[12:26:47] <eddyb> dbaupp: if I were you, I would put the type itself in the path, and flatten it in back::link
+[12:27:48] <eddyb> where we could then use C++ mangling constructs to get rid of some $ madness
+[12:29:24] <dbaupp> eddyb: context?
+[12:29:33] <dbaupp> oh the __extensions__ one?
+[12:29:38] <eddyb> yupp
+[12:29:52] <dbaupp> you mean just let back::link sanitize it?
+[12:30:08] <eddyb> *flatten* it. what pretty_ty does
+[12:30:29] <dbaupp> but... it ahs to be a string at that point?
+[12:30:39] <eddyb> I don't think so
+[12:30:54] <eddyb> (though I'm not precisely sure)
+[12:32:41] <dbaupp> the current design doesn't allow for just lumping the type in there wholesale and unflattened
+[12:32:48] <dbaupp> I'll fill a bug about making it more sane
+[12:33:24] <dbaupp> I just finally got annoyed enough at having no idea which type the method is being called on to make it so I could actually tell.
+[12:36:01] <eddyb> pfffft, monomorphize doesn't know its own self type, meth has to substitute manually =))
+[12:36:55] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[12:36:55] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14adf2fd3 to 14736f5a8: 02http://git.io/N3iJvQ
+[12:36:55] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[12:41:31] <eddyb> dbaupp: did you see my comment above about misusage of an is_passed_by_val fn/method? I think I can strip an alloca, a store and a load for most passed-by-ref arguments *everywhere* (including self)
+[12:42:37] <dbaupp> eddyb: I saw it, but I have no idea of the inner workings of most of trans, so I couldn't make a meaningful comment :)
+[12:42:44] <dbaupp> but that sounds pretty good
+[12:43:42] *** Quits: ion- (ion@moz-5285E875.hsd1.va.comcast.net) (Quit: Leaving)
+[12:44:02] <eddyb> ByVal/ByRef is backwards in *one way*. ty::SelfMode (which I removed) had ByRef only for self-by-value (because it required taking a reference to it), which only made sense after understanding how references are passed by value :P
+[12:50:29] <eddyb> rustc: /home/eddy/Projects/rust/src/llvm/include/llvm/Support/Casting.h:239: typename llvm::cast_retty<X, Y*>::ret_type llvm::cast(Y*) [with X = llvm::PointerType; Y = llvm::Type; typename llvm::cast_retty<X, Y*>::ret_type = llvm::PointerType*]: Assertion `isa<X>(Val) && "cast<Ty>() argument of incompatible type!"' failed.
+[12:50:34] <eddyb> return types o_O?
+[12:51:27] <eddyb> define internal void @Foo::bar::h0bbff5399b184f5360077bf67a74ea4a09686d89b5c0e75d7fd402026a4c16a0Y2ag::v0.0(%"struct.Foo<int>"*) unnamed_addr #4 {
+[12:51:52] <dbaupp> you broke it
+[12:52:00] * dbaupp <- very helpful
+[12:52:04] <eddyb> dbaupp: empty Rust method => empty LLVM function :D
+[12:53:03] <dbaupp> but does it compile yet? :P
+[12:53:35] <eddyb> calling a generic method works. or a method on a generic impl. no idea where the std breakage comes from now
+[12:55:48] <dbaupp> is it that^ crash?
+[12:57:30] <eddyb> yeah, I'm running with RUST_LOG now
+[13:03:42] *** Joins: tupshin_ (quassel@moz-54DE2E9C.du.xdsl.is)
+[13:05:49] <eddyb> dbaupp: turns out that faulty logic spreads throughout trans, it's not just a single argument-handling function
+[13:41:45] <eddyb> so I have to datumize arguments
+[14:04:39] <eddyb> dbaupp: pffft, I'm fixing pattern matching. this commit will be stretchy
+[14:06:56] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[14:06:56] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/B0SBjg
+[14:06:56] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[14:11:53] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[14:11:53] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/FOQx3w
+[14:11:53] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[14:11:53] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[14:11:53] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/YsHeqw
+[14:11:53] <ghrust> 13rust/06auto 147349fc3 15Huon Wilson: syntax: expand impl_pretty_name to handle more cases....
+[14:11:53] <ghrust> 13rust/06auto 143f74e0a 15bors: auto merge of #11254 : huonw/rust/impl-names, r=brson...
+[14:11:54] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[14:12:35] *** Quits: klutzy (th@BA61F396.8E859986.ECA1BB11.IP) (Ping timeout)
+[14:18:18] *** Joins: nrc (ncameron@moz-A76F1825.cable.virginm.net)
+[14:22:30] *** Joins: klutzy (th@BA61F396.8E859986.ECA1BB11.IP)
+[14:28:59] <eddyb> I'll settle for broken debuginfo that can be fixed later
+[14:44:51] <eddyb> dbaupp: it seems LLVM needs allocas to attach debug info to vars. but there is already some logic in place to switch to a more indirect access to have all the allocas required, so I don't think I need to care that much for it
+[14:54:38] <eddyb> oh, it now fails for --- lazily_emit_tydesc_glue DROP ~str
+[14:55:12] <eddyb> thousands of lines of successful translated methods :D
+[15:26:42] *** Joins: gwty_ (gwtypc@199540EF.6E448401.27560D6E.IP)
+[15:32:10] *** kimundi is now known as zz_kimundi
+[15:35:15] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[15:49:50] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[15:49:50] *** ChanServ sets mode: +ao dherman dherman
+[15:52:46] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[15:55:13] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[15:56:38] <eddyb> why does simplified_glue_type use u32 when the glue function doesn't do anything?
+[15:56:50] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[15:56:50] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 143f74e0a to 142897549: 02http://git.io/N3iJvQ
+[15:56:50] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[15:56:52] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[15:56:52] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/jiIb9Q
+[15:56:52] <ghrust> 13rust/06auto 148f26d0b 15Huon Wilson: syntax: expand impl_pretty_name to handle more cases....
+[15:56:52] <ghrust> 13rust/06auto 1451ace54 15bors: auto merge of #11254 : huonw/rust/impl-names, r=brson...
+[15:56:52] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[15:59:09] *** Quits: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au) (Ping timeout)
+[16:01:04] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[16:21:58] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[16:27:23] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[16:27:23] *** ChanServ sets mode: +ao dherman dherman
+[16:27:31] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[16:33:45] *** Quits: Kxepal (Miranda@moz-B7DB05D8.pppoe.mtu-net.ru) (Ping timeout)
+[16:36:36] *** Joins: Kxepal (Miranda@moz-937849DD.pppoe.mtu-net.ru)
+[16:42:06] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[16:53:23] *** Quits: tupshin_ (quassel@moz-54DE2E9C.du.xdsl.is) (Client exited)
+[16:59:52] <eddyb> error:  requires `eh_personality` lang_item
+[16:59:56] <eddyb> pfffffffft
+[17:06:53] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[17:06:54] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/jiIb9Q
+[17:06:54] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[17:09:44] <eddyb> I can't trigger the LLVM assert outside of libstd :(
+[17:28:20] *** Joins: tupshin_ (quassel@moz-54DE2E9C.du.xdsl.is)
+[17:47:44] <eddyb> dbaupp, cmr, strcat: I hope I'm close, I've pushed my current progress https://github.com/mozilla/rust/pull/11252
+[17:49:11] <eddyb> this is my current attempt at fixing a glue type mismatch https://github.com/mozilla/rust/pull/11252/files#diff-caf36d0255584a4a014908f67f71cb8fR245
+[17:49:44] *** Quits: gwty (gwtypc@199540EF.6E448401.27560D6E.IP) (Ping timeout)
+[17:49:46] *** Quits: gwty_ (gwtypc@199540EF.6E448401.27560D6E.IP) (Ping timeout)
+[17:51:27] *** Joins: gwty (gwtypc@F97FFBA9.3803318B.25B273F5.IP)
+[17:51:48] *** Joins: gwty_ (gwtypc@F97FFBA9.3803318B.25B273F5.IP)
+[17:54:56] <eddyb> 220:62 error: unrecognized intrinsic function: `volatile_load`
+[17:55:25] <eddyb> oh nvm I updated while compiling rustc X_X
+[18:04:49] <eddyb> strcat: do you have a compact testcase for generic dtors?
+[18:05:02] <sfackler> eddyb: them being broken?
+[18:05:27] <strcat> eddyb: just 'impl<T: Foo> Drop for Bar { }' and call a method from Foo 
+[18:05:41] <eddyb> yupp. they might be easier to fix now that I have a (vague) idea of what's going on
+[18:05:42] <sfackler> try "struct Foo<T> { f: HashSet<T> } impl Drop for Foo { fn drop(&mut self) { self.f.clear() }"
+[18:06:03] <eddyb> thanks
+[18:09:32] <eddyb> struct Foo<T>{x:T} trait Bar{fn baz(&self){}} impl<T> Bar for T{} impl<T: Bar> Drop for Foo<T> {fn drop(&mut self){self.x.baz();}}
+[18:09:57] <eddyb> strcat: ^ is that enough? I want it to be as self-contained as possible
+[18:10:31] <eddyb> I'm already debugging breakage which is triggered by obscure complex std::rt stuff
+[18:14:05] <strcat> eddyb: something like that, yeah
+[18:17:43] <eddyb>     // NB: v is an *alias* of type t here, not a direct value.
+[18:18:04] <eddyb> oh, I think I know what's going on
+[18:20:36] <eddyb> strcat: there's a method on Datum which chooses drop_ty/drop_ty_immediate depending on the mode of the Datum. which is sane. except not everything goes through that method :(
+[18:21:26] <eddyb> oh, look, TypeDroppingCleanupFunction has all the fields of a Datum modulo mode. pffffft
+[18:22:24] <eddyb> oh, and there's a ImmediateTypeDroppingCleanupFunction LOL
+[18:51:23] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[18:51:23] *** ChanServ sets mode: +ao dherman dherman
+[19:06:53] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[19:06:53] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/YXiUeA
+[19:06:53] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()
+[19:14:00] *** Quits: nrc (ncameron@moz-A76F1825.cable.virginm.net) (Ping timeout)
+[19:19:20] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[19:24:36] *** Quits: tupshin_ (quassel@moz-54DE2E9C.du.xdsl.is) (Ping timeout)
+[19:27:08] *** Joins: jdm (jdm@moz-3FFA85CA.dsl.teksavvy.com)
+[19:29:23] <eddyb> I have no idea what I'm doing. literally. I might have fixed 5 bugs. I'm not sure
+[19:34:27] <jdm> heh
+[19:37:06] <eddyb> I need someone who knows how Datum & cleanup work
+[19:37:15] <eddyb> RevokeClean vs ZeroMem
+[19:38:18] <eddyb> well, I know how what they do, but not when it makes sense to use which and whether rewriting trans::_match to use only RevokeClean is a good idea
+[19:47:49] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[19:47:49] *** ChanServ sets mode: +qo brson brson
+[19:49:51] <eddyb> does anyone see a problem here? Store { %tydesc*, i8* }* -> { %tydesc*, i8* }*
+[19:57:43] *** zz_kimundi is now known as kimundi
+[20:14:44] <eddyb> error: requires `ty_visitor` lang_item WHYYYY?
+[20:15:03] <eddyb> this is really annoying. and I get an ICE if I just copy the ty_visitor definition from libstd
+[20:41:57] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[20:41:57] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/_AP9yw
+[20:41:57] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[20:42:54] <sfackler> acrichto: ping
+[20:45:05] <eddyb> the debug info is so cryptic :(
+[20:46:50] *** Joins: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP)
+[20:46:50] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/6Qej8w
+[20:46:50] *** Parts: ghrust (ghrust@C8693FCB.6A2AE50.F3114085.IP) ()
+[20:46:51] *** Joins: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP)
+[20:46:51] <ghrust> 01[13rust01] 15bors pushed 4 new commits to 06auto: 02http://git.io/SQ5Edw
+[20:46:51] <ghrust> 13rust/06auto 1432eaa12 15Brian Anderson: Don't allow single-variant enums to be dereferenced. #6246...
+[20:46:51] <ghrust> 13rust/06auto 14c755cf0 15Brian Anderson: Don't allow newtype structs to be dereferenced. #6246
+[20:46:52] <ghrust> 13rust/06auto 149e6a2fc 15Brian Anderson: rustc: Add error about obsolete struct deref
+[20:46:54] *** Parts: ghrust (ghrust@9C8B94D4.6A2AE50.F3114085.IP) ()
+[20:47:22] <acrichto> sfackler: pong
+[20:50:44] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[20:55:28] <eddyb> unadjusted datum: Datum { val={ %tydesc*, i8* }*, ty=&'a any::Any<no-bounds>, mode=ByValue }
+[20:56:01] <eddyb> okay, that's wrong. it should be ByRef AFAICT
+[21:01:13] <sfackler> acrichto: I followed what you did in your #[boot] PR to switch the macro registration stuff from a magic function to a #[macro_registrar] attribute, but I seem to have corrupted the metadata somehow. it looks like I have a Res with a value of 0 and a next of the end of the metadata chunk so maybe_get_doc fails falling off the end of the array
+[21:01:39] <sfackler> acrichto: here's the commit https://github.com/sfackler/rust/commit/af78ae5ebc92dad1c776c3589a3a57000b91f887
+[21:01:50] <sfackler> am I doing anything totally pants-on-head?
+[21:05:10] <eddyb> sfackler: no, that would be me. you might have just forgotten to update a part of the metadata encoder/decoder
+[21:06:56] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[21:13:13] <acrichto> sfackler: hm that all looks right to me
+[21:13:22] <acrichto> may be something to do with the other changes in flight
+[21:14:26] <sfackler> do you know what a res.val of 0 represents?
+[21:14:47] <sfackler> it's also a bit weird because I could have sworn this worked just fine before I pushed the commit last night
+[21:15:03] <acrichto> hm where is this Res? I don't remember that in metadata...
+[21:15:16] <sfackler> extra::ebml::Res
+[21:15:24] *** Joins: ChrisMorgan (chris@moz-6AC741CA.static.tpgi.com.au)
+[21:15:37] <sfackler> it's the metadata tag value
+[21:15:51] <acrichto> 0x108 isn't in use by anything else is it/
+[21:15:54] <acrichto> as a tag value
+[21:16:17] <acrichto> hm I suppose not
+[21:16:51] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[21:17:15] <sfackler> acrichto: shouln't be. I picked it since it was 1 more than the boot tag :P
+[21:17:17] <acrichto> haha more "lolwut" in the codebase!
+[21:17:33] <acrichto> is this dying during decoding or encoding?
+[21:17:42] <acrichto> I guess encoding wouldn't make sense
+[21:17:56] <acrichto> it might have something to do with resetting the cstore?
+[21:18:46] <acrichto> it might also just be a corrupt metadata file
+[21:19:55] <sfackler> acrichto: I'm grabbing a backtrace now
+[21:20:52] <sfackler> acrichto: it fails while calling get_macro_registrar_fn in decoder
+[21:21:50] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[21:21:53] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[21:21:53] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14352136c to 14c34ef5d: 02http://git.io/N3iJvQ
+[21:21:53] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[21:22:26] <acrichto> sfackler: and this is loading the registrar at runtime?
+[21:22:36] <acrichto> as in when compiling another crate
+[21:22:41] <sfackler> are there any other optional pieces of metadata? maybe maybe_get_doc doesn't work if the tag isn't there?
+[21:22:45] <sfackler> acrichto: yes
+[21:23:01] <acrichto> hehe I was using maybe_get_doc to work explicitly if the tag wasn't there
+[21:23:23] <sfackler> it looks like it tries to do that
+[21:23:44] <acrichto> so how's it dying?
+[21:23:47] <acrichto> like what's the assertion
+[21:24:06] <sfackler> 'index out of bounds: the len is 2640 but the index is 2640', /Users/sfackler/rust/rust/src/libextra/ebml.rs:100
+[21:24:16] <sfackler> it just read this: ebml::reader::Res{val: 0u, next: 2640u}
+[21:24:18] <acrichto> hm...
+[21:24:28] <sfackler> maybe it's an EOF Res that isn't handled by maybe_get_doc?
+[21:24:46] <acrichto> while pos < d.end
+[21:24:47] <sfackler> though that's still weird since the crate this tests loads should have a macro registrar...
+[21:24:49] <acrichto> that's the condition on the loop
+[21:25:07] <sfackler> yeah, the failure happens at the second call to vuint_at in maybe_get_doc
+[21:25:33] <acrichto> I think you may be looking at corrupt metadata
+[21:25:44] <acrichto> if you're not at the end you should have a valid tag/doc
+[21:25:58] <sfackler> yeah
+[21:26:08] <acrichto> where'd the metadata come from?
+[21:26:10] <sfackler> I am a bit suspicious though because the "next" value is exactly the size of the metadata
+[21:26:40] <sfackler> acrichto: this auxilliary crate: https://github.com/mozilla/rust/pull/11151/files#diff-de382d662e3c51a41a83fa929e35afd4R1
+[21:27:02] <acrichto> code path wise?
+[21:27:15] <sfackler> oh, you mean how was it loaded?
+[21:27:18] <acrichto> yeah
+[21:27:43] <acrichto> I'm also not very familiar with ebml so this very well could be a bug in ebml
+[21:28:23] <sfackler> acrichto: here's the part that loads the crate: https://github.com/mozilla/rust/pull/11151/files#diff-e5a82d974db2b4391946b2f73eb68613R414
+[21:29:37] <acrichto> hm so it should be decompressing and everything just fine
+[21:31:35] <sfackler> I added a debug line to maybe_get_doc and it looks like these are the tags it sees before it fails: 40, 33, 37, 114, 259, 121, 127, 2
+[21:31:44] <sfackler> and then the one with a tag of 0 that causes the crash
+[21:32:49] <acrichto> decimal => hex is hard :(
+[21:33:04] <sfackler> aha
+[21:33:08] <sfackler> haha
+[21:33:29] <sfackler> wolframalpha to the rescue
+[21:33:50] <sfackler> {28_16, 21_16, 25_16, 72_16, 103_16, 79_16, 7f_16, 2_16}
+[21:34:15] <acrichto> hm so it's not there
+[21:34:24] <acrichto> should have been after 0x103
+[21:34:30] <acrichto> the native lib
+[21:34:36] <sfackler> yeah
+[21:34:59] <sfackler> I'm going to try building the aux crate myself
+[21:35:01] <acrichto> hm this sounds like a bug in ebml falling off the end
+[21:35:19] <acrichto> rustc --ls may work
+[21:35:22] <acrichto> dunno what that even does :P
+[21:35:55] <sfackler> wat
+[21:36:04] <sfackler> it compiles just fine when I do it myself
+[21:36:09] <sfackler> maybe there's a stale copy of the aux crate
+[21:36:15] <sfackler> rustc --ls doesn't list much :P
+[21:36:19] <acrichto> hmm
+[21:36:33] <cmr> rustc --ls has been broken for as long as I remember
+[21:36:35] <sfackler> just crate metadata and external dependencies
+[21:36:39] <acrichto> oh it doesn't do metadata
+[21:36:43] <acrichto> just things like attributes
+[21:36:47] <sfackler> yeah
+[21:37:07] <sfackler> there's no reason it couldn't do more, I just don't think anyone's done the work
+[21:37:30] <acrichto> you'd have to specify a mapping of code => string
+[21:37:35] <acrichto> which sounds like the job of an iterator macro
+[21:37:44] <acrichto> but I'm not sure if you can do the same thing in rust
+[21:38:25] <sfackler> you shouuld just be able to use csearch::{each_top_level_item_of_crate, each_child_of_item, get_symbol}
+[22:30:32] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[22:41:59] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[22:41:59] <ghrust> 01[13rust01] 15bors merged 06auto into 06master: 02http://git.io/3EL6NA
+[22:41:59] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[22:46:56] *** Joins: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP)
+[22:46:56] <ghrust> 01[13rust01] 15bors pushed 0 new commits to 06auto: 02http://git.io/IU58oQ
+[22:46:56] *** Parts: ghrust (ghrust@1E8607E8.6A2AE50.F3114085.IP) ()
+[22:46:57] *** Joins: ghrust (ghrust@79968228.6A2AE50.F3114085.IP)
+[22:46:57] <ghrust> 01[13rust01] 15bors pushed 2 new commits to 06auto: 02http://git.io/gPCR6A
+[22:46:57] <ghrust> 13rust/06auto 147a8ca91 15a_m0d: Update documentation to remove reference to ::rt logging
+[22:46:57] <ghrust> 13rust/06auto 14bcf9643 15bors: auto merge of #11235 : am0d/rust/doc_update, r=brson...
+[22:46:57] *** Parts: ghrust (ghrust@79968228.6A2AE50.F3114085.IP) ()
+[22:47:41] *** Joins: nrc (ncameron@moz-A76F1825.cable.virginm.net)
+[22:50:50] *** Quits: jdm (jdm@moz-3FFA85CA.dsl.teksavvy.com) (Quit: Lost terminal)
+[22:57:10] *** Joins: tikue_ (tkuehn@moz-C55F9DFF.hsd1.pa.comcast.net)
+[23:32:35] *** kimundi is now known as zz_kimundi
+[23:33:49] *** Quits: nrc (ncameron@moz-A76F1825.cable.virginm.net) (Ping timeout)
+[23:36:08] *** Joins: tupshin_ (quassel@moz-54DE2E9C.du.xdsl.is)
+[23:46:56] *** Joins: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP)
+[23:46:56] <ghrust> 01[13rust01] 15bors 04force-pushed 06auto from 14bcf9643 to 1448918fa: 02http://git.io/N3iJvQ
+[23:46:56] *** Parts: ghrust (ghrust@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[23:46:57] *** Joins: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP)
+[23:46:57] <ghrust> 01[13rust01] 15bors pushed 3 new commits to 06auto: 02http://git.io/cT9LHw
+[23:46:57] <ghrust> 13rust/06auto 14f42a36c 15Florian Hahn: Remove `extern mod foo (name="bar")` syntax, closes #9543
+[23:46:57] <ghrust> 13rust/06auto 147ea10bd 15Florian Hahn: Inject std libs with versions
+[23:46:57] <ghrust> 13rust/06auto 142d2e257 15bors: auto merge of #10696 : fhahn/rust/issue9543-remove-extern-mod-foo, r=alexcrichton...
+[23:46:59] *** Parts: ghrust (ghrust@2EE61FCC.6A2AE50.F3114085.IP) ()

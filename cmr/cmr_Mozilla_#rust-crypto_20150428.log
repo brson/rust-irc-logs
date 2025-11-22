@@ -1,0 +1,373 @@
+[00:07:03] *** Joins: gsingh93 (gulshan@moz-qnbukr.mi.comcast.net)
+[00:38:44] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[00:39:04] *** Joins: brson (brson@moz-ib4.pdv.48.37.IP)
+[00:43:41] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[00:46:58] *** Quits: atomic (atomic@moz-kvs6fc.torservers.net) (Quit: Leaving)
+[00:49:50] *** Joins: atomic (atomic@moz-ch53jc.jager.io)
+[00:51:15] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[01:21:11] *** Joins: Riastradh (riastradh@moz-m49.pl4.163.109.IP)
+[01:42:14] *** Quits: brson (brson@moz-ib4.pdv.48.37.IP) (Quit: leaving)
+[02:57:24] <bascule> https://github.com/sfackler/rust-openssl/issues/206
+[02:57:25] <bascule> heh
+[03:00:37] * taryn pre-cringes
+[03:00:55] <taryn> ah
+[03:00:57] <taryn> not bad
+[03:01:09] <taryn> bascule: I motion we move to libressl and use libtls's api
+[03:01:20] <bascule> lol
+[03:01:23] <bascule> do they have an API?
+[03:01:29] <bascule> does it implement RFC 6125 correctly?
+[03:01:40] <bascule> how do they handle ccTLDs vs gTLDs?
+[03:02:02] <taryn> bascule: the have an api in the library
+[03:02:17] <bascule> url?
+[03:02:20] <bascule> #lazy
+[03:02:37] <bascule> does it implement RFC6125?
+[03:02:40] <bascule> what approach does it take?
+[03:02:44] <bascule> strict or loose?
+[03:02:57] <taryn> bascule: http://www.openbsd.org/cgi-bin/man.cgi/OpenBSD-current/man3/tls_accept_fds.3?query=tls_init&sec=3
+[03:03:13] <bascule> is w*.openbsd.org a valid presented identifier for a reference identifier of www.openbsd.org?
+[03:03:39] <bascule> a cursory ^F reveals nothing about what I'm looking for
+[03:04:19] <taryn> bascule: I'd have to chech the code/docs, but I'd assume so
+[03:05:05] <bascule> also I'm pretty sure anyone who isn't Ryan Sleevi or Brian Smith who has even attempted to implement RFC 6125 has gotten it wrong in some capacity, including me
+[03:05:32] <bascule> so I would be incredibly suspicious of anyone claiming to have implemented it correctly, including me!
+[03:05:45] <bascule> I mean
+[03:05:54] <bascule> I admit the only implementation of it I've done is wrong
+[03:06:35] <sfackler> bascule: sweet, hostname verification is one of the things I've been worried about not having
+[03:07:05] <bascule> sfackler: for Servo you should probably just wrap pkix *shrug*
+[03:07:40] <bascule> but I think it'd be nice if there were a pure-Rust hostname verifier usable with rust-openssl/hyper
+[03:08:21] <bascule> seems hard, but I've spent a lot of time wrapping my brain around RFC 6125's errata, lol
+[03:09:44] <sfackler> I have been a bit torn over whether rust-openssl should be a pretty direct binding to openssl or should "do the right thing" by e.g. validating certs by default
+[03:09:48] <sfackler> which openssl apparently doesn't do
+[03:09:54] <sfackler> (horrifyingly)
+[03:10:43] <taryn> bascule: https://github.com/libressl-portable/openbsd/blob/master/src/lib/libtls/tls_verify.c
+[03:10:56] <cmr> I don't get it
+[03:11:05] <cmr> why is this such a horrifyingly complex problem.
+[03:11:13] <cmr> why are these RFCs so long
+[03:11:58] <taryn> sfackler: perhaps make a rust-sanessl
+[03:12:04] <taryn> sfackler: which  does the right thing by default
+[03:12:08] <sfackler> haha
+[03:12:22] <sfackler> but yeah, that was what I was thinking
+[03:15:09] <bascule> sfackler: I would implement hostname verification by default, and have people turn it off if they don't want it personally
+[03:15:20] <bascule> sfackler: I say this having been a contributor to the Ruby OpenSSL binding
+[03:15:23] <bascule> which is a shitshow
+[03:15:34] <bascule> until I documented it, the method to do hostname verification was undocumented
+[03:15:40] <sfackler> D:
+[03:16:27] <bascule> taryn: that definitely does not implement RFC 6125 correctly
+[03:16:59] <bascule> taryn: specifically, wildcards should be disallowed on gTLDs and ccTLDs
+[03:17:08] <bascule> however, the logic to disambiguate that isn't present
+[03:17:12] <bascule> let's see what it actually does...
+[03:17:30] <bascule> okay, it looks like it disallows them on gTLDs
+[03:17:32] <bascule> but not ccTLDs
+[03:17:35] <bascule> so it's not terrible
+[03:17:37] <bascule> but it is naive
+[03:18:12] <bascule> I guess I'd say "it could be worse"
+[03:18:37] <bascule> yeah, they call the ccTLD thing out
+[03:18:39] <bascule> * No attempt to prevent the use of eg. "*.co.uk".
+[03:18:51] <bascule> so yeah, that's not a *bad* implementation
+[03:19:11] <bascule> it's probably pretty close to what I want to do in Rust
+[03:20:04] <bascule> I would do some more stringent scanning on all of the characters in the presented identifier
+[03:20:09] <bascule> and ensure they're all in a very strict range
+[03:20:14] <bascule> like that's trying to blacklist null bytes
+[03:20:24] <bascule> I would whitelist all of the characters that are actually valid in identifiers
+[03:21:15] <bascule> but uhh, if I were grading that, I'd give it a B, and my Ruby implementation a C
+[03:21:23] <bascule> but my Ruby implementation had to be backwards compatible
+[03:21:33] <bascule> if I do this, I'm gonna actually get the gTLD/ccTLD thing right
+[03:25:28] <bascule> taryn: OpenSSL and libtls/LibreSSL/whateves should get together and pick a common hostname verification API o_O
+[03:25:33] <taryn> bascule: check the mailing lists to see if it can be improved
+[03:25:52] <taryn> bascule: imho libressl is the future
+[03:26:04] <bascule> IMHO BoringSSL is the future :P
+[03:26:12] <bascule> https://www.openssl.org/docs/crypto/X509_check_host.html
+[03:26:37] <bascule> like uhh
+[03:26:40] <bascule> I'm on the CFRG ML
+[03:26:43] <bascule> and the TLS ML
+[03:26:52] <bascule> and the trans ML
+[03:26:56] <bascule> and the unbearable ML
+[03:27:11] <bascule> and the webcrypto ML
+[03:27:17] <bascule> and like
+[03:27:22] <bascule> Adam Langley and Ryan Sleevi
+[03:27:23] <bascule> are legit
+[03:27:28] <bascule> so is Brian Smith, don't get me wrong
+[03:27:34] <bascule> see also Ben Laurie
+[03:27:35] <bascule> but yeah
+[03:27:45] <taryn> bascule: why boringssl over libressl?
+[03:28:13] <bascule> the people working on it are trying to solve more pragmatic problems using better methods
+[03:28:25] <bascule> and generally know what they're doing more than the LibreSSL folk
+[03:28:33] <bascule> and participate more in the development of TLS in general
+[03:29:16] <bascule> like when it comes to TLS, Adam Langley is a god
+[03:30:59] <bascule> Adam Langley singlehandedly broke the CFRG logjam and made Microsoft go away
+[03:31:11] <bascule> and if you don't believe me, ask Ilari, heh
+[03:31:49] *** Quits: adu (adu@moz-d3un5a.ms5a.74ae.000a.2601.IP) (Ping timeout: 121 seconds)
+[03:35:07] <bascule> https://twitter.com/BRIAN_____/status/592893852807241728
+[03:35:08] <bascule> lol
+[03:56:41] *** Joins: erickt (erickt@moz-njt.vqi.14.76.IP)
+[04:19:55] <Ilari> X.509 => Unsafe.
+[04:33:17] <taryn> put X.509 in an unsafe block
+[04:39:14] <bascule> lol Ilari
+[04:59:54] <Ilari> Well, even the general attitudes in X.509 world are not conductive to security...
+[05:08:53] <Ilari> The X.509 way seems to be "be liberial what you send, be even more liberial what you accept".
+[05:21:42] *** Quits: erickt (erickt@moz-njt.vqi.14.76.IP) (Ping timeout: 121 seconds)
+[05:32:42] <bascule> haha
+[05:32:45] <bascule> gawd
+[05:32:53] <bascule> can we just get to langsec already
+[05:33:15] <bascule> be strict in what you send and treat what you receive like it's a nuclear warhead
+[05:42:32] <Ilari> There are three kinds of explosives: Those that are relatively stable, those that go off if you look at them wrong and those that go off even if you don't look at them wrong. :->
+[05:46:16] <bascule> hahahaha
+[05:46:35] <bascule> Ilari: how do we replace PKIX with something sane?
+[05:46:56] <bascule> by which I mean the entire concept of an X.509-powered PKI
+[05:47:24] <Ilari> Well, I think first step would be to define the high-level semantics of something saner (that isn't DNSSEC)...
+[05:47:48] <bascule> IETF BOF: how the fuck do we replace X.509?
+[05:48:40] <bascule> nukeitfromorbit
+[05:49:53] <Ilari> High-level semantics don't include things like serialization or RSA-foo vs. ECDSA vs EdDSA (that's lower level).
+[05:51:03] <Ilari> But do include things like constraint types, what signs what, how is trust determined and so so.
+[05:53:48] <Ilari> Another reason certain key exchange types (anything that isn't either pure-PSK or something forward-secure) in TLS are bad: Those couple certificate contents into key exchange.
+[05:57:03] <Ilari> The only one of those that is actually used in wild is RSA key exchange. Where the client has to parse shit out of X.509 certificate just to complete the key exchange.
+[05:58:16] <Ilari> Whereas with (EC)DHE, one can extract the certificate, PoP TBS and signature, and pass those to be validated in another module.
+[05:59:40] <Ilari> And similarly, for signing one can pass key handle and PoP TBS and obtain a certificate and signature blob from another module.
+[06:00:28] <eternaleye> Ilari: Heh, now I want a blog along the lines of "Things I won't work with" for crypto
+[06:03:40] <Ilari> Well, there is no shortage of absolutely crap crypto (even if one ignores homecooked crypto primitives, which are just about indistinguishable from horribly broken).
+[06:13:46] <eternaleye> Ilari: No, no, "Things I won't work with" is a specific blog: http://pipeline.corante.com/archives/things_i_wont_work_with/
+[06:14:15] <eternaleye> Ilari: Written by a chemist in the pharmeceutical industry, going into detail about stuff that makes his "No way, no how!" list
+[06:17:33] <eternaleye> >> Personally, my metal azide requirements are minimal, and very easily satisfied. I can get all I need by looking at a structure drawn on a whiteboard from about twenty feet away, thanks, and have no desire to actually prepare any of these things. I do not see this as an irrational reluctance. For example, last year I wrote about mercury azides, a most alarming class of compounds whose synthesis would be much easier if the two solvent 
+[06:17:34] <eternaleye> layers didn't keep getting disturbed by explosions. I've also covered selenium tetraazide, a cheerful lemon-yellow solid with the annoying habit of blowing up when it gets warmer than about -64C, which would explain why you don't run into it very often.
+[06:24:47] <bascule> Ilari: if we're designing a next-generation PKI, can we forget RSA even existed?
+[06:25:15] <bascule> maybe start with cfrgcurves as a baseline
+[06:25:46] <eternaleye> bascule: I wonder how hard it'd be to create a krb6 based on Macaroons...
+[06:26:22] <bascule> haha I'd love Macaroonized Kerberos
+[06:26:36] <eternaleye> bascule: Just tell all this fancy-schmancy public-key stuff to take a long walk off a short pier
+[06:26:43] <Ilari> bascule: Well, in higher-level design (which I consider kinda important), the relevant thing about asymmetric signatures is that those exist.
+[06:27:00] <bascule> Ilari: so like
+[06:27:11] <bascule> there's "deniable" triple-DH key exchanges
+[06:27:14] <bascule> those are good, right?
+[06:27:21] <bascule> they remove a signature algorithm from key exchange
+[06:27:44] <bascule> instead of RSA-ECDHE you have... Triple-ECDH
+[06:28:05] <eternaleye> ITYM Handshake[X,E]E :P
+[06:28:09] <bascule> but for certificate chains, you still need signatures
+[06:28:46] <eternaleye> But yeah, I think certificate chains are a misfeature.
+[06:29:07] <eternaleye> Ephemeral + channel-binding + application-level auth FTW
+[06:29:29] <eternaleye> Hell, just bolt SASL to it and call it a day
+[06:30:34] <bascule> uhh
+[06:30:42] <eternaleye> (Incidentally: WTF is with the varity of auth protocols? I can understand RADIUS + others - it does session management and such as well. But SASL vs EAP vs ... ?)
+[06:30:48] <bascule> so we run an X.509 PKI for S2S authentication
+[06:31:04] <bascule> we bind to OUs
+[06:31:14] <eternaleye> bascule: I'm so sorry. :P
+[06:31:46] <eternaleye> bascule: In that case, just bolt EAP on top and use EAP-TLS though :P
+[06:32:00] <bascule> I'd rather use Macaroons! :o
+[06:32:07] <eternaleye> bascule: Oh, agreed.
+[06:32:20] <eternaleye> bascule: But by then you've left certificate chains behind anyway
+[06:32:43] <eternaleye> bascule: I'm saying that cert chains over something _sensible_ like channel binding doesn't really even need innovation
+[06:33:30] <bascule> so Google invented the TLS channel ID extension
+[06:33:31] <bascule> and
+[06:33:39] <bascule> apparently Google hates the TLS channel ID extension
+[06:33:46] <bascule> and they're working on unbearable/tokbind
+[06:34:02] <bascule> which, Ilari convinced them shouldn't use ALPN but should be a TLS extension
+[06:34:03] <eternaleye> And this is when we should burn it all down and let the cockroaches have a go.
+[06:34:09] <bascule> lololololol
+[06:35:19] <eternaleye> But seriously, I think the only sensible way forward is to murder TLS with a rusty spoon, decide on some sensible handshake like Handshake[XE]E that sets up an AEAD channel, support channel binding on top of it, and call it a day.
+[06:35:41] <Ilari> bascule: I think it was discussed in meeting (which was before my message), but I first observed that ALPN has scaling problems a long time ago.
+[06:35:47] <eternaleye> Heck, for the SOCK_STREAM/SOCK_SEQPACKET case, could even just use Rogaway's CHAIN construction with a MRAE
+[06:35:51] <bascule> I mean
+[06:36:00] <bascule> I wrote this: http://cleancrypt.org/tls/
+[06:36:01] <bascule> lol
+[06:36:08] <bascule> but replacing TLS is like... really really hard
+[06:36:15] <eternaleye> Just replace the little-epsilon (which stands for "the empty string") in the per-chunk AD with actual AD
+[06:36:22] <bascule> also that page is pretty out of date
+[06:36:26] <bascule> I don't even mention Noise
+[06:36:49] <eternaleye> bascule: Replacing TLS is hard because TLS should be something like five separate protocols...
+[06:36:56] <bascule> hahahaha
+[06:36:58] <bascule> yeah
+[06:37:02] <bascule> totes agree
+[06:37:07] <Ilari> Well, design something that can fulfill the planned external API of TLS 1.3 before TLS 1.3 is finished (which will take some time at least)? :->
+[06:37:15] <bascule> rofl Ilari
+[06:37:30] <bascule> I'd say that's doable, but then there's Noise
+[06:37:56] <eternaleye> Seriously, it should have a dead-simple KEX (cough*noise*cough), a dead-simple transport (MRAE in CHAIN), and a dead-simple channel binding (HKDF with a special token)
+[06:37:57] <bascule> I think around this time last year I was hanging out with Trevor Perrin at SOUPS talking about Noise v1
+[06:38:18] <eternaleye> All of these things have decent, and decently provable, security properties
+[06:38:25] <eternaleye> And are designed for composition.
+[06:38:27] <Ilari> "How would extensions via ALPN scale? It seems to me that the negotiation scales very poorly (full exponential in independent case!) in number of available extensions." (this was from 7th February 2014).
+[06:38:51] <eternaleye> All the other shiny crap people want should go on top of the above.
+[06:39:38] <Ilari> And things like WebSockets2 and Tokbind prove my point...
+[06:40:08] <eternaleye> Want something ALPN-ish? USE SRV RECORDS, FOR FUCK'S SAKE PEOPLE.
+[06:40:47] <eternaleye> You're already trusting the fucking DNS to give you the server name
+[06:40:57] <bascule> I mean so
+[06:41:05] <bascule> eternaleye: troll our X.509 PKI all you will but...
+[06:41:14] <bascule> we can bind to the subject (via e.g. OU)
+[06:41:25] <bascule> which is nice because different hosts have different certs with different CNs
+[06:41:31] <eternaleye> bascule: Sure. And with channel bindings you can bind to arbitrary information.
+[06:41:41] <bascule> in that sort of setup, I don't think channel ID even works
+[06:42:11] <eternaleye> bascule: Macaroon on the channel binding with a third-party caveat requiring a valid signature from the cert.
+[06:42:31] <bascule> we just have an "ou" caveat
+[06:42:45] <eternaleye> bascule: Or, you know, sign a nonce || channel binding value
+[06:42:53] <Ilari> Also, heh: "SPDY3 CREDENTIALS reminds me of one of my homebrew crypto stuff... Before it was security-patched..." (29th January 2014).
+[06:43:10] <bascule> cn+nonce forms the macaroon identifier
+[06:43:11] <eternaleye> bascule: I mean, channel binding is sufficient to implement arbitrary mutual auth.
+[06:43:17] <bascule> although I kind of want to introduce a KID
+[06:43:33] <eternaleye> bascule: I forget what the model is for it - not the common reference string, it's stronger than that
+[06:43:42] <eternaleye> bascule: (Though CRS is also sufficient IIRC)
+[06:44:09] <bascule> eternaleye: I mean, if you have an X.509 PKI doing AuthN, contextually binding bearer tokens is pretty easy...
+[06:44:25] <Ilari> bascule: BTW, also some chinese guy (claimed affiliation with Alibaba, inc.) posted I-D about doing 1-RTT with TLS 1.2. :-)
+[06:44:33] <eternaleye> bascule: That's what I mean: PKI should not be part of the TLS-ish protocol
+[06:44:34] <bascule> Ilari: I saw
+[06:44:49] <bascule> eternaleye: Noise solves that problem! :o
+[06:44:52] <bascule> "solves"
+[06:44:55] <bascule> punts on it
+[06:44:57] <eternaleye> bascule: People just bolt EEEEVERYTHING to TLS because then a.) they can get someone else to implement it for them and b.) TLS is everywhere!
+[06:44:58] <bascule> but seems good
+[06:45:01] <Ilari> bascule: Can Noise do key exchange in 1RTT?
+[06:45:10] <bascule> Ilari: yes
+[06:45:40] <eternaleye> HandshakeXE and HandshakeEE are 1rtt, no?
+[06:45:55] <eternaleye> HandshakeXE might be 0rtt, with the problems that implies, actually
+[06:46:09] <bascule> there are many things that claim 0rtt
+[06:46:14] *** Quits: gsingh93 (gulshan@moz-qnbukr.mi.comcast.net) (Ping timeout: 121 seconds)
+[06:46:16] <bascule> question is
+[06:46:18] <bascule> replayability
+[06:46:29] <eternaleye> "with the problems that implies"
+[06:46:42] <bascule> I feel like "secure" 0rtt involves some sort of pre-key exchange
+[06:46:47] <bascule> or handoff
+[06:46:57] <eternaleye> Well, that's what the X means a known key for the server
+[06:47:00] <bascule> or continuity
+[06:47:12] <bascule> QUIC claims to be 0rtt
+[06:47:17] <eternaleye> EE is both-ephemeral/unknown
+[06:47:18] <Ilari> bascule: Except it is broken.
+[06:47:21] <bascule> but that's in an optimal case
+[06:47:24] <bascule> Ilari: hahaha
+[06:47:24] <eternaleye> XE is server-known, client-ephemeral
+[06:47:34] <bascule> Ilari: I think secure "0rtt" is possible but
+[06:47:44] <eternaleye> QUIC does EE, then saves the server and uses XE for subsequent connections, basically.
+[06:47:54] <bascule> the main way you do it IMO is some sort of pre-key
+[06:48:05] <Ilari> bascule: Well, DKG broke 0RTT pretty throughly (at least in deployment context TLS (or QUIC) is in).
+[06:48:08] <bascule> or other stateful key which consumed is exhausted and non-replayable
+[06:48:22] <eternaleye> Ah, yeah
+[06:48:25] <bascule> Ilari: what about Axolotl?
+[06:48:27] <eternaleye> Some variety of ratchet
+[06:48:36] <bascule> eternaleye: or just pre-keying system in general
+[06:48:43] <eternaleye> bascule: I don't consider Axolotl really "0rtt"
+[06:48:43] <bascule> like there's a broker who introduces you
+[06:48:46] <bascule> and has a prekey
+[06:48:47] <eternaleye> bascule: Prekeying as well
+[06:48:52] <bascule> sure whatever
+[06:48:56] <eternaleye> bascule: It's just that the "rtt" is to a third party
+[06:49:08] <bascule> this is basically the multi-principal scenario where Macaroons come in handy ;)
+[06:49:14] <eternaleye> bascule: It's amortization / early-work, not elision.
+[06:49:26] <bascule> Macaroons are pointless unless you have at least three principals
+[06:49:28] <eternaleye> bascule: I only use 0rtt to refer to eliding the RTT entirely
+[06:49:30] <Ilari> bascule: Basically, any context where there are possibly multiple server endpoints and only two-party connections.
+[06:49:43] <bascule> Ilari: what about the "handoff" scenario?
+[06:50:02] <Ilari> bascule: Well, that doesn't appear in TLS, so presumably wasn't analyzed.
+[06:50:14] <eternaleye> bascule: In a two-party context, then "pre-keying" is basically just doing a few handshakes ahead of time, but waiting to send data until you're ready in a sense...
+[06:50:19] <bascule> yeah talking about outside the scope of TLS here for a second
+[06:50:35] <bascule> Bob knows Alice and wants to introduce her to Carol, in such a way that Alice and Carol have a secure channel that Bob can't read
+[06:50:36] <eternaleye> bascule: Which makes it a lot clearer that it doesn't actually "save" any RTT, just plays a shuffle game with when they happen.
+[06:51:00] <bascule> eternaleye: it's more like the introducer/broker can do one of the round-trips in advance
+[06:51:10] <eternaleye> bascule: I'm not disagreeing
+[06:51:10] <bascule> in such a way that it's non-replayable
+[06:51:21] <eternaleye> bascule: I just very much dislike calling that "0rtt"
+[06:51:23] <Ilari> eternaleye: I think in QUIC, the server rejects the handshake (with advice) if you get it wrong (e.g. don't know the server public key).
+[06:51:25] <bascule> lol sure
+[06:51:32] <bascule> I don't know how else to describe it
+[06:51:34] <bascule> "handoff"
+[06:51:43] <eternaleye> bascule: Pre-keying or handoff is just fine
+[06:51:47] <bascule> but it's more like handoff-ECDHE
+[06:51:51] <Ilari> eternaleye: The idea being, after getting the rejection message, the client can try again and probably succeed.
+[06:51:54] <eternaleye> bascule: It's just a completely different thing from 0rtt
+[06:51:58] <bascule> sure
+[06:52:46] <bascule> eternaleye: one of the things I like most about Macaroons is they are very useful in eliminating round-trips
+[06:52:51] <eternaleye> bascule: Agreed
+[06:52:53] <bascule> so excuse me if I indulge "0rtt"
+[06:52:54] <bascule> heh
+[06:52:56] <Ilari> Also for fun, I inquired about interaction of 0RTT and resumption. I got the feeling others didn't even understand the question...
+[06:53:12] <bascule> where other protocols might remint credentials, Macaroons afford any bearer the ability remint credentials offline
+[06:53:21] <eternaleye> bascule: Well, IMO 0rtt requires that _the entire conversation flow_ begins with a message to the server, which contains appdata.
+[06:53:21] <bascule> specifically, attenuate credentials by adding caveats
+[06:53:36] <bascule> like "this Macaroon will self-destruct in 1 second"
+[06:53:44] <eternaleye> bascule: Because I see the RTT counts as applying to the whole flow, not just one leg of it
+[06:54:06] <bascule> eternaleye: if you are introducing two nodes de-novo, and there is no broker of a pre-key, I don't think it's possible to do that securely
+[06:54:14] <eternaleye> bascule: Precisely.
+[06:54:19] <Ilari> Specifically, if resumption attempt has 0RTT data, how is the 0RTT encryption keyed?
+[06:55:03] <eternaleye> bascule: That's why I dislike the use of "0rtt" for things like introduction or prekeying, because it's conflating something quite sensible with something that people *want* naively, but can't be done securely.
+[06:55:16] <bascule> I think the way you do secure key exchange in the form of a single message is doing some work in advance
+[06:55:34] <bascule> so yeah whatever
+[06:55:37] <eternaleye> bascule: I think that's called a "handshake" in the business :P
+[06:55:40] <bascule> I'll accept terminological criticism
+[06:56:01] <bascule> eternaleye: it's more like a handshake sealing a contract to be exercised at a future time, heh
+[06:56:42] <eternaleye> bascule: Sure, but that's really more just inserting a time delay between handshake and appdata
+[06:56:54] <eternaleye> bascule: With some protocols, that just sort of falls out naturally.
+[06:57:29] <eternaleye> bascule: Especially the ones that are deterministic, and thus can avoid the server keeping state for them
+[06:57:33] <bascule> eternaleye: with capability-based / P2P protocols these sort of key exchanges are quite natural
+[06:57:47] <eternaleye> bascule: Yup, and I'm hugely in favor of that.
+[06:58:30] <bascule> so I've been trying to get trevp to design Noise with that in mind ;)
+[06:58:51] <bascule> in the meantime n00bs keep building their own protocols on top of "NaCl"
+[06:59:58] <bascule> hey Ilari 
+[07:00:03] <bascule> can you check me on one thing
+[07:00:06] <eternaleye> I'm very glad that one of my first encounters with modern(ish) crypto was reading Stephen Levy's "The Codebreakers"
+[07:00:16] <bascule> was Adam Langley the magic unicorn who undid the Microsoft CFRG logjam?
+[07:00:27] <eternaleye> The Bass-o-Matic anecdote did wonders on curing me of the desire to roll my own.
+[07:01:58] *** Joins: Tobba (Tobba@moz-6oh.7ki.21.217.IP)
+[07:03:52] <Ilari> bascule: I think he was. At least he posted the I-D merging Curve25519Function and rpgcurves.
+[07:03:58] <bascule> yeah, that
+[07:04:28] <Ilari> (I certainly didn't expect that logjam to break).
+[07:13:11] <bascule> me either
+[07:13:18] <bascule> seems like the CFRG is actually doing ok now
+[07:13:19] <bascule> amazing
+[07:13:43] <bascule> maybe they should stop asking about NIST and start asking about EdDSA
+[07:21:54] <Ilari> bascule: BTW: I think I figured out a nasty exploit for the 1RTT TLS 1.2 proposal. :-)
+[07:22:25] <bascule> lolololol
+[07:22:33] <bascule> the one posted yesterday? (?)
+[07:22:36] <Ilari> Yes.
+[07:22:40] <bascule> sweet
+[07:24:22] <Ilari> Bonus points for apparently being so bad that even extended_master_secret won't save you.
+[07:25:25] <Ilari> (Unless one does app-layer auth via channel bindings).
+[08:18:29] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[10:00:31] *** Quits: Tobba (Tobba@moz-6oh.7ki.21.217.IP) (Ping timeout: 121 seconds)
+[10:10:11] *** Joins: Tobba (Tobba@moz-6oh.7ki.21.217.IP)
+[10:12:27] *** Joins: Tuba (Tobba@moz-65g.7ki.21.217.IP)
+[10:15:42] *** Quits: Tobba (Tobba@moz-6oh.7ki.21.217.IP) (Ping timeout: 121 seconds)
+[10:20:13] *** Joins: Tobba (Tobba@moz-6oh.7ki.21.217.IP)
+[10:21:13] *** Quits: Tuba (Tobba@moz-65g.7ki.21.217.IP) (Ping timeout: 121 seconds)
+[10:26:55] *** Quits: Tobba (Tobba@moz-6oh.7ki.21.217.IP) (Ping timeout: 121 seconds)
+[10:31:47] *** Joins: zv (user@moz-eb6cs8.ca.comcast.net)
+[10:49:17] *** Joins: Tobba (Tobba@moz-65g.7ki.21.217.IP)
+[11:32:44] *** Quits: Tobba (Tobba@moz-65g.7ki.21.217.IP) (Ping timeout: 121 seconds)
+[11:58:36] *** Joins: Tobba (Tobba@moz-65g.7ki.21.217.IP)
+[12:46:23] *** Quits: Tobba (Tobba@moz-65g.7ki.21.217.IP) (Ping timeout: 121 seconds)
+[14:09:07] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[15:48:11] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[16:15:09] <Ilari> bascule: Also, one wants for security layer protocol to start with something else than 0x16 (and presumably in ASCII controls range) so it can be recognized apart from TLS.
+[16:36:42] <bascule> Ilari: haha, yeah
+[16:51:20] <Ilari> Seems like if you want to see plenty of ICEs, associated constants are a good way to get those. :->
+[16:58:35] *** Quits: Riastradh (riastradh@moz-m49.pl4.163.109.IP) (Ping timeout: 121 seconds)
+[17:19:22] <Ilari> Wow, seems like I can't manage to do anything with associated constants without causing an ICE.
+[17:23:11] <Ilari> Even something so simple as if statement with associated constant as condition ICEs.
+[17:25:44] <kmc> nice
+[17:26:02] <kmc> associated types were super buggy when introduced, as well
+[17:26:59] <Ilari> Also, fun hacks: let bound = size_of::<<T as Reduction>::Words>() >> 2;
+[17:28:19] <Ilari> (Reduction::Words is supposed to be an array type of u32s, and that is hacky way to get length of said array). 
+[17:29:04] <Ilari> I didn't find any trait bound to assert to obtain the array .len() method.
+[17:35:41] *** Joins: gsingh93 (gulshan@moz-qnbukr.mi.comcast.net)
+[17:55:07] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[18:11:42] <Ilari> bascule: Wonder if there even is feature list for TLS 1.3...
+[18:11:53] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[18:11:58] <bascule> haha
+[18:14:45] <Ilari> I think someone asked what will TLS 1.3 do on TLS WG ML... I think nobody answered that question.
+[18:15:03] <Ilari> Or was it what it defends against.
+[18:20:58] * bascule o_O https://vaultproject.io/
+[18:21:19] <bascule> I could (and already have) write something better than that :(
+[18:21:23] <bascule> in Rust! :o
+[18:24:21] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[18:45:10] <Ilari> What makes that "chinese 1RTT TLS 1.2 hack" so nasty to analyze is the fact that TLS 1.2 server authentication is busted (not quite bad enough to be easy to attack, but still).
+[19:31:30] *** Quits: eternaleye (eternaleye@moz-7ps.ehi.245.50.IP) (Ping timeout: 121 seconds)
+[19:33:13] *** Joins: eternaleye (eternaleye@moz-7ps.ehi.245.50.IP)
+[19:51:11] *** Quits: eternaleye (eternaleye@moz-7ps.ehi.245.50.IP) (Ping timeout: 121 seconds)
+[19:51:42] *** Joins: eternaleye (eternaleye@moz-7ps.ehi.245.50.IP)
+[20:01:03] *** Joins: Riastradh (riastradh@moz-6odf4a.exit.babylon.network)
+[20:30:10] <Ilari> (Also, that screwed up auth is from SSLv3 era and wasn't fixed)
+[20:56:40] <Ilari> I think the reason for that insecure auth is that SSLv3 was designed to use RSA key exchange, and then was retrofitted with DHE.
+[21:00:09] <Ilari> Does TLS handshake violate langsec in a nasty way (thinking of SMACK and such).
+[21:00:12] <Ilari> *?
+[21:57:30] *** Joins: jtdowney (jtdowney@moz-gh1isj.static.twtelecom.net)
+[22:08:59] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[22:39:37] *** Quits: jtdowney (jtdowney@moz-gh1isj.static.twtelecom.net) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[23:02:41] <bascule> Ilari: well it uses X.509, so yes? lol
+[23:06:07] <Ilari> Oh yeah, that too...
+[23:12:05] <bascule> I should say ASN.1
+[23:12:08] <bascule> e.g. BERserk
+[23:14:59] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Quit: leaving)
+[23:39:56] *** Joins: brson (brson@moz-0i1.c9m.56.172.IP)

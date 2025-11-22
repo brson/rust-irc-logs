@@ -1,0 +1,484 @@
+[00:00:08] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Quit: ZZZzzz…)
+[00:00:08] *** Quits: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net) (Quit: maxiepoo)
+[00:00:46] <kmc> I think there is already code to flip it rightside-up, which I have bypassed here (this is the raw output of glReadPixels, truncated and interpreted at the expected window size)
+[00:00:55] *** Quits: canhtak (canhtak@moz-14E3CE16.wl.t.ulaval.ca) (Ping timeout)
+[00:01:45] *** Joins: canhtak (canhtak@moz-14E3CE16.wl.t.ulaval.ca)
+[00:02:41] *** Joins: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net)
+[00:04:39] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[00:04:57] <pcwalton> kmc: bit depth is wrong
+[00:05:15] <pcwalton> too many colors per pixel
+[00:05:25] <pcwalton> err writing too many bytes per pixel
+[00:06:33] <kmc> but it's way less than 4/3 of the expected size :<
+[00:07:11] <pcwalton> could be that the stride is wrong or something...
+[00:07:18] <pcwalton> core-foundation is shrinking: 5 files changed, 252 insertions(+), 451 deletions(-)
+[00:07:22] <kmc> I think there's like one extra byte per scanline, and that's why the red gets offset onto alternating r,g,b
+[00:07:29] <pcwalton> that makes sense.
+[00:07:31] <pcwalton> oh
+[00:07:34] <pcwalton> I wonder if there is scan line padding?
+[00:07:47] <pcwalton> some texture formats like padding
+[00:09:22] *** Quits: mccr8 (mccr8@moz-BBE3ABD.mv.mozilla.com) (Quit: mccr8)
+[00:09:27] <kmc> could be relevant: http://www.opengl.org/sdk/docs/man/xhtml/glPixelStore.xml
+[00:11:10] <pcwalton> right, that's what I was looking for
+[00:11:18] <kmc> I'll try reading out some of these parameters
+[00:25:13] *** Quits: CaseyBecking (CaseyBecki@ED8170C4.82E507D6.C334098E.IP) (Ping timeout)
+[00:31:37] <kmc> yeah GL_PACK_ALIGNMENT was set to 4; setting it to 1 fixes the problem
+[00:31:43] <kmc> hooray
+[00:35:47] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Quit: ZZZzzz…)
+[00:36:38] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[00:37:26] *** Quits: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net) (Quit: maxiepoo)
+[00:38:36] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[00:39:46] *** joduinn-food is now known as joduinn
+[00:41:14] <pcwalton> kmc: awesome
+[00:41:25] <pcwalton> hmm, I am a little worried about overflows in the casts in Core Foundation
+[00:41:41] <pcwalton> there's some dangerous stuff in there
+[00:42:41] *** Joins: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP)
+[00:42:41] <ghservo> [13rust-core-foundation] 15pcwalton opened issue #22: Audit for overflows  02http://git.io/TIvMFg
+[00:42:41] *** Parts: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP) ()
+[00:43:22] <kmc> yeah
+[00:43:33] <kmc> I think a lot of our code has this problem :/
+[00:43:49] <pcwalton> yeah, somebody discovered that rust std::vec was overflowing like crazy
+[00:43:57] <pcwalton> if you tried to make it crash with overflows you could
+[00:44:49] <kmc> I feel like overflow should cause task failure in safe code
+[00:44:52] <kmc> but that's hard to do efficiently
+[00:45:05] <pcwalton> we've discussed that a lot, I think maybe a per-module flag is the right thing
+[00:45:05] <kmc> i don't think x86 supports it natively
+[00:45:07] <pcwalton> or per-lexical-scope
+[00:45:13] <pcwalton> so that bit twiddling code gets it
+[00:45:16] <pcwalton> but layout code doesn't
+[00:45:47] <cmr> pcwalton: I feel like int/uint etc should be shied away from in favor of a type that checks for overflow.
+[00:46:17] *** Quits: gandalf (zbraniecki@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: My lid went down)
+[00:46:19] <pcwalton> there are two approaches I guess, one's type based and the other is operation based
+[00:46:32] <pcwalton> so there's an overflowable int type versus a non-overflowable int type
+[00:46:40] <pcwalton> or whether the operations are separate
+[00:46:42] <pcwalton> and it changes what "+" means
+[00:47:26] <dbaupp> we do have .checked_add(), .checked_mul() etc right now (which use the LLVM intrinsics), fwiw.
+[00:47:36] <pcwalton> oh, that's nice
+[00:47:53] <cmr> pcwalton: those are what strcat used to fix the overflow.
+[00:47:56] <pcwalton> I was thinking just having a pragma to change what + and friends do in a scope would be nice… although maybe generics can circumvent it
+[00:48:40] <cmr> if our type system can express it, I'd rather do that than have magic that changes + etc
+[00:48:41] <pcwalton> I was actually most concerned with "as" at this point
+[00:48:48] <cmr> mm
+[00:49:01] <pcwalton> actually hmm
+[00:49:09] <pcwalton> I'll just add a function that is not called that transmutes a uint to a CFIndex
+[00:49:22] <pcwalton> if that is ever not true then compilation will fail
+[00:49:29] <pcwalton> that will solve the problem in Core Foundation's case
+[00:49:29] <cmr> the poor mans' static_assert
+[00:50:05] <cmr> once we have better constexprs, static_assert!() will be useful.
+[00:50:20] *** Quits: ahal|afk (ahal@moz-94F07FF4.cable.teksavvy.com) (Quit: Leaving)
+[00:53:50] *** Quits: harth (heather@moz-A0276582.hsd1.ca.comcast.net) (Client exited)
+[00:55:53] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[00:55:53] <ghservo> [13servo] 15kmcallister opened issue #1178: check-ref needs to comapre pixel data but not PNG metadata  02http://git.io/_fAxFw
+[00:55:53] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[00:56:14] *** Quits: dbaupp (Thunderbir@moz-B3C9E9E8.lns20.syd6.internode.on.net) (Ping timeout)
+[00:57:19] *** Joins: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP)
+[00:57:19] <ghservo> [13servo] 15kmcallister opened issue #1179: check-ref should test both CPU and GPU rendering  02http://git.io/WZEh0A
+[00:57:19] *** Parts: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP) ()
+[00:59:15] *** Joins: dbaupp (Thunderbir@moz-B3C9E9E8.lns20.syd6.internode.on.net)
+[00:59:37] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[00:59:37] <ghservo> [13servo] 15kmcallister opened issue #1180: check-ref should fix window size  02http://git.io/qIjy1Q
+[00:59:37] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[01:00:07] <kmc> so now check-ref works for me on Linux modulo these three issues
+[01:01:31] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[01:01:31] <ghservo> [13rust-opengles] 15kmcallister opened pull request #58: Suppress alignment padding from glReadPixels (06master...06align)  02http://git.io/g5LxAw
+[01:01:31] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[01:01:36] <kmc> r? pcwalton
+[01:01:50] <pcwalton> on it
+[01:03:11] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[01:03:12] <ghservo> 01[13rust-opengles01] 15pcwalton pushed 3 new commits to 06master: 02http://git.io/BKhMOw
+[01:03:12] <ghservo> 13rust-opengles/06master 146a0ece9 15Keegan McAllister: Clean up read_pixels
+[01:03:12] <ghservo> 13rust-opengles/06master 148079db1 15Keegan McAllister: Suppress alignment padding from glReadPixels...
+[01:03:12] <ghservo> 13rust-opengles/06master 1490152e9 15Patrick Walton: Merge pull request #58 from kmcallister/align...
+[01:03:14] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[01:04:00] <kmc> I think the Servo buildbot for Mac is stuck so I can't actually land this fix yet...
+[01:04:06] <kmc> (or the Au format one)
+[01:04:34] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[01:04:45] *** Quits: canhtak (canhtak@moz-14E3CE16.wl.t.ulaval.ca) (Quit: canhtak)
+[01:05:28] <pcwalton> uh-oh. I guess jack is responsible for those?
+[01:10:26] *** Joins: mccr8 (mccr8@moz-86495BF6.dslextreme.com)
+[01:11:49] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Connection reset by peer)
+[01:11:51] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[01:13:55] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[01:17:50] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[01:18:20] *** Joins: canhtak (canhtak@moz-14E3CE16.wl.t.ulaval.ca)
+[01:20:16] *** Joins: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP)
+[01:20:16] <ghservo> [13servo] 15kmcallister opened pull request #1181: Update rust-opengles for bugfix (06master...06opengles)  02http://git.io/t097qg
+[01:20:17] *** Parts: ghservo (ghservo@24260B07.6A2AE50.F3114085.IP) ()
+[01:22:49] *** Joins: harth (heather@moz-A0276582.hsd1.ca.comcast.net)
+[01:24:33] *** Quits: mccr8 (mccr8@moz-86495BF6.dslextreme.com) (Quit: mccr8)
+[01:25:06] *** Joins: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net)
+[01:26:33] *** Quits: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net) (Quit: maxiepoo)
+[01:27:09] *** Joins: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net)
+[01:28:28] *** Quits: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net) (Quit: maxiepoo)
+[01:37:52] *** Joins: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net)
+[01:38:24] *** Quits: harth (heather@moz-A0276582.hsd1.ca.comcast.net) (Client exited)
+[01:46:31] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[01:48:58] *** Quits: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net) (Quit: maxiepoo)
+[01:50:26] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[01:51:48] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[01:52:33] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[01:53:00] *** joduinn is now known as joduinn-afk
+[01:58:42] *** Quits: dbaupp (Thunderbir@moz-B3C9E9E8.lns20.syd6.internode.on.net) (Ping timeout)
+[02:01:21] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[02:02:39] *** Joins: dbaupp (Thunderbir@moz-7FBF750E.lns20.syd6.internode.on.net)
+[02:04:05] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[02:13:16] *** Joins: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net)
+[02:25:02] *** Quits: azakai (alon@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[02:26:11] *** Quits: Jayflux (Jason@moz-B741706F.as13285.net) (Quit: Leaving)
+[02:28:28] *** Joins: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com)
+[02:29:34] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[02:29:34] *** ChanServ sets mode: +qo dherman dherman
+[02:30:36] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[02:35:00] *** Joins: brson (brson@981AA104.E81F12CD.76F66111.IP)
+[02:35:00] *** ChanServ sets mode: +o brson
+[02:45:40] *** Quits: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net) (Quit: maxiepoo)
+[02:48:44] *** Joins: harth (heather@moz-A0276582.hsd1.ca.comcast.net)
+[02:50:33] *** Quits: harth (heather@moz-A0276582.hsd1.ca.comcast.net) (Ping timeout)
+[02:51:51] *** Joins: harth (heather@moz-A0276582.hsd1.ca.comcast.net)
+[02:54:30] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[02:55:51] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[02:56:25] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Connection reset by peer)
+[02:56:53] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[02:58:53] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[03:04:31] *** Quits: lmandel (lmandel@moz-76CE9D51.cable.teksavvy.com) (Quit: lmandel)
+[03:16:54] *** Quits: exobit (foo@moz-90D1B547.nycmny.fios.verizon.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[03:20:53] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[03:24:42] *** Quits: brson (brson@981AA104.E81F12CD.76F66111.IP) (Quit: leaving)
+[03:29:54] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Input/output error)
+[03:30:21] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[03:32:06] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[03:35:55] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[03:44:49] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Connection reset by peer)
+[03:45:09] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[03:47:19] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[03:47:42] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: pcwalton)
+[03:54:12] *** Joins: kimundi_ (kimundi@moz-CEF9AA1F.dip0.t-ipconnect.de)
+[03:55:09] *** Quits: kimundi (kimundi@moz-F8D99315.dip0.t-ipconnect.de) (Ping timeout)
+[03:55:09] *** kimundi_ is now known as kimundi
+[04:03:10] *** kimundi is now known as zz_kimundi
+[04:05:47] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Ping timeout)
+[04:06:13] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[04:10:27] *** zz_kimundi is now known as kimundi
+[04:23:28] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Ping timeout)
+[04:23:54] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[04:39:23] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[04:40:23] *** Joins: marcosc_ (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[04:40:23] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Connection reset by peer)
+[04:41:50] *** joduinn-afk is now known as joduinn-home
+[04:42:23] *** Quits: marcosc_ (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[04:42:46] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[04:42:46] *** ChanServ sets mode: +qo dherman dherman
+[04:45:22] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[04:50:16] *** Joins: exobit (foo@moz-90D1B547.nycmny.fios.verizon.net)
+[04:52:53] *** Joins: marcosc_ (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[04:52:53] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Connection reset by peer)
+[04:55:02] *** Quits: marcosc_ (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[04:59:25] *** Joins: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net)
+[05:07:04] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[05:07:30] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[05:11:08] *** Quits: canhtak (canhtak@moz-14E3CE16.wl.t.ulaval.ca) (Quit: canhtak)
+[05:16:16] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Input/output error)
+[05:16:55] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[05:17:34] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[05:17:34] *** ChanServ sets mode: +qo dherman dherman
+[05:18:41] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[05:19:46] *** Quits: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net) (Quit: maxiepoo)
+[05:29:38] *** Joins: pcwalton (pcwalton@moz-B51927E9.hsd1.ca.comcast.net)
+[05:29:38] *** ChanServ sets mode: +o pcwalton
+[05:34:06] *** Joins: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net)
+[05:38:35] *** Quits: dbaupp (Thunderbir@moz-7FBF750E.lns20.syd6.internode.on.net) (Ping timeout)
+[05:42:41] *** Joins: dbaupp (Thunderbir@moz-8F906C32.lns20.syd6.internode.on.net)
+[05:45:19] *** Quits: dbaupp (Thunderbir@moz-8F906C32.lns20.syd6.internode.on.net) (Ping timeout)
+[05:45:21] *** Joins: dbaupp (Thunderbir@moz-89FD7F5F.lns20.syd6.internode.on.net)
+[05:45:22] *** Quits: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net) (Quit: maxiepoo)
+[05:47:08] *** Quits: dbaupp (Thunderbir@moz-89FD7F5F.lns20.syd6.internode.on.net) (Ping timeout)
+[05:47:50] *** Joins: dbaupp (Thunderbir@moz-96FDCF0F.lns20.syd6.internode.on.net)
+[05:53:20] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[06:10:49] *** Joins: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP)
+[06:10:50] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[06:10:50] <ghservo> [13rust-cocoa] 15pcwalton opened pull request #17: Introduce a more convenient notation and embrace dynamic typing. (06master...06revamp)  02http://git.io/r1x-BA
+[06:10:50] *** Parts: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP) ()
+[06:11:52] *** Joins: marcosc_ (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[06:11:52] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Connection reset by peer)
+[06:13:52] *** Quits: marcosc_ (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[06:16:31] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[06:16:31] <ghservo> 01[13rust-core-foundation01] 15pcwalton created 06revamp (+1 new commit): 02http://git.io/Pfhcbw
+[06:16:31] <ghservo> 13rust-core-foundation/06revamp 1482ccdbe 15Patrick Walton: Revamp and modernize the Core Foundation APIs....
+[06:16:31] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[06:16:40] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[06:16:40] <ghservo> [13rust-core-foundation] 15pcwalton opened pull request #23: Revamp and modernize the Core Foundation APIs. (06master...06revamp)  02http://git.io/i9Gx4Q
+[06:16:40] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[06:18:06] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[06:18:06] <ghservo> 01[13rust-core-graphics01] 15pcwalton created 06cf-revamp (+1 new commit): 02http://git.io/uxQOHg
+[06:18:06] <ghservo> 13rust-core-graphics/06cf-revamp 14f6dc4f7 15Patrick Walton: Update for the Core Foundation bindings revamp
+[06:18:06] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[06:18:25] *** Joins: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP)
+[06:18:25] <ghservo> 01[13rust-core-graphics01] 15pcwalton 04deleted 06cf-revamp at 14f6dc4f7: 02http://git.io/hUSvrg
+[06:18:25] *** Parts: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP) ()
+[06:18:55] *** Joins: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP)
+[06:18:55] <ghservo> [13rust-core-graphics] 15pcwalton opened pull request #10: Update for the Core Foundation bindings revamp (06master...06cf-revamp)  02http://git.io/ZK8aqg
+[06:18:55] *** Parts: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP) ()
+[06:20:08] *** Joins: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP)
+[06:20:08] <ghservo> [13rust-io-surface] 15pcwalton opened pull request #9: Update for the Core Foundation bindings revamp (06master...06cf-revamp)  02http://git.io/3sXfAA
+[06:20:08] *** Parts: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP) ()
+[06:20:20] *** Joins: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP)
+[06:20:20] <ghservo> [13rust-core-text] 15pcwalton opened pull request #15: Update for the Core Foundation bindings revamp (06master...06cf-revamp)  02http://git.io/uIHRtQ
+[06:20:20] *** Parts: ghservo (ghservo@9C8B94D4.6A2AE50.F3114085.IP) ()
+[06:21:07] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[06:21:07] <ghservo> [13rust-azure] 15pcwalton opened pull request #59: Update for the Core Foundation bindings revamp (06master...06cf-revamp)  02http://git.io/k8ThTg
+[06:21:07] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[06:22:34] *** Joins: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP)
+[06:22:34] <ghservo> [13rust-layers] 15pcwalton opened pull request #32: Update for Core Foundation bindings revamp (06master...06cf-revamp)  02http://git.io/Xefd1w
+[06:22:34] *** Parts: ghservo (ghservo@2EE61FCC.6A2AE50.F3114085.IP) ()
+[06:23:44] *** Quits: harth (heather@moz-A0276582.hsd1.ca.comcast.net) (Client exited)
+[06:25:28] *** Parts: pcwalton (pcwalton@moz-B51927E9.hsd1.ca.comcast.net) ()
+[06:36:56] *** Joins: ghservo (ghservo@79968228.6A2AE50.F3114085.IP)
+[06:36:56] <ghservo> 01[13servo01] 15pcwalton pushed 2 new commits to 06master: 02http://git.io/AKLjSA
+[06:36:56] <ghservo> 13servo/06master 14c1750a2 15Keegan McAllister: Update rust-opengles for bugfix
+[06:36:56] <ghservo> 13servo/06master 145e94d69 15Patrick Walton: Merge pull request #1181 from kmcallister/opengles...
+[06:36:57] *** Parts: ghservo (ghservo@79968228.6A2AE50.F3114085.IP) ()
+[06:40:06] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[06:40:18] *** Joins: harth (heather@moz-A0276582.hsd1.ca.comcast.net)
+[06:42:02] *** Quits: harth (heather@moz-A0276582.hsd1.ca.comcast.net) (Ping timeout)
+[06:51:15] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Quit: Gone to save the world!)
+[07:06:04] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[07:06:46] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Connection reset by peer)
+[07:07:05] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[07:09:08] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[07:11:09] *** Quits: dbaupp (Thunderbir@moz-96FDCF0F.lns20.syd6.internode.on.net) (Ping timeout)
+[07:14:41] *** Joins: dbaupp (Thunderbir@moz-4D38AB0E.lns20.syd6.internode.on.net)
+[07:17:43] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[07:33:28] *** Quits: dbaupp (Thunderbir@moz-4D38AB0E.lns20.syd6.internode.on.net) (Ping timeout)
+[07:37:23] *** Joins: dbaupp (Thunderbir@moz-EA596755.lns20.syd6.internode.on.net)
+[07:44:52] *** Joins: jensnockert (jensnocker@moz-5B057FF0.minc.se)
+[07:55:33] *** Quits: emi (sunshine@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[08:01:15] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[08:01:58] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Input/output error)
+[08:02:26] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[08:04:25] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[08:09:58] *** Quits: JamesNZ (james@moz-264643C7.bitstream.orcon.net.nz) (Quit: Busying myself...)
+[08:26:51] *** Joins: emi (sunshine@moz-9FE842F.cpe.net.cable.rogers.com)
+[08:33:34] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[08:38:56] *** Quits: dbaron (dbaron@moz-C14966F9.dsl.dynamic.sonic.net) (Ping timeout)
+[08:41:53] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Connection reset by peer)
+[08:42:17] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[08:44:28] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[08:45:39] *** Quits: exobit (foo@moz-90D1B547.nycmny.fios.verizon.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[08:56:47] *** Quits: emi (sunshine@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[08:57:37] *** Joins: Jackneill (Jackneill@moz-224A92F.pool.digikabel.hu)
+[09:14:26] *** Joins: Ms2ger (Ms2ger@moz-6EEC6E4D.adsl-dyn.isp.belgacom.be)
+[09:15:01] *** Joins: harth (heather@moz-A0276582.hsd1.ca.comcast.net)
+[09:16:57] *** Quits: harth (heather@moz-A0276582.hsd1.ca.comcast.net) (Ping timeout)
+[09:36:29] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[09:37:28] *** Joins: marcosc_ (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[09:37:28] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Connection reset by peer)
+[09:39:33] *** Quits: jensnockert (jensnocker@moz-5B057FF0.minc.se) (Input/output error)
+[09:39:41] *** Quits: marcosc_ (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[09:39:47] *** Joins: jensnockert (jensnocker@moz-5B057FF0.minc.se)
+[09:42:16] *** Joins: madalynn (Mibbit@BE29EA5A.214B2527.57DA49D3.IP)
+[09:42:28] *** Quits: madalynn (Mibbit@BE29EA5A.214B2527.57DA49D3.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[09:57:10] *** Joins: emi (sunshine@moz-9FE842F.cpe.net.cable.rogers.com)
+[10:26:41] *** Quits: emi (sunshine@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[10:31:45] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[10:32:45] *** Joins: marcosc_ (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[10:32:46] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Connection reset by peer)
+[10:34:47] *** Quits: marcosc_ (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[10:39:16] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[10:45:38] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[11:02:25] *** Joins: victorporof (victorporo@733111D7.F5F0D9CD.9B1E38F4.IP)
+[11:04:13] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[11:04:46] *** Joins: exobit (foo@moz-90D1B547.nycmny.fios.verizon.net)
+[11:24:06] *** Joins: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP)
+[11:26:46] *** Joins: emi (sunshine@moz-9FE842F.cpe.net.cable.rogers.com)
+[11:36:39] *** Joins: askalski (akuda@moz-A2FA9AA0.neoplus.adsl.tpnet.pl)
+[11:49:04] *** Quits: tgummerer (tgummerer@moz-582025B2.members.linode.com) (Quit: Coyote finally caught me)
+[11:49:09] *** jyeo is now known as jyeo_away
+[11:54:32] *** Joins: mihneadb (mihneadb@4A8952C.AE58154E.4A6B528C.IP)
+[11:56:52] *** Quits: emi (sunshine@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[12:31:27] *** Quits: Ms2ger (Ms2ger@moz-6EEC6E4D.adsl-dyn.isp.belgacom.be) (Quit: bbl)
+[12:38:09] *** Joins: canhtak (canhtak@moz-A161DED8.wl.t.ulaval.ca)
+[12:47:29] *** Quits: jensnockert (jensnocker@moz-5B057FF0.minc.se) (Ping timeout)
+[12:52:58] *** Quits: exobit (foo@moz-90D1B547.nycmny.fios.verizon.net) (Quit: Textual IRC Client: www.textualapp.com)
+[12:54:11] *** Joins: jensnockert (jensnocker@moz-5B057FF0.minc.se)
+[13:00:56] *** Quits: askalski (akuda@moz-A2FA9AA0.neoplus.adsl.tpnet.pl) (Quit: Wychodzi)
+[13:01:26] *** Joins: Debloper (debloper@30048D8E.348E28A8.5D9ABA9F.IP)
+[13:03:57] *** Joins: emi (sunshine@moz-9FE842F.cpe.net.cable.rogers.com)
+[13:11:00] *** Quits: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP) (Quit: Kostic)
+[13:18:16] *** Joins: Jayflux (Jason@moz-507E4D8C.as13285.net)
+[13:26:57] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[13:26:57] *** ChanServ sets mode: +qo dherman dherman
+[13:27:34] *** Quits: emi (sunshine@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[13:31:54] *** Quits: nielsle (nielsle@moz-C46DA772.boa.fiberby.dk) (Ping timeout)
+[13:35:26] *** Quits: jensnockert (jensnocker@moz-5B057FF0.minc.se) (Input/output error)
+[13:39:18] *** Joins: CaseyBecking (CaseyBecki@moz-29F30CC3.lsanca.fios.verizon.net)
+[13:51:34] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Input/output error)
+[13:52:03] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[13:53:46] *** Quits: CaseyBecking (CaseyBecki@moz-29F30CC3.lsanca.fios.verizon.net) (Quit: Leaving...)
+[14:00:15] *** Quits: toshok (toshok@moz-43741342.cat) (Ping timeout)
+[14:01:58] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Input/output error)
+[14:02:16] *** Joins: nielsle (nielsle@moz-C46DA772.boa.fiberby.dk)
+[14:02:39] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[14:03:43] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[14:07:18] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[14:07:28] *** Joins: jensnockert (jensnocker@moz-5B057FF0.minc.se)
+[14:09:04] *** Quits: canhtak (canhtak@moz-A161DED8.wl.t.ulaval.ca) (Quit: canhtak)
+[14:13:17] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[14:17:27] *** Quits: jensnockert (jensnocker@moz-5B057FF0.minc.se) (Input/output error)
+[14:19:19] *** Joins: canhtak (canhtak@moz-A161DED8.wl.t.ulaval.ca)
+[14:22:57] *** Quits: ttaubert (uid2620@moz-31ABA2C0.irccloud.com) (Broken pipe)
+[14:22:57] *** Quits: silverroots (uid10556@moz-31ABA2C0.irccloud.com) (Input/output error)
+[14:23:20] *** Joins: jensnock_ (jensnocker@moz-5B057FF0.minc.se)
+[14:27:12] *** Joins: emi (sunshine@moz-9FE842F.cpe.net.cable.rogers.com)
+[14:32:34] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[14:32:34] *** ChanServ sets mode: +qo dherman dherman
+[14:34:09] *** Quits: jensnock_ (jensnocker@moz-5B057FF0.minc.se) (Input/output error)
+[14:42:07] *** Joins: ttaubert (uid2620@moz-31ABA2C0.irccloud.com)
+[14:43:39] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[14:44:54] *** Joins: marcosc_ (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[14:44:54] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Connection reset by peer)
+[14:46:49] *** Quits: marcosc_ (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[14:53:09] *** Joins: ibnc (ibnc@moz-8A9CD85B.client.mchsi.com)
+[14:57:02] *** Quits: emi (sunshine@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[14:57:53] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[14:58:32] *** Joins: silverroots (uid10556@moz-31ABA2C0.irccloud.com)
+[15:06:06] *** Quits: ibnc (ibnc@moz-8A9CD85B.client.mchsi.com) (Client exited)
+[15:06:26] *** Joins: ibnc (ibnc@moz-8A9CD85B.client.mchsi.com)
+[15:08:08] *** Quits: ibnc (ibnc@moz-8A9CD85B.client.mchsi.com) (Ping timeout)
+[15:12:17] *** Joins: emi (sunshine@moz-9FE842F.cpe.net.cable.rogers.com)
+[15:26:19] *** Joins: tgummerer (tgummerer@moz-582025B2.members.linode.com)
+[15:33:49] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[15:36:28] *** Quits: reyre (reyre@moz-89E9865B.com) (Quit: ZNC - http://znc.in)
+[15:37:28] *** Joins: reyre (reyre@moz-89E9865B.com)
+[15:37:40] *** Joins: doomlord_ (servitor@moz-4625DF14.range86-184.btcentralplus.com)
+[15:46:44] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Ping timeout)
+[15:47:06] *** Quits: mihneadb (mihneadb@4A8952C.AE58154E.4A6B528C.IP) (Quit: Computer gone to sleep - Zzzz...)
+[15:51:13] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[15:54:14] *** Quits: jst (quassel@moz-BBE3ABD.mv.mozilla.com) (Input/output error)
+[15:59:41] *** Joins: jxs (joaoxsouls@moz-A7EE0DAF.compute-1.amazonaws.com)
+[16:00:53] *** Joins: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP)
+[16:05:56] *** Quits: jxs (joaoxsouls@moz-A7EE0DAF.compute-1.amazonaws.com) (Quit: bye)
+[16:09:05] *** Quits: canhtak (canhtak@moz-A161DED8.wl.t.ulaval.ca) (Quit: canhtak)
+[16:10:42] *** Joins: jxs (joaoxsouls@moz-A7EE0DAF.compute-1.amazonaws.com)
+[16:12:26] *** Quits: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP) (Input/output error)
+[16:12:36] *** Joins: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP)
+[16:12:47] *** Quits: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP) (Input/output error)
+[16:12:53] *** Joins: jensnockert (jensnocker@moz-5B057FF0.minc.se)
+[16:13:37] *** Joins: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP)
+[16:15:38] *** Quits: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP) (Ping timeout)
+[16:18:56] *** Joins: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP)
+[16:20:43] *** Quits: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP) (Ping timeout)
+[16:23:46] *** Joins: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP)
+[16:25:35] *** Quits: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP) (Ping timeout)
+[16:27:43] *** Joins: toshok (toshok@moz-43741342.cat)
+[16:28:37] *** Joins: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP)
+[16:30:16] *** Quits: jxs (joaoxsouls@moz-A7EE0DAF.compute-1.amazonaws.com) (Quit: bye)
+[16:30:22] *** Quits: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP) (Ping timeout)
+[16:30:48] *** Joins: jxs (joaoxsouls@moz-A7EE0DAF.compute-1.amazonaws.com)
+[16:32:07] *** Joins: jst (quassel@moz-BBE3ABD.mv.mozilla.com)
+[16:32:21] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Quit: ZZZzzz…)
+[16:35:27] *** Quits: jxs (joaoxsouls@moz-A7EE0DAF.compute-1.amazonaws.com) (Quit: bye)
+[16:35:58] *** Joins: jxs (joaoxsouls@moz-A7EE0DAF.compute-1.amazonaws.com)
+[16:41:03] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Ping timeout)
+[16:41:54] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[16:43:50] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[16:44:36] *** Joins: Ms2ger (Ms2ger@moz-6EEC6E4D.adsl-dyn.isp.belgacom.be)
+[16:44:53] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[16:45:23] *** Quits: jensnockert (jensnocker@moz-5B057FF0.minc.se) (Input/output error)
+[16:52:20] *** Joins: canhtak (canhtak@moz-A161DED8.wl.t.ulaval.ca)
+[16:54:47] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[16:54:47] *** ChanServ sets mode: +qo dherman dherman
+[16:58:21] *** Quits: jst (quassel@moz-BBE3ABD.mv.mozilla.com) (Input/output error)
+[16:58:52] *** Joins: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP)
+[17:01:23] *** Quits: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP) (Ping timeout)
+[17:01:34] *** Joins: dbaron (dbaron@moz-C14966F9.dsl.dynamic.sonic.net)
+[17:04:21] *** Joins: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP)
+[17:04:36] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[17:06:09] *** Quits: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP) (Ping timeout)
+[17:06:51] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Quit: ZZZzzz…)
+[17:08:55] *** Joins: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP)
+[17:10:16] *** Quits: glob|away (glob@moz-DF237567.glob.com.au) (Ping timeout)
+[17:10:43] *** Quits: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP) (Ping timeout)
+[17:13:39] *** Joins: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP)
+[17:13:57] *** Joins: glob (glob@moz-DF237567.glob.com.au)
+[17:15:20] *** Quits: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP) (Ping timeout)
+[17:18:34] *** Joins: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP)
+[17:20:17] *** Quits: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP) (Ping timeout)
+[17:23:17] *** Quits: tgummerer (tgummerer@moz-582025B2.members.linode.com) (Quit: Coyote finally caught me)
+[17:23:47] *** Joins: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP)
+[17:25:32] *** Quits: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP) (Ping timeout)
+[17:27:07] *** Joins: jst (quassel@moz-BBE3ABD.mv.mozilla.com)
+[17:35:39] *** Joins: ibnc (ibnc@moz-8A9CD85B.client.mchsi.com)
+[17:54:06] *** Joins: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com)
+[17:59:02] *** Joins: JamesNZ (james@moz-264643C7.bitstream.orcon.net.nz)
+[18:04:17] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Input/output error)
+[18:05:23] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[18:10:49] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[18:22:25] *** Quits: ibnc (ibnc@moz-8A9CD85B.client.mchsi.com) (Client exited)
+[18:22:45] *** Joins: ibnc (ibnc@moz-8A9CD85B.client.mchsi.com)
+[18:24:28] *** Quits: ibnc (ibnc@moz-8A9CD85B.client.mchsi.com) (Ping timeout)
+[18:26:36] *** Joins: ibnc (ibnc@moz-8A9CD85B.client.mchsi.com)
+[18:28:34] *** Joins: valenting (Thunderbir@F12D0376.5025026B.FB866788.IP)
+[18:41:19] *** Joins: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net)
+[18:42:42] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[18:43:12] *** Quits: maxiepoo (Max@moz-6F50ADE.hsd1.il.comcast.net) (Ping timeout)
+[18:49:31] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Quit: ZZZzzz…)
+[18:54:33] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[18:58:02] *** Joins: harth (heather@moz-A0276582.hsd1.ca.comcast.net)
+[18:58:59] *** Quits: harth (heather@moz-A0276582.hsd1.ca.comcast.net) (Connection reset by peer)
+[18:59:05] *** Joins: harth (heather@moz-A0276582.hsd1.ca.comcast.net)
+[18:59:50] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[19:09:32] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Connection reset by peer)
+[19:10:00] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[19:20:28] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[19:28:16] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[19:32:42] *** Quits: ibnc (ibnc@moz-8A9CD85B.client.mchsi.com) (Ping timeout)
+[19:36:32] *** Joins: ibnc (ibnc@moz-8A9CD85B.client.mchsi.com)
+[19:36:52] *** Quits: Debloper (debloper@30048D8E.348E28A8.5D9ABA9F.IP) (Quit: Leaving.)
+[19:38:11] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Connection reset by peer)
+[19:38:23] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[19:42:11] *** Quits: jensnockert (jensnocker@moz-7DC16A5F.afb.bredband2.com) (Input/output error)
+[19:48:52] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[19:48:59] * Ms2ger keeps pushing things to his branch, waiting for jdm to review
+[19:51:58] *** Quits: valenting (Thunderbir@F12D0376.5025026B.FB866788.IP) (Ping timeout)
+[19:53:57] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[20:05:20] *** Quits: JamesNZ (james@moz-264643C7.bitstream.orcon.net.nz) (Client exited)
+[20:24:17] *** Quits: Jackneill (Jackneill@moz-224A92F.pool.digikabel.hu) (Input/output error)
+[20:28:27] *** Quits: ibnc (ibnc@moz-8A9CD85B.client.mchsi.com) (Quit: )
+[20:33:33] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[20:43:13] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Connection reset by peer)
+[20:43:30] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[20:48:49] *** Quits: victorporof (victorporo@733111D7.F5F0D9CD.9B1E38F4.IP) (Quit: victorporof)
+[20:49:38] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[20:49:38] *** ChanServ sets mode: +qo dherman dherman
+[20:54:15] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[21:03:54] *** Joins: valenting (Thunderbir@F12D0376.5025026B.FB866788.IP)
+[21:04:02] *** Quits: valenting (Thunderbir@F12D0376.5025026B.FB866788.IP) (Input/output error)
+[21:04:53] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[21:14:40] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Input/output error)
+[21:15:07] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[21:16:58] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[21:23:54] *** Quits: dbaron (dbaron@moz-C14966F9.dsl.dynamic.sonic.net) (Ping timeout)
+[21:39:21] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[21:44:45] <Ms2ger> -    pub unsafe fn as_abstract_node<N>(cx: *JSContext, node: @N) -> AbstractNode<ScriptView> {
+[21:44:45] <Ms2ger> -        // This surrenders memory management of the node!
+[21:44:46] <Ms2ger> -        let mut node = AbstractNode {
+[21:44:48] <Ms2ger> \o/
+[21:51:31] <SimonSapin> nice
+[21:57:49] <Ms2ger> Now, to figure out why Document works
+[22:01:17] <Ms2ger> ... because I was looking at the wrong code
+[22:09:20] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Input/output error)
+[22:10:32] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[22:11:42] *** Quits: emi (sunshine@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[22:21:20] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[22:29:52] *** Joins: emi (sunshine@moz-9FE842F.cpe.net.cable.rogers.com)
+[22:32:44] *** Quits: Ms2ger (Ms2ger@moz-6EEC6E4D.adsl-dyn.isp.belgacom.be) (Quit: nn)
+[22:44:11] *** Quits: dbaupp (Thunderbir@moz-EA596755.lns20.syd6.internode.on.net) (Ping timeout)
+[22:48:11] *** Joins: dbaupp (Thunderbir@moz-EA596755.lns20.syd6.internode.on.net)
+[23:01:05] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[23:06:16] *** Joins: dbaron (dbaron@moz-C14966F9.dsl.dynamic.sonic.net)
+[23:10:46] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Connection reset by peer)
+[23:11:14] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)
+[23:20:21] *** Quits: canhtak (canhtak@moz-A161DED8.wl.t.ulaval.ca) (Quit: canhtak)
+[23:21:51] *** Quits: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt) (Ping timeout)
+[23:30:41] *** Joins: canhtak (canhtak@moz-A161DED8.wl.t.ulaval.ca)
+[23:36:29] *** Joins: alex-abreu (alex@moz-7421D6C9.mc.videotron.ca)
+[23:57:55] *** Joins: marcosc (marcosc@moz-B5FEFBD3.dsl.telepac.pt)

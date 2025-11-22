@@ -1,0 +1,1202 @@
+[00:01:52] *** Quits: dherman (dherman@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: dherman)
+[00:03:11] <jack> larsberg: here's my backtrace: https://gist.github.com/metajack/8344489
+[00:03:24] *** Quits: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[00:03:54] *** Joins: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[00:04:06] <larsberg> that's in begin_unwind - are you also getting a SIGILL or segfault that's generating that backtrace?
+[00:04:36] <larsberg> that looks idential to the backtrace for the signal I had to mask / work around in mine as well (the third thing in my gist)
+[00:04:38] <jack> yes.
+[00:04:40] <jack> sigh
+[00:04:48] <jack> how did you mask that?
+[00:05:14] <larsberg> I did 'signal 0' to skip it and managed to get to the breakpoint
+[00:05:25] <larsberg> there's a way to mask certain signals as well in GDB, but it escapes me...
+[00:06:08] *** Quits: Jayflux (Jason@moz-1E3C2EFA.as13285.net) (Quit: Leaving)
+[00:07:31] <larsberg> `handle SIGILL nostop noprint ignore` hrmph, but it's still only randomly sometimes stopping at rust_fail
+[00:07:40] <larsberg> sometimes it just prints the assert and continues merrily along
+[00:07:44] <larsberg> hrmph
+[00:08:33] <jack> yeah, it just gets an illegal instruction if i signal 0
+[00:08:54] *** Joins: deokjinkim (Mibbit@B4104EBB.3CC170B1.1E14B209.IP)
+[00:09:20] <larsberg> yeah, masking it via handle every fourth/fifth time I seem to get the breakpoint hit
+[00:09:29] <jack> there we go.
+[00:09:33] <larsberg> I also got the brand-new: https://gist.github.com/larsbergstrom/8344557
+[00:09:54] <jack> SharedChan::send in window.rs:60 called by window.rs:171
+[00:10:15] <jack> so we have the same thing.
+[00:11:50] *** Joins: canhtak (canhtak@moz-DB18D73D.wl.t.ulaval.ca)
+[00:11:59] <jack> why would this be failing?
+[00:12:01] <jack> there's no @ at all
+[00:12:04] <larsberg> that seems really weird - why would Window's Drop be getting called from within the code for the one-off timer tasks?
+[00:12:13] <jack> it's JSVal and ~
+[00:12:16] <larsberg> (if your line numbers are the same as my line numbers)
+[00:12:35] <jack> jdm: ping
+[00:13:15] * jack goes to look at the old code
+[00:13:59] <jack> we used to pass inthe timer inside a Cell
+[00:14:01] <jack> and unwrap it
+[00:14:05] <jack> now we let the closure own it.
+[00:14:25] <jack> that shouldn't matter since it is destroyed post sleep
+[00:14:30] *** Joins: erickt (etryzelaar@moz-4A9FF4B2.public.wayport.net)
+[00:14:58] <jack> this code didn't change :(
+[00:19:26] <jack> i wonder if the failure is in the other side and this is just where it shows up?
+[00:19:31] *** Joins: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP)
+[00:19:31] <ghservo> [13servo] 15SimonSapin opened issue #1474: Fallback rather than crash on missing fonts 02http://git.io/2-qfqA
+[00:19:31] *** Parts: ghservo (ghservo@DE823A67.6A2AE50.F3114085.IP) ()
+[00:19:43] <jack> SimonSapin: a bug for that exists :)
+[00:19:55] <jack> larsberg: the timer proc calls script_chan.send()
+[00:19:57] <SimonSapin> oh
+[00:20:08] <SimonSapin> well it’s new with the upgrade for me
+[00:21:03] <jack> larsberg: and script_task::handle_timer_fire_msg has some unsafe code
+[00:21:12] <jack> SimonSapin: oh really?
+[00:22:07] <SimonSapin> jack: hum, maybe I had removed that package recently
+[00:22:18] <SimonSapin> but on pre-upgrade master I get this anyway: https://pastebin.mozilla.org/3967504
+[00:22:38] <SimonSapin> in a loop, several times per second
+[00:23:38] <SimonSapin> anyway, that aside, your PR works for me jack
+[00:23:42] *** Quits: erickt (etryzelaar@moz-4A9FF4B2.public.wayport.net) (Ping timeout)
+[00:23:52] <jack> SimonSapin: awesome :)
+[00:25:54] <jack> larsberg: afaict that timer handling code ins script_task didn't change either.
+[00:27:34] <jack> maybe we need special code to stay alive unti lthe timers fire?
+[00:27:48] <jack> when i got those back traces it fails immediate, then hangs for 10 seconds
+[00:28:17] <jack> i don't see anything that joins the timers.
+[00:29:42] <jack> TimerMessage_Close doesn't notify script task
+[00:30:01] <jack> so i think the timer is firing after the window destructor has run.
+[00:31:30] <jack> even Timer_TriggerExit doesn't drain the timers.
+[00:33:14] <jack> i think this may be where we have to stop using tm.sleep()
+[00:33:59] <jack> there's no way to cancel the timer. so right now it will wake up after the window is destroyed
+[00:36:05] <jack> when the timer fires, it grabs the window from the page and just tries to do stuff.
+[00:36:23] *** Quits: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[00:36:39] *** Joins: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[00:38:59] <larsberg> jack: aha! That makes perfect sense.
+[00:39:54] <larsberg> I guess the easiest thing is just not to exit script until the active one-shot timers have fired
+[00:40:40] <jack> easier said than done. or at least it's not obvious to me how to wait for that ;)
+[00:43:43] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: pcwalton)
+[00:44:06] <larsberg> hrmph, you're right - that handle is not a HANDLE. I see more channels in our future...
+[00:45:32] <larsberg> or we're just going to start giving up and using try_send instead of send in a bunch of places
+[00:46:26] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[00:47:22] *** Quits: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca) (Quit: eatkinson)
+[00:48:07] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[00:48:15] <larsberg> Oh, even try_send won't help.
+[00:48:44] <larsberg> The send's succeeding in this case (unlike most of our other failures) - like you said it's that the callback is fiddling with the already-destroyed Window
+[00:48:50] <larsberg> I should read more closely
+[00:49:17] * larsberg summons jdm
+[00:51:58] *** Quits: azita (Azita@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: azita)
+[00:57:27] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Ping timeout)
+[01:02:16] *** Joins: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca)
+[01:03:36] <larsberg> eatkinson: ping
+[01:03:47] <eatkinson> larsberg: pong
+[01:03:59] <larsberg> with regards to your earlier question about parallelizing additional passes...
+[01:04:10] <larsberg> we were waiting on landing incremental reflow to make sure that doesn't change a bunch of stuff
+[01:04:16] <larsberg> pcwalton already did most of the work to enable it
+[01:04:36] <larsberg> we're waiting on weak pointers to land from the Rust side (though we could probably do it with more dangerous transmute madness)
+[01:05:10] <larsberg> but the design for incremental reflow is pretty much what we discussed when you drove up (down?) to MTV during our workweek
+[01:07:24] <eatkinson> larsberg: sounds good. i read through the parallel and incremental code and it looks pretty cool
+[01:07:46] <eatkinson> i'd be happy to help out depending on what my workload is next semester
+[01:08:13] <larsberg> eatkinson: that would be fantastic!
+[01:08:14] <eatkinson> i figured you probably want to land a basic version of parallel layout first though
+[01:09:26] <larsberg> yeah, definitely. even with a basic version there will be lots of interesting stuff to measure, e.g., minimum subtree size before a sequential cutoff
+[01:10:05] <larsberg> and we'd like to get some more realistic examples of our parallel workload over to the Rust team to encourage them to totally overtune things for Servo's benefit }:-)
+[01:12:22] <jack> larsberg: i think we are stuck unless we can remove tm.sleep()
+[01:12:34] <eatkinson> larsberg: yeah i'd like to see how much parallelism there actually is in real pages. i haven't really been able to find a definitive answer on that
+[01:12:36] <jack> otherwise we have to sleep for small chunks, wake upa nd check if we are dead, etc
+[01:12:54] <jack> we need to use oneshot()
+[01:13:19] <jack> and select on that plus a cancel channel
+[01:14:11] <larsberg> jack: even removing tm.sleep we still crash the same way (I tried it in case there was a bug with timers)
+[01:14:32] <larsberg> eatkinson: we're interested in that as well. I'm currently running some benchmarks on page load time breakdowns, but that's next on my list
+[01:14:54] <larsberg> I'm planning to do a really rudimentary measure of the maximum sequential dependency chain
+[01:14:57] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[01:15:10] <larsberg> to give us an upper bound for "maximum achievable parallelism by Guy Steel's own runtime"
+[01:16:34] <larsberg> jack: I wonder if they have seen that SIGILL we're running into
+[01:16:54] <larsberg> it seems weird for the runtime to be randomly crashing during begin_unwind
+[01:17:50] <eatkinson> larsberg: cool i'd be interested to hear how that goes
+[01:18:38] <larsberg> eatkinson: definitely! whether the numbers are good or bad for us, we'll put them out there :-)
+[01:25:07] <jack> select! undefined macro
+[01:29:21] *** Quits: dbaupp (Thunderbir@moz-BB237A70.lns20.syd6.internode.on.net) (Ping timeout)
+[01:29:43] *** Joins: dbaupp (Thunderbir@moz-BB237A70.lns20.syd6.internode.on.net)
+[01:31:10] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[01:31:10] *** ChanServ sets mode: +o pcwalton
+[01:31:40] *** Quits: ramitos (ramitos@moz-60679625.socal.res.rr.com) (Connection reset by peer)
+[01:33:40] *** Quits: alex-abreu (alex@moz-7421D6C9.mc.videotron.ca) (Ping timeout)
+[01:36:42] *** Joins: ramitos (ramitos@moz-60679625.socal.res.rr.com)
+[01:45:29] *** Joins: alex-abreu (alex@moz-7421D6C9.mc.videotron.ca)
+[01:46:44] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[01:48:26] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[01:58:45] *** Quits: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[01:59:48] <jack> ok, switching to cancelable timers doesn't help
+[01:59:50] <jack> sigh.
+[02:00:35] *** Quits: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net) (Quit: bholley)
+[02:17:41] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[02:29:24] *** Quits: Jesse (jruderman@moz-BBE3ABD.mv.mozilla.com) (Quit: Jesse)
+[02:39:31] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: leaving)
+[02:39:36] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[02:39:37] *** ChanServ sets mode: +o brson
+[02:39:41] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: brson)
+[02:39:45] *** Joins: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net)
+[02:39:46] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[02:39:46] *** ChanServ sets mode: +o brson
+[02:39:50] *** Quits: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net) (Quit: bholley)
+[02:40:53] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: leaving)
+[02:40:57] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[02:40:58] *** ChanServ sets mode: +o brson
+[02:45:28] *** kimundi is now known as zz_kimundi
+[02:46:37] *** Quits: azakai (alon@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[02:47:01] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[02:48:47] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[02:55:25] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[03:13:15] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[03:13:16] *** ChanServ sets mode: +qo dherman dherman
+[03:16:42] <jack> ok. i've managed to narrow it down to the layout task destructor.
+[03:21:02] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Linkinus - http://linkinus.com)
+[03:23:28] *** Quits: zz_kimundi (kimundi@moz-9888D3CE.dip0.t-ipconnect.de) (Ping timeout)
+[03:26:53] *** Joins: zz_kimundi (kimundi@moz-1273C77B.dip0.t-ipconnect.de)
+[03:26:54] *** zz_kimundi is now known as kimundi
+[03:42:17] *** Joins: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net)
+[03:47:20] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[03:47:33] <jack> Some @Box must be hanging around
+[03:47:41] <jack> @Box is the only @-data we have  in layout_task
+[03:48:04] *** Quits: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net) (Quit: bholley)
+[03:48:47] <jack> the displaylist which gets sent to the render has only nod epointers.
+[03:48:52] <jack> no box pointers escape taht i can see.
+[03:49:03] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[03:49:04] <jack> so i can't figure out how there culd be some circular reference that makes them live too long
+[03:49:23] <strcat> jack: I strongly suspect it's a destructor making an @
+[03:49:26] <strcat> but I could be wrong...
+[03:49:40] <strcat> don't really know how you'd track it down
+[03:50:04] <jack> the layout task has no destructors
+[03:50:16] <jack> must be from somewhere else.
+[03:50:56] <jack> i wish there was a way to make gdb trap creating an @ after a certain place in the code.
+[03:51:14] <strcat> jack: break on local_malloc?
+[03:51:20] <strcat> the symbol is probably mangled
+[03:51:34] <strcat> but it's _Zn_342local_malloc_eaj098wu543209852094385230 something
+[03:51:43] <jack> but i need to break only on a local malloc certain point
+[03:51:47] <jack> otherwise i'll watch the whole flow tree
+[03:51:50] <jack> maybe that's not so bad.
+[03:51:55] <strcat> hm
+[03:56:05] <jack> that is possible helpful. just went through a bunch of them and i think i can make that work.
+[03:59:26] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[03:59:37] <jack> i can't find it if that's the case.
+[03:59:56] <jack> there's certainly no calls to local_malloc after the layout task starts shutting down.
+[04:02:07] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[04:02:07] *** ChanServ sets mode: +qo dherman dherman
+[04:03:26] <jack> deokjinkim, jaeman: i'm around if anyone has questions tonight.
+[04:04:00] <jack> patrickkim: ^
+[04:05:00] <jack> strcat: maybe this isn't hte task with the problem.
+[04:09:30] <jack> i am narrowing down which task it is by adding infinite loops to the ends of the blocks
+[04:12:52] <patrickkim> ok thank you jack!
+[04:13:00] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[04:17:22] *** Quits: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca) (Quit: eatkinson)
+[04:21:50] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[04:23:45] <jack> whre does it spawn to solve layout in parallel?
+[04:23:59] *** Joins: jdm (jdm@moz-AC9499B2.cable.teksavvy.com)
+[04:23:59] *** ChanServ sets mode: +o jdm
+[04:25:33] <jdm> I see timers were causing a problem in the backlog
+[04:25:49] <jack> jdm: they weren't.
+[04:25:57] <jack> test_title.html causes a SIGILL
+[04:25:58] <jdm> oh?
+[04:26:03] <jack> and two other content tests
+[04:26:12] <jack> i'm trying to track it down but not having much luck.
+[04:26:35] <jack> it appears to happen in the annihilator of the layout task.
+[04:26:40] <jack> but i'm nto even 100% sure of that.
+[04:26:45] <jdm> huh
+[04:27:32] <jack> if i put infinite loops in all the tasks at the very end, it still crashes if layout doesn't have one.
+[04:27:36] <jack> the crash goes away if i put one in layout
+[04:28:11] <jack> the instruct and a assert failure on live_allocs.is_null() happen about simultaneously
+[04:28:20] <jack> s/instruct/illegal instruction/
+[04:28:45] <jack> i can't find anything weird with @-data, so i'm not sure what it could be.
+[04:30:18] <dbaupp> isn't the illegal instruction the result of the assert failure? (The runtime uses `rtassert!()` which has to call the abort intrisic, because unwinding is impossible)
+[04:30:57] <jack> dbaupp: does the abort intrinsic generate illegal instructions?
+[04:31:04] <jack> you might be right, but i don't know.
+[04:31:14] <jack> having that SIGILL basically makes debugging this impossible.
+[04:31:33] <jack> the SIGILL trips first though
+[04:31:46] <jack> if you ignore it in gdb, you can sometimes get the rust_fail part
+[04:32:07] <jack> that points to a chan.send to the Timer task
+[04:32:13] <jack> which makes very little sense.
+[04:32:31] <jack> also it's in a different task than the one that's causing the problem afaict.
+[04:32:31] <dbaupp> yeah, I think an illegal instruction is the only thing LLVM can rely on to actually kill the program.
+[04:32:37] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[04:33:03] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[04:34:11] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[04:34:15] <jack> dbaupp: the Drop for LocalHeap uses assert! not rtassert!
+[04:35:07] <jack> https://github.com/mozilla/rust/blob/master/src/libstd/rt/local_heap.rs#L138
+[04:36:22] *** Joins: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net)
+[04:37:52] <dbaupp> jack: hm, peculiar
+[04:39:16] <jack> how do i use TRACK_ALLOCATIONS?
+[04:39:51] <dbaupp> oh, maybe because ti's calling assert!() in a non-task context, which falls back to abort()-ing
+[04:47:38] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[04:49:23] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[04:53:12] *** Quits: ato__ (ato@moz-9CC2E667.no) (Ping timeout)
+[04:53:24] *** Quits: qlkzy (qlkzy@moz-A97B5CE9.members.linode.com) (Ping timeout)
+[04:53:33] *** Quits: robertknight (robertknig@moz-DF72422D.members.linode.com) (Ping timeout)
+[04:53:33] *** Joins: ato__ (ato@moz-9CC2E667.no)
+[04:54:52] *** Joins: qlkzy (qlkzy@moz-A97B5CE9.members.linode.com)
+[04:55:30] <jack> i'm giving up for tonight.
+[04:55:53] <jack> i'll need to recompile rustc to get rtdebug
+[04:58:09] *** Joins: robertknight (robertknig@moz-DF72422D.members.linode.com)
+[05:14:21] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[05:17:40] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[05:26:38] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[05:36:56] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Quit: Leaving)
+[05:36:58] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[05:36:58] <ghservo> [13servo] 15ksh8281 opened pull request #1475: fix line-height, implement <br> (06master...06line_height_br) 02http://git.io/-j_5GA
+[05:36:58] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[05:37:31] <patrickkim> jack : ping
+[05:45:35] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[05:45:35] *** ChanServ sets mode: +qo dherman dherman
+[05:45:40] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[05:47:09] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[05:47:57] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[05:49:39] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[05:50:11] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[05:50:14] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[05:52:43] *** Quits: hoverbear (hoverbear@moz-86FCBF4B.gv.shawcable.net) (Quit: Taking a nap.)
+[05:57:49] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[05:59:27] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[06:01:20] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[06:01:20] *** ChanServ sets mode: +qo dherman dherman
+[06:15:07] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[06:23:29] *** Joins: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca)
+[06:24:08] *** Quits: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca) (Input/output error)
+[06:25:58] *** Quits: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net) (Quit: bholley)
+[06:26:25] *** Joins: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net)
+[06:26:31] *** Quits: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net) (Quit: bholley)
+[06:32:37] *** Quits: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net) (Connection reset by peer)
+[06:33:52] *** Quits: canhtak (canhtak@moz-DB18D73D.wl.t.ulaval.ca) (Quit: canhtak)
+[06:42:42] *** Joins: sedman_ (sedman@E4D2F0A.47298EC7.57E8EAD3.IP)
+[06:48:15] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[06:50:00] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[06:58:42] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[06:58:45] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[07:01:57] *** Joins: six600110 (six600110@moz-C663577C.hsd1.il.comcast.net)
+[07:02:19] *** Quits: six600110 (six600110@moz-C663577C.hsd1.il.comcast.net) (Client exited)
+[07:04:48] *** Quits: jdm (jdm@moz-AC9499B2.cable.teksavvy.com) (Ping timeout)
+[07:13:53] *** Quits: ibnc (ibnc@moz-718F3037.client.mchsi.com) (Client exited)
+[07:14:14] *** Joins: ibnc (ibnc@moz-718F3037.client.mchsi.com)
+[07:15:54] *** Quits: ibnc (ibnc@moz-718F3037.client.mchsi.com) (Ping timeout)
+[07:21:46] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[07:31:44] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[07:31:44] *** ChanServ sets mode: +o pcwalton
+[07:32:23] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[07:37:11] *** Joins: Ms2ger (Ms2ger@D324D80C.3387515C.187A1082.IP)
+[07:44:50] *** Joins: sammykim (sammy.kim@5AB4884B.FCC4549.14D5B978.IP)
+[07:48:31] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[07:50:21] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[07:59:12] *** Quits: sammykim (sammy.kim@5AB4884B.FCC4549.14D5B978.IP) (Quit: Lost terminal)
+[08:07:14] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[08:08:22] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: leaving)
+[08:08:25] *** Joins: Kostic (marko@moz-21B247D3.mbb.telenor.rs)
+[08:15:17] *** Quits: Kostic (marko@moz-21B247D3.mbb.telenor.rs) (Ping timeout)
+[08:29:45] *** Joins: Afuna (sid21127@moz-31ABA2C0.irccloud.com)
+[08:31:08] *** Quits: deokjinkim (Mibbit@B4104EBB.3CC170B1.1E14B209.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[08:49:03] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[08:50:48] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[08:52:23] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[09:05:37] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[09:13:12] *** Joins: Debloper (debloper@moz-88FF8AE8.redhat.com)
+[09:14:54] *** Quits: eholk (eholk@moz-58C5EE6F.wavecable.com) (Ping timeout)
+[09:19:12] *** Joins: eholk (eholk@moz-58C5EE6F.wavecable.com)
+[09:31:50] *** Quits: eholk (eholk@moz-58C5EE6F.wavecable.com) (Ping timeout)
+[09:32:36] *** Joins: eholk (eholk@moz-58C5EE6F.wavecable.com)
+[09:40:26] *** Quits: eholk (eholk@moz-58C5EE6F.wavecable.com) (Ping timeout)
+[09:41:19] *** Joins: eholk (eholk@moz-58C5EE6F.wavecable.com)
+[09:44:33] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Client exited)
+[09:49:40] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[09:51:23] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[10:21:36] *** Joins: patrickkim_ (Mibbit@93E02D7B.BACDE851.97B9B372.IP)
+[10:27:15] *** Joins: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP)
+[10:27:15] <ghservo> [13servo] 15ksh8281 closed pull request #1475: fix line-height, implement <br> (06master...06line_height_br) 02http://git.io/-j_5GA
+[10:27:15] *** Parts: ghservo (ghservo@C8693FCB.6A2AE50.F3114085.IP) ()
+[10:47:07] *** Quits: silverroots (uid10556@moz-31ABA2C0.irccloud.com) (Quit: )
+[10:50:00] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[10:51:44] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[11:07:48] * Ms2ger wonders what's up with the upgrade
+[11:15:55] <SimonSapin> Ms2ger: I suppose the pull request needs review?
+[11:17:55] <Ms2ger> A pr, excellent
+[11:18:11] *** Joins: jackneill (jackneill@moz-5CBC0CBA.pool.digikabel.hu)
+[11:27:33] *** Quits: patrickkim_ (Mibbit@93E02D7B.BACDE851.97B9B372.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[11:31:17] *** Quits: kanru (kanru@moz-99690620.hinet-ip.hinet.net) (Input/output error)
+[11:37:37] *** Quits: Houm (Houm@moz-25669AA8.fbx.proxad.net) (Ping timeout)
+[11:46:57] *** Quits: sedman_ (sedman@E4D2F0A.47298EC7.57E8EAD3.IP) (Ping timeout)
+[11:50:16] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[11:51:13] <larsberg> Ms2ger: on the ugprade, jack and I have been looking at a SIGILL while running the content tests. Other than that, it appears clear to land (passes ref tests, builds targeting android, the ad-hoc tests of pages seem to work)
+[11:51:57] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[11:59:16] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[12:02:12] *** Joins: Houm (Houm@moz-25669AA8.fbx.proxad.net)
+[12:08:33] *** Joins: ibnc (ibnc@moz-718F3037.client.mchsi.com)
+[12:10:13] *** Quits: ibnc (ibnc@moz-718F3037.client.mchsi.com) (Ping timeout)
+[12:18:54] *** Joins: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP)
+[12:32:35] *** Joins: canhtak (canhtak@moz-DB18D73D.wl.t.ulaval.ca)
+[12:33:42] *** Quits: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP) (Quit: Kostic)
+[12:40:14] *** Joins: ibnc (ibnc@moz-718F3037.client.mchsi.com)
+[12:42:00] *** Quits: ibnc (ibnc@moz-718F3037.client.mchsi.com) (Ping timeout)
+[12:50:36] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[12:52:21] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[13:09:37] *** Joins: jdm (jdm@moz-AC9499B2.cable.teksavvy.com)
+[13:09:37] *** ChanServ sets mode: +o jdm
+[13:32:50] *** Quits: Debloper (debloper@moz-88FF8AE8.redhat.com) (Quit: Leaving.)
+[13:47:18] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[13:49:14] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Ping timeout)
+[13:51:03] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[13:52:44] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[13:55:10] *** Joins: ahal (ahal@moz-7DE89BF0.cable.teksavvy.com)
+[14:11:02] *** bhearsum|afk is now known as bhearsum
+[14:17:03] *** Joins: hoverbear (hoverbear@moz-86FCBF4B.gv.shawcable.net)
+[14:33:19] *** Joins: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP)
+[14:33:19] <ghservo> [13servo] 15kworr opened issue #1476: Building on FreeBSD stalls on rust compilation. 02http://git.io/SoEXtw
+[14:33:19] *** Parts: ghservo (ghservo@F6EE6DE3.6A2AE50.F3114085.IP) ()
+[14:40:12] *** Joins: ibnc (ibnc@moz-718F3037.client.mchsi.com)
+[14:41:59] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[14:41:59] *** ChanServ sets mode: +qo dherman dherman
+[14:51:21] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[14:53:06] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[14:55:29] *** Quits: jdm (jdm@moz-AC9499B2.cable.teksavvy.com) (Quit: Lost terminal)
+[15:25:59] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[15:27:09] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[15:27:09] *** ChanServ sets mode: +qo dherman dherman
+[15:30:26] <jack> larsberg: i'm hoping you figured it all out while i was asleep :)
+[15:31:19] <larsberg> jack: well, plan B is getting more sleep while I keep playing with it :-) I was hoping the same when I was reading the backscroll this morning :-)
+[15:31:59] <larsberg> do you happen to remember if this only happened once you cherry-picked the debug-info patch?
+[15:32:24] <larsberg> I thought we weren't seeing this before changing Rusts again, though I don' t know if you picked up more stuff after the -refcell branch before the cherry-pick
+[15:33:52] <jack> i'm sure we had this in most versions
+[15:34:21] <jack> but to be honest i wasn't paying attention. i suppose you could try without debug info and see if that fixes it.
+[15:34:46] <larsberg> I'll give it a go
+[15:35:01] <larsberg> I hadn't seen it when I was doing the initial testing of content tests
+[15:36:11] <jack> maybe cmr will bisect it for us :) or at least go backwards until it stops working
+[15:36:17] <jack> er, starts
+[15:36:51] <cmr> if it involves changes to the servo codebase I won't have time for that until the weekend
+[15:37:27] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[15:37:27] <jack> i figured you can just run backwards and see if it fixes it or until the syntax breaks.
+[15:37:43] <jack> i think there is a pretty large window.
+[15:38:45] <cmr> I can look into it in 2 hours
+[15:40:34] *** Quits: ibnc (ibnc@moz-718F3037.client.mchsi.com) (Client exited)
+[15:40:56] *** Joins: ibnc (ibnc@moz-718F3037.client.mchsi.com)
+[15:41:31] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[15:42:38] *** Quits: ibnc (ibnc@moz-718F3037.client.mchsi.com) (Ping timeout)
+[15:51:54] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[15:53:37] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[15:55:34] *** Joins: jdm (jdm@13F2CEC5.7672369.D8E68FF6.IP)
+[15:55:34] *** ChanServ sets mode: +o jdm
+[16:00:26] <larsberg> jack: thankfully, still get the error when compiling servo w/o any debug-info
+[16:08:47] <jack> yes. "thankfully"
+[16:09:16] *** Quits: canhtak (canhtak@moz-DB18D73D.wl.t.ulaval.ca) (Quit: canhtak)
+[16:09:22] <jack> i'm going to try recompiling rust with --cfg rtdebug and see if TRACK_ALLOCATIONS is helpful
+[16:09:52] <jack> so far the only thing that's given me any info at all is adding `loop {}` to the ends of tasks to preventt he annihilator running
+[16:10:15] <jack> if you only add that to layout, it stops the crashing.
+[16:10:23] <jack> if all others have that but not layout, it still crashes.
+[16:10:33] *** Joins: canhtak (canhtak@moz-DB18D73D.wl.t.ulaval.ca)
+[16:11:10] <larsberg> so the theory is that there's something allocated in layout that we've handed off to somebody else that has an @ that isn't being sent back for destruction before layout shuts down?
+[16:11:46] *** Joins: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP)
+[16:12:02] <jack> as far as i can tell, live_allocs is the list of local_heap allocations (@-boxes) for the current task.
+[16:12:15] <jack> and when the annhilator runs i think it reduces the refcount on all the @-boxes
+[16:12:24] <jack> anything that goes to 0 is removed from the list
+[16:12:42] <jack> then the Drop logic for the local_heap as an assert to verify the heap is empty
+[16:13:01] <jack> so basically some @-box is outliving the local_heap
+[16:13:08] <jack> which could be because there is a cycle
+[16:13:21] <jack> or because we handed it off to another task which is refcounting it.
+[16:13:28] *** Joins: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net)
+[16:13:41] <jack> i did a sort of audit of the layout code and the only @-box we use is @Flow
+[16:13:46] <jack> sorry
+[16:13:47] <jack> @Box
+[16:13:56] <larsberg> yeah, the only thing I can think of is the layout data hanging out in the DOM nodes, but pcwalton added all of the reap_layout_data / reap_dead_layout_data stuff
+[16:13:57] <jack> these are never given to renderer
+[16:14:20] <jack> the LayoutData struct doesn't contain @-boxes that i could see.
+[16:14:43] <jack> and that all seems to get freed ok.
+[16:15:17] <jack> basically what happens is the script task sends layout a node and asks layout to free the memory. layout transmutes the opaque poitner to Option<~LayoutData> and then sets it to None
+[16:15:23] <jack> which destroys ~LayoutData
+[16:16:05] <jack> one thing i tried last night at strcat's suggestion was to run nm on servo to find local_malloc symbol and break on that
+[16:16:15] <jack> then i ran through looking for weird ones
+[16:16:31] <jack> there aren't that many in layout, but they call seemed fine.
+[16:17:02] <jack> but i think i'm at the end of what is possible to do without adding debugging to the rust runtime.
+[16:17:16] <jack> what would be nice is to get a memory dump of the local heap to see what is actually on it.
+[16:17:27] <jack> is it a Flow?
+[16:17:32] <jack> or is the local_heap corrupted?
+[16:17:37] <jack> sorry, Box
+[16:18:21] <larsberg> if the allocated addresses are stable (which they probably aren't...) you could even set a memory breakpoint for when we first touch the memory associated with the thing that's in the local_heap to see the callstack of its allocation
+[16:19:10] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[16:23:43] *** Joins: ibnc (ibnc@moz-718F3037.client.mchsi.com)
+[16:26:12] <larsberg> jack: do you know if there's an easy way to just rebuild libstd for the rust in the servo tree?
+[16:27:37] <jack> there's a target for it
+[16:27:43] *** Quits: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net) (Ping timeout)
+[16:27:56] <jack> you could do RUSTFLAGS="--cfg rtdebug" make stage2-std
+[16:28:05] <jack> or some incantation like that
+[16:28:21] <jack> or maybeit's std-stage2
+[16:28:36] <jack> i get confused because the test targets are named backwards from the regular ones
+[16:31:10] *** Joins: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca)
+[16:31:41] *** Joins: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net)
+[16:31:43] *** Quits: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[16:35:01] *** Quits: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP) (Quit: Kostic)
+[16:37:02] <larsberg> thanks, yeah, the test version is 'make check-stage2-std'
+[16:38:44] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse)
+[16:43:09] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)
+[16:46:02] <jack> running the compiler with rtdebug is annoying.
+[16:51:31] <jack> kmc: do you remember how to use TRACK_ALLOCATIONS?
+[16:52:15] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[16:52:50] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[16:52:50] *** ChanServ sets mode: +qo dherman dherman
+[16:54:01] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[16:56:42] * Ms2ger idly wonders if Seneca would be interested to work on Servo
+[17:00:11] <jdm> interesting idea
+[17:00:25] <jdm> david humphries is certainly aware of it
+[17:00:57] <jdm> less of a "boom, your work shipped to 500 million people" effect for the students
+[17:01:37] *** Joins: azita (Azita@moz-BBE3ABD.mv.mozilla.com)
+[17:03:19] <jgraham> "boom your work shipped to 5 mozilla employees"
+[17:05:24] <Ms2ger> And a volunteer!
+[17:05:56] *** jdm is now known as jdm|f00ding
+[17:07:52] <jgraham> And a robot you mean?
+[17:10:43] <larsberg> jack: ooooh, I've learned that there is one alloc remaining in the local_allocs
+[17:10:54] <larsberg> I added some debugging code in place of the assert about local_heap
+[17:11:32] <jack> yay for more info
+[17:11:36] <jack> any idea what it is?
+[17:12:06] <larsberg> not yet
+[17:12:21] <larsberg> do you know how to back-solve for what type of data something is from the rust in-memory representation?
+[17:12:40] <jack> ask acrichto maybe?
+[17:13:19] <larsberg> will do. lemme see if I can reliably get it to break on that line in the debugger so I can inspect the memory more closely
+[17:14:05] <Ms2ger> jgraham, voluntary robot, alright
+[17:15:30] *** Joins: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net)
+[17:21:06] <jack> larsberg: can you gist your diff for local_heap.rs?
+[17:21:18] <jack> i think if i can figure it out by trapping local_malloc
+[17:21:22] <jack> an then comoparing at the end.
+[17:21:59] <larsberg> https://gist.github.com/larsbergstrom/8358495
+[17:22:40] <larsberg> yeah, I was thinking of adding some additional debugging info on each allocation (the address + some kind of index) to see if there's anything stable I can use as a breakpoint for a second run
+[17:23:05] <larsberg> but I'll have to make it check an environment variable or I'll get all that debug spew as it rebuilds rust three times :-)
+[17:24:37] <larsberg> oh, I bet the rtabort! is coming from the destructor for the MemoryRegion
+[17:24:46] <larsberg> on line 286
+[17:28:58] <jack> yeah, that looks possible.
+[17:29:14] <jack> crap. i just realized i'm building on the wrong platform.
+[17:32:39] *** Quits: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net) (Ping timeout)
+[17:46:15] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[17:46:16] *** ChanServ sets mode: +o brson
+[17:50:20] *** jdm|f00ding is now known as jdm
+[17:50:44] *** Joins: azakai (alon@moz-BBE3ABD.mv.mozilla.com)
+[17:51:10] *** Joins: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca)
+[17:51:56] * jack hopes pcwalton has some better ideas for making progress
+[17:52:22] <cmr> jack: I'm finishing up some homework, should be able to do whatever it was you wanted in a half hour
+[17:52:43] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[17:53:47] <jack> cmr: no worries.
+[17:54:26] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[17:56:04] <larsberg> jack: it's only @ we care about, right, not MutexArc or Rc<RefCell<T>>?
+[17:56:30] <jack> afaik @ is hte only thing on the local_heap
+[18:02:23] *** Joins: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP)
+[18:02:30] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[18:02:30] *** ChanServ sets mode: +o pcwalton
+[18:05:18] *** Joins: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net)
+[18:05:45] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[18:05:48] <jack> pcwalton: we're blocked on the upgrade because three of the content tests are causing runtime aborts
+[18:05:57] <jack> pcwalton: your help would be appreciated tracking it down
+[18:06:06] <jack> seems like local_heap is non-empty when layout task finalizes.
+[18:06:07] <pcwalton> hmm, that's not my area of expertise but I can help
+[18:06:11] <pcwalton> oh, ok
+[18:06:46] <pcwalton> let me get into the office real quick and then I'll get on that
+[18:09:07] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[18:09:07] *** ChanServ sets mode: +o brson
+[18:24:27] *** Quits: victorporof (victorporo@5EC92F85.71368607.9B1E38F4.IP) (Quit: victorporof)
+[18:28:09] *** Quits: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca) (Ping timeout)
+[18:28:47] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[18:30:40] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[18:35:58] *** Quits: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP) (Client exited)
+[18:38:46] *** Quits: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP) (Quit: No Ping reply in 180 seconds.)
+[18:38:57] *** Joins: jst (quassel@CB36FB4D.BE63433B.EE6E63A5.IP)
+[18:45:04] *** Quits: azita (Azita@moz-BBE3ABD.mv.mozilla.com) (Quit: azita)
+[18:53:13] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[18:54:57] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[19:03:38] *** Joins: dbaron (dbaron@moz-A9D01D68.dsl.dynamic.sonic.net)
+[19:05:28] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: leaving)
+[19:05:32] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[19:05:32] *** ChanServ sets mode: +o brson
+[19:08:07] <larsberg> Well, the leaked value has to be from one of the following three places, as they're the only ones from layout_task that call local_alloc: https://gist.github.com/larsbergstrom/8360510
+[19:11:46] <abinader> anyone has plans to implement DOMImplementation.webidl ?
+[19:14:48] <Ms2ger> Not afaik
+[19:17:28] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[19:17:28] *** ChanServ sets mode: +o pcwalton
+[19:19:46] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[19:19:48] <pcwalton> jack: same branch?
+[19:20:33] <abinader> Ms2ger: I guess that'll be my next step then :-)
+[19:20:45] <abinader> Ms2ger: btw, I'm almost finished w/ the patch review on node's replaceChild
+[19:21:13] <abinader> finishing a good test case for https://critic.hoppipolla.co.uk/showcomment?chain=1113
+[19:21:37] <jack> pcwalton metajack/rustup-20131219
+[19:21:49] <pcwalton> ok. investigating now :)
+[19:22:22] <jack> what? why i spush_back allocating?
+[19:22:34] <pcwalton> for vectors?
+[19:22:39] <pcwalton> push_back could resize the vector
+[19:23:05] <jack> part of hte problem is we dont' understand why *anything* would be on the local heap
+[19:23:23] <pcwalton> no @? perhaps it's that something was not Send
+[19:23:32] <pcwalton> or rather
+[19:23:36] <pcwalton> contains_managed returned true
+[19:23:43] <jack> when does that happen?
+[19:23:55] <pcwalton> if the type system says it could contain a managed pointer
+[19:24:09] <pcwalton> easiest way is to probably break in "malloc"
+[19:24:14] <pcwalton> the local malloc
+[19:24:41] <jack> that's what lars did above.
+[19:24:55] <pcwalton> ah, did it not turn up anything?
+[19:26:46] <pcwalton> if not, I guess put a watchpoint on the count of local allocations
+[19:26:58] <jack>         let mut flow = ~BlockFlow::from_box(base, box_) as ~Flow:;
+[19:27:02] <jack> that allocates on localheap
+[19:27:25] <pcwalton> oh right, doh
+[19:27:45] <larsberg> I'm instrumenting my runtime righ tnow to spit out the address of the result of the local alloc and I figured out some cheesy gdb automation that dumps the backtrace. after that all compiles and runs, I should at least know where the thing was allocated
+[19:27:46] <pcwalton> hmmm
+[19:27:51] <jack>         match *layout_data_ref.get() {
+[19:27:55] <jack> taht allocates on local heap
+[19:28:05] * pcwalton is confused as to why "as ~Flow" is allocating at all
+[19:28:12] <pcwalton> maybe it's BlockFlow that's allocating on the local heap
+[19:28:15] <jack> why would MutRef.get()  allocate?
+[19:28:19] <pcwalton> it shouldn't
+[19:28:44] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[19:29:28] <jack>  mut_base(self).children.push_back(new_child)
+[19:29:32] <jack> that's the third one.
+[19:30:18] <jack> we cna't find any @-data in lyaout anymore.
+[19:30:34] <pcwalton> ok, my best guess that "~Flow:" is considered @ data
+[19:30:34] <jack> there is an old box iterator that is unused though the dead_code warning doesn't fire for it.
+[19:30:37] <pcwalton> and infects everything
+[19:30:45] <pcwalton> we need to remove the : there
+[19:30:55] <jack> i assume the : is there for a good reason :)
+[19:30:57] <pcwalton> I think that ~Flow: is not Send and therefore it could contain managed according to the type system
+[19:31:08] <pcwalton> I think it was there because Flows *used* to contain @
+[19:31:10] <pcwalton> and so I needed that
+[19:31:12] <pcwalton> but not anymore
+[19:31:16] <jack> but let's say tha'ts the case. flows aren't cyclic, so why do we leak?
+[19:32:12] <pcwalton> is the box annihilator not running?
+[19:32:50] <jack> the thing that's causing the failure is Drop for LocalHeap
+[19:33:10] <jack> which is just: assert!(self.live_allocs.is_null())
+[19:33:15] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[19:34:14] <pcwalton> yeah
+[19:34:22] <pcwalton> it's asserting that the box annihilator killed everything
+[19:34:34] <pcwalton> I'm confused as to why the box annihilator didn't pick everything up
+[19:35:34] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[19:35:56] <jack> pcwalton: now you're with us. :)
+[19:36:15] <pcwalton> well, we can probably fix it by just removing the :
+[19:36:19] <jack> we've been trying to figure that out since last night. so we though we'd try figuring out what was left to clean up
+[19:36:21] <pcwalton> assuming that compiles
+[19:36:23] <jack> and maybe reasoning from there
+[19:36:31] <jack> pcwalton: i'm testing that hypothesis now
+[19:38:05] *** Quits: dbaron (dbaron@moz-A9D01D68.dsl.dynamic.sonic.net) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[19:42:12] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Ping timeout)
+[19:42:49] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[19:42:49] *** ChanServ sets mode: +qo dherman dherman
+[19:51:18] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[19:53:48] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[19:55:34] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[19:56:30] <pcwalton> brb, lunch
+[19:58:06] *** Quits: alex-abreu (alex@moz-7421D6C9.mc.videotron.ca) (Ping timeout)
+[19:59:16] <larsberg> jack, pcwalton: it's not the Flow: allocation, it's returned for initialize_layout_data
+[19:59:28] <larsberg> (I just got my franken-runtime + debugger scripts working)
+[20:01:03] <larsberg> it's the fifth one allocated in that run
+[20:01:21] <larsberg> on the content/test_title.html page
+[20:07:43] <jack> it fixes it on linux for me.
+[20:08:31] <larsberg> well, I'm not going to complain if it lets the Rust upgrade land :-)
+[20:10:08] <larsberg> but I certainly wonder why removing that would cause us to no longer leak the layout_data
+[20:10:19] <jack> i'm also curious.
+[20:10:23] <jack> maybe it's a bug in rustc.
+[20:11:38] *** Joins: alex-abreu (alex@moz-7421D6C9.mc.videotron.ca)
+[20:12:48] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[20:15:33] <jack> larsberg: which allocation stack trace is the one that leaked?
+[20:16:01] <larsberg> the third one in the gist: https://gist.github.com/larsbergstrom/8360510
+[20:16:49] <abinader> Ms2ger: do you know a clever way to create doctype elements w/o document.implementation atm?
+[20:17:36] <Ms2ger> From the parser?
+[20:17:38] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[20:20:09] <larsberg> jack: I'm going to try dumping the debug info for the node to see if it's enlightening
+[20:20:12] <abinader> Ms2ger: yep!
+[20:20:56] <jack> oh man.
+[20:21:04] <jack> the crash seems to be gone, but we still hang.
+[20:21:07] * jack hits head on desk
+[20:21:24] <larsberg> if the hang is in the timer task, I was seeing that before we started getting the crash
+[20:21:35] <larsberg> (if you just hook it up in gdb and break)
+[20:21:56] <larsberg> does it also eventually finish but take a longggggg while and then give a send on chan err?
+[20:22:08] <jack> how long is long?
+[20:22:20] <larsberg> not horribly long, like a minute
+[20:22:55] <abinader> Ms2ger: nevermind, "new DocumentType()" works :D
+[20:23:28] <Ms2ger> ... It does?
+[20:23:42] <abinader> should be an illegal constructor, but at this point it fulfills the test purpose
+[20:23:52] <Ms2ger> File an issue to remove it, please
+[20:24:10] <abinader> yep
+[20:25:56] <jack> task '<unnamed>' failed at 'sending on a closed channel', /Users/jack/src/servo/src/compiler/rust/src/libstd/comm/mod.rs:635
+[20:26:00] <jack> running test_title.html now
+[20:26:06] <jack> which triggers a fatal runtime error too
+[20:26:26] <jack> 4 content tests now fail.
+[20:26:28] <jack> *sigh*
+[20:27:50] <abinader> Ms2ger: actually it doesn't work, console outputs nothing after the line I call "new DocumentType()"
+[20:28:10] <abinader> so probably is just an error message that's missing
+[20:28:28] <Ms2ger> Ah, probably
+[20:28:38] <Ms2ger> I bet it has an XXXjdm too
+[20:33:00] <abinader> Ms2ger: ok, so I guess I'll probably need document.implementation.createDocumentType to have step 6.3 of ReplaceChild() properly tested
+[20:33:50] <jdm> ha
+[20:34:02] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[20:34:14] <jack> sporadic segfault on linux. constant abort on os x.
+[20:34:45] <larsberg> jack: the type of the html node that has associated data that's being leaked is a text node
+[20:35:03] <larsberg> if you'd prefer, I can shelve this and look at your updates to see if I can track down that segfault / abort
+[20:35:26] <jack> larsberg: you seem to be making progress so keep going. i'll dig a little farther on this first
+[20:35:48] <Ms2ger> abinader, I think you can use document.firstChild
+[20:36:02] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[20:36:12] <jack> the send is in reap_dead_layotu_data from the script task
+[20:36:16] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[20:36:36] <jack> odd that the layout_chan would already be dead.
+[20:36:39] <Ms2ger> Also feel free to implement Document.doctype :)
+[20:36:46] *** Quits: hoverbear (hoverbear@moz-86FCBF4B.gv.shawcable.net) (Quit: Taking a nap.)
+[20:36:51] <abinader> Ms2ger: :D
+[20:36:51] *** Joins: hoverbear (hoverbear@moz-86FCBF4B.gv.shawcable.net)
+[20:37:02] <abinader> lemme try the firstChild first
+[20:37:50] <larsberg> the content tests are a weird case because they all immediately call window.close() from javascript, often before we've even finished laying out the page, which is a totally different shutdown path than normal
+[20:39:30] <jack> stupid race condition
+[20:39:37] <jack> we send all the reap messages but don't wait for them to reap.
+[20:39:48] <jack> then we send exit now
+[20:40:02] <jack> but actually that should be fine if the thing processes messages in-order.
+[20:40:11] <larsberg> lol! good catch - time for yet another "call me back when you're done" callback, I guess...
+[20:42:08] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[20:42:52] <abinader> Ms2ger: indeed, is_a(document.firstChild, DocumentType); returns true after I added <!doctype html> as first line, as expected :-)
+[20:42:52] <larsberg> you're right - those should all be in sequential order in the message queue (a pile of Reaps and then the Exit)
+[20:43:24] <Ms2ger> Good :)
+[20:44:56] <jack> one comes in after exit now though
+[20:45:00] <jack> or ather, at least one does.
+[20:45:08] <jack> i'll have to figure out who's sending it.
+[20:46:53] <larsberg> I bet it's the Drop for a random node that was hanging around for some reason
+[20:47:10] <larsberg> like it's some garbage node we don't have in the tree anymore (due to a remove)
+[20:47:17] <larsberg> and the JS GC kills it
+[20:47:26] <larsberg> and then we get the reap message after we've torn it all down
+[20:47:31] <jack> nothing calls reap but script_task afaik.
+[20:47:35] <jack> will double check that.
+[20:47:36] <larsberg> that spidermonkey; always late to the party...
+[20:47:40] <larsberg> node::Drop does
+[20:48:29] <cmr> jack: alright, what's up?
+[20:49:00] <jack> cmr: not sure if it's still a useful thing to do. lars is still looking at it but we found a workaround.
+[20:49:07] <cmr> ok
+[20:49:35] <larsberg> jack: if what you're seeing is correct, that random lingering drop is probably what was causing our local_allocs bug, too
+[20:49:54] <larsberg> and maybe something about less alloc pressure changed the timing of something (e.g., the JS GC gets called and reaps the data before we tear down layout)
+[20:50:37] <jack> oh you're right.
+[20:50:43] <jack> Drop for Node does reap too
+[20:50:54] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[20:51:44] <jack> this is starting to converge on a transmute error.
+[20:51:53] <jack> because the reaping should set the node's LayoutData to None
+[20:52:53] <larsberg> do you think we're reaping a node twice?
+[20:52:56] <jack> one node
+[20:53:02] <jack> we call reap twice always
+[20:53:09] <jack> but reap checks is LayoutData is_some()
+[20:53:12] <jack> oh
+[20:53:13] <jack> duh
+[20:53:22] <jack> how in the world is that safe?
+[20:53:24] <larsberg> I was under the impression it's just getting reaped late by the JS GC because it's not in the tree anymore
+[20:53:33] <jack> LayoutData is mutating from a nother task and there's no lock.
+[20:53:55] <jack> so when script shuts down it tries to reap everything then shut down layout
+[20:54:16] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[20:54:20] <jack> when script task finishes shutdown, it triggers dtors for Nodes
+[20:54:23] <jack> which call reap again.
+[20:54:29] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[20:54:37] <jack> they check if they are reaped or not
+[20:54:45] <jack> but that seems unlikely to work reliably
+[20:54:58] <jack> but the layout task should be down when this check happens
+[20:55:15] <jack> so the question is, why are we reaping in the dtor?
+[20:55:17] <jack> pcwalton: ^
+[20:55:29] <larsberg> JS GC?
+[20:55:58] <larsberg> otherwise we'd have to do it on node::remove(), right?
+[20:55:59] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[20:56:25] <jack> yeah
+[20:56:56] <jack> i think that we shouldnt' be doing reap not in Node::drop
+[20:57:08] <jack> so shut_down_layout is probably wrong
+[20:57:25] <jack> but it's hard to know when layout can shut down
+[20:57:32] <larsberg> so instead we should release pointers to the node tree, call the JS gc, and then send layout a shutdown message?
+[20:57:52] <jack> assuming such a thing is possible.
+[20:58:00] <jack> it's still a bug that one node is reaped twice.
+[20:58:04] <larsberg> I'm blindly hand-waving over my ignorance of spidermonkey
+[20:58:07] <jack> so there are multiple problems here.
+[20:58:17] <jack> becuase ocne the nodes are reaped, calling reap again is supposed to be a no-op
+[20:58:21] <jack> but currently it still fires.
+[20:58:28] <larsberg> I assume the double-reap would go away if we remove the race condition by waiting for a return from ExitNowMsg
+[20:58:28] <jack> i wonder if there is a node not in the tree
+[20:58:46] <larsberg> yes, the text node "starting title"
+[20:58:48] *** jdm is now known as jdm|away
+[20:58:51] <larsberg> we set the title to a new value
+[20:58:55] <jack> ah
+[20:58:58] <jack> the old title!
+[20:59:00] <larsberg> which abandons the old one
+[20:59:01] <jack> i bet that's it.
+[20:59:05] <jdm|away> jack: reaping from node::drop sounds important
+[20:59:10] <larsberg> and is consistent with what I'm seeing with a leaked TextNode's layout data
+[20:59:18] <jack> so the old title gets reaped after layout is gone.
+[20:59:20] <jack> and boom
+[20:59:24] <larsberg> yup
+[20:59:29] <jack> which fits with your "it's a text node" theory
+[20:59:42] <jack> er.. s/theory/evidence/
+[20:59:50] <larsberg> :-)
+[20:59:54] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[21:00:04] <jdm|away> and yes, there would be no reason for the destructor to run before the GC
+[21:00:13] <jdm|away> which happens when tearing down the jscontext
+[21:00:24] <jdm|away> the destructor for the old title content, that is
+[21:00:31] <larsberg> jdm|away: the problem we're having is that this drop is getting called *after* the layout task has exited
+[21:00:43] <larsberg> so it either crashes with live_allocs because the data hasn't been reaped
+[21:00:44] <jack> jdm: how do we force that to happen before we shut down layout?
+[21:00:59] <larsberg> or we get a crash trying to send a message to the layout task channel, which is broken
+[21:00:59] <jdm|away> jack: set the js_info member to None in a place in script task that makes sense
+[21:01:12] <jack> currently we call shut_down_layout from handle_exit_pipeline_msg
+[21:01:40] * jdm|away feels like he actually discussed this problem with patrick in suwon
+[21:02:01] <jdm|away> but yeah, clear js_info before shutting down layout
+[21:02:30] <jdm|away> and as long as the @JSContext destructor runs, a GC should occur
+[21:02:52] <jack> ok. those both go away immediately. so probably setting none in shut_down_layout is fine.
+[21:03:53] * jdm|away is actually away now
+[21:04:33] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[21:04:49] <larsberg> fantastic!
+[21:04:50] <jack> we can't do this.
+[21:04:58] <larsberg> I think we might still need to wait for ExitMsg thing to return
+[21:05:02] <jack> script_task has _multiple_ layouts.
+[21:05:12] <jack> it might be in several pipelines.
+[21:05:29] <jack> oh
+[21:05:29] <jack> nnm
+[21:05:32] <jack> Page.js_info :)
+[21:05:36] <jack> problem solved
+[21:05:46] <larsberg> :-)
+[21:06:24] <jack> i wonder why we didn't hit this before
+[21:07:02] <jack> that did not trigger js_gc
+[21:07:43] <jack> i can kill the frame too
+[21:12:00] <jack> when does the dtor run when you set Option<~Foo> to None? immediately? end of the current block?
+[21:14:00] *** Quits: bholley (bholley@moz-A2189431.hsd1.ca.comcast.net) (Quit: bholley)
+[21:14:22] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[21:14:44] <jack> i guess something else is keeping JSPageInfo alive.
+[21:16:06] <jack> there don't seem to be any dtors on the script structures
+[21:16:32] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[21:16:45] <larsberg> jack: immediately from what I can tell: https://gist.github.com/larsbergstrom/8362762
+[21:19:08] * jack tries to figure out what's keeping JS context alive
+[21:21:31] <jack> ok. Cx isi dropping, but nodes aren't being collected until later.
+[21:22:19] *** Joins: valenting (Thunderbir@23EF5095.ECBF5C84.FB866788.IP)
+[21:23:53] *** Joins: khodzha (khodzha@58A7E199.A859D9FD.CA6E2165.IP)
+[21:23:54] *** Quits: khodzha1 (khodzha@DBBBFFE1.3E410295.CA6E2165.IP) (Ping timeout)
+[21:24:30] <jack> looks like if it's the root page, that won't get removed
+[21:26:03] <larsberg> the js_info, you mean? what's not getting removed?
+[21:27:49] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[21:29:08] <jack> i think Cx dropping doesn't trigger GC
+[21:29:14] <jack> since GC is per zone or whatever
+[21:29:27] <jack> of course, bholley and jdm are both MIA
+[21:30:47] <larsberg> unless we have some way of forcing JS GC to happen, I don't know how we can fix this
+[21:32:50] <eddyb> I thought the API had a "manual flush button"
+[21:33:07] <jack> sigh. #jsapi says JS_DestroyContext will trigger gc
+[21:33:12] <jack> but those nodes aren't being collected
+[21:33:25] <jack> something else must be holding them.
+[21:33:40] <eddyb> (I remember both SM and v8 being able to expose a gc() function to JS. the C/C++ API must have a better version of that)
+[21:33:40] <larsberg> eddyb: I was just looking through our jsapi.rs file's bindings right now to see if we could just cheat and call JS_CollectAllTheThings() myself :-)
+[21:34:33] <larsberg> aha, we can call JS_GC(runtime)...
+[21:35:08] <jack> adding drop debugging to rust-mozjs
+[21:35:11] <larsberg> jack: we might be able to do that during shutdown , reap the layout_datas, wait for layout to finish, and be good...
+[21:35:38] <jack> it won't help if the GC thinks there are valid roots to that data.
+[21:36:06] <larsberg> you mean something that isn't either in the node tree (which we reap manually) or garbage (which it would reap)?
+[21:36:26] <jack> well if DestroyContext triggers GC then JS must think ti's not garbage yet.
+[21:36:54] * jack wonders if the timers are holding onto ti or something
+[21:37:07] <larsberg> oh, yeah, the callbacks :-)
+[21:37:44] <jack> that should go away when window is destroyed.
+[21:37:49] <larsberg> TimerData (in window.rs) definitely has some JSVals
+[21:37:55] * Ms2ger wanders in
+[21:38:16] <jack> it looks like JSFinish is called after layout is gone and that's what finally runs the GC that collects the nodes.
+[21:38:18] * larsberg welcomes ms2ger to our spidermonkey party
+[21:38:34] <jack> but JS_RemoveObjectRoot and JS_DestroyContext run when we expect.
+[21:38:40] <jack> so something is still holding onto them
+[21:38:54] *** Quits: jackneill (jackneill@moz-5CBC0CBA.pool.digikabel.hu) (Ping timeout)
+[21:41:01] <jack> Window is not getting dropped.
+[21:41:08] *** jdm|away is now known as jdm
+[21:41:09] <jdm> back
+[21:41:12] <jack> THANK GOD
+[21:41:18] <jack> PLEASE HELP ME
+[21:41:21] <jdm> okay
+[21:41:27] <Ms2ger> I NEED SOMEBODY!
+[21:41:31] <Ms2ger> Well, jack does
+[21:41:51] <jack> jdm: @Cx is getting dropped, but htat is not triggering GC of the nodes.
+[21:42:10] <jack> or rather, the nodes aren't garbage yet at that point.
+[21:42:55] <jdm> jack: have you made sure that JS_GC is being called?
+[21:43:07] <jack> #jsapi says that it gets calle.d i'm going to try calling it manually now
+[21:43:43] <jdm> jack: I just want to ensure that we understand the nature of the problem. gdb should be able to tell us
+[21:43:46] *** Quits: not_gavin (gavin@E04DED12.5AA33DAB.2321E71E.IP) (No route to host)
+[21:44:04] *** Joins: not_gavin (gavin@E04DED12.5AA33DAB.2321E71E.IP)
+[21:47:12] <jack> mok. calling JS_GC manually doens't help
+[21:47:20] <jack> the ndoes don't go away until JS_Finish
+[21:47:29] <jdm> hum hum
+[21:47:32] <jack> when is whenthe whole runtime is torn down
+[21:47:43] <Ms2ger> They'd better go away by then!
+[21:48:02] <jack> Ms2ger: they should go away much sooner :)
+[21:48:05] <larsberg> darn, so much for my hopes of a quick fix via JS_GC pixie dust
+[21:48:20] <Ms2ger> Need a CC? :)
+[21:48:57] <jack> jdm: the big change i made was in shut_down_layout where there was a small loop reaping layout data, it now just does page.js_info = None; page.frame = None;
+[21:48:59] *** Joins: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[21:49:47] <jdm> I wonder if we have a cycle...
+[21:49:58] <jack> garbage collectors love cycles!
+[21:50:05] <jdm> yes, but on the rust side :)
+[21:50:13] <jdm> so we clear the frame...
+[21:50:28] <jack> Frame has a pointer to Window
+[21:50:36] <jack> i have debugging on the Window Drop and it's not firing.
+[21:50:50] <jack> what else can hold @Window?
+[21:50:55] <jdm> all nodes have a pointer to the document
+[21:50:59] <Ms2ger> Everything :)
+[21:51:01] <jdm> and document has a window
+[21:51:14] <jdm> and the nodes are in the document and being traced...
+[21:51:21] <jdm> sounds like we need to resurrect a teardown phase
+[21:52:19] <jack> so i need to remove the document from the Window?
+[21:53:04] <jdm> that might be enough
+[21:53:11] <jack> so something else must hold the document?
+[21:53:12] <Ms2ger> Mm
+[21:53:20] <jdm> no, that won't work
+[21:53:25] <jdm> window doesn't hold a document
+[21:53:28] <jack> I mena, nodes -> window -> nodes should be a cycle that JS GC will collect
+[21:53:28] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Client exited)
+[21:53:43] <jdm> the document is part of the frame
+[21:53:52] <Ms2ger> Call FreeInnerObjects()?
+[21:53:55] <jack> an AbstractDocument though
+[21:53:55] * Ms2ger ducks
+[21:54:16] <jdm> this is true
+[21:54:29] *** Joins: Kostic (marko@moz-F32454CB.mbb.telenor.rs)
+[21:54:34] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[21:54:40] <jdm> jack: the problem I envision is if there is a cycle in the @T types in rust
+[21:54:57] <jdm> that will inhibit the destructor
+[21:55:05] <jack> Window holds @Page
+[21:55:10] <jack> Page holds @Window.
+[21:55:15] <jack> er
+[21:55:19] <jdm> jack: no, window's in the frame
+[21:55:23] <Ms2ger> Page holds AbstractDocument?
+[21:55:25] <jdm> so that cycle is broken
+[21:55:27] <jack> so that one is getting broken.
+[21:55:36] <jack> Navigator?
+[21:55:53] <jdm> that's quite likely
+[21:55:58] <pcwalton> back
+[21:56:05] <pcwalton> we need to get rid of @ in the script task too
+[21:56:08] <pcwalton> IMHO
+[21:56:11] <jdm> how cute, even XXXjdm
+[21:56:23] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[21:56:24] <jdm> oh wait, no window in navigator
+[21:56:25] * Ms2ger hides
+[21:56:32] <jack> jdm: where?
+[21:56:32] * pcwalton reads backscroll
+[21:56:46] <jdm> navigator is not a problem
+[21:57:01] <jack> pcwalton: your layout reaping was slightly wrong.
+[21:57:07] <jdm> and location holds a @Page
+[21:57:13] <jack> we reaped in Node's dtor and before shutting down the layout task.
+[21:57:16] <jdm> so that cycle is broken too
+[21:57:22] <jack> but the problem is that some nodes still exist but aren't in the tree
+[21:57:28] <jack> so those get run after the alyout task is gone
+[21:57:29] <jack> and BOOM
+[21:57:40] <jack> so we're trying to make JS_GC trigger the reaping instead
+[21:58:05] <larsberg> where BOOM is either layout_task noticing it had live_allocs or the destructor trying to reap and sending on a dead channel
+[21:58:06] <jdm> jack: I recommend breaking in the codegen'ed finalizers
+[21:58:12] <pcwalton> jack: oh, I had some code to try to prevent that
+[21:58:14] <pcwalton> but I guess it didn't work
+[21:58:15] <jdm> we can figure out what isn't being GCed during JS_GC
+[21:58:19] <pcwalton> to try to find it anyway
+[21:58:25] <jack> it found it.
+[21:58:26] <pcwalton> what I had in my head is that the layout task would do all the reaping
+[21:58:28] <pcwalton> indeed this is important
+[21:58:33] <Ms2ger> So the nodes are no longer in the tree, but they still stay alive?
+[21:58:41] <jack> it will, but the problem is we have to finalize the nodes BEFORE layout is gone.
+[21:58:41] <pcwalton> because layout stuff can only be destroyed on the layout task
+[21:58:45] <pcwalton> right
+[21:58:52] <jack> you just walked the tree
+[21:58:55] <jack> but that is not enough
+[21:59:02] *** bhearsum is now known as bhearsum|afk
+[21:59:04] <pcwalton> ISTR I had a comment in there saying something like "// if there is anything alive, then this is bad"
+[21:59:04] <jack> because there might be a replaced element
+[21:59:17] <pcwalton> and the GC might not have run yet
+[21:59:27] <jack> exactly. so I shoudl be triggering GC now
+[21:59:33] <jack> but the problem is that there is some cycle preventing it.
+[21:59:37] <jdm> jack: one problem with this analysis right now is that we're conflating the Rust destructor with the JS finalizer
+[21:59:42] <jdm> and they are technically separate
+[21:59:51] <jack> jdm: what do you mean?
+[22:00:15] <jdm> jack: look for any method named finalize inside src/script/dom/bindings/codegen
+[22:00:24] <jdm> that is what executes when a DOM object is GCed
+[22:00:44] <jdm> and we force a reference count decrease
+[22:00:48] <jack> what RUST_LOG can i use to see those? i see they are there
+[22:00:56] <jack> i guess NodeBinding et al
+[22:01:03] <jdm> jack: RUST_LOG=script::dom::bindings::codegen
+[22:01:09] <pcwalton> this should have been a safe abort, I hope?
+[22:01:14] <pcwalton> not an invalid pointer dereference
+[22:01:26] <jack> here we go
+[22:01:30] <jack> pcwalton: safe abort.
+[22:01:34] <pcwalton> ok, good
+[22:01:34] <jack> SIGILL
+[22:01:38] <jack> which is what rtabort does
+[22:02:23] <pcwalton> I'm happy for that at least :) the safety of servo is starting to come together
+[22:02:59] <jack> like the last rust upgrade, this one is tough but the end result si definitely safer.
+[22:03:05] <jack> ie, the bugs we found were from rust being too lax before.
+[22:03:10] <pcwalton> yup :) and thanks so much for doing it
+[22:03:21] <jack> you should have found this earlier, but for some reason it didn't trigger.
+[22:03:27] <jack> s/you/we/
+[22:03:34] <pcwalton> yeah
+[22:03:59] <jack> https://gist.github.com/metajack/8363569
+[22:04:01] <jack> jdm: ^
+[22:04:19] * jdm tries to figure out how many are expected
+[22:05:04] <jdm> that looks like it's GCing correctly to me
+[22:05:07] <jack> note that "dropping a node" is in the Drop impl for Node
+[22:05:15] <jack> so that doesn't seem to get run until way too late
+[22:05:31] <jack> so only the JS half of hte objects are getting destroyed.
+[22:05:44] <jdm> right
+[22:06:04] <jack> oh
+[22:06:05] <jack> god
+[22:06:14] <jack> let _ = ... transmute()
+[22:06:19] <jack> _ isn't a drop!
+[22:06:28] <jack> didn't that change recently to not be a drop?
+[22:06:32] <jack> or am i crazy
+[22:06:34] <cmr> it's not a drop
+[22:06:42] <cmr> I don't know if it changed or not, but it's not a drop now.
+[22:06:46] <cmr> (I don't think it was before)
+[22:06:46] <jack> we want util::drop()
+[22:06:54] <cmr> std::prelude::drop
+[22:06:55] <jack> or something
+[22:06:55] <jdm> effffffffff
+[22:07:16] <jack> time to grep for let _ :)
+[22:07:36] <jdm> http://mxr.mozilla.org/servo/search?string=let%20_%20%3D
+[22:07:55] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[22:08:20] <jdm> where are we doing that that's relevant?
+[22:08:28] <jack> js finalizers.
+[22:08:35] <jack> that's how you down the refcount.
+[22:08:40] <jdm> oh, I didn't search for the right thing
+[22:08:41] <jdm> yep
+[22:08:57] <Ms2ger> ... wut
+[22:09:14] <jack> you'd hope that _ going out of scope at the end of the block would drop
+[22:09:19] <cmr> it does.
+[22:09:25] *** Joins: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[22:09:25] <jack> so that shouldnt' be a bug.
+[22:09:31] <jack> it just to drop immediately 
+[22:09:32] <cmr> it's not an *immediate* drop.
+[22:09:33] <jack> and now it doesn't
+[22:09:41] <Ms2ger> s//used/?
+[22:10:02] <jack> Ms2ger: yes
+[22:10:11] <jack> ok. that didn't fix it as expected.
+[22:11:05] <jdm> I'm weirded out by a node having this problem
+[22:11:05] <jack> any other ideas?
+[22:11:15] <jdm> we don't hold on to concrete ones anywhere that I'm aware of
+[22:11:31] <jack> note that Node is never getting finalized.
+[22:11:37] <jack> only the elements
+[22:11:56] <Ms2ger> Yes, Node doesn't exist
+[22:11:59] <jack> NodeBinding::finalize is not showing up in that output
+[22:12:17] <jdm> yes, because there is no @Node type ever
+[22:12:24] <jdm> so we don't want to run a finalizer that uses that
+[22:12:24] <jack> so what causes finalization of Node?
+[22:12:41] <jdm> jack: when a derived element finalizes and drops its node field
+[22:14:00] <jack> adding drop debuggin to Element now
+[22:14:13] <Ms2ger> Wasn't Text the issue?
+[22:14:26] <jack> noen of hte nodes are dropping until late
+[22:14:34] <Ms2ger> Ah
+[22:14:41] <jack> the issue is that text still had layoutdata 
+[22:14:41] <Ms2ger> Well, there's no Elements either :)
+[22:15:02] <jdm> yeah, do something like HTMLTitleElement
+[22:15:02] <jack> these Drops get called eventually :)
+[22:16:00] <jack> did did the whole chain now.
+[22:17:51] <jack> none of that gets called
+[22:17:54] <jack> the first Drop is Node's
+[22:18:02] <jack> and that immediately triggers the layout crash
+[22:18:17] <jack> and that drop gets called after JS_Finish starts.
+[22:18:58] <jdm> wat
+[22:19:09] <jdm> are you sure your rust_log is correct?
+[22:19:27] <jack> i'll push a branch quick.
+[22:20:32] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[22:20:50] <jack> metajack/rustup-20131219-jsfun
+[22:20:57] <jack> has hte changes i've made and the debuggign i added
+[22:21:06] <jack> (except the printfs in mozjs dtors)
+[22:21:57] <jdm> such typos
+[22:22:29] <jack> https://github.com/metajack/servo/blob/rustup-20131219-jsfun/src/components/script/script_task.rs#L923-L933
+[22:22:42] <jdm> jack: ooc, does anything change if you reverse clearing frame and js_info?
+[22:22:48] * jdm expects no
+[22:23:05] <jack> testing
+[22:23:52] <jack> apparently i should not have hit "y" when emacs asked me to save buffers
+[22:23:59] <jack> whree did those chars come from? :)
+[22:24:37] <jdm> haha
+[22:24:40] <jack> same behavior with swappage
+[22:24:52] <jdm> figures
+[22:25:21] <jdm> jack: so the backtrace from the drop is JS_Finish?
+[22:25:49] <jack> i added println from before JS_Finish
+[22:25:55] <jack> and that shows up before the node Drop
+[22:26:09] <jack> let me build on linux so i can get a real backtrace
+[22:26:34] <jdm> that actually sounds like what we want
+[22:26:55] <jack> So we won't drop any nodes until the whole runtime comes down?
+[22:26:56] <jdm> that should be coming from dropping the rt_rsrc
+[22:26:59] <jdm> well, no
+[22:26:59] <jack> How is that what we want?
+[22:27:05] <jdm> oh, right
+[22:27:42] <jdm> ok, if the drop is coming from JS_Finish, that implies that we're not actually GCing everything earlier
+[22:27:53] <jdm> jack: the drop is from a finalizer, right?
+[22:27:56] <jdm> pastebin?
+[22:28:33] <jack> impl Drop for Node { fn drop(...) { println!("dropping Node....") } }
+[22:28:41] <jdm> jack: pastebin the backtrace, I mean
+[22:28:51] <jack> still compiling.
+[22:29:30] <jack> but i think i see where you're going
+[22:29:55] <jdm> I mean, there's always a GC when the runtime goes away
+[22:30:07] <jdm> but I guess part of that is forcing everything to be GCed
+[22:30:11] <jack> and everything is dead :)
+[22:30:28] <jdm> but the runtime should be going away when clearing js_info
+[22:30:35] <jack> why?
+[22:30:43] <jack> runtime is owned by ScriptTask
+[22:30:44] <jdm> because nobody else holds a reference to it afaik
+[22:30:48] <jack> JSPageInfo is owned by Page
+[22:30:50] <jdm> oh, foo
+[22:30:53] <jdm> eff
+[22:30:55] <jdm> yeah, I see
+[22:31:40] <jack> in the case of same-origin iframe, we need to GC this window but not the whole runtime
+[22:33:41] <jack> trying to find the symbol for Node::drop
+[22:34:22] <jack> or does gdb understand `break script::dom::Node::drop
+[22:34:48] <jdm> it might
+[22:35:34] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[22:35:51] <jack> not defined.
+[22:35:55] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[22:36:19] <jack> i can break on reap_layout_data though, which is called from drop
+[22:36:36] <jack> https://gist.github.com/metajack/8364049
+[22:37:06] <jack> not from JS_Finish
+[22:37:08] *** Joins: ggherdov_ (sid11402@moz-E77DEB21.irccloud.com)
+[22:37:12] <jack> it's from the box annihilator
+[22:37:16] <jack> so we're leaking
+[22:37:49] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[22:38:49] <jdm> ok
+[22:38:59] <jdm> so we're back to the cycle theory
+[22:40:03] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[22:43:30] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[22:44:02] <jack> Page is not getting dropped
+[22:44:14] <jack> that's p robably fine since PageTree is not dropped until the end.
+[22:44:18] <jdm> right
+[22:44:22] <jdm> and Document holds it too
+[22:44:25] <jdm> or window or something
+[22:45:22] *** Quits: Kostic (marko@moz-F32454CB.mbb.telenor.rs) (Ping timeout)
+[22:46:29] <jdm> why is a node involved???
+[22:46:55] <jdm> they should be entirely controlled by the GC
+[22:47:40] <larsberg> if it matters, I believe that these text nodes are allocated in javascript and assigned to the window's title in this program (as opposed to text in an HTML document)
+[22:55:05] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[22:55:59] <jack> since we drop an AbstractDocument, how do we drop the refcount on Document.window?
+[22:56:25] <jack> since HTMLDocument's finalizer runs, why doens't that disappears @Document ;)
+[22:56:46] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[22:56:50] <jack> doesn't JS own Document?
+[22:57:11] <jdm> all abstractdocuments are intended to be traced
+[22:57:20] <jdm> which is not something we're following, unfortunately
+[22:57:27] <jdm> so yeah, the GC should own documents as well
+[22:57:31] *** Quits: ahal (ahal@moz-7DE89BF0.cable.teksavvy.com) (Input/output error)
+[22:58:34] <jdm> jack: could we find out the refcount of the document in the JS finalizer?
+[22:59:02] <jack> if you tell me how i'd do that sure :)
+[22:59:27] <jdm> jack: cast the @HTMLDocument to a Box<HTMLDocument> and look inside, probably?
+[22:59:44] <jdm> (note, htmldocument finalizer)
+[23:00:39] <jdm> box.refcount
+[23:00:43] <jdm> sorry, ref_count
+[23:03:25] <jack> refcount = 3
+[23:03:50] *** Joins: harth_ (heather@moz-42412102.hsd1.ca.comcast.net)
+[23:04:06] <jdm> that's... special?
+[23:04:43] <jdm> I'd like to know who's bumping it
+[23:05:42] *** Quits: harth_ (heather@moz-42412102.hsd1.ca.comcast.net) (Ping timeout)
+[23:06:06] <jdm> jack: any change if you comment out the load event code?
+[23:06:20] <jdm> everything from let event to the actual dispatch_event
+[23:06:40] <jack> where's that?
+[23:06:44] <jack> in HTMLDocument.rs?
+[23:07:10] <jdm> jack: script_task.rs
+[23:07:16] <jdm> right above find_fragment_node
+[23:07:48] <jack> trying now
+[23:08:57] <jdm> I've also started my own build from scratch so I can more easily experiment
+[23:10:13] <jack> refcount still 3
+[23:10:22] <jgraham> jdm: Do you agree with Ms2ger in https://critic.hoppipolla.co.uk/showcomment?chain=1155?
+[23:10:58] <jdm> jgraham: yep
+[23:11:02] <jack> pcwalton: does transmute affect the refcount?
+[23:11:16] <pcwalton> jack: it does not
+[23:11:23] <jgraham> OK, thanks, just checking since all the html* in that directory are actual interfaces
+[23:11:26] <jack> i assume the answer is no, but if you transmute back into @Foo then it goes out of scope it will decrease the refcount
+[23:11:30] <pcwalton> yup
+[23:11:31] <pcwalton> it does
+[23:11:34] <pcwalton> you need to forget it
+[23:11:36] <jgraham> (I think)
+[23:12:05] <pcwalton> jack: so I think when passing an @value into transmute it'll bump the refcount
+[23:12:10] <jdm> transmute calls forget on the source
+[23:12:12] <pcwalton> because @ is copy-by-default
+[23:12:15] <pcwalton> right
+[23:12:19] <pcwalton> so the refcount += 1
+[23:12:20] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[23:13:21] <jdm> oh, so we need to explicitly forget after calling transmute as well?
+[23:13:39] <jack> no, that will keep the refcount high
+[23:13:48] <jdm> oh, right
+[23:13:49] <jack> forget will prevent the refcount from dropping.
+[23:14:24] <jack> let foo = @Foo; // refcount = 1
+[23:14:45] <jack> let bar = cast::transmute(foo); // refcount = 2
+[23:14:52] <jack> / foo goes out of scope, refcount == 1.
+[23:14:57] <jdm> makes sense
+[23:15:12] <jdm> so the path of the @mut HTMLDocument is extremely limited
+[23:15:22] <jdm> we should be able to figure out what the deal here is
+[23:15:24] <jack> but that means if you transmute you are bumping the refcount and that thing you transmuted into is now an owner.
+[23:16:04] *** Quits: Ms2ger (Ms2ger@D324D80C.3387515C.187A1082.IP) (Quit: nn)
+[23:16:50] <jdm> script_task calls HTMLDocument::new, which in turn creates the @mut HTMLDocument and passes it to Document::reflect_document
+[23:16:55] <jdm> that's where it is transmuted
+[23:17:16] <jdm> so I could imagine 3 at the point when it is transmuted
+[23:17:36] <jdm> but that should be decreasing rapily afterwards
+[23:17:53] <jack> maybe it's this reflecting code?
+[23:17:59] *** Quits: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[23:18:22] *** Joins: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[23:19:01] <jdm> sorry, there are some more layers that will bump it up to 5 or something
+[23:19:33] <jdm> huh
+[23:19:41] <jack> fn squirrel_away :)
+[23:19:42] <jdm> we actually call cast::forget on the @ value
+[23:19:45] <jdm> wtf
+[23:20:11] <jdm> in my defence, I got that code straight from niko
+[23:22:32] <jack> removing that gets the refcount to 2
+[23:22:36] <jdm> :<
+[23:23:01] <jack> that's the only call to forget in the script code
+[23:24:08] <jdm> reflect_dom_object returns the same @ type it receives
+[23:25:05] <jdm> so Document::reflect_document takes an argument called document
+[23:25:09] <jdm> it's the @ value
+[23:25:17] <jdm> it passes that to reflect_dom_object
+[23:25:34] <jdm> and the return value is the same one, but it's assigned to a new var called document that shadows the argument
+[23:25:35] <jack> that calls Wrap and Wrap_
+[23:25:42] <jdm> we transmute the new value
+[23:25:48] <jdm> could anything weird happen here?
+[23:26:54] <jack> we can check the refcount there.
+[23:27:05] <jack> it should be 2 at the end of reflect_document right?
+[23:27:13] <jdm> Node::reflect_node has the same shadowing thing as well, fwiw
+[23:27:23] <jdm> jack: define "end"
+[23:27:45] <jack> well, whoever gets teh result
+[23:27:52] <jack> when the result is returned, the refcount should be 1.
+[23:28:04] <jdm> HTMLDocument::new, I would expect the refcount of the document object to be 2
+[23:28:09] <jdm> then when that method returns it should be 1
+[23:28:56] <jack> you mean let d = HTMLDocument::new(); d wraps a @HTMLDocument with refcount = 1
+[23:29:30] <jdm> right
+[23:34:44] *** Quits: valenting (Thunderbir@23EF5095.ECBF5C84.FB866788.IP) (Quit: valenting)
+[23:34:57] <jack> well, that's the problem.
+[23:35:03] <jack> HTMLDocument::new returns a document with refcount = 2.
+[23:35:16] <jdm> this sounds like a rustc problem to me
+[23:35:33] <jack> pcwalton: ^
+[23:35:44] <jdm> given that we have an @ value that should be dropped in that method
+[23:35:47] <jack> i guess the next thing is which call bumps the refcount
+[23:36:04] <pcwalton> hmm
+[23:36:38] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[23:36:40] <pcwalton> I have not seen any trivial refcounting mistakes in the code generated by rustc for a long time
+[23:36:45] <pcwalton> but that doesn't mean there aren't any lurking
+[23:37:01] <pcwalton> anyway, I'm going to solve this by removing @ ASAP, but that doesn't help you right now :)
+[23:37:06] <jdm> heh
+[23:37:31] <jdm> jack: any change if you         let document = HTMLDocument::new_inherited(window);
+[23:37:34] <jdm> er
+[23:37:39] <jdm> let document = @mut HTMLDocument::new_inherited(window);
+[23:37:41] <jdm> ?
+[23:38:27] <jack> it's not the shadowing.
+[23:38:51] *** Quits: alex-abreu (alex@moz-7421D6C9.mc.videotron.ca) (Ping timeout)
+[23:38:57] <jdm> jack: right, but I'm wondering if it will drop properly if we bind it to a name
+[23:39:06] <jdm> rather than passing it as a temporary
+[23:39:40] <jdm> good, I can reproduce locally
+[23:40:40] <jack> @mut HTMLDocument::new didnt' help
+[23:40:41] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[23:40:46] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Input/output error)
+[23:40:47] <jack> er, you know what i meant
+[23:41:13] <jdm> grumble
+[23:42:14] <jack> after elt document = @mut HtmlDocument::new_inherinit(...); // document.ref_count == 1 right?
+[23:42:18] <jack> should == 1
+[23:42:29] <jack> because we just created the @ box
+[23:42:59] <jack> we pass hte box to reflect_document, so refcount is 2, then return which drops refcount to 1.
+[23:43:32] <jack> reflect_document calls reflect_dom_object, which bumps it to 3, but we shadow the return, so we're back to 2.
+[23:43:47] <jack> transmute bumps it to 3.
+[23:44:06] <jack> then it goes out of scope, returning to 2.
+[23:44:52] <jack> so at relfect_dom_object, we're at 3.
+[23:45:06] <jack> it calls wrap_fn, which bumps to 4.
+[23:45:43] <jack> then returns 
+[23:46:17] <jack> so assuming wrap_fn doesn't leak, we're going to return obj with a refcount of 3.
+[23:46:33] <jack> so we have a mismatch
+[23:47:23] <jack> we copy and bump on function calls. what ahppens on returns?
+[23:48:23] <jack> oh i see the problem.
+[23:48:46] <jack> we put @HtmlDocument in AbstractDocument *and* in a reserved slot.
+[23:49:06] <jack> both those transmutes will hold refs.
+[23:49:20] <jack> we want the AbstractDocument not to hold a ref.
+[23:49:33] <jack> correct?
+[23:49:46] <jdm> hum.
+[23:49:49] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[23:49:50] <jdm> that does sound fishy
+[23:49:55] <jdm> yes, you're right
+[23:50:15] <jack> i don't know how to prevent the refcount increasing though.
+[23:50:36] *** Joins: alex-abreu (alex@moz-7421D6C9.mc.videotron.ca)
+[23:50:37] <pcwalton> transmute_copy
+[23:51:31] <jack> why is it called copy
+[23:51:40] <jack> i mean, the hwole problem is transmute copies the box
+[23:52:09] <jack> oh i see. it takes & instead of T
+[23:53:32] <jack> named poorly i'd say.
+[23:54:21] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[23:54:31] <jack> now it segfaults immediately on startup.
+[23:54:32] <jack> sigh.
+[23:54:33] <jdm> ooh, it only segfaulted this time
+[23:55:42] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[23:55:43] <jack> is this worse or better?
+[23:55:50] <jack> WHO CAN TELL!
+[23:56:23] <jdm> why segfault in squirrel_away
+[23:56:26] <jdm> that makes no senes
+[23:57:07] <jdm> refcount 140737251559232u
+[23:57:11] <jdm> that doesn't look quite right for the document
+[23:57:23] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[23:58:36] <jack> that just means we freed too early

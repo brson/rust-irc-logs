@@ -1,0 +1,1027 @@
+[00:06:17] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[00:06:29] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[00:06:59] *** Quits: cait (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[00:08:12] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.3)
+[00:08:18] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[00:13:05] *** Joins: CaseyBecking (CaseyBecki@moz-EDABF502.lsanca.fios.verizon.net)
+[00:14:59] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Broken pipe)
+[00:15:05] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[00:15:22] *** Quits: azakai (alon@moz-62518563.mtv2.mozilla.com) (Ping timeout)
+[00:15:26] *** Quits: mccr8 (mccr8@moz-62518563.mtv2.mozilla.com) (Quit: )
+[00:15:41] *** Joins: azita (Azita@moz-62518563.mtv2.mozilla.com)
+[00:18:40] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[00:21:02] <kmc> first low-hanging tokenizer optimization yields 15%
+[00:22:57] <Fiora> wow, link to the patch?
+[00:24:09] <kmc> not pushed yet
+[00:24:51] <kmc> but basically
+[00:25:09] <kmc> old code: loop { match state { A => match character { 'x' => ..., 'y' => state = B } } }
+[00:25:20] <kmc> new code: loop { match state { A => loop { match character { 'x' => ..., 'y' => { state = B; break } } } }
+[00:25:32] <kmc> i.e., don't re-dispatch on the state if we know it hasn't changed
+[00:25:41] <kmc> I had always planned to do this but it turned out to be easier than I expected
+[00:25:54] <kmc> er here 'character' is a function call that consumes the next character
+[00:25:54] *** Quits: alphonse23 (sean@A6D9FFFF.60DF7298.8588B1D7.IP) (Quit:  HydraIRC -> http://www.hydrairc.com <- Wibbly Wobbly IRC)
+[00:26:39] <Fiora> so basically if the character match keeps you in the same state, don't hop back to the start of the state, just stay there?
+[00:26:50] <kmc> yeah, don't return to the main loop which checks the state
+[00:27:27] <kmc> the preparatory refactoring involved this command:  perl -lne 'if (m/go!\((.*)(to [^;]+); ([^)]*)\),/) { print "$`go!($1$2; $3),$'"'"'" } else { print }'
+[00:28:02] *** Quits: Nekit1234007 (Nekit12340@3126F0EA.D0169432.4707F662.IP) (Ping timeout)
+[00:29:32] <Fiora> could you do that thing where you use a jump table based on the character?  or is it too complicated for that
+[00:29:43] <Fiora> like to jump to the right state code
+[00:32:39] <kmc> I think rustc / llvm compiles the outer state match into a jump table
+[00:32:54] <kmc> don't know about the inner; usually there are only a few special characters and everything else is handled the same way
+[00:33:11] <kmc> also these are unicode codepoints, although the characters handled specially are always ASCII i think
+[00:33:12] *** Joins: tobytailor (tobytailor@moz-CBD810C7.hsd1.ca.comcast.net)
+[00:33:18] * kmc -> afk for a bit
+[00:35:18] <kmc> fun fact: clang (and I think GCC too) will compile code like isspace into a range check followed by a "table lookup" using a 64-bit immediate as a table of 64 booleans
+[00:36:59] <strcat> kmc: llvm can do a good job with a switch
+[00:37:14] <strcat> it knows how to do branches, binary search, jump table and now/soon perfect hashing
+[00:37:26] <Fiora> that's really cool, I've seen that done manually and I've seen like, macros for that kind of thing
+[00:37:36] <Fiora> but I had no idea they managed to add it to a compiler
+[00:37:52] <Fiora> it's one of my favorite silly microoptimizations too
+[00:38:05] <strcat> you need computed gotos to do a real jump table yourself
+[00:38:30] *** Quits: azita (Azita@moz-62518563.mtv2.mozilla.com) (Quit: azita)
+[00:39:08] <Fiora> is the thing where you do static const void* my_labels[] = {label1, label2, label3, label4 ... };   [...]    goto my_labels[i]; a gcc extension?
+[00:39:32] <strcat> yes
+[00:39:34] <strcat> &&label
+[00:39:41] <strcat> called computed gotos
+[00:39:51] <Fiora> ahhhh, so that's what that is
+[00:40:01] <strcat> http://gcc.gnu.org/onlinedocs/gcc-3.2/gcc/Labels-as-Values.html
+[00:40:10] <strcat> lol
+[00:40:11] <strcat> gcc 3.2
+[00:40:13] <strcat> google...
+[00:40:33] <Fiora> assembly wise when I think 'computed goto' I think of the atrocious thing where you compute a jump address arithmetically
+[00:40:51] <strcat> Fiora: well you can
+[00:40:55] <strcat> look at their example further down
+[00:41:10] <Fiora> wow.  that's.       w ow
+[00:41:22] <bjz_> strcat: I've heard that's super useful for VMs for dynamic langs - apparently  they use it in the Erlang VM
+[00:41:32] <bjz_> strcat: I might be wrong though
+[00:41:33] <strcat> it would be nice if google found the up to date docs
+[00:41:36] <strcat> and not gcc 3.2
+[00:41:42] <strcat> ;\
+[00:42:25] <strcat> http://gcc.gnu.org/onlinedocs/gcc-4.8.1/gcc/Labels-as-Values.html#Labels-as-Values
+[00:42:27] * strcat sighs
+[00:42:39] <strcat> it's not like they updated them anyway
+[00:42:54] *** Joins: Nekit1234007 (Nekit12340@DC1D6696.9C28A5C7.4707F662.IP)
+[00:44:18] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[00:44:54] <Fiora> the worst thing I've seen is the asm thingy where you do it without a table.  like where you have N cases and they're like 64 bytes each so you do        shl i, 6     lea tmp, [addr_of_first_case + i]    jmp tmp
+[00:45:20] <strcat> Fiora: well computed gotos essentially let you do that
+[00:45:32] <strcat> you just have to use a lot of labels
+[00:45:40] <strcat> and if you store them, store them as offsets
+[00:46:05] <strcat> who needs function pointers and functions anyway/
+[00:51:43] *** Quits: Savago (Savago@D8B9C081.E820043D.D4C04133.IP) (Ping timeout)
+[00:53:10] *** Joins: Savago (Savago@504D6CF1.5315C0D2.4C2245EF.IP)
+[00:56:30] *** Joins: cait (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[01:01:35] *** Joins: hoverbear (hoverbear@moz-86FCBF4B.gv.shawcable.net)
+[01:03:10] *** Joins: Guest (textual@2216D00C.4265C9B5.DC3E9228.IP)
+[01:03:10] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.3)
+[01:03:15] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[01:03:15] *** Quits: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[01:03:56] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[01:04:10] *** Quits: tobytailor (tobytailor@moz-CBD810C7.hsd1.ca.comcast.net) (Quit: tobytailor)
+[01:04:44] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[01:04:55] *** Joins: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com)
+[01:07:24] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[01:15:44] *** Joins: mno2 (mno2@E1E0A0A3.621D86F0.CFF65E33.IP)
+[01:17:43] *** Quits: Jayflux (Jason@moz-CF767DBE.ppp.as43234.net) (Quit: Leaving)
+[01:19:37] *** Quits: Savago (Savago@504D6CF1.5315C0D2.4C2245EF.IP) (Quit: Savago)
+[01:26:08] *** Quits: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: jet)
+[01:30:39] *** Joins: tobytailor (tobytailor@moz-CBD810C7.hsd1.ca.comcast.net)
+[01:30:49] *** Quits: tobytailor (tobytailor@moz-CBD810C7.hsd1.ca.comcast.net) (Client exited)
+[01:30:52] *** Quits: maxli (Adium@moz-EE42E0E.student.cs.uwaterloo.ca) (Ping timeout)
+[01:31:19] *** Joins: tobytailor (tobytailor@moz-CBD810C7.hsd1.ca.comcast.net)
+[01:35:15] *** Joins: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[01:36:29] *** Quits: Guest (textual@2216D00C.4265C9B5.DC3E9228.IP) (Quit: Textual IRC Client: www.textualapp.com)
+[01:40:22] *** Quits: tobytailor (tobytailor@moz-CBD810C7.hsd1.ca.comcast.net) (Quit: tobytailor)
+[01:41:54] *** Joins: maxli (Adium@moz-F47DD19B.student.cs.uwaterloo.ca)
+[01:42:13] *** Quits: elan (elancaster@moz-16672D29.hsd1.ca.comcast.net) (Ping timeout)
+[01:42:37] *** Joins: elan (elancaster@moz-16672D29.hsd1.ca.comcast.net)
+[01:43:18] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[01:48:54] *** Joins: lpy (lpy@1834E2CB.F09091A8.1348A864.IP)
+[01:51:10] *** Quits: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: jet)
+[01:53:03] *** Joins: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[01:53:24] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: sleep)
+[01:55:08] *** Quits: soumyaC (uid15286@moz-E77DEB21.irccloud.com) (Quit: Connection closed for inactivity)
+[02:01:42] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[02:01:51] *** Joins: tobytailor (tobytailor@moz-CBD810C7.hsd1.ca.comcast.net)
+[02:02:02] *** Quits: lpy (lpy@1834E2CB.F09091A8.1348A864.IP) (Client exited)
+[02:03:51] *** Quits: nszceta (nszceta@moz-E458A7C0.pharm.pitt.edu) (Quit: Textual IRC Client: www.textualapp.com)
+[02:13:10] *** Quits: maxli (Adium@moz-F47DD19B.student.cs.uwaterloo.ca) (Ping timeout)
+[02:13:59] *** Joins: maxli (Adium@moz-F47DD19B.student.cs.uwaterloo.ca)
+[02:18:23] *** Quits: maxli (Adium@moz-F47DD19B.student.cs.uwaterloo.ca) (Ping timeout)
+[02:19:06] *** Joins: kanru (kanru@moz-DB4A9C19.scl3.mozilla.com)
+[02:19:14] *** Joins: maxli (Adium@moz-F47DD19B.student.cs.uwaterloo.ca)
+[02:19:24] *** Quits: brson (brson@moz-62518563.mtv2.mozilla.com) (Ping timeout)
+[02:24:02] *** Quits: tobytailor (tobytailor@moz-CBD810C7.hsd1.ca.comcast.net) (Quit: tobytailor)
+[02:29:12] *** Quits: CaseyBecking (CaseyBecki@moz-EDABF502.lsanca.fios.verizon.net) (Client exited)
+[02:29:45] *** Joins: CaseyBecking (CaseyBecki@moz-EDABF502.lsanca.fios.verizon.net)
+[02:30:31] *** Joins: brendan (brendaneic@moz-62518563.mtv2.mozilla.com)
+[02:31:25] *** Quits: CaseyBecking (CaseyBecki@moz-EDABF502.lsanca.fios.verizon.net) (No route to host)
+[02:32:57] *** Quits: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: jet)
+[02:34:38] *** Quits: zz_kimundi (kimundi@moz-EBF89014.dip0.t-ipconnect.de) (Ping timeout)
+[02:35:39] *** Quits: robn (robn@moz-76B0302C.static.internode.on.net) (Ping timeout)
+[02:37:52] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[02:37:53] *** ChanServ sets mode: +o pcwalton
+[02:38:07] *** Joins: robn (robn@moz-76B0302C.static.internode.on.net)
+[02:38:24] *** Joins: zz_kimundi (kimundi@moz-CEAAC5E6.dip0.t-ipconnect.de)
+[02:38:25] *** zz_kimundi is now known as kimundi
+[02:38:26] *** Joins: aurynj (Eon@583ABBE5.60FA2E28.B9E25744.IP)
+[02:42:20] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (No route to host)
+[02:42:38] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[02:42:41] *** Quits: tikue (tkuehn@CB7FC854.FAD414BA.D74CC41D.IP) (Quit: tikue)
+[02:46:01] *** Quits: maxli (Adium@moz-F47DD19B.student.cs.uwaterloo.ca) (Input/output error)
+[02:46:09] *** Joins: maxli (Adium@moz-F47DD19B.student.cs.uwaterloo.ca)
+[02:46:45] *** Quits: robn (robn@moz-76B0302C.static.internode.on.net) (Ping timeout)
+[02:47:43] *** Joins: robn (robn@moz-76B0302C.static.internode.on.net)
+[02:50:01] *** Quits: drawoc (drawoc@moz-BAC1D3AB.res-cmts.sesh.ptd.net) (Quit: WeeChat 0.4.3)
+[02:59:23] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[03:03:35] *** Joins: nszceta (nszceta@moz-E642D2FB.hsd1.pa.comcast.net)
+[03:03:50] *** Quits: oxum (anonymous@A8E74FA7.A3DB4D3F.520CDC98.IP) (Quit: ...)
+[03:13:56] *** Joins: dranov (dranov@62D43C56.42CAD9AB.FCAAE698.IP)
+[03:29:07] *** Joins: tobytailor (tobytailor@moz-CBD810C7.hsd1.ca.comcast.net)
+[03:29:09] *** Quits: dranov (dranov@62D43C56.42CAD9AB.FCAAE698.IP) (Ping timeout)
+[03:30:34] *** Joins: CaseyBecking (CaseyBecki@moz-EDABF502.lsanca.fios.verizon.net)
+[03:42:31] *** Joins: oxum (anonymous@77FDBEE3.3AABCBEA.520CDC98.IP)
+[03:43:24] *** Quits: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca) (Quit: canhtak)
+[03:46:04] *** Quits: maxli (Adium@moz-F47DD19B.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[03:46:43] *** Quits: tobytailor (tobytailor@moz-CBD810C7.hsd1.ca.comcast.net) (Quit: tobytailor)
+[03:47:01] *** Quits: oxum (anonymous@77FDBEE3.3AABCBEA.520CDC98.IP) (Quit: Bye..)
+[03:47:14] *** Joins: oxum (anonymous@77FDBEE3.3AABCBEA.520CDC98.IP)
+[03:50:50] *** Quits: brendan (brendaneic@moz-62518563.mtv2.mozilla.com) (Quit: brendan)
+[04:05:29] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Quit: )
+[04:06:27] *** Quits: elan (elancaster@moz-16672D29.hsd1.ca.comcast.net) (Quit: elan)
+[04:08:42] *** Quits: ahal (ahal@moz-7DE89BF0.cable.teksavvy.com) (Ping timeout)
+[04:10:26] *** Joins: maxli (Adium@moz-B19F68ED.student.cs.uwaterloo.ca)
+[04:13:38] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[04:16:02] *** Joins: CaseyBec_ (CaseyBecki@moz-EDABF502.lsanca.fios.verizon.net)
+[04:16:28] *** Quits: CaseyBecking (CaseyBecki@moz-EDABF502.lsanca.fios.verizon.net) (Ping timeout)
+[04:18:08] *** Quits: mno2 (mno2@E1E0A0A3.621D86F0.CFF65E33.IP) (Connection reset by peer)
+[04:18:24] *** Joins: tobytailor (tobytailor@moz-CBD810C7.hsd1.ca.comcast.net)
+[04:23:36] *** Quits: oxum (anonymous@77FDBEE3.3AABCBEA.520CDC98.IP) (Ping timeout)
+[04:24:21] *** Joins: oxum (anonymous@77FDBEE3.3AABCBEA.520CDC98.IP)
+[04:30:09] *** Joins: erickt (erickt@49C4075F.3AC15C18.2321E71E.IP)
+[04:30:35] *** Quits: flaki (uid26072@moz-A42E5B7B.irccloud.com) (Quit: Connection closed for inactivity)
+[04:34:26] *** Quits: nszceta (nszceta@moz-E642D2FB.hsd1.pa.comcast.net) (Quit: Textual IRC Client: www.textualapp.com)
+[04:35:55] *** Quits: oxum (anonymous@77FDBEE3.3AABCBEA.520CDC98.IP) (Ping timeout)
+[04:51:02] *** Quits: tobytailor (tobytailor@moz-CBD810C7.hsd1.ca.comcast.net) (Quit: tobytailor)
+[04:55:40] *** Quits: CaseyBec_ (CaseyBecki@moz-EDABF502.lsanca.fios.verizon.net) (Client exited)
+[04:56:14] *** Joins: CaseyBecking (CaseyBecki@moz-EDABF502.lsanca.fios.verizon.net)
+[04:57:55] *** Quits: CaseyBecking (CaseyBecki@moz-EDABF502.lsanca.fios.verizon.net) (Ping timeout)
+[04:58:12] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[05:00:29] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[05:05:13] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[05:11:57] *** Joins: mno2 (mno2@E1E0A0A3.621D86F0.CFF65E33.IP)
+[05:18:32] *** fredy is now known as fredy_test
+[05:20:03] *** fredy_test is now known as fredy
+[05:21:14] *** Joins: eddyb (eddy@F8B50789.F33C1089.FB866788.IP)
+[05:31:42] *** Quits: erickt (erickt@49C4075F.3AC15C18.2321E71E.IP) (Ping timeout)
+[05:36:53] *** Joins: erickt (erickt@49C4075F.3AC15C18.2321E71E.IP)
+[05:40:15] *** Quits: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net) (Ping timeout)
+[05:43:14] *** Quits: hoverbear (hoverbear@moz-86FCBF4B.gv.shawcable.net) (Quit: Taking a nap.)
+[05:49:42] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[05:51:27] *** Joins: matematikaadit (adit@FB46008F.BEE8536A.E99CBB2C.IP)
+[05:51:38] *** Quits: matematikaadit (adit@FB46008F.BEE8536A.E99CBB2C.IP) (Connection reset by peer)
+[05:54:59] *** Quits: maxli (Adium@moz-B19F68ED.student.cs.uwaterloo.ca) (Input/output error)
+[05:55:38] *** Joins: maxli (Adium@moz-F47DD19B.student.cs.uwaterloo.ca)
+[05:58:09] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[05:58:10] *** Quits: maxli (Adium@moz-F47DD19B.student.cs.uwaterloo.ca) (Ping timeout)
+[05:58:46] *** Joins: ozkriff (Mibbit@6014F6.BC46A4C1.71211713.IP)
+[05:59:25] *** Joins: maxli (Adium@moz-F47DD19B.student.cs.uwaterloo.ca)
+[05:59:41] <ozkriff> Hi! :) Whom should I ask about merging https://github.com/mozilla-servo/rust-stb-image/pull/30 ?
+[06:00:32] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[06:02:38] <eddyb> ozkriff: jack, maybe
+[06:03:27] <ozkriff> jack: https://github.com/mozilla-servo/rust-stb-image/pull/30 ? :)
+[06:09:55] *** Quits: cait (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[06:12:22] *** Quits: maxli (Adium@moz-F47DD19B.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[06:26:57] *** Joins: Debloper (debloper@moz-88FF8AE8.redhat.com)
+[06:27:11] *** Joins: Ms2ger (Ms2ger@moz-98421F60.adsl-dyn.isp.belgacom.be)
+[06:43:26] *** Quits: erickt (erickt@49C4075F.3AC15C18.2321E71E.IP) (Ping timeout)
+[07:02:50] *** Joins: ahunt (ahunt@moz-6D6D79D6.cable.virginm.net)
+[07:34:38] *** Joins: flaki (uid26072@moz-A42E5B7B.irccloud.com)
+[07:38:35] <Ms2ger> <strcat> even chinese is smaller with utf-8, because of ascii xml/css/html strings
+[07:38:55] <Ms2ger> I wonder if that's true for in-memory representation in browsers, with interned strings
+[07:40:40] *** Quits: alex-abreu (alex@moz-7421D6C9.mc.videotron.ca) (Ping timeout)
+[07:42:12] *** Joins: alex-abreu (alex@moz-7421D6C9.mc.videotron.ca)
+[07:44:20] <Ms2ger> ozkriff, I've held off on that in case something goes wrong with the current rust upgrade
+[07:44:46] *** Quits: doomlord_ (servitor@moz-56F8DA57.range86-148.btcentralplus.com) (Connection reset by peer)
+[07:46:01] *** Quits: dbaron (dbaron@moz-3C92D971.dsl.dynamic.sonic.net) (Ping timeout)
+[07:47:31] *** Quits: alex-abreu (alex@moz-7421D6C9.mc.videotron.ca) (Ping timeout)
+[07:47:42] *** Joins: alex-abreu (alex@moz-7421D6C9.mc.videotron.ca)
+[07:47:56] *** Quits: aydinkim (aydin.kim@5AB4884B.FCC4549.14D5B978.IP) (Quit: Lost terminal)
+[07:50:54] <Ms2ger> ozkriff, oh, and it doesn't merge cleanly?
+[07:56:22] *** Joins: CaseyBecking (CaseyBecki@moz-EDABF502.lsanca.fios.verizon.net)
+[07:58:07] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[07:58:23] *** Quits: CaseyBecking (CaseyBecki@moz-EDABF502.lsanca.fios.verizon.net) (Ping timeout)
+[08:00:34] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[08:14:52] *** Quits: Ms2ger (Ms2ger@moz-98421F60.adsl-dyn.isp.belgacom.be) (Quit: bbl)
+[08:30:56] *** Joins: erickt (erickt@49C4075F.3AC15C18.2321E71E.IP)
+[08:32:51] *** Quits: erickt (erickt@49C4075F.3AC15C18.2321E71E.IP) (Ping timeout)
+[08:40:12] *** Joins: cait (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[08:42:03] *** Quits: cait (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[08:45:06] <ozkriff> Ms2ger: Updated
+[08:53:09] *** Joins: soumyaC (uid15286@moz-E77DEB21.irccloud.com)
+[08:55:39] *** Joins: mihneadb (mihneadb@moz-6B31F5AA.static.ziggozakelijk.nl)
+[08:58:39] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[09:00:31] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[09:04:03] *** Joins: msanchez (msanchez@E6836824.9773E83B.5D23F53B.IP)
+[09:12:27] <Manishearth> http://www.reddit.com/r/rust/comments/21zrd5/looking_for_newbie_friends_on_rust/cghzay8 LOL
+[09:17:24] <eddyb> Manishearth: reaping that sweet sweet karma
+[09:22:08] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse)
+[09:23:07] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Client exited)
+[09:25:20] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[09:38:31] <Manishearth> heh
+[09:42:58] *** Joins: Ms2ger (Ms2ger@moz-4A14BC33.ugent.be)
+[09:47:33] *** Joins: oxum (anonymous@55D1CC88.D2D0C1C4.520CDC98.IP)
+[09:52:34] * Ms2ger gives eddyb a +1
+[09:58:27] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[10:00:31] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[10:04:56] *** Quits: robn (robn@moz-76B0302C.static.internode.on.net) (Ping timeout)
+[10:06:21] *** Joins: robn (robn@moz-76B0302C.static.internode.on.net)
+[10:08:41] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[10:08:41] *** Quits: bjz_ (bjz@B398BE78.F804C29E.D35A31DF.IP) (Connection reset by peer)
+[10:10:27] *** Quits: robn (robn@moz-76B0302C.static.internode.on.net) (Ping timeout)
+[10:13:00] *** Joins: robn (robn@moz-76B0302C.static.internode.on.net)
+[10:31:53] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Client exited)
+[10:41:15] *** Quits: victorporof (victorporo@moz-1C281963.dsl.bell.ca) (Quit: victorporof)
+[10:41:58] *** Joins: cait (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[10:42:54] *** Quits: mno2 (mno2@E1E0A0A3.621D86F0.CFF65E33.IP) (Quit: mno2)
+[10:45:22] *** Quits: cait (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[10:50:11] *** Joins: philix (felipe@moz-3F4DCEE1.host.telemar.net.br)
+[10:51:10] *** Quits: Ms2ger (Ms2ger@moz-4A14BC33.ugent.be) (Ping timeout)
+[11:05:30] *** Quits: oxum (anonymous@55D1CC88.D2D0C1C4.520CDC98.IP) (Ping timeout)
+[11:14:06] *** Joins: Kostic (Kostic@C4D4CB5C.58A2DD99.2168A69F.IP)
+[11:23:27] *** Joins: dranov (dranov@46290EAA.42CAD9AB.FCAAE698.IP)
+[11:27:45] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[11:32:53] *** Joins: CaseyBecking (CaseyBecki@moz-EDABF502.lsanca.fios.verizon.net)
+[11:34:52] *** Quits: philix (felipe@moz-3F4DCEE1.host.telemar.net.br) (Ping timeout)
+[11:34:54] *** Quits: CaseyBecking (CaseyBecki@moz-EDABF502.lsanca.fios.verizon.net) (Ping timeout)
+[11:36:23] *** Joins: Ms2ger (Ms2ger@moz-4A14BC33.ugent.be)
+[11:38:45] *** Joins: cait (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[11:39:22] *** Quits: cait (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Quit: Leaving)
+[11:39:26] *** Joins: cait (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[11:56:21] *** Joins: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca)
+[11:58:47] *** Quits: mihneadb (mihneadb@moz-6B31F5AA.static.ziggozakelijk.nl) (Quit: Computer gone to sleep - Zzzz...)
+[12:00:24] *** bhearsum|afk is now known as bhearsum
+[12:05:57] *** Quits: msanchez (msanchez@E6836824.9773E83B.5D23F53B.IP) (Ping timeout)
+[12:10:31] *** Joins: lpy (lpy@186A8F3A.F09091A8.1348A864.IP)
+[12:10:52] <ozkriff> Ms2ger: I have updated my PR for rust-stb-image
+[12:12:46] <lpy> mbrubeck: ping
+[12:13:46] *** Quits: lpy (lpy@186A8F3A.F09091A8.1348A864.IP) (Connection reset by peer)
+[12:13:49] *** Joins: lpy_ (lpy@207F51B2.F09091A8.1348A864.IP)
+[12:14:11] *** lpy_ is now known as lpy
+[12:18:18] *** Joins: victorporof (victorporo@moz-1C281963.dsl.bell.ca)
+[12:22:24] *** Joins: sankha93 (sankha93@7061CD01.D6BD0D91.22D41759.IP)
+[12:23:06] *** Joins: msanchez (msanchez@E6836824.9773E83B.5D23F53B.IP)
+[12:32:41] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[12:34:23] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[12:39:28] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.3)
+[12:39:35] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[12:44:05] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[12:44:09] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[12:44:32] *** Joins: ahal (ahal@moz-7DE89BF0.cable.teksavvy.com)
+[12:45:29] *** catlee-away is now known as catlee
+[13:06:32] *** Joins: jackneill (jackneill@moz-782B761E.pool.digikabel.hu)
+[13:09:28] *** Quits: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca) (Quit: canhtak)
+[13:13:45] *** Quits: lpy (lpy@207F51B2.F09091A8.1348A864.IP) (Ping timeout)
+[13:13:56] *** Joins: lpy (lpy@207F51B2.F09091A8.1348A864.IP)
+[13:20:27] *** Joins: nszceta (nszceta@moz-E458A7C0.pharm.pitt.edu)
+[13:22:28] *** Joins: doomlord_ (servitor@moz-56F8DA57.range86-148.btcentralplus.com)
+[13:28:30] *** Joins: nimish (quassel@6CD90D4F.B586C2A4.5F29FBA5.IP)
+[13:30:27] *** Quits: nimish (quassel@6CD90D4F.B586C2A4.5F29FBA5.IP) (Quit: http://quassel-irc.org - Chat comfortably. Anywhere.)
+[13:30:56] *** Quits: victorporof (victorporo@moz-1C281963.dsl.bell.ca) (Quit: victorporof)
+[13:41:46] *** Joins: elan (elancaster@moz-16672D29.hsd1.ca.comcast.net)
+[13:46:35] *** ahal is now known as ahal|afk
+[13:48:01] *** Quits: Ms2ger (Ms2ger@moz-4A14BC33.ugent.be) (Ping timeout)
+[13:49:14] <mbrubeck> lpy: pong
+[13:50:07] <lpy> mbrubeck: Hi! :) I just want to ask are you working on #2026?
+[13:50:07] <crowbot> Issue #2026: Add a textContent getter for Element that returns a bare string - https://github.com/mozilla/servo/issues/2026
+[13:50:51] <mbrubeck> lpy: yes - sorry, forgot to mark it assigned
+[13:51:02] <lpy> mbrubeck: okay :) thanks
+[13:51:49] *** Joins: Ms2ger (Ms2ger@moz-4A14BC33.ugent.be)
+[13:52:11] *** Joins: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca)
+[13:54:43] *** Quits: lpy (lpy@207F51B2.F09091A8.1348A864.IP) (Client exited)
+[13:58:05] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[13:58:30] *** Joins: erickt_ (erickt@49C4075F.3AC15C18.2321E71E.IP)
+[14:00:27] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[14:01:58] *** Quits: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca) (Quit: canhtak)
+[14:05:32] *** Joins: abinader (sid21713@moz-A42E5B7B.irccloud.com)
+[14:06:30] *** Quits: Ms2ger (Ms2ger@moz-4A14BC33.ugent.be) (Ping timeout)
+[14:07:17] *** ahal|afk is now known as ahal
+[14:08:14] *** Joins: maxli (Adium@moz-B19F68ED.student.cs.uwaterloo.ca)
+[14:12:31] *** Quits: maxli (Adium@moz-B19F68ED.student.cs.uwaterloo.ca) (Ping timeout)
+[14:13:29] *** Joins: maxli (Adium@moz-B19F68ED.student.cs.uwaterloo.ca)
+[14:16:02] *** Joins: Ms2ger (Ms2ger@moz-4A14BC33.ugent.be)
+[14:19:58] *** Quits: ozkriff (Mibbit@6014F6.BC46A4C1.71211713.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[14:21:12] *** Joins: oxum (anonymous@BE14E3DD.378E99F2.520CDC98.IP)
+[14:23:16] *** Joins: CaseyBecking (CaseyBecki@moz-EDABF502.lsanca.fios.verizon.net)
+[14:24:52] *** Joins: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca)
+[14:30:14] *** Joins: ghservo (ghservo@49477F7E.6A2AE50.F3114085.IP)
+[14:30:14] <ghservo> [13rust-stb-image] 15metajack pushed 2 new commits to 06master: 02http://git.io/MTMjOw
+[14:30:14] <ghservo> 13rust-stb-image/06master 14464bc2d 15ozkriff: Updated to latest Rust: priv/pub
+[14:30:14] <ghservo> 13rust-stb-image/06master 14b00422e 15Jack Moffitt: Merge pull request #30 from ozkriff/master...
+[14:30:14] *** Parts: ghservo (ghservo@49477F7E.6A2AE50.F3114085.IP) ()
+[14:31:58] *** Joins: mihneadb (mihneadb@moz-6B31F5AA.static.ziggozakelijk.nl)
+[14:33:37] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[14:35:20] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[14:36:24] *** Quits: CaseyBecking (CaseyBecki@moz-EDABF502.lsanca.fios.verizon.net) (Ping timeout)
+[14:36:58] *** Quits: Ms2ger (Ms2ger@moz-4A14BC33.ugent.be) (Quit: bbl)
+[14:41:10] <SimonSapin> Interesting that roc considers this realistic https://groups.google.com/forum/#!msg/mozilla.dev.servo/1K2-Qy27e3A/Q9DWOO8Nt3EJ
+[14:42:22] <strcat> "use utf8"; // do it! ;p
+[14:43:23] <strcat> or just stop allowing surrogates, it's wrong ;P
+[14:43:30] <strcat> web standards can adapt to actual practice
+[14:43:39] *** Quits: Debloper (debloper@moz-88FF8AE8.redhat.com) (Quit: Leaving.)
+[14:43:46] <SimonSapin> strcat: this proposal is purely implementation detail, no need to opt in
+[14:45:16] *** Joins: victorporof (victorporo@13F2CEC5.7672369.D8E68FF6.IP)
+[14:45:26] *** Joins: maxli1 (Adium@moz-EE42E0E.student.cs.uwaterloo.ca)
+[14:45:47] <SimonSapin> And yes, standards need to adapt to reality. In this case, reality is people do shit wrong and end up with lone surrogates. And the Nash equilibrium is that no browser wants to be the first to "not support" these broken websites.
+[14:46:16] <eddyb> SimonSapin: though... when do you not use [] or charAt on strings?
+[14:46:39] *** Quits: maxli (Adium@moz-B19F68ED.student.cs.uwaterloo.ca) (Ping timeout)
+[14:46:40] <eddyb> (I think v8 may have an ASCII or UTF-8 string format internally, not sure on the details)
+[14:47:08] *** Quits: maxli1 (Adium@moz-EE42E0E.student.cs.uwaterloo.ca) (Ping timeout)
+[14:48:19] <SimonSapin> eddyb: yes, you can do that with values that happen to contain nothing about U+00FF
+[14:48:33] <eddyb> oooh
+[14:48:51] <eddyb> u8 codepoints?
+[14:48:59] <eddyb> SimonSapin: I'm liking this idea :D
+[14:49:15] <SimonSapin> you store code points as u8 when you know thet doesn’t overflow, yes.
+[14:49:27] <eddyb> I actually had something similar in mind for a text editor that shares buffers with OpenGL
+[14:49:44] <eddyb> (text buffers, that is)
+[14:49:51] <SimonSapin> Python does this: https://docs.python.org/dev/whatsnew/3.3.html#pep-393-flexible-string-representation
+[14:50:19] <eddyb> so access is just one shift more
+[14:50:43] <eddyb> (and typed JITs can of course inline the shift)
+[14:51:05] <SimonSapin> but roc’s idea here is to use always use UTF-8+surrogates
+[14:51:08] <eddyb> hmm, where's the cost. append?
+[14:51:17] <SimonSapin> with some hacks to make .charAt fast
+[14:51:25] <eddyb> what hacks?
+[14:51:48] <SimonSapin> maybe have a UCS2 copy when charAt is used 
+[14:52:08] *** Joins: dbaron (dbaron@moz-3C92D971.dsl.dynamic.sonic.net)
+[14:52:19] <SimonSapin> or have some kind of mapping of UCS2 unit position to UTF8 byte position
+[14:52:29] <eddyb> and that leads me back to the previous question: how many strings don't get touched by []/charAt?
+[14:52:43] *** Joins: hyunjunekim (Mibbit@7D74E938.F9F187B.FCFA478E.IP)
+[14:52:48] <SimonSapin> that’s a good question :)
+[14:52:51] <eddyb> I think we could actually measure it
+[14:53:00] <cmr> most in the DOM, I would imagine.
+[14:53:05] <cmr> (speculation though)
+[14:53:07] <SimonSapin> (and JS strings, being immutable, have no .append(), only .concat() which returns a copy)
+[14:53:32] <eddyb> SimonSapin: right, and if you had two modes, checking whether a conversion is necessary is O(1)
+[14:53:55] <eddyb> heck, you can have a rope of an u8 codepoint string and an UCS-2 string
+[14:55:01] <eddyb> I know Google does mass-scale statistics for things like these
+[14:55:07] <SimonSapin> but for us right now this is mostly up to SpiderMonkey
+[14:55:45] <eddyb> is there anything in place to throw a modified SM FF build at "the internet" (most popular sites or something) and get stats?
+[14:56:00] <eddyb> I'm really curious now, didn't think this could actually work
+[14:56:45] <SimonSapin> we have some telemetry in Firefox (including Nightly, Aurora and Beta)
+[14:57:09] <jgraham> I don't think we have the right kind of telemetry for this yet
+[14:57:18] <SimonSapin> but ours is not nearly as fine-grained as Google’s
+[14:57:26] <SimonSapin> afaiu
+[15:00:23] <jgraham> Maybe you could hack it somehow? Like use a histogram but record a value in the 1 bucket for "no charAt use" and in the 2 bucket for "charAt use"
+[15:00:29] <jgraham> Although
+[15:00:35] *** Joins: jdm (jdm@moz-AC9499B2.cable.teksavvy.com)
+[15:00:35] *** ChanServ sets mode: +o jdm
+[15:00:42] <jgraham> I predict you can't do this from spidermonkey
+[15:07:43] *** Quits: oxum (anonymous@BE14E3DD.378E99F2.520CDC98.IP) (Ping timeout)
+[15:09:10] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[15:09:26] *** Joins: CaseyBecking (CaseyBecki@ED8170C4.82E507D6.C334098E.IP)
+[15:14:22] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[15:18:34] *** Quits: hyunjunekim (Mibbit@7D74E938.F9F187B.FCFA478E.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:21:44] <jdm> eddyb: halp
+[15:21:56] <jdm> I have types Root and JSRef
+[15:22:08] <jdm> also Element, in this case
+[15:22:29] <jdm> I have implemented two Derefs that go Root->JSRef, and JSRef->Element
+[15:22:42] <jdm> now, there's a RemoveChild method on Element
+[15:23:02] <eddyb> you should be able to call it
+[15:23:06] <jdm> and a trait INode implemented for JSRef<Element> that also has RemoveChild (taking a different set of arguments)
+[15:23:12] <eddyb> haha
+[15:23:17] <jdm> I cannot find a way to call INode::RemoveChild
+[15:23:28] <jdm> even when I explicitly have a JSRef type
+[15:23:33] <eddyb> it doesn't stop at it?
+[15:23:45] <jdm> not in my rustc
+[15:23:47] <eddyb> jdm: is it JSRef or &JSRef?
+[15:23:59] <jdm> it's mut JSRef, in this case
+[15:24:05] <eddyb> try borrowing it
+[15:24:16] <jdm> hmm
+[15:24:21] <eddyb> jdm: it might not try to autoborrow at all
+[15:24:32] <Manishearth> Wait, you can't call a method of a trait unless you use generics, right?
+[15:24:45] <eddyb> Manishearth: uhm, where'd you get that idea from?
+[15:25:09] <jdm> eddyb: still no change :/
+[15:25:18] <eddyb> hmpf
+[15:25:25] <eddyb> jdm: method lookup is bad, though
+[15:25:36] <eddyb> I thought we had tests to prevent silly things like this
+[15:25:44] <eddyb> jdm: is the trait only implemented for JSRef<Element>?
+[15:26:00] <eddyb> jdm: is it obvious that you have a JSRef<Element> and not a JSRef<inference var>?
+[15:26:21] <jdm> eddyb: have any improvements landed since caf17fea06bdf3d1540aded41a161f04a8c5a2c9 ?
+[15:26:36] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[15:26:40] <jdm> eddyb: so JSRef is actually JSRef<'a, Element> if that makes a difference
+[15:26:57] <eddyb> jdm: no, I don't think so
+[15:27:14] <jdm> but yeah, I don't think inference should be in play here
+[15:27:35] <eddyb> pfft
+[15:28:01] <eddyb> jdm: tiny testcase and RUST_LOG=rustc::middle::typeck::check::method
+[15:28:20] <eddyb> and I should go soon
+[15:28:56] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[15:29:09] <jdm> I'll see what I can produce
+[15:31:07] *** ahal is now known as ahal|afk
+[15:31:32] <Manishearth> rusti: struct A{x:int}trait S {pub fn b(){println!("hello!")}}impl S for A{}fn main(){let a :A = A{x:1};a.b();}
+[15:31:33] -rusti- <anon>:11:106: 11:111 error: type `main::A` does not implement any method in scope named `b`
+[15:31:33] -rusti- <anon>:11         struct A{x:int}trait S {pub fn b(){println!("hello!")}}impl S for A{}fn main(){let a :A = A{x:1};a.b();}
+[15:31:33] -rusti-                                                                                                                    ^~~~~
+[15:31:33] -rusti- error: aborting due to previous error
+[15:31:34] -rusti- playpen: application terminated with error code 101
+[15:31:40] <Manishearth> eddyb: that^
+[15:32:06] <eddyb> Manishearth: that's not a method ;)
+[15:32:08] <Manishearth> Yes, it will work if I declare it as an S instead of an A
+[15:32:12] <eddyb> well, it's a static one
+[15:32:16] <Manishearth> oh!
+[15:32:18] <Manishearth> hm
+[15:32:19] <eddyb> :P
+[15:32:29] <eddyb> Manishearth: lrn2rust
+[15:32:52] <cmr> eddyb: play nice
+[15:33:06] <eddyb> cmr: we're all joking around here
+[15:33:09] <Manishearth> yep, works now.
+[15:33:17] <cmr> jokes are only allowed on April 1
+[15:33:25] <eddyb> aww :(
+[15:33:44] <Manishearth> I forgot the (self) because I whipped it up on IRC, totally cramped :P
+[15:34:02] <Manishearth> I wonder why I thought that inheritence works that way
+[15:34:09] <eddyb> inheritance?
+[15:34:16] <eddyb> Rust doesn't have structural inheritance
+[15:34:36] <Manishearth> because come to think of it ive written code that uses complicated traits and stuff while playing with Rust
+[15:34:44] <Manishearth> eddyb: trait-things. I suck at terminology
+[15:35:19] <eddyb> bounds?
+[15:35:23] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[15:35:57] <jdm> eddyb: aha, the trait is to blame
+[15:35:59] <Manishearth> eddyb: yes, that :)
+[15:36:17] <jdm> if it's a regular impl, everything works fine
+[15:36:30] <Manishearth> I really need to go through the tutorial a couple of times and  memorize all the terminology.
+[15:37:26] *** kimundi is now known as zz_kimundi
+[15:37:46] <Manishearth> eddyb: cmr I didn't get to run my servo April fools joke :P
+[15:38:03] <Manishearth> (probably would have been banned from the rust community if i did fwiw :P )
+[15:38:20] <cmr> Manishearth: https://github.com/mozilla/rust/wiki/The-Rusticon
+[15:38:36] *** Joins: tobytailor (tobytailor@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[15:38:37] <Manishearth> been linked to that befoe, iirc. /me bookmarks
+[15:38:54] <jdm> eddyb: https://gist.github.com/jdm/9936609 and https://gist.github.com/jdm/9936635
+[15:39:02] <jdm> can someone with a modern rustc try that first testcase?
+[15:39:21] * Manishearth wonders when jgraham will turn up
+[15:39:30] <eddyb> jdm: might want to give nmatsakis those
+[15:39:38] <jgraham> Manishearth: You rang?
+[15:39:54] * jdm wonders if it's time to get back into rustc hacking
+[15:40:22] <Manishearth> jgraham: ANy updates on update.py?
+[15:40:53] <Manishearth> It seems to want its own git repo. ANd nesting git repos without submodules ... not sure if it's possible
+[15:40:56] <jgraham> Manishearth: Not really. I fixed the runtests script so that it should actually work with servo again
+[15:41:18] <Manishearth> great :)
+[15:41:24] <jgraham> It doesn't exactly want its own repo
+[15:41:24] <Manishearth> pushed to pypi?
+[15:41:28] <jgraham> Manishearth: Yeah
+[15:41:40] <jgraham> It just assumes that any repo it's in is a gecko tree
+[15:42:08] <Manishearth> which it isn't. Hm.
+[15:42:21] <jgraham> Or at least that the update process will be the same as it is for gecko
+[15:42:34] <jgraham> But maybe the solution here is to make that true
+[15:42:52] <Manishearth> I guess we can add an extra param to update.py that specifies an update hook
+[15:43:03] <Manishearth> to use instead of the gecko update
+[15:43:12] <jgraham> So in gecko there are two mach commands "mach web-platform-tests" to run the tests and "mach web-platform-tests-update" to update the tests
+[15:43:13] <Manishearth> how would we make it true?
+[15:43:22] <Manishearth> hmm
+[15:43:24] <jgraham> I think we want the same thing here
+[15:43:33] <jgraham> e.g. make web-platform-tests-update
+[15:43:49] <jgraham> That will pull a new version of the testsuite and check it in to the servo tree
+[15:43:50] *** Joins: mccr8 (mccr8@moz-62518563.mtv2.mozilla.com)
+[15:44:08] <jgraham> Then make web-platform-tests would just run the tests already in the tree
+[15:44:22] <Manishearth> jgraham: submodule i assume?
+[15:44:27] <nmatsakis> jdm: the reason you're seeing an error there is because we always favor inherent methods over trait methods
+[15:44:31] <nmatsakis> jdm: currently, at least.
+[15:44:39] <jdm> :(
+[15:44:45] <jgraham> Manishearth: Not a submodule in gecko, just a static copy
+[15:45:04] <Manishearth> jgraham: fwiw there might be a way to locally have a git clone within a git repo
+[15:45:11] <nmatsakis> jdm: you can force the issue using a standalone func (which would eventually be UFCS), but it'll look like RemoveChild(ref)
+[15:45:43] <jdm> ok, I appreciate the workaround
+[15:45:57] <jgraham> Manishearth: I think doing a copy is OK even though it bloats the servo repo a bit.
+[15:46:04] <jdm> nmatsakis: any chance we could make rustc not bail immediately and look for other candidates?
+[15:46:21] <Manishearth> jgraham: copy to where? main servo tree?
+[15:46:46] <jgraham> Yeah, under tests/ or something
+[15:46:56] *** Quits: mccr8 (mccr8@moz-62518563.mtv2.mozilla.com) (Connection reset by peer)
+[15:47:12] *** Joins: mccr8 (mccr8@moz-62518563.mtv2.mozilla.com)
+[15:47:29] <nmatsakis> jdm: jdm no
+[15:47:35] <nmatsakis> jdm: not until we impl DST at least
+[15:47:35] <Manishearth> jgraham: hm. But how will we tell the venv to look for the repo there?
+[15:47:50] <Manishearth> jgraham: also, wpt seems to want it in a git repo
+[15:48:15] <jdm> nmatsakis: why does DST make a difference?
+[15:48:22] <nmatsakis> jdm: well, we COULD I guess, it'd be rather hacky, we'd have to treat object types very specially -- might be ok if we knew that the behavior we want eventually. I was debating recently if we ought to change it
+[15:48:32] <nmatsakis> jdm: the reason the rules are the way they are is a workaround for lack of DST
+[15:48:52] <nmatsakis> jdm: specifically, if I am doing something like "impl Trait for ~Trait { fn foo(&self) { self.foo(); } }"
+[15:48:53] *** Joins: hoverbear (hoverbear@726D908C.44E18222.E74D50F2.IP)
+[15:48:58] <jdm> oh, right
+[15:49:04] <jdm> feh
+[15:49:09] <nmatsakis> but these kinds of dorky impls aren't needed post-DST
+[15:49:31] *** Quits: untitaker (untitaker@moz-B015CD5B.adsl.highway.telekom.at) (Ping timeout)
+[15:49:59] <jgraham> Manishearth: The venv can be elsewhere. We can tell runtests.py where to find the tests and update.py where to put them through command lind options
+[15:50:02] <jgraham> *line
+[15:50:43] <Manishearth> ah, alright
+[15:51:05] *** Joins: mno2 (mno2@C9C55379.F9BA5024.DA359910.IP)
+[15:51:07] <Manishearth> jdm: any reason why the servo makefile runs under 'sh' and not  bash?
+[15:51:20] *** Quits: tobytailor (tobytailor@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: tobytailor)
+[15:51:22] <jdm> bash might not exist!!!
+[15:51:25] <jdm> shrugf
+[15:51:55] <Manishearth> jdm: because I can't source from sh
+[15:52:16] <jdm> I doubt it's a big deal to switch to bash instead
+[15:52:44] <Manishearth> And to run a virtualenv I either have to source or explicit-path-call pythn every time -_-
+[15:53:44] <mbrubeck> Manishearth: Can you use "." to source from sh?
+[15:53:48] <cmr> Manishearth: in sh, it's .
+[15:53:49] <jgraham> You know the problem here is that you're using make, right? ;)
+[15:53:50] <cmr> yeah.
+[15:54:22] <jgraham> The virtualenv script might assume bash anyway, I'm not sure
+[15:54:37] <Manishearth> cmr: I was using ., IIRC, but the paths weren't working. *tries again*
+[15:55:14] <Manishearth> hm, that works
+[15:55:59] <Manishearth> jgraham: nah, I was calling . _virtualenv/bin/activate from the makefile but there were some issues. I read that sh has problems with sourcing so I just switched without further thought. I'l look into it
+[15:57:29] *** Quits: jdm (jdm@moz-AC9499B2.cable.teksavvy.com) (Quit: Lost terminal)
+[15:58:01] *** Joins: untitaker (untitaker@moz-C9BFA0EA.adsl.highway.telekom.at)
+[15:58:31] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[15:59:34] *** Quits: mno2 (mno2@C9C55379.F9BA5024.DA359910.IP) (Quit: mno2)
+[16:00:23] *** ahal|afk is now known as ahal
+[16:00:31] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[16:14:58] *** catlee is now known as catlee-lunch
+[16:16:29] *** Joins: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net)
+[16:16:44] *** Quits: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net) (Input/output error)
+[16:19:11] *** Joins: bholley (bholley@B08EEEEB.6BBCE916.7B974E06.IP)
+[16:22:17] *** Quits: mihneadb (mihneadb@moz-6B31F5AA.static.ziggozakelijk.nl) (Quit: Computer gone to sleep - Zzzz...)
+[16:22:47] *** Quits: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca) (Quit: canhtak)
+[16:23:36] *** Quits: bholley (bholley@B08EEEEB.6BBCE916.7B974E06.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[16:28:15] *** Joins: bholley (bholley@B08EEEEB.6BBCE916.7B974E06.IP)
+[16:28:19] *** Quits: erickt_ (erickt@49C4075F.3AC15C18.2321E71E.IP) (Ping timeout)
+[16:29:45] *** Joins: maxli (Adium@moz-F47DD19B.student.cs.uwaterloo.ca)
+[16:30:06] *** ahal is now known as ahal|lunch
+[16:34:21] *** Quits: msanchez (msanchez@E6836824.9773E83B.5D23F53B.IP) (Quit: Ex-Chat)
+[16:34:34] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[16:34:46] *** Quits: maxli (Adium@moz-F47DD19B.student.cs.uwaterloo.ca) (Ping timeout)
+[16:35:34] *** Joins: esummers (esummers@moz-3B015C90.wi.res.rr.com)
+[16:36:20] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[16:38:59] *** Joins: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca)
+[16:40:25] *** Joins: azakai (alon@moz-62518563.mtv2.mozilla.com)
+[16:42:02] *** Joins: dherman (dherman@moz-C07D5168.p2p.sfo1.mozilla.com)
+[16:42:02] *** ChanServ sets mode: +qo dherman dherman
+[16:48:24] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[16:50:17] *** Quits: ahunt (ahunt@moz-6D6D79D6.cable.virginm.net) (Ping timeout)
+[16:51:13] *** Joins: khodzha (khodzha@557CE0BA.2AEE264E.CA6E2165.IP)
+[16:51:39] *** Quits: khodzha1 (khodzha@BA0B862B.2AEE264E.CA6E2165.IP) (Ping timeout)
+[16:52:03] *** Joins: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net)
+[16:53:18] *** Quits: mccr8 (mccr8@moz-62518563.mtv2.mozilla.com) (Connection reset by peer)
+[16:53:34] *** Joins: mccr8 (mccr8@moz-62518563.mtv2.mozilla.com)
+[17:03:17] *** Joins: jdm (jdm@FCCEA34F.7672369.D8E68FF6.IP)
+[17:03:18] *** ChanServ sets mode: +o jdm
+[17:03:31] *** Joins: ahunt (ahunt@moz-6D6D79D6.cable.virginm.net)
+[17:06:04] *** Joins: alphonse23 (sean@FB7EB8B4.60DF7298.8588B1D7.IP)
+[17:06:18] *** Quits: bholley (bholley@B08EEEEB.6BBCE916.7B974E06.IP) (Quit: Textual IRC Client: www.textualapp.com)
+[17:07:52] *** Quits: eddyb (eddy@F8B50789.F33C1089.FB866788.IP) (Ping timeout)
+[17:10:53] *** Joins: eddyb (eddy@F8B50789.F33C1089.FB866788.IP)
+[17:11:50] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (No route to host)
+[17:11:55] *** Joins: maxli (Adium@moz-F47DD19B.student.cs.uwaterloo.ca)
+[17:17:23] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[17:19:29] *** Joins: azita (Azita@moz-62518563.mtv2.mozilla.com)
+[17:20:48] *** Joins: tobytailor (tobytailor@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[17:27:26] *** ahal|lunch is now known as ahal
+[17:30:31] *** Joins: pachuco (Mibbit@moz-AEFBDC1A.client.mchsi.com)
+[17:30:52] *** Quits: pachuco (Mibbit@moz-AEFBDC1A.client.mchsi.com) (Quit: http://www.mibbit.com ajax IRC Client)
+[17:30:54] *** Joins: brson (brson@moz-62518563.mtv2.mozilla.com)
+[17:30:54] *** ChanServ sets mode: +o brson
+[17:31:43] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[17:34:18] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[17:36:29] *** catlee-lunch is now known as catlee
+[17:38:38] *** Joins: Savago (Savago@504D6CF1.5315C0D2.4C2245EF.IP)
+[17:48:17] *** Quits: Kostic (Kostic@C4D4CB5C.58A2DD99.2168A69F.IP) (Quit: Leaving)
+[17:55:14] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[17:57:14] *** Quits: azita (Azita@moz-62518563.mtv2.mozilla.com) (Quit: azita)
+[17:58:50] *** Quits: brson (brson@moz-62518563.mtv2.mozilla.com) (Ping timeout)
+[17:59:57] *** Quits: jackneill (jackneill@moz-782B761E.pool.digikabel.hu) (Ping timeout)
+[18:00:02] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[18:00:56] *** Quits: dranov (dranov@46290EAA.42CAD9AB.FCAAE698.IP) (Ping timeout)
+[18:01:24] *** Joins: brson (brson@moz-62518563.mtv2.mozilla.com)
+[18:01:24] *** ChanServ sets mode: +o brson
+[18:04:07] *** Joins: jackneill (jackneill@moz-782B761E.pool.digikabel.hu)
+[18:09:32] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.3)
+[18:10:10] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[18:10:21] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[18:11:02] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[18:11:02] *** ChanServ sets mode: +o pcwalton
+[18:13:08] *** Joins: azita (Azita@moz-62518563.mtv2.mozilla.com)
+[18:14:28] *** Quits: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[18:15:23] *** Joins: Ms2ger (Ms2ger@B7B2FF50.C60A97A6.F9FB0584.IP)
+[18:15:52] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[18:17:04] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[18:19:53] *** Joins: tikue (tkuehn@CB7FC854.FAD414BA.D74CC41D.IP)
+[18:20:44] *** Joins: Jayflux (Jason@moz-CF767DBE.ppp.as43234.net)
+[18:29:42] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[18:31:36] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[18:35:27] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[18:37:08] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[18:39:59] *** zz_kimundi is now known as kimundi
+[18:45:37] *** Quits: CaseyBecking (CaseyBecki@ED8170C4.82E507D6.C334098E.IP) (Client exited)
+[18:46:02] *** Joins: CaseyBecking (CaseyBecki@ED8170C4.82E507D6.C334098E.IP)
+[18:46:08] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[18:47:50] *** Quits: CaseyBecking (CaseyBecki@ED8170C4.82E507D6.C334098E.IP) (Ping timeout)
+[18:53:21] *** Joins: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[18:54:09] *** Joins: CaseyBecking (CaseyBecki@ED8170C4.82E507D6.C334098E.IP)
+[18:57:17] <Ms2ger> Manishearth, please, please, please, make the make target no more complex than running a python script
+[18:57:30] *** Quits: dbaron (dbaron@moz-3C92D971.dsl.dynamic.sonic.net) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[18:58:24] <kmc> pcwalton: so it occurred to me that rust-cocoa could now provide syntax like  let string = objc![[NSString alloc] initWithCString: "Hello, world!"];
+[18:58:28] <kmc> with a procedural macro
+[18:58:36] <pcwalton> kmc: that would be nice
+[18:58:41] <jdm> hubba hubba
+[19:03:12] *** Quits: jackneill (jackneill@moz-782B761E.pool.digikabel.hu) (Quit: WeeChat 0.4.3)
+[19:03:45] *** Quits: hoverbear (hoverbear@726D908C.44E18222.E74D50F2.IP) (Quit: Taking a nap.)
+[19:06:04] *** Joins: bholley (bholley@B08EEEEB.6BBCE916.7B974E06.IP)
+[19:09:14] *** Parts: Ms2ger (Ms2ger@B7B2FF50.C60A97A6.F9FB0584.IP) (Leaving)
+[19:10:35] *** Quits: azita (Azita@moz-62518563.mtv2.mozilla.com) (Quit: azita)
+[19:11:20] *** Quits: bholley (bholley@B08EEEEB.6BBCE916.7B974E06.IP) (Ping timeout)
+[19:11:23] *** Joins: bholley (bholley@B08EEEEB.6BBCE916.7B974E06.IP)
+[19:11:46] *** Quits: brson (brson@moz-62518563.mtv2.mozilla.com) (Ping timeout)
+[19:12:52] *** Joins: azita (Azita@moz-62518563.mtv2.mozilla.com)
+[19:13:05] <jdm> mmm, the introduction of Unrooted<T> yields surprisingly pleasant rustc errors
+[19:13:07] *** Quits: tobytailor (tobytailor@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: tobytailor)
+[19:13:27] <jdm> since I see an error with some code trying to use properties on the underlying type and think "oh! that's not safe! thanks compiler!"
+[19:13:56] *** Joins: tobytailor (tobytailor@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[19:15:04] *** Quits: tobytailor (tobytailor@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: tobytailor)
+[19:15:13] <eddyb> jdm: you're welcome :P
+[19:15:21] <eddyb> wait, this is not rustc
+[19:15:27] <eddyb> this is eddyb
+[19:22:46] *** Joins: brendan (brendaneic@moz-62518563.mtv2.mozilla.com)
+[19:28:24] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[19:29:24] *** Joins: ghservo (ghservo@99CAE845.6A2AE50.F3114085.IP)
+[19:29:25] <ghservo> [13servo] 15jdm opened issue #2027: Document::create_collection's callback should return a boolean instead of a node 02http://git.io/NB2yUg
+[19:29:25] *** Parts: ghservo (ghservo@99CAE845.6A2AE50.F3114085.IP) ()
+[19:29:40] *** Joins: brson (brson@moz-62518563.mtv2.mozilla.com)
+[19:29:40] *** ChanServ sets mode: +o brson
+[19:30:28] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[19:35:53] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[19:35:56] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[19:37:28] *** Quits: bholley (bholley@B08EEEEB.6BBCE916.7B974E06.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[19:37:36] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[19:37:53] *** Joins: bholley (bholley@B08EEEEB.6BBCE916.7B974E06.IP)
+[19:38:16] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[19:38:48] *** Quits: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: jet)
+[19:41:37] *** elan is now known as elan-lunch
+[19:44:02] <kmc> 17:35 < kmc> fun fact: clang (and I think GCC too) will compile code like isspace into a range check followed by a "table lookup" using a 64-bit immediate as a table of 64 booleans
+[19:44:06] <kmc> I checked and rustc does this too :)
+[19:44:12] <kmc> (not surprising)
+[19:45:19] <jdm> liberal doses of Deref sugar make this rooting stuff much more pleasant to read
+[19:45:29] <kmc> movzbl %dil, %ecx; movabs $0x1000204000000001, %rdx; bt %rcx, %rdx
+[19:45:38] <eddyb> hah
+[19:45:54] <eddyb> kmc: LLVM recently got hash lookups for large sparse switches
+[19:46:04] <kmc> perfect hashing? :D
+[19:46:11] <eddyb> yupp
+[19:46:14] <kmc> that's pretty great
+[19:46:25] <kmc> I was playing around with hash functions that can be implemented just in registers, without table lookups
+[19:46:33] <eddyb> so something like Many should be much cheaper than C++ RTTI :D
+[19:47:22] <kmc> just like take the first 8 bytes of a string and munge them in registers as a single word
+[19:47:58] *** Quits: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca) (Quit: canhtak)
+[19:48:11] *** Quits: brson (brson@moz-62518563.mtv2.mozilla.com) (Ping timeout)
+[19:48:24] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[19:49:00] <Fiora> kmc: isn't that the kind of thing that like, murmurhash and stuff can do?
+[19:49:10] <Fiora> http://code.google.com/p/cityhash/source/browse/trunk/src/city.cc#129    like I guess this
+[19:49:24] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[19:50:00] <kmc> yeah, sorry, what I meant is doing this for perfect hashing with a key set known at compile time
+[19:50:26] <kmc> you'd find a set of shifts and constants that has no collisions on specifically your key set
+[19:50:35] <Fiora> oooh
+[19:50:36] <kmc> gperf etc. use tables instead
+[19:50:44] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[19:50:56] <kmc> (or not even no collisions, but sufficiently few)
+[19:51:04] <eddyb> kmc: you still need a table, though
+[19:51:15] <eddyb> I guess I misunderstood the "very cheap lookup" part
+[19:51:25] <Fiora> that almost sounds like a job for a superoptimizer or something?
+[19:52:25] <eddyb> kmc: I actually have code somewhere that naively tries to find minimal a, b constants for (k + a) & ((1 << b) - 1)
+[19:52:30] <kmc> eddyb: you need to check a table once you have a hash value, but you don't need a table to compute tha hash value
+[19:52:37] <eddyb> right
+[19:52:52] <eddyb> the keys were TypeId's for trait objects
+[19:52:59] <kmc> gperf generates code like  switch (hval) { default: hval += asso_values[(unsigned char)str[4]+1]; case 4: case 3: hval += asso_values[(unsigned char)str[2]]; ... }
+[19:53:07] <kmc> and an asso_values table
+[19:53:27] <eddyb> I think I needed like 64 table entries for 8 possible keys to have no collisions
+[19:53:43] <eddyb> and that gets big when each entry is Option<&()>
+[19:53:57] <kmc> mm
+[19:54:15] <eddyb> kmc: but you can certainly do better than that fixed form
+[19:54:17] *** Joins: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[19:55:04] <eddyb> like, you could take a window of the original bits instead of just the bottom `b` bits
+[19:55:35] <eddyb> kmc: oooh, SmallStr would be fun for this
+[19:55:51] <eddyb> since <= 15 byte strings would be an immediate value
+[19:56:31] <eddyb> so all you need is to have something that works with two registers on x64
+[19:56:50] <Fiora> or you could put it in an sse register? :P
+[19:56:55] <eddyb> and you've turned O(N) memory and hashing time into O(1)
+[19:57:04] <eddyb> Fiora: and do FMA on it?
+[19:57:17] <eddyb> as long as it's fast ;)
+[19:57:22] <Fiora> I guess it'd be hard to do bit-wise mixing across a simd register
+[19:57:38] <eddyb> shift and shuffle :D
+[19:57:56] <Fiora> so like, lots of bit-shifts of the individual sections, and then shuffling to mix between the sections?
+[19:58:06] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[19:58:10] <Fiora> since there's no 128-bit bit-shift
+[19:58:13] <eddyb> hmm
+[19:58:31] <Fiora> sudden temptation to use vpperm everywhere
+[19:58:33] <eddyb> Fiora: shuffle + add should do a lot, though
+[19:58:35] <eddyb> hahaha
+[19:58:57] <eddyb> you know what would be nice to have right now?
+[19:58:59] <Fiora> "let's reverse bytes randomly and invert them randomly"
+[19:59:04] <eddyb> wiREd/r3
+[19:59:19] <Fiora> what's that?
+[19:59:37] <eddyb> even though LLVM has this information, it's not readily accessible
+[19:59:44] <eddyb> Fiora: decompiler project of mine
+[19:59:55] <eddyb> I had high-level descriptions of opcodes
+[20:00:26] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[20:00:37] <eddyb> you could just plug those into a naive search over small combinations of instructions that fed into each-other
+[20:06:12] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Client exited)
+[20:06:14] <strcat> kmc: there is rust perfect hashing via a syntax ext btw
+[20:06:19] <strcat> not really sure if that's what you were talking about
+[20:06:31] <strcat> https://github.com/sfackler/rust-phf
+[20:06:50] <strcat> would be really useful in librustc
+[20:07:14] *** Joins: brson (brson@moz-62518563.mtv2.mozilla.com)
+[20:07:14] *** ChanServ sets mode: +o brson
+[20:07:21] *** Quits: bholley (bholley@B08EEEEB.6BBCE916.7B974E06.IP) (Ping timeout)
+[20:07:56] *** Joins: bholley (bholley@B08EEEEB.6BBCE916.7B974E06.IP)
+[20:09:14] *** Joins: Aleksej (Aleksej@moz-987515CB.broadband.corbina.ru)
+[20:11:22] <kmc> yes
+[20:11:26] <kmc> i'm using that in the HTML parser
+[20:11:58] <kmc> it's pretty sweet
+[20:12:12] <kmc> only 0.25 seconds to generate a map with like 8,000 keys
+[20:12:27] <kmc> and it's simpler even than declaring a static hashmap of the vanilla sort
+[20:12:55] <strcat> kmc: I plan on making a generic container macro
+[20:13:23] <strcat> foo!(HashMap, (1, 2), (3, 4), (5, 6))
+[20:13:34] <strcat> where it calls HashMap::with_capacity(3) and inserts them
+[20:14:07] <jdm> hmm
+[20:15:52] <kmc> cool
+[20:16:06] <kmc> it's like std::initializer_list! ;)
+[20:16:11] <pcwalton> rust-phf is amazing
+[20:16:15] <pcwalton> it's worth a preso or blog post IMO
+[20:16:29] <pcwalton> really a great example of the power of Rust's macros to do something that's really irritating in C++
+[20:16:35] <pcwalton> and comes up all over the place, honestly
+[20:16:46] <pcwalton> lots of programs have statically initialized maps that need to be fast
+[20:17:16] <kmc> yes
+[20:17:23] <kmc> to all of that :)
+[20:17:29] <kmc> did you mention this to sfackler?
+[20:17:31] <pcwalton> and typically people use std::map and initialize it at program startup, slowing down startup unnecessarily
+[20:17:41] <strcat> we just need static regexp now :)
+[20:17:50] <strcat> basic syntax checking for SQL strings... etc.
+[20:18:10] <pcwalton> yes
+[20:18:12] <SimonSapin> pcwalton: should the compiler be doing this for match?
+[20:18:26] <pcwalton> SimonSapin: compiling basic string matching to a hash table, you mean?
+[20:18:32] <pcwalton> I've thought about it… it might be worthwhile
+[20:18:32] *** Quits: sankha93 (sankha93@7061CD01.D6BD0D91.22D41759.IP) (Client exited)
+[20:18:34] <SimonSapin> yes
+[20:18:44] <zwarich> should we have a lexer / parser generator as a macro? ;-)
+[20:19:04] <SimonSapin> eg. https://github.com/mozilla-servo/rust-cssparser/blob/6a1086270b00531c6551c9d0aa660a6aff435f87/color.rs#L43-L196
+[20:19:09] *** Joins: tobytailor (tobytailor@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[20:19:18] <pcwalton> yeah
+[20:19:21] <pcwalton> that would be a nice thing to do
+[20:19:27] <pcwalton> in the meantime that should probably be a rust-phf
+[20:19:35] <SimonSapin> and https://github.com/lifthrasiir/rust-encoding/blob/7c48b47ad54544a41c9dc9d13ab53d084d1ea2b8/src/encoding/label.rs#L16-L279
+[20:20:00] <SimonSapin> pcwalton: make it a "good first bug" ? :)
+[20:20:15] * jdm nods approvingly
+[20:20:38] <pcwalton> possibly -- it's maybe not that easy
+[20:20:41] <pcwalton> but it's self-contained
+[20:21:08] <SimonSapin> maybe an intern first project, then
+[20:21:15] <kmc> yeah replacing that with rust-phf would be almost trivial
+[20:21:25] <kmc> once I add it as a servo dependency for the html parser ;)
+[20:21:27] *** Quits: brendan (brendaneic@moz-62518563.mtv2.mozilla.com) (Quit: brendan)
+[20:21:31] <kmc> SimonSapin: I was also thinking about replacing the mako templates in the CSS parser with procedural macros
+[20:21:39] <SimonSapin> kmc: +1
+[20:22:04] <pcwalton> yes, please :)
+[20:22:07] <SimonSapin> if only to dogfood them
+[20:22:19] <pcwalton> I don't mind the Mako as a dependency before we had them
+[20:22:28] <pcwalton> but checking in Mako into the tree isn't ideal IMO
+[20:22:38] <pcwalton> we have a compiler, let's use it :)
+[20:22:40] *** Joins: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[20:22:48] <kmc> also, we're not rewriting CodegenRust.py anytime soon, but we could make rustc drive it via a procedural macro
+[20:22:52] <pcwalton> yes
+[20:22:56] <pcwalton> +a mililon
+[20:23:00] <pcwalton> million too
+[20:23:11] <kmc> I'll open some tickets :)
+[20:23:57] <jdm> kmc: wait what?
+[20:24:02] <SimonSapin> well, unless we go rewrite the git history and screw everyone’s clone, that 460K for Mako’s zip file is already spent
+[20:24:08] * jdm still doesn't understand what those are
+[20:24:17] <kmc> what procedural macros are?
+[20:24:20] <jdm> yep
+[20:24:37] <kmc> generating ASTs at compile time by running rust code
+[20:24:39] <SimonSapin> jdm: rust code that takes Rust AST as input and give modified AST as output
+[20:25:07] <jdm> ah, I see
+[20:25:09] <kmc> this is supported now... you write a library crate that links against libsyntax and then you do  #[phase(syntax)] extern crate whatever
+[20:25:14] <kmc> and the compiler will dlopen() it :)
+[20:25:39] <jdm> so what would making rustc drive the codegen mean in practice?
+[20:26:04] <eddyb> less eww python code
+[20:26:07] <kmc> a procedural macro which invokes CodegenRust (probably for a single IDL file), parses the Rust output, and splices it in
+[20:26:16] <eddyb> IDL is tokenizable, right?
+[20:26:18] <jdm> ohhhh
+[20:26:23] <jdm> spooky
+[20:26:26] <eddyb> (I mean, token-compatible with Rust)
+[20:26:37] <kmc> so that we don't have generated .rs files sitting around, and so the build system doesn't need to know about them
+[20:26:47] <eddyb> you can probably use rule-based macros for most of the parsing
+[20:26:58] <jdm> there are upsides an downsides to that idea
+[20:27:00] <eddyb> too bad you can't quasi-quote matchers
+[20:27:18] <jdm> one being that I really appreciate having the generated files sitting around for my work :P
+[20:27:27] <eddyb> --pretty expanded
+[20:27:27] <kmc> point
+[20:27:54] <kmc> eddyb: CodegenRust.py is almost 6000 lines long; we're not rewriting it as a procedural macro any time soon
+[20:27:59] <eddyb> haha
+[20:28:02] <kmc> (it's inherited from Gecok code)
+[20:28:10] <kmc> Gecko too.
+[20:28:15] <eddyb> kmc: I want to overhaul quasi-quoting some time in the future
+[20:28:27] <jdm> the one in mozilla-central is 12000 lines long
+[20:28:31] <jdm> we're only just getting started :)
+[20:28:36] <pauls> It might be shorter as one, since it'll be manipulating AST instead of text.
+[20:29:46] *** Quits: bholley (bholley@B08EEEEB.6BBCE916.7B974E06.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[20:31:44] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[20:32:28] <kmc> jdm: haha
+[20:36:40] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[20:37:01] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Client exited)
+[20:38:53] *** Joins: ghservo (ghservo@94BD74B8.6A2AE50.F3114085.IP)
+[20:38:53] <ghservo> [13servo] 15kmcallister opened issue #2028: Replace style properties Mako template with procedural macros 02http://git.io/R9DxqQ
+[20:38:53] *** Parts: ghservo (ghservo@94BD74B8.6A2AE50.F3114085.IP) ()
+[20:39:25] <kmc> jdm: I guess you could still use rustc --pretty=expanded, but it will have a load of other junk in it
+[20:40:24] <eddyb> kmc: but it would be easy to drive it standalone
+[20:40:24] *** Joins: mihneadb (mihneadb@moz-6B31F5AA.static.ziggozakelijk.nl)
+[20:40:31] <kmc> that's true
+[20:40:33] <eddyb> and output prettified AST into files
+[20:40:42] <kmc> it seems like a generic "run this external program to generate Rust code" macro could be useful
+[20:41:34] <pcwalton> kmc: it'd be unixy
+[20:41:41] <kmc> we would also lose the caching of CodegenRust results, though
+[20:41:52] <kmc> and it's not terribly fast
+[20:42:25] <kmc> if we're managing our own cache then I think it's cleaner for the build system to know about it
+[20:42:29] <jdm> yeah, that's actually a big deal
+[20:42:48] <jdm> it's only going to get slower as time goes on
+[20:44:10] *** Quits: elan-lunch (elancaster@moz-16672D29.hsd1.ca.comcast.net) (Ping timeout)
+[20:46:14] *** Joins: elan-lunch (elancaster@moz-16672D29.hsd1.ca.comcast.net)
+[20:53:19] *** Quits: Jayflux (Jason@moz-CF767DBE.ppp.as43234.net) (Quit: Leaving)
+[20:53:25] *** Joins: Jayflux (Jason@moz-CF767DBE.ppp.as43234.net)
+[20:57:55] <larsberg> are procedural macros integrated with symbols for debugging, profiling, and (later) code coverage? I'd sort of want to know things like e.g., what parts of the generated code our ref tests never execute 
+[20:58:19] *** Quits: CaseyBecking (CaseyBecki@ED8170C4.82E507D6.C334098E.IP) (Ping timeout)
+[20:58:34] <eddyb> larsberg: you can do fancy things with spans
+[20:58:39] <eddyb> (and thus, debuginfo)
+[20:58:57] <eddyb> larsberg: spans are "location (expanded from location)*"
+[20:59:46] *** Joins: hoverbear (hoverbear@moz-6543792B.wireless.uvic.ca)
+[20:59:52] <strcat> larsberg: I think the dead code lint actually does forbid dead code that's generated from macros
+[21:00:02] <strcat> not that it necessarily should...
+[21:00:04] <larsberg> eddyb: nice, that would help
+[21:00:35] <larsberg> strcat: I'm mainly worried about being able to ask "of all of this stylesystem parsing code we generate that's reachable, do we actually have tests that execute all of it?"
+[21:00:52] <strcat> ah
+[21:00:55] <eddyb> oh, that's what coverage is about :D
+[21:01:02] * eddyb finally figured it's about *tests*
+[21:01:30] <eddyb> larsberg: I think cmr&huon played with coverage tools
+[21:01:35] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[21:01:44] <SimonSapin> eddyb: typically, coverage is about code that’s executed at least once when running the full test suite
+[21:06:06] *** Joins: CaseyBecking (CaseyBecki@ED8170C4.82E507D6.C334098E.IP)
+[21:07:38] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[21:09:19] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Ping timeout)
+[21:09:41] * jdm -> train
+[21:09:43] *** Quits: jdm (jdm@FCCEA34F.7672369.D8E68FF6.IP) (Quit: Lost terminal)
+[21:10:24] <huon> larsberg: kcov works alright by just using the debuginfo (it's not perfect, but is better than nothing)
+[21:12:37] *** Quits: elan-lunch (elancaster@moz-16672D29.hsd1.ca.comcast.net) (Quit: elan-lunch)
+[21:13:31] *** Joins: dranov (dranov@F9D59147.3B6BC09B.A5830293.IP)
+[21:15:44] <larsberg> huon: thanks for the info!
+[21:16:25] <SimonSapin> argh madness http://dev.w3.org/csswg/css2/box.html#collapsing-margins
+[21:17:57] <huon> larsberg: (and theoretically procedural-macro generated code gets covered by debuginfo, but I don't think it has a source location, so I don't know how you ask anything about profiling/coverage of it.)
+[21:19:51] *** bhearsum is now known as bhearsum|afk
+[21:20:15] *** Quits: hoverbear (hoverbear@moz-6543792B.wireless.uvic.ca) (Quit: Taking a nap.)
+[21:20:20] *** Quits: maxli (Adium@moz-F47DD19B.student.cs.uwaterloo.ca) (Ping timeout)
+[21:20:32] *** Joins: maxli (Adium@moz-B19F68ED.student.cs.uwaterloo.ca)
+[21:21:35] *** Quits: ahunt (ahunt@moz-6D6D79D6.cable.virginm.net) (Ping timeout)
+[21:22:13] <larsberg> SimonSapin: I spent many hours reviewing the first version of that PR, #1924
+[21:22:14] <crowbot> Issue #1924: layout: Implement the proper behavior for margin collapse when negative - https://github.com/mozilla/servo/pull/1924
+[21:23:10] <larsberg> huon: thanks! I think that will probably be an issue that requires us to at least do eddyb's pretty-printing option when we're doing profiling or code coverage runs
+[21:23:34] <larsberg> Otherwise, "40% of time in __unnamed22344__()" will get a bit maddening :-)
+[21:23:40] <eddyb> larsberg: if you don't read directly from a file, you should be fine
+[21:23:54] <SimonSapin> larsberg: wait, isn’t that supposed to be the same as what I’m reviewing?
+[21:24:12] <larsberg> SimonSapin: pcwalton realized it was wrong and rewrote it (closing the old one)
+[21:24:16] <eddyb> larsberg: that is, if the IDL is lexed as Rust tokens you get spans
+[21:24:28] <SimonSapin> oh, ok
+[21:24:39] <eddyb> larsberg: I guess it would even work even if you were to keep them outside of the module tree
+[21:24:54] <larsberg> eddyb: aha, that sounds good, then
+[21:25:16] <eddyb> imagine Rust errors that have an IDL span :D
+[21:25:21] <eddyb> much confuse
+[21:26:12] <SimonSapin> Actually, Jinja2 (a Python templating system) rewrites Python tracebacks to show the Jinja source rather than the generated code, it’s very useful
+[21:26:44] <SimonSapin> (with some "interesting" code code to mutate immutable traceback objects.)
+[21:27:53] *** Quits: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[21:28:32] *** Joins: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[21:30:35] *** Quits: flaki (uid26072@moz-A42E5B7B.irccloud.com) (Quit: Connection closed for inactivity)
+[21:31:06] *** Joins: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP)
+[21:31:06] *** ChanServ sets mode: +o jdm
+[21:31:40] *** Quits: mihneadb (mihneadb@moz-6B31F5AA.static.ziggozakelijk.nl) (Quit: Computer gone to sleep - Zzzz...)
+[21:34:12] *** Joins: elan-lunch (elancaster@moz-16672D29.hsd1.ca.comcast.net)
+[21:34:51] *** Joins: eholk_ (eholk@moz-F70D5031.hsd1.in.comcast.net)
+[21:35:25] *** elan-lunch is now known as elan
+[21:36:29] *** Quits: Nekit1234007 (Nekit12340@DC1D6696.9C28A5C7.4707F662.IP) (Ping timeout)
+[21:39:43] *** catlee is now known as catlee-away
+[21:41:02] <SimonSapin> or usage of the term "flow" clashes with the spec’s "in flow" vs. "out of flow"
+[21:42:22] *** Quits: brson (brson@moz-62518563.mtv2.mozilla.com) (Ping timeout)
+[21:43:44] *** Joins: bvssvni (Mibbit@moz-A47B6F8E.bb.online.no)
+[21:45:18] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[21:46:57] *** Joins: ahunt (ahunt@moz-6D6D79D6.cable.virginm.net)
+[21:47:23] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[21:49:01] *** Joins: sp3d (sp3d@6361F3B1.19CD1E54.8354FB35.IP)
+[21:50:41] *** Joins: Nekit1234007 (Nekit12340@A4D1747.7796E3F4.4707F662.IP)
+[21:51:17] *** Quits: ahal (ahal@moz-7DE89BF0.cable.teksavvy.com) (Ping timeout)
+[21:54:31] *** Joins: bholley (bholley@B08EEEEB.6BBCE916.7B974E06.IP)
+[21:57:33] *** Quits: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[21:58:03] *** Joins: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[21:59:09] <larsberg> SimonSapin: s/or/our? If so, I agree.
+[21:59:45] <SimonSapin> yes
+[22:00:38] <SimonSapin> damn keyboard dyslexia
+[22:00:43] <SimonSapin> or whatever it’s called
+[22:00:59] *** Parts: Aleksej (Aleksej@moz-987515CB.broadband.corbina.ru) ()
+[22:01:05] <eddyb> dissociative finger actions :P?
+[22:02:31] <SimonSapin> I distinctly think of a word, and my fingers type a different work
+[22:03:06] <jgraham> (please tell me that wasn't intentional)
+[22:03:29] *** Quits: nszceta (nszceta@moz-E458A7C0.pharm.pitt.edu) (Quit: Textual IRC Client: www.textualapp.com)
+[22:03:36] <larsberg> lol
+[22:03:36] <SimonSapin> (I left this one on purpose after noticing it to demonstrate, but it wasn’t intentional at first.)
+[22:03:52] <jgraham> (good enough :)
+[22:09:02] *** Quits: abaez (a__@moz-8D618AC3.nycmny.fios.verizon.net) (Client exited)
+[22:13:03] *** Joins: Jesse (jruderman@moz-62518563.mtv2.mozilla.com)
+[22:15:25] *** Quits: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP) (Ping timeout)
+[22:15:28] *** Joins: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP)
+[22:15:28] *** ChanServ sets mode: +o jdm
+[22:17:15] *** Quits: dranov (dranov@F9D59147.3B6BC09B.A5830293.IP) (Ping timeout)
+[22:20:51] *** Joins: hoverbear (hoverbear@moz-86FCBF4B.gv.shawcable.net)
+[22:22:03] *** Joins: abaez (a__@moz-8D618AC3.nycmny.fios.verizon.net)
+[22:22:04] *** Quits: abaez (a__@moz-8D618AC3.nycmny.fios.verizon.net) (Client exited)
+[22:22:12] *** Quits: ahunt (ahunt@moz-6D6D79D6.cable.virginm.net) (Ping timeout)
+[22:22:35] *** Joins: abaez (a__@moz-8D618AC3.nycmny.fios.verizon.net)
+[22:25:09] <pcwalton> SimonSapin: "Flow" in Servo means more "parallelism unit"
+[22:25:29] <pcwalton> I am not sure what a better term would be but I am not super happy with "flow"
+[22:25:35] <pcwalton> Render Object in WebKit is the best term, honestly
+[22:25:43] <pcwalton> but we have a two level tree
+[22:26:00] <pcwalton> well, maybe Fragment is the best term, but it encompasses more than fragments
+[22:27:03] <pcwalton> well, Render Object is so generic that it can't be a bad term, but it's also pretty meaningless
+[22:27:12] <pcwalton> it's a thing… used in rendering...
+[22:28:04] *** Joins: flaki (uid26072@moz-A42E5B7B.irccloud.com)
+[22:28:26] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[22:28:31] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[22:30:12] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Ping timeout)
+[22:30:34] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[22:32:13] *** Joins: brson (brson@moz-62518563.mtv2.mozilla.com)
+[22:32:13] *** ChanServ sets mode: +o brson
+[22:32:35] *** Joins: eibwen (kvirc@moz-A47B471B.dip0.t-ipconnect.de)
+[22:32:36] *** Quits: victorporof (victorporo@13F2CEC5.7672369.D8E68FF6.IP) (Quit: victorporof)
+[22:34:10] *** Joins: Jesse_ (jruderman@moz-62518563.mtv2.mozilla.com)
+[22:34:17] *** Quits: Jesse (jruderman@moz-62518563.mtv2.mozilla.com) (Connection reset by peer)
+[22:35:21] <jdm> RenderThing
+[22:35:39] <eddyb> RndrThngy
+[22:35:40] *** Quits: brson (brson@moz-62518563.mtv2.mozilla.com) (Ping timeout)
+[22:36:20] * larsberg puts on his bikeshed paintin' clothes...
+[22:36:57] <SimonSapin> call it Superman. (See Bedazzling Names in https://www.thc.org/root/phun/unmaintain.html )
+[22:37:30] <jdm> mmm, it's been a while since I read that
+[22:38:10] <larsberg> SimonSapin: you're giving me horrible flashbacks to debugging/grading undergraduate projects...
+[22:38:39] <SimonSapin> larsberg: you’re welcome :)
+[22:39:12] *** Quits: bholley (bholley@B08EEEEB.6BBCE916.7B974E06.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[22:40:46] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[22:41:45] *** Joins: brson (brson@moz-62518563.mtv2.mozilla.com)
+[22:41:45] *** ChanServ sets mode: +o brson
+[22:42:22] *** kimundi is now known as zz_kimundi
+[22:42:24] *** Quits: abaez (a__@moz-8D618AC3.nycmny.fios.verizon.net) (Connection reset by peer)
+[22:44:55] *** Joins: abaez (a__@moz-8D618AC3.nycmny.fios.verizon.net)
+[22:50:19] <SimonSapin> pcwalton: Is MarginCollapseInfo.margin_in "in" for inside?
+[22:50:32] <mbrubeck> RenderPiece? RenderUnit? RenderBranch?
+[22:52:15] <pcwalton> SimonSapin: I read it as "into" the next block
+[22:52:17] *** Quits: brson (brson@moz-62518563.mtv2.mozilla.com) (Ping timeout)
+[22:52:18] <pcwalton> it's from Gecko
+[22:53:24] <SimonSapin> pcwalton: can you explain a bit more what it represents?
+[22:54:42] *** Joins: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca)
+[22:54:43] <pcwalton> SimonSapin: it represents the margin we're currently accumulating in between block children that cannot be collapsed with the top margin of the parent block
+[22:55:24] *** Quits: Nekit1234007 (Nekit12340@A4D1747.7796E3F4.4707F662.IP) (Input/output error)
+[22:56:07] *** Joins: victorporof (victorporo@moz-1C281963.dsl.bell.ca)
+[22:56:58] *** Joins: Nekit1234007 (Nekit12340@A4D1747.7796E3F4.4707F662.IP)
+[22:58:54] *** Joins: brson (brson@moz-62518563.mtv2.mozilla.com)
+[22:58:54] *** ChanServ sets mode: +o brson
+[23:02:13] *** Quits: Savago (Savago@504D6CF1.5315C0D2.4C2245EF.IP) (Quit: Savago)
+[23:02:15] <SimonSapin> pcwalton: so far I have to say this is a much cleaner design than the big mess I have in WeasyPrint
+[23:02:37] <pcwalton> I based it somewhat on a hybrid of WeasyPrint and Gecko
+[23:02:44] <pcwalton> WebKit's was inscrutable to me
+[23:02:56] <pcwalton> hopefully it's correct :) except for the float thing
+[23:03:10] <SimonSapin> (block_container_layout() is a single 300+ lines function doing everything…)
+[23:03:27] <pcwalton> I still think assign_height_block_base() is too big
+[23:03:37] <pcwalton> also assign_height_float() really needs to be nuked and folded into assign_height_block_base()
+[23:03:45] <pcwalton> I think that is probably the biggest problem with wikipedia
+[23:07:12] *** Joins: drawoc (drawoc@moz-BAC1D3AB.res-cmts.sesh.ptd.net)
+[23:09:04] *** Quits: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: jet)
+[23:09:18] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (No route to host)
+[23:09:36] *** Quits: azita (Azita@moz-62518563.mtv2.mozilla.com) (Quit: azita)
+[23:09:54] <SimonSapin> pcwalton: it was already like this before, but BaseFlow.position is documented as "upper left corner" (a point?) but is of type Rect<Au> (a rectangle)
+[23:10:15] <pcwalton> yeah, it needs to say "the border box"
+[23:10:28] <pcwalton> I think it's the border box anyway
+[23:10:52] <pcwalton> in general I think the interaction between the block flow's single box's border box and the block flow's position property needs to be carefully documented, and possibly some of it should be refactored
+[23:11:41] *** Joins: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[23:12:17] *** Quits: eddyb (eddy@F8B50789.F33C1089.FB866788.IP) (Ping timeout)
+[23:13:12] *** Quits: CaseyBecking (CaseyBecki@ED8170C4.82E507D6.C334098E.IP) (Ping timeout)
+[23:14:03] *** Joins: azita (Azita@moz-62518563.mtv2.mozilla.com)
+[23:17:42] <SimonSapin> how do we use TODO vs. FIXME vs. other such markers?
+[23:19:08] *** Quits: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP) (Quit: Lost terminal)
+[23:20:22] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[23:20:51] <pcwalton> I usually use "TODO" for "this is not broken, but we should add a feature here" and FIXME as "this is an actual bug"
+[23:24:18] *** Joins: bholley (bholley@B08EEEEB.6BBCE916.7B974E06.IP)
+[23:27:29] *** Quits: bholley (bholley@B08EEEEB.6BBCE916.7B974E06.IP) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[23:29:04] *** Joins: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net)
+[23:29:05] <SimonSapin> pcwalton: which iter method is this? https://github.com/pcwalton/servo/blob/9a71601fc314bd40635a0f882169a637044bf9c6/src/components/main/layout/block.rs#L795
+[23:29:47] <pcwalton> SimonSapin: that's option::iter
+[23:29:56] <pcwalton> once box_ is no longer an option that will go away
+[23:30:42] *** Quits: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: jet)
+[23:30:52] <SimonSapin> for some reason I overlooked the Option and was looking for an iter method on Box
+[23:30:57] *** Quits: kaksmet (kaksmet@moz-2D34ADFA.dynamic.se.alltele.net) (Ping timeout)
+[23:37:31] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[23:38:38] *** Quits: azita (Azita@moz-62518563.mtv2.mozilla.com) (Quit: azita)
+[23:41:47] *** Quits: eibwen (kvirc@moz-A47B471B.dip0.t-ipconnect.de) (Ping timeout)
+[23:41:50] *** Quits: tobytailor (tobytailor@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: tobytailor)
+[23:43:17] *** Quits: tethra (tethra@moz-87614AA7.default.tethra.uk0.bigv.io) (Client exited)
+[23:47:10] <SimonSapin> pcwalton: what’s inorder in assign_height_block_base?
+[23:48:15] <SimonSapin> is it when we do stuff sequentially because of floats?
+[23:49:36] *** Quits: alphonse23 (sean@FB7EB8B4.60DF7298.8588B1D7.IP) (Ping timeout)
+[23:56:38] *** Quits: fairfieldt (fairfieldt@moz-D8998E1C.xen.prgmr.com) (Quit: ZNC - http://znc.in)
+[23:57:48] <pcwalton> SimonSapin: yes
+[23:58:03] <pcwalton> it is currently massively overused but that's my other PR (which I'll rebase after acid2)
+[23:58:21] *** Joins: tobytailor (tobytailor@moz-DFAA4E15.p2p.sfo1.mozilla.com)
+[23:58:30] *** Joins: alphonse23 (sean@FB7EB8B4.60DF7298.8588B1D7.IP)

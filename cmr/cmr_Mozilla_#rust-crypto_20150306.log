@@ -1,0 +1,112 @@
+[16:07:06] *** Joins: cmr (cmr@moz-35s2fm.members.linode.com)
+[16:10:29] <Ilari> (E.g. Compare the WrappingOps trait from the RFC and WrappingOps trait from the API reference.)
+[16:25:24] <Ilari> "However, then we hit the next problem: Rust-Crypto is filled to the brim with integer operations that expect to be able to wrap. So, even with the SIMD workaround for the ICE, basically nothing works anyway due to all the use of wrapping arithmetic."
+[16:51:06] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[16:51:41] <Ilari> ... And think integer overflow with checking disabled is pretty much UB (or at least it was at one point).
+[16:53:45] <cmr> Ilari: Overflow isn't UB anymore, it's still defined to be wrapping when checking is disable.
+[16:53:52] <cmr> (thank god)
+[16:54:45] <Ilari> Oh, good. It is just the crates that utterly break with overflow checks on.
+[16:55:26] <Ilari> (Weither that breakage is ICE or about any operation triggering a panic from overflow.
+[16:55:29] <Ilari> )
+[16:58:31] <Ilari> Also, / and % are fun, since the underlying i386/amd64 instruction can actually fault even without division by zero.
+[17:03:45] <Ilari> Fortunately those are rare in crypto code, due to slowness of division and and the fact that those are one of the very few i386/amd64 operations that aren't constant-time.
+[17:04:40] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[17:10:40] <Dcoder> wtf, rotate_right/left needs to be T again?
+[17:10:46] <Dcoder> instead of usize
+[17:11:33] <Ilari> Well, things with crypto-like arithmetic seem be pretty much in the worst state right now...
+[17:15:12] <Dcoder> wait, it's not T, it just shifted to u32 for no apparent reason
+[17:16:02] <Dcoder> (it's reasonable to expect a 2^32+ word bignum to be an input to this)
+[17:17:53] <Dcoder> yeah, looks like my thing panics
+[17:18:10] <Dcoder> not fixing it
+[17:19:43] <Ilari> 2^32 bits (that's already quite a lot)?
+[17:21:08] <Dcoder> it is, but no reason it shouldn't be possible
+[17:21:22] <Dcoder> usize, like it was, would allow this
+[17:21:35] <Dcoder> and Shr + Shl take in usize arguments
+[17:21:41] <Dcoder> but rotate changes to u32 for no reason
+[17:22:02] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[17:23:38] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[17:24:57] <bascule>  13_4__8__ 9_11__12_  13_4__ 8_9__11_    13_ 4_8_   11__12_ 13_ 4_ 
+[17:25:00] <bascule> 4|  8_9__11|  12_ 13\4|_ 8_9|  11_ 12\  4/ 8\\ 9\ 11/ 12/ 13| 4| 8|
+[17:25:03] <bascule> 8| 9|_  12| 13|_4) 8|| 9|11| 12| 13| 4|/ 8_ 9\11\ 12V 13/| 4| 8| 9|
+[17:25:07] <bascule> 9|  11_12| 13|  4_ 8< 9| 11|12| 13|_4| 8/ 9__11_ 12\| 13| 4|8_|9_|11_|
+[17:25:09] <bascule> 11|_12|   4|_8| 9\_11\_12__13|_4__8_/9_/   12\13_\4_| 8(9_|11_|12_)
+[17:25:12] <bascule>                                         
+[17:29:31] <Dcoder> are left shifts also going to be included in this integer checking nonsense?
+[17:29:44] <Dcoder> don't seem to be checked atm
+[17:30:22] <Ilari> Dcoder: I think that's the plan... I don't know if it is values or just shifts.
+[17:31:18] <Ilari> My reading of the RFC it is just shifts.
+[17:32:11] <Ilari> Which still can cause problems with rotations: Rotate by 0 results in shift overflow if rotate is implemented as pair of shifts and OR.
+[17:32:28] <Dcoder> hm, does that include right shifts that eat nonzero bits?
+[17:32:38] <Ilari> My reading: no.
+[17:32:43] <Dcoder> ok
+[17:34:18] <Ilari> Thet is, my reading is that left and right shift of u32 by 31 bits can never fail, no matter what the value.
+[17:35:05] <Dcoder> huh, that was not my understanding, let me check rfc
+[17:35:09] <eternaleye> Ben Black is really being a pill on the lists.
+[17:35:52] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[17:38:10] <Dcoder> weird, there's basically no guidance on shifts beyond "don't shift more than N bits"
+[17:38:43] <Dcoder> but some code e.g. uses shifts to multiply by 4 etc, which would motivate also checking that shifts don't eat bits
+[17:38:47] <Dcoder> especially left shifts
+[17:40:43] <Ilari> Heh, reminds me of some of my buggy attepts at unsaturated word decoding. There shifts eating bits are a potential source of trouble.
+[17:43:28] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[17:54:01] *** Quits: LinuxBunny (Retep998@moz-gv8vtu.east.verizon.net) (Ping timeout: 121 seconds)
+[17:55:24] <Ilari> Okay, Michael posted something to TLS list... Let's see...
+[17:55:39] <Dcoder> just agreement
+[17:57:05] <Dcoder> oh, the *other* michael
+[17:57:06] <Dcoder> heh.
+[17:59:04] <Ilari> Yeah, not Mike.
+[18:08:02] *** Joins: branchp (branchp@moz-k5a.7g2.93.84.IP)
+[18:26:13] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[18:28:18] <Ilari> Well, at least "compiler crashes if you get it wrong" is almost as usable as "compiler won't let you get it wrong". :->
+[18:29:28] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[18:29:48] <tiffany> heh, that's amusing, libressl isn't vulnerable to FREAK
+[18:30:09] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Connection closed)
+[18:30:22] <Ilari> Yeah, Libress deimplemented RSA-EXPORT.
+[18:34:27] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[18:38:46] *** Joins: blank_name (blank_name@moz-mteiba.mi.frontiernet.net)
+[18:45:22] <Ilari> Also saw GnuTLS notice about FREAK (essentially claimed that GnuTLS is not vulernable).
+[18:45:51] <branchp> GnuTLS is still a thing?
+[18:47:38] <Ilari> Yup (no longer GNU thing).
+[18:48:10] <bascule> lol
+[19:04:17] *** Quits: WindowsBunny (Peter@moz-gv8vtu.east.verizon.net) (Connection closed)
+[19:04:22] *** Joins: WindowsBunny (Peter@moz-gv8vtu.east.verizon.net)
+[19:21:56] <Ilari> Uh, oh... What test passes? :->
+[19:22:16] <Ilari> Ah, bswap test.
+[19:30:55] *** Joins: adu (ajr@moz-vd1fau.fios.verizon.net)
+[19:55:56] <Ilari> Haha: "Even a rabbit farm site uses modern cryptography (AEAD GCM and DHE), and PayPal uses obsolete, ****ing RC4 and static RSA. Enough!"
+[20:01:52] <adu> heh
+[20:02:10] <Ilari> bascule: Also, Edwards is simple to explain? Some kind of deformed clock addition?
+[20:03:40] <adu> so who was trying to convince me that Whirlpool was cool?
+[20:03:49] <adu> it's just as complicated as AES
+[20:03:57] <Dcoder> lol
+[20:04:29] <Ilari> adu: Well, at least the S-Box doesn't look as horrible. :->
+[20:05:06] <adu> I wonder if there's functions such that Whirlpool(x) = F(AES(G(x)))
+[20:06:05] <adu> are there any papers on that?
+[20:07:25] <Ilari> Well, Whirlpool is hash function, and its core cipher W has 512 bit blocks and 512 bit key. Whereas Rijndael (AES) only goes up to 256-bit blocks and keys.
+[20:27:40] *** Quits: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua) (Ping timeout: 121 seconds)
+[20:50:17] <adu> is there an acronym for Whirlpool?
+[20:50:30] <adu> WP? WPL? WHL?
+[20:51:04] <eternaleye> I've seen WP, but not often
+[20:51:17] <adu> yeah, but when I see WP I think wordpress
+[20:51:37] <eternaleye> I usually saw it written as WP512
+[20:51:45] <eternaleye> Of course, there's only one whirlpool...
+[20:51:56] <eternaleye> I'd say don't bother abbreviating.
+[20:52:00] <adu> eternaleye: what about the failed whirlpool-0?
+[20:52:28] <eternaleye> adu: This is like when people say "The Matrix was pretty cool, too bad they never made a sequel"
+[20:52:35] <adu> lol
+[20:52:44] <eternaleye> adu: or "Too bad they never made a Tsukihime anime"
+[20:53:11] <adu> but they made 3
+[20:53:39] * adu actually liked the animatrix
+[20:56:27] <Ilari> I think there are actually three versions of Whirlpool.
+[20:57:22] <Ilari> The 2nd being IIRC Whirlpool-T
+[20:57:41] <adu> what's the third?
+[20:58:02] <Ilari> Whirlpool
+[20:58:52] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[20:59:20] <adu> which one is most commonly used/
+[21:00:47] <Ilari> The third one.
+[21:06:15] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[21:29:30] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[22:40:13] *** Quits: ttaubert (uid2620@moz-6d2u0s.uxbridge.irccloud.com) (Quit: Connection closed for inactivity)
+[22:50:24] <Ilari> Hah: ".NET's SSLStream always sends a SNI. If you don't provide a hostname, it sends the string "?###" where ### is an incrementing number. WTF?"
+[22:59:12] *** Quits: adu (ajr@moz-vd1fau.fios.verizon.net) (Client exited)
+[23:16:34] *** Quits: brson (brson@moz-cfhap5.mtv2.mozilla.com) (Ping timeout: 121 seconds)
+[23:34:39] *** Quits: branchp (branchp@moz-k5a.7g2.93.84.IP) (Quit: Leaving)

@@ -1,0 +1,1938 @@
+[00:00:21] *** Joins: Pierre (pierre@moz-f6adg6.9gkk.jgog.e800.2404.IP)
+[00:01:45] <larsberg> Manishearth: normally it seems to only say that when the buildbot process gets a SIGTERM
+[00:02:00] <Manishearth> hm
+[00:02:43] *** Joins: lfairy (lfairy@moz-kaosf8.vf.net.nz)
+[00:02:45] <Manishearth> homu is totally oblivious, though I think we had ruled out it being homu's fault
+[00:02:51] <larsberg> wait, it shouldn't be using 54856; that's homu's port
+[00:02:51] *** Parts: lfairy (lfairy@moz-kaosf8.vf.net.nz) ()
+[00:02:57] <larsberg> I must have something misconfigured
+[00:03:01] <Manishearth> ah
+[00:03:07] <Manishearth> wrong hook?
+[00:03:51] *** Quits: dawehner (quassel@moz-h829oe.hsi6.kabel-badenwuerttemberg.de) (Ping timeout: 121 seconds)
+[00:03:56] *** Quits: MrZeus (Orestes@moz-n8pa5v.skybroadband.com) (Ping timeout: 121 seconds)
+[00:04:05] <larsberg> I'm so confused, no, that's the HTTP status push from buildbot to homu, so it should be working. That's the port it's trying to contact homu on
+[00:04:15] <larsberg> so maybe homu isn't listening?
+[00:04:26] *** Joins: cakecatz (textual@moz-1m7v28.sannet.ne.jp)
+[00:05:12] <Manishearth> why should buildbot be connecting to homu?
+[00:05:17] *** Joins: || (taryn@moz-g8toaq.vmsplic.me)
+[00:05:18] <larsberg> Manishearth: I bet this line is wrong: https://github.com/servo/saltfs/blob/master/homu/cfg.toml#L45
+[00:05:38] <Manishearth> wait you committed the toml to saltfs?
+[00:05:44] <Manishearth> ..oh there's a templating system
+[00:05:59] *** Joins: agile (mike@moz-m71dqt.rcsntx.sbcglobal.net)
+[00:06:06] <larsberg> you thought you were about to see a bunch of passwords, eh? :-)
+[00:06:13] <Manishearth> yeah
+[00:06:16] *** Joins: brson (brson@moz-e9i.crj.56.172.IP)
+[00:06:16] *** ChanServ sets mode: +o brson
+[00:06:38] <Manishearth> +1 on the Servo buildbot password btw :p
+[00:06:45] <larsberg> that was all jack
+[00:06:51] <Manishearth> larsberg: I think homu uses the buildbot json api, so...
+[00:07:15] *** Joins: nattokirai (nattokirai@moz-k48.ii6.5.103.IP)
+[00:07:24] <Manishearth> http://build.servo.org/json?as_text=1 . no port
+[00:09:31] <Manishearth> larsberg: so I guess https://github.com/servo/saltfs/commit/0bf1f01a0846c2f985da7d6fe623527c7170922a broke it?
+[00:10:19] <Manishearth> but that was needed to make homu work..and we had a couple of successful merges too
+[00:10:32] <larsberg> Manishearth: I'm having a little trouble getting the spidery web of hooks, web APIs, callbacks, and various services all untangled
+[00:11:12] <Manishearth> I wasn't around when you were setting up the webhooks so I still don't have an idea what that web is like
+[00:11:16] <Manishearth> though I'm figuring it out
+[00:11:52] * Manishearth would like a pretty diagram
+[00:12:05] <larsberg> Manishearth: looks like we have it slightly wrong - https://github.com/rust-lang/rust-buildbot/blob/master/master/master.cfg#L1786-L1793
+[00:12:44] <Manishearth> aha
+[00:12:47] <Manishearth> we fed it /
+[00:12:51] <larsberg> so the url should be http://build.servo.org/homu/buildbot
+[00:12:56] <Manishearth> yep
+[00:13:09] <Manishearth> I don't get how homu was working till now
+[00:13:22] * Manishearth blames entropy
+[00:13:54] <larsberg> Manishearth: because of this - https://github.com/servo/saltfs/blob/master/buildbot/master/master.cfg#L344 we also set the GitHub web status, which rust doesn't do
+[00:14:03] <larsberg> (bors uses that)
+[00:14:24] <larsberg> or so I'd guess? We may have to turn that off if we get the explicit buildbot->homu reporting turned on...
+[00:14:29] * larsberg has a headache
+[00:14:42] <Manishearth> github web status?
+[00:14:53] <Manishearth> Oh, the status of the tests? THat's homu's job
+[00:15:56] *** Quits: bholley (bholley@moz-cfhap5.mtv2.mozilla.com) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[00:16:17] <Manishearth> wait, that's not test status
+[00:16:33] * Manishearth confused
+[00:16:37] <larsberg> Manishearth: things are being pushed to auto but we're not getting builds? http://build.servo.org/waterfall urgh
+[00:16:49] <larsberg> not a big fan of everything working fine and then just stopping on us :-/
+[00:17:37] <Manishearth> yeah
+[00:17:42] <Manishearth> I've seen that before
+[00:17:52] <Manishearth> but ... it usually gets resolved by kicking the tires
+[00:19:31] * pcwalton is going to have nightmares of "block formatting context" being whispered into his ear
+[00:19:49] <pcwalton> I suppose it's a good thing that these layout bugs are getting more and more obscure and corner case-y
+[00:19:50] <jack> Manishearth: the diagram as I understand it is this:
+[00:19:55] <jack> 1) comment posted on a PR
+[00:20:16] <jack> 2) GitHub fires webhook to http://build.servo.org:54856/github (homu)
+[00:20:28] <jack> 3) Homu comments on GH, merges to auto, etc
+[00:20:50] <jack> 4) GitHub fires push notifications to http://build.servo.org:9010/ 
+[00:21:09] <jack> 5) buildbot-github-listener receives those, and publishes changes over PB protocol to buildbot
+[00:21:24] <jack> 6) buildbot detects new changes on branches it likes, and does builds.
+[00:22:02] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[00:22:02] -ghservo- [13saltfs] 15larsbergstrom pushed 1 new commit to 06master: 02http://git.io/vezcH
+[00:22:02] -ghservo- 13saltfs/06master 143ca3c08 15Lars Bergstrom: Fix the buildbot service url
+[00:22:02] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[00:22:12] <jack> 7) buildbot publishes status back to GitHub
+[00:22:21] <jack> I have no idea what homu does about status.
+[00:22:33] <Manishearth> api black magic
+[00:23:00] <jack> so it also publishes status?
+[00:23:06] *** Quits: brson (brson@moz-e9i.crj.56.172.IP) (Quit: leaving)
+[00:23:09] <Manishearth> to the github commit?
+[00:23:10] <Manishearth> yes
+[00:23:16] <Manishearth> see: https://github.com/servo/servo/pull/5415
+[00:23:16] <crowbot> PR #5415: Get the barest bones of webdriver integration ready for keeners. - https://github.com/servo/servo/pull/5415
+[00:23:17] <jack> Then we should probably disable buildbot doing that.
+[00:23:25] <jack> How does homu know the build is complete?
+[00:23:34] <jack> bors got it from the status.
+[00:23:37] <Manishearth> uh
+[00:23:39] <larsberg> Yeah, I think that we want buildbot just pushing to homu, via the URL thing I just fixed up above
+[00:23:47] <Manishearth> it does that^
+[00:23:51] <jack> Or maybe it queried buildbot's API
+[00:24:04] <Manishearth> larsberg: did you restart salt?
+[00:24:04] <larsberg> buildbot is supposed to push it to homu via https://github.com/servo/saltfs/blob/master/buildbot/master/master.cfg#L325-L328
+[00:24:21] <jack> ok
+[00:24:34] <larsberg> I think the errors we were seeing in twistd are because homu was not correctly listening there and it would cause buildbot to shut down? I'm shooting in the dark a little.
+[00:24:39] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[00:24:39] -ghservo- [13string-cache] 15kmcallister closed pull request #54: Remove #![no-std] and dependency on libcore (06master...06only-std) 02http://git.io/OSzuFQ
+[00:24:39] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[00:24:49] <larsberg> But I pushed the config file change; I think we need to restart homu and buildbot for them to both see it / work
+[00:24:49] <Manishearth> larsberg: once you restart salt, just do a ctrl-c+up+enter in screen#4
+[00:24:55] <jack> so #4 in the steps above is working, but #5 or #6 is failing
+[00:25:03] <Manishearth> ooh, spooky
+[00:25:16] *** Parts: || (taryn@moz-g8toaq.vmsplic.me) ()
+[00:25:20] <larsberg> OK, homu restarted :-) I think buildbot needs a hup
+[00:25:28] <kmc> or a hug?
+[00:25:37] <Manishearth> I think we should do buildbot first, then homu
+[00:25:54] <larsberg> though we may need to also disable buildbot from publishing to git status, as jack said
+[00:26:08] <larsberg> (rust no longer does so, according to their master.cfg)
+[00:26:15] <larsberg> kmc: I think we all need a hug after all this ops stuff
+[00:26:18] <jack> larsberg: there may be another bug there yeah, but it doesn't get there yet :)
+[00:27:19] * jack doesn't touch anything until you both reports results of this latest change
+[00:28:59] <larsberg> I'm looking right now at the WebStatus and GitHubStatus parts of our master.cfg. Assuming I need to kill the GitHubStatus, but don't know what that WebStatus is doing...
+[00:29:09] <Manishearth> what is webstatus
+[00:29:19] <Manishearth> The colors on the console?
+[00:29:20] <larsberg> https://github.com/servo/saltfs/blob/master/buildbot/master/master.cfg#L344
+[00:29:34] <Manishearth> No, I mean where does that show up?
+[00:29:57] <larsberg> I think we just want to remove the GitHubStatus and restart, as it's buildbot master reporting to buildbot web thingie that statuses changed
+[00:30:28] <mbrubeck> kmc: kill -SIGHUG
+[00:30:30] <frewsxcv> Manishearth: https://github.com/servo/servo/pull/5526#issuecomment-90247766
+[00:30:31] <crowbot> PR #5526: Utilize Option::expect - https://github.com/servo/servo/pull/5526
+[00:30:48] <frewsxcv> Manishearth: i think it's the " All is well — The Travis CI build passed " notification 
+[00:31:02] <Manishearth> frewsxcv: tyhat's the github status
+[00:31:11] <frewsxcv> oh, right
+[00:31:16] <larsberg> ooooh, now twistd.log seems to have done something reporting statuses and suchlike
+[00:31:43] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[00:31:43] -ghservo- [13servo] 15bors-servo 04force-pushed 06tmp from 14e3f93d5 to 143c5c2f4: 02http://git.io/veWu4
+[00:31:43] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[00:31:44] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[00:31:44] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/vezlF
+[00:31:44] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[00:31:55] <Manishearth> (just closed the hanged PR)
+[00:32:17] <jack> webstatus is what does the build.servo.org site i think
+[00:32:24] <Manishearth> oh
+[00:32:34] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[00:32:34] -ghservo- [13saltfs] 15larsbergstrom pushed 1 new commit to 06master: 02http://git.io/vez8e
+[00:32:34] -ghservo- 13saltfs/06master 14eb8dae0 15Lars Bergstrom: Remove the bors-specific GH status reporting
+[00:32:34] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[00:34:02] <jdm> oh goodness, making changes in the net crate is so much more pleasant now
+[00:34:13] <jdm> 54s start to finish
+[00:34:24] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[00:34:24] -ghservo- [13html5ever] 15kmcallister opened pull request #123: Handle qualified names in serialization, + misc cleanup (06master...06serialize) 02http://git.io/vez8K
+[00:34:24] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[00:34:47] <kmc> jdm: what changed?
+[00:34:53] <Manishearth> net_traits
+[00:35:07] <jdm> gilles-leblanc split the shared parts into a separate crate
+[00:35:10] <kmc> yay
+[00:35:18] <Manishearth> a majority of the net crate defected from it
+[00:35:25] <Manishearth> you could call them....trait-ors
+[00:35:30] * Manishearth shows himself out
+[00:35:57] <jdm> boo hiss
+[00:36:10] <kmc> traits are header files for a more refined age
+[00:36:17] <Manishearth> larsberg: are we ready to try again?
+[00:36:29] <Manishearth> (was buildbot restarted after the next change?)
+[00:36:33] <larsberg> Manishearth: I'm done and have hupd'd everything
+[00:36:41] <Manishearth> kay
+[00:36:42] *** Joins: je_julie (uid29643@moz-2q4j9e.brockwell.irccloud.com)
+[00:36:46] *** Quits: system64 (uid17738@moz-7c4aav.uxbridge.irccloud.com) (Quit: Connection closed for inactivity)
+[00:36:54] <larsberg> changes to buildbot/master.cfg cause a salt highstate to restart the service
+[00:37:07] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[00:37:07] -ghservo- [13servo] 15Manishearth closed pull request #5338: Implement Element.outerHTML setter (06master...06outerhtml) 02http://git.io/hp3u
+[00:37:07] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[00:37:09] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[00:37:09] -ghservo- [13servo] 15bors-servo 04force-pushed 06auto from 14b74eba5 to 14f373645: 02http://git.io/A9I6iA
+[00:37:09] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[00:37:46] <Manishearth> so far it's bbehaving the same
+[00:38:27] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[00:38:27] -ghservo- [13servo] 15jdm opened issue #5551: Make the compositor stop depending on the net crate 02http://git.io/vez4z
+[00:38:27] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[00:38:46] <larsberg> well, except that it "Sent 2 events to http://build.servo.org:54856/buildbot"
+[00:38:58] <larsberg> where before it failed to connect. So I think the status reporting is now fine?
+[00:39:54] <Manishearth> hm
+[00:40:07] <Manishearth> wait
+[00:40:24] <Manishearth> no that url is correct
+[00:41:24] <larsberg> yes, I believe the URL is all fixed up now
+[00:41:47] <larsberg> looking at http://build.servo.org/waterfall, they are getting events for tmp but not auto
+[00:43:52] <Manishearth> larsberg: https://github.com/rust-lang/rust-buildbot/blob/master/master/master.cfg#L1790 ?
+[00:44:09] <Manishearth> no we have that
+[00:44:25] *** Quits: cakecatz (textual@moz-1m7v28.sannet.ne.jp) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[00:44:33] <larsberg> yup, I think this is the GitHub->buildbot not seeing the pushes to auto, which is really weird to me
+[00:44:39] <larsberg> because that's been working since the dawn of time
+[00:45:25] *** Joins: squiggyvv (Mibbit@moz-juv.9o3.252.72.IP)
+[00:45:28] <pcwalton> http://i.imgur.com/982E7HM.png amazon looks a lot better in the static suite now with all my patches applied
+[00:46:03] <Manishearth> larsberg: what if the scheduler is wrong?
+[00:46:07] *** Quits: dbaron (dbaron@moz-l8ebtf.sfo1.mozilla.com) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[00:46:12] <gw> pcwalton: nice!
+[00:46:17] <Manishearth> because buildbot's site logs the ush, it just doesn't do anything
+[00:46:21] <larsberg> pcwalton: that looks great!
+[00:46:26] *** Joins: dbaron (dbaron@moz-854vhb.rgd2.9kg1.0101.2620.IP)
+[00:46:27] <Manishearth> pcwalton: should I add it to twis?
+[00:46:34] *** Joins: adu (ajr@moz-0foa9t.md.comcast.net)
+[00:46:41] *** Joins: nonsensickle (nonsensickl@moz-4v0.gkd.16.182.IP)
+[00:46:42] <Manishearth> (any background on which things were fixed?)
+[00:46:43] <pcwalton> Manishearth: if you'd like, just be sure to add that it's with a bunch of unreviewed patches :)
+[00:46:50] *** Joins: cakecatz (textual@moz-1m7v28.sannet.ne.jp)
+[00:47:16] <pcwalton> Manishearth: https://github.com/servo/servo/pulls/pcwalton as well as a bunch of things that larsberg closed
+[00:47:38] <Manishearth> thansk
+[00:47:41] *** Joins: azita (Azita@moz-lu4ojo.prno.oesp.0009.2601.IP)
+[00:48:08] <larsberg> gw: do you have an opinion on jdm's question about merging our rust-xlib with https://github.com/Daggerbot/x11-rs/ ? I thought it seemed fine, modulo the very very incomplete glx bindings in x11-rs that we clearly could not use
+[00:48:36] * jdm assumed that rust-glx was still required there
+[00:48:51] <larsberg> pcwalton: sorry about that! Until rebased past those huge CSS changes, they were causing huge load on GitHub's servers and causing us to DOS our own servers :-/
+[00:48:57] <pcwalton> yeah
+[00:49:00] <pcwalton> it's fine
+[00:49:57] *** Quits: nattokirai (nattokirai@moz-k48.ii6.5.103.IP) (Client exited)
+[00:51:19] *** Quits: squiggyvv (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[00:51:39] <gw> larsberg: sounds reasonable to me (from a very quick scan). although, our glx bindings are auto generated via gl_generator, which is neat - perhaps x11-rs could switch to using auto generated glx bindings? or leave that to rust-glx?
+[00:53:39] <gw> larsberg: this is effectively all we need to do to bind to glx - https://github.com/servo/rust-glx/blob/master/build.rs#L13
+[00:55:19] <jdm> I don't believe x11-rs actually uses the glx module at all; I assume it's just used by consumers of x11-rs instead.
+[00:56:02] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[00:57:36] *** Joins: jgallagher (john@moz-6ge.dhn.131.24.IP)
+[00:58:19] <gw> right, I just mean that it seems unnecessary for x11-rs to have those manual glx bindings at all, not that it should actually cause a problem
+[00:58:56] <jdm> then we are all in agreement :)
+[00:59:51] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[00:59:51] -ghservo- [13servo] 15pcwalton opened pull request #5552: layout: Correctly take the inline size of cleared floats into account when estimating the inline size of block formatting contexts. (06master...06block-formatting-context-cleared-floats) 02http://git.io/vezzy
+[00:59:51] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[01:00:06] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[01:00:22] <larsberg> jdm: gw: that sounds great :-)
+[01:00:41] *** Joins: dawehner (quassel@moz-h829oe.hsi6.kabel-badenwuerttemberg.de)
+[01:01:11] *** Quits: agile (mike@moz-m71dqt.rcsntx.sbcglobal.net) (Connection closed)
+[01:02:32] *** Joins: agile (mike@moz-m71dqt.rcsntx.sbcglobal.net)
+[01:04:58] <larsberg> Manishearth: do you think we should try closing that and checking on a clean PR?
+[01:05:05] *** Quits: dawehner (quassel@moz-h829oe.hsi6.kabel-badenwuerttemberg.de) (Ping timeout: 121 seconds)
+[01:08:15] *** Quits: azakai (alon@moz-fo726a.ujol.1ibb.0101.2620.IP) (Ping timeout: 121 seconds)
+[01:10:13] *** Joins: tikue (tkuehn@moz-n71.k1b.0.198.IP)
+[01:12:05] *** Quits: jdm (jdm@moz-ilbt2e.cable.teksavvy.com) (Quit: )
+[01:15:14] *** darkowlzz|afk is now known as darkowlzz
+[01:16:08] *** Quits: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com) (Quit: quit)
+[01:16:40] *** Quits: adu (ajr@moz-0foa9t.md.comcast.net) (Client exited)
+[01:21:27] *** Quits: fabrice (fabrice@moz-hp8v19.ujol.1ibb.0101.2620.IP) (Quit: Leaving.)
+[01:21:43] *** darkowlzz is now known as darkowlzz|afk
+[01:22:07] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[01:22:07] -ghservo- [13servo] 15larsbergstrom closed pull request #5415: Get the barest bones of webdriver integration ready for keeners. (06master...06webdriver) 02http://git.io/j8Gi
+[01:22:07] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[01:22:50] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[01:22:50] -ghservo- [13servo] 15bors-servo 04force-pushed 06auto from 14f373645 to 14ec45020: 02http://git.io/A9I6iA
+[01:22:50] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[01:22:51] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[01:22:51] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/vezrb
+[01:22:51] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[01:23:49] * larsberg wonders why buildbot is not seeing these changes to auto
+[01:23:56] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[01:23:56] -ghservo- [13servo] 15larsbergstrom reopened pull request #5415: Get the barest bones of webdriver integration ready for keeners. (06master...06webdriver) 02http://git.io/j8Gi
+[01:23:56] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[01:25:11] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[01:28:45] <larsberg> Manishearth: jack: So when I look at the web hook event thingies coming from github, they are sending them against the "auto" branch but the buildbot UI is reporting them as being in "tmp" and ignoring them. I suspect it's because tmp=auto in these cases and something is getting confused?
+[01:28:48] *** Quits: mwu (mwu@moz-76fo19.2rkg.9kg1.0101.2620.IP) (Ping timeout: 121 seconds)
+[01:28:54] <larsberg> But I'd expect that to be causing rust issues, too...
+[01:29:24] <larsberg> owait, except that they don't use the github status API; they use the poller
+[01:29:28] <larsberg> hrmph
+[01:31:58] *** Quits: cakecatz (textual@moz-1m7v28.sannet.ne.jp) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[01:33:30] <larsberg> oh, the payload of the event (the "commits") is empty, which causes the github poller python script to think there were no changes found
+[01:33:33] <larsberg> the plot thickens...
+[01:35:53] <larsberg> hrm https://developer.github.com/v3/activity/events/types/#pushevent
+[01:37:49] <pcwalton> oh hmm, our iframes don't support width="" or height=""
+[01:37:55] <pcwalton> that's why they always break layouts :)
+[01:38:00] <pcwalton> will fix that tomorrow
+[01:38:05] *** Quits: aweinstock (aweinstock@moz-8mcrmr.us) (Ping timeout: 121 seconds)
+[01:40:59] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[01:45:55] <larsberg> Manishearth: jack: I think the problem is that the github webhook listener for buildbot drops some of the pushes to auto performed by homu
+[01:46:20] *** Quits: azita (Azita@moz-lu4ojo.prno.oesp.0009.2601.IP) (Client exited)
+[01:46:24] *** Joins: playjax (chatzilla@moz-puuit6.optusnet.com.au)
+[01:46:28] <larsberg> for now, I've re-enabled the GitPoller, in a configuration similar to Rust's, and it appears to be noticing and building things, so hopefully we'll get through the queue tonight
+[01:47:07] * larsberg goes to sleep
+[01:50:00] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[01:51:36] *** Joins: slyu (slyu@moz-2hf62a.HINET-IP.hinet.net)
+[01:52:30] *** Quits: chmanchester (Chris@moz-1mjgmd.2rkg.9kg1.0101.2620.IP) (Ping timeout: 121 seconds)
+[01:54:16] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[02:00:02] *** Quits: darkowlzz|afk (Elite12883@moz-kue6ah.elitebnc.org) (Ping timeout: 121 seconds)
+[02:08:46] *** Joins: darkowlzz (Elite12883@moz-kue6ah.elitebnc.org)
+[02:12:39] *** Joins: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP)
+[02:15:03] *** Joins: hatmanjh (Mibbit@moz-juv.9o3.252.72.IP)
+[02:15:24] *** Quits: psd (psd@moz-acc.mpg.78.202.IP) (Ping timeout: 121 seconds)
+[02:24:09] *** Quits: pauls (pauls@moz-e5p333.ccs.neu.edu) (Ping timeout: 121 seconds)
+[02:24:25] *** Quits: hatmanjh (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[02:31:29] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[02:31:29] *** ChanServ sets mode: +o pcwalton
+[02:32:25] *** Joins: brson (brson@moz-jbg.c9m.56.172.IP)
+[02:32:25] *** ChanServ sets mode: +o brson
+[02:32:39] *** Quits: brson (brson@moz-jbg.c9m.56.172.IP) (Quit: leaving)
+[02:34:27] *** Joins: pauls (pauls@moz-e5p333.ccs.neu.edu)
+[02:34:28] *** Joins: nattokirai (nattokirai@moz-19f880.panda-world.ne.jp)
+[02:35:18] *** Quits: Jesse (jruderman@moz-scd8h1.ujol.1ibb.0101.2620.IP) (Client exited)
+[02:42:32] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (Client exited)
+[02:45:01] *** Quits: zz_kimundi (kimundi@moz-4kjois.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[02:45:20] *** Joins: brson (brson@moz-jbg.c9m.56.172.IP)
+[02:45:20] *** ChanServ sets mode: +o brson
+[02:47:10] *** Quits: dbaron (dbaron@moz-854vhb.rgd2.9kg1.0101.2620.IP) (Ping timeout: 121 seconds)
+[02:47:43] *** Joins: zz_kimundi (kimundi@moz-94ap69.dip0.t-ipconnect.de)
+[02:47:45] *** zz_kimundi is now known as kimundi
+[02:50:58] <barosl> jack, Homu uses `tmp`, as I was nervous that Buildbot would choose wrong commit while Homu is merging commits to `auto`
+[02:51:30] <barosl> (It can push several commits at once, due to the rollup feature)
+[02:52:10] <barosl> So it's like a staging area
+[02:57:55] *** Joins: jdm (jdm@moz-ilbt2e.cable.teksavvy.com)
+[02:57:56] *** ChanServ sets mode: +qo jdm jdm
+[02:58:25] <jdm> wtf is going on with the builders
+[02:58:27] <jdm> build 1519 is using a revision from february
+[02:59:10] <jdm> 1522 was from jan 18
+[02:59:25] <jdm> heh, 1521 was from sept 2014
+[03:03:51] *** Quits: nattokirai (nattokirai@moz-19f880.panda-world.ne.jp) (Connection closed)
+[03:04:55] <jdm> agh, looks like I screwed up the mime sniffing rebase too
+[03:08:05] <jdm> how can I interrupt a run?
+[03:08:39] *** Joins: erickt (erickt@moz-njt.vqi.14.76.IP)
+[03:08:49] <larsberg> barosl: I think that breaks the github poller in build it because it pushes zero commit branches to auto, which it thinks is a no op
+[03:08:56] *** Quits: pauls (pauls@moz-e5p333.ccs.neu.edu) (Ping timeout: 121 seconds)
+[03:09:11] <larsberg> jdm: should be able to hit stop build on the builder page
+[03:09:45] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[03:09:45] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/vezhE
+[03:09:45] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[03:09:46] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[03:09:46] -ghservo- [13servo] 15bors-servo 04force-pushed 06auto from 14ec45020 to 141f57c6d: 02http://git.io/A9I6iA
+[03:09:46] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[03:09:58] <jdm> thanks
+[03:10:03] <jdm> how's the sleeping going? :)
+[03:10:32] *** Quits: gozala (uid5923@moz-ftm4af.brockwell.irccloud.com) (Quit: Connection closed for inactivity)
+[03:10:35] <larsberg> Sorry I can't look into the build failures you just mentioned, I do need to call it :(. I must have either musconfigured the git poller or the very old data in the poller directory broke something
+[03:10:48] <larsberg> Not well, but the kid is back asleep now :)
+[03:11:25] *** Quits: brson (brson@moz-jbg.c9m.56.172.IP) (Quit: leaving)
+[03:16:34] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[03:16:34] -ghservo- [13servo] 15luniv opened pull request #5553: Use iterators for iterating through CSS rules (06master...06css-rule-iterators) 02http://git.io/vezjM
+[03:16:34] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[03:17:36] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[03:17:36] -ghservo- [13servo] 15luniv closed pull request #5553: Use iterators for iterating through CSS rules (06master...06css-rule-iterators) 02http://git.io/vezjM
+[03:17:36] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[03:20:13] *** Quits: mystor (mystor@moz-ldavpp.home3.cgocable.net) (Connection closed)
+[03:23:19] *** Joins: fabrice (fabrice@moz-r84lgh.ca.comcast.net)
+[03:25:45] *** Joins: Jesse (jruderman@moz-pqc1f5.ca.comcast.net)
+[03:27:21] *** darkowlzz is now known as darkowlzz|afk
+[03:27:37] *** Joins: adu (ajr@moz-0foa9t.md.comcast.net)
+[03:27:45] *** Joins: dbaron (dbaron@moz-rb4k89.dynamic.fusionbroadband.com)
+[03:37:26] *** Quits: darkowlzz|afk (Elite12883@moz-kue6ah.elitebnc.org) (Ping timeout: 121 seconds)
+[03:41:10] *** Joins: cakecatz (textual@moz-1souik.smart2j.com)
+[03:41:28] *** Quits: tikue (tkuehn@moz-n71.k1b.0.198.IP) (Client exited)
+[03:42:35] *** Quits: cakecatz (textual@moz-1souik.smart2j.com) (Connection closed)
+[03:47:26] *** Joins: darkowlzz|afk (Elite12883@moz-kue6ah.elitebnc.org)
+[03:53:08] *** Quits: erickt (erickt@moz-njt.vqi.14.76.IP) (Ping timeout: 121 seconds)
+[03:54:27] *** Joins: erickt (erickt@moz-njt.vqi.14.76.IP)
+[03:56:00] *** Quits: darkowlzz|afk (Elite12883@moz-kue6ah.elitebnc.org) (Ping timeout: 121 seconds)
+[03:56:48] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[03:57:34] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[03:57:34] -ghservo- [13servo] 15bors-servo pushed 0 new commits to 06tmp: 02http://git.io/vegI1
+[03:57:34] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[03:57:37] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[03:57:37] -ghservo- [13servo] 15bors-servo closed pull request #5415: Get the barest bones of webdriver integration ready for keeners. (06master...06webdriver) 02http://git.io/j8Gi
+[03:57:37] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[04:00:52] *** Joins: palodequeso (quassel@moz-45ieh4.dhcp.embarqhsd.net)
+[04:01:18] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[04:14:36] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[04:14:36] -ghservo- [13servo] 15jdm opened issue #5554: Process NewSession and DeleteSession commands 02http://git.io/vegm8
+[04:14:36] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[04:15:44] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[04:15:44] -ghservo- [13servo] 15jdm opened issue #5555: Document how to test the WebDriver integration 02http://git.io/vegmi
+[04:15:44] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[04:20:44] *** Joins: mystor (mystor@moz-ldavpp.home3.cgocable.net)
+[04:22:03] *** Joins: Temur (Tarmashirin@moz-1bk.gu9.221.117.IP)
+[04:25:01] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[04:25:01] -ghservo- [13servo] 15jdm opened issue #5556: Process the Get command 02http://git.io/vegOq
+[04:25:01] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[04:25:18] *** Quits: mystor (mystor@moz-ldavpp.home3.cgocable.net) (Ping timeout: 121 seconds)
+[04:29:40] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[04:29:40] -ghservo- [13servo] 15bors-servo 04force-pushed 06tmp from 1485c75ba to 141f57c6d: 02http://git.io/veWu4
+[04:29:40] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[04:29:42] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[04:29:42] -ghservo- [13servo] 15bors-servo 04force-pushed 06auto from 1485c75ba to 14505a480: 02http://git.io/A9I6iA
+[04:29:42] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[04:30:02] *** Quits: jdm (jdm@moz-ilbt2e.cable.teksavvy.com) (Quit: )
+[04:36:00] *** Quits: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP) (Ping timeout: 121 seconds)
+[04:45:54] *** Joins: mr_booedw (Mibbit@moz-juv.9o3.252.72.IP)
+[04:49:05] *** Quits: mr_booedw (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[04:50:33] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[04:54:48] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[04:55:17] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[04:55:17] -ghservo- [13servo] 15xfq opened pull request #5557: Update CONTRIBUTING.md (06master...06patch-1) 02http://git.io/vegnL
+[04:55:17] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[04:57:03] *** Joins: bogdan_maris (Instantbird@moz-662.esi.231.62.IP)
+[04:59:21] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[04:59:21] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/vegcJ
+[04:59:21] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[05:03:17] *** Quits: playjax (chatzilla@moz-puuit6.optusnet.com.au) (Ping timeout: 121 seconds)
+[05:05:35] *** Joins: bholley (bholley@moz-hb3rtc.ca.comcast.net)
+[05:08:17] *** Quits: bholley (bholley@moz-hb3rtc.ca.comcast.net) (Connection closed)
+[05:08:42] *** Joins: bholley (bholley@moz-hb3rtc.ca.comcast.net)
+[05:11:50] <jack> jdm: why the r-?
+[05:15:06] *** Quits: bholley (bholley@moz-hb3rtc.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[05:15:45] *** Quits: Jesse (jruderman@moz-pqc1f5.ca.comcast.net) (Client exited)
+[05:17:57] *** Joins: mihneadb (mihneadb@moz-b5r.gbu.120.86.IP)
+[05:20:31] *** Quits: adu (ajr@moz-0foa9t.md.comcast.net) (Client exited)
+[05:21:41] *** Joins: mystor (mystor@moz-ldavpp.home3.cgocable.net)
+[05:21:45] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[05:21:45] -ghservo- [13servo] 15aneeshusa opened pull request #5558: Remove compositor dependency on net crate. (06master...06remove-compositor-dependency-on-net) 02http://git.io/veg8C
+[05:21:45] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[05:21:55] *** Quits: caitp- (caitp@moz-lmogh4.cable.rogers.com) (Ping timeout: 121 seconds)
+[05:22:40] <barosl> larsberg, It won't push any new commits from the view of the whole repository, but aren't the commits still "new" to auto? I think GitPoller detects new commits based on a specific branch
+[05:24:44] *** Joins: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP)
+[05:25:58] *** Quits: mystor (mystor@moz-ldavpp.home3.cgocable.net) (Ping timeout: 121 seconds)
+[05:26:26] *** Joins: darkowlzz (Elite12883@moz-kue6ah.elitebnc.org)
+[05:29:49] *** Quits: caitp (caitp@moz-lmogh4.cable.rogers.com) (Ping timeout: 121 seconds)
+[05:32:29] *** kimundi is now known as zz_kimundi
+[05:36:03] *** Quits: erickt (erickt@moz-njt.vqi.14.76.IP) (Ping timeout: 121 seconds)
+[05:40:53] *** Joins: gfxmonk (tim@moz-jq6k9h.internode.on.net)
+[05:44:44] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[05:46:04] <gfxmonk> Is there some way to run the wpt server and just have it stick around, rather than run some tests and immediately exit?
+[05:49:00] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[05:49:14] *** Joins: bholley (bholley@moz-hb3rtc.ca.comcast.net)
+[05:49:25] <gw> gfxmonk: see https://github.com/servo/servo/blob/master/tests/wpt/README.md#running-the-tests-manually
+[05:53:53] *** Quits: bholley (bholley@moz-hb3rtc.ca.comcast.net) (Connection closed)
+[05:53:58] *** Joins: bholley (bholley@moz-hb3rtc.ca.comcast.net)
+[05:55:54] *** Joins: aravindavk (aravinda@moz-m6j.f0d.244.121.IP)
+[05:57:39] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[05:57:39] -ghservo- [13servo] 15glennw opened pull request #5559: Support focus management and keyboard events for iframes. (06master...06iframe-focus) 02http://git.io/vegun
+[05:57:39] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[06:00:14] *** Quits: bholley (bholley@moz-hb3rtc.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[06:00:46] *** Quits: bdero (bran@moz-lbs.91h.47.73.IP) (Ping timeout: 121 seconds)
+[06:03:13] *** Joins: Nekit1234007 (nekit@moz-0e9.tce.51.84.IP)
+[06:09:34] <larsberg> barosl: sorry, I mean the webhook. The statuses delivered show commits to temp, but no commits to auto. Without any commits, the Webhook buildbot handler assumes nothing changed and drops the even
+[06:09:48] <larsberg> So, it sees nothing that happens in auto :(
+[06:15:44] <gfxmonk> gw: thanks, I missed that. Strangely that script doesn't actually do anything, as nothing actually calls main()
+[06:15:45] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[06:15:45] -ghservo- [13servo] 15bors-servo merged 06auto into 06master: 02http://git.io/vegcJ
+[06:15:45] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[06:15:47] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[06:15:47] -ghservo- [13servo] 15bors-servo pushed 0 new commits to 06tmp: 02http://git.io/veg2u
+[06:15:47] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[06:15:48] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[06:15:48] -ghservo- [13servo] 15bors-servo merged 06tmp into 06auto: 02http://git.io/veg2z
+[06:15:48] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[06:15:49] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[06:15:49] -ghservo- [13servo] 15bors-servo closed pull request #5423: add readonly pathname function in location (06master...06issue5397-location-pathname) 02http://git.io/jR02
+[06:15:49] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[06:18:55] *** Joins: caitp- (caitp@moz-lmogh4.cable.rogers.com)
+[06:19:16] *** Joins: dinfuehr (dinfuehr@moz-c25.u8s.112.91.IP)
+[06:22:14] *** darkowlzz is now known as darkowlzz|afk
+[06:23:15] *** Quits: caitp- (caitp@moz-lmogh4.cable.rogers.com) (Ping timeout: 121 seconds)
+[06:29:59] <nmzaheer> gfxmonk: have a look at this https://github.com/servo/servo/blob/master/tests/wpt/web-platform-tests/README.md
+[06:38:18] *** Joins: bholley (bholley@moz-hb3rtc.ca.comcast.net)
+[06:38:53] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[06:38:59] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[06:38:59] *** ChanServ sets mode: +o pcwalton
+[06:39:04] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (A TLS packet with unexpected length was received.)
+[06:39:27] *** Joins: dawehner (quassel@moz-h829oe.hsi6.kabel-badenwuerttemberg.de)
+[06:39:40] *** Quits: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP) (Ping timeout: 121 seconds)
+[06:40:56] <gfxmonk> nmzaheer: Cheers, yeah I noticed that's pointing to a different script. I'm making a tiny PR to update the outer one (although perhaps the duplication is unnecessary?)
+[06:43:09] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[06:47:08] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[06:47:08] *** ChanServ sets mode: +o pcwalton
+[06:48:40] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (Client exited)
+[06:49:05] *** Joins: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP)
+[06:50:06] *** Quits: aravindavk (aravinda@moz-m6j.f0d.244.121.IP) (Ping timeout: 121 seconds)
+[06:52:08] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[06:52:08] -ghservo- [13servo] 15gfxmonk opened pull request #5560: Update manual wpt instructions (06master...06wpt-instructions) 02http://git.io/vegiW
+[06:52:08] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[06:54:38] *** Joins: mtsr (mtsr@moz-5r1gp7.yourbnc.co.uk)
+[06:55:09] *** Joins: dstrbad (dstrbad@moz-rhd2ng.cable.xnet.hr)
+[06:57:11] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[06:57:11] -ghservo- [13servo] 15bors-servo merged 06tmp into 06auto: 02http://git.io/vegPc
+[06:57:11] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[06:57:12] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[06:57:12] -ghservo- [13servo] 15bors-servo closed pull request #5338: Implement Element.outerHTML setter (06master...06outerhtml) 02http://git.io/hp3u
+[06:57:12] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[07:03:24] *** Quits: dbaron (dbaron@moz-rb4k89.dynamic.fusionbroadband.com) (Ping timeout: 121 seconds)
+[07:06:54] *** Quits: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP) (Ping timeout: 121 seconds)
+[07:07:11] *** Joins: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP)
+[07:10:00] *** Joins: mskrzypkows (m.skrzypkow@moz-u9sv8i.itsa.net.pl)
+[07:11:21] *** Quits: dstrbad (dstrbad@moz-rhd2ng.cable.xnet.hr) (A TLS packet with unexpected length was received.)
+[07:13:47] *** Quits: bholley (bholley@moz-hb3rtc.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[07:15:56] *** Joins: dstrbad (dstrbad@moz-rhd2ng.cable.xnet.hr)
+[07:18:53] *** Joins: kmicu (kmicu@moz-uga.edn.218.91.IP)
+[07:19:02] *** Quits: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP) (Ping timeout: 121 seconds)
+[07:20:19] *** Joins: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP)
+[07:20:53] *** Joins: Ms2ger (Ms2ger@moz-15i.9ho.190.193.IP)
+[07:23:50] *** Joins: mystor (mystor@moz-ldavpp.home3.cgocable.net)
+[07:27:20] *** Joins: caitp (caitp@moz-lmogh4.cable.rogers.com)
+[07:27:54] *** Quits: mystor (mystor@moz-ldavpp.home3.cgocable.net) (Ping timeout: 121 seconds)
+[07:31:44] *** Quits: caitp (caitp@moz-lmogh4.cable.rogers.com) (Ping timeout: 121 seconds)
+[07:33:04] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[07:33:07] *** Quits: dawehner (quassel@moz-h829oe.hsi6.kabel-badenwuerttemberg.de) (Connection closed)
+[07:33:24] *** Joins: laumann (thomas@moz-33d.hq0.225.130.IP)
+[07:35:12] *** Joins: dawehner (quassel@moz-h829oe.hsi6.kabel-badenwuerttemberg.de)
+[07:35:40] *** Quits: laumann (thomas@moz-33d.hq0.225.130.IP) (Connection closed)
+[07:37:17] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[07:39:09] *** Quits: capella (chatzilla@moz-jqv43v.res.rr.com) (Ping timeout: 121 seconds)
+[07:41:50] *** Joins: capella (chatzilla@moz-jqv43v.res.rr.com)
+[07:42:43] *** Parts: nmzaheer (nmzaheer@moz-15i.9ho.190.193.IP) ()
+[07:44:27] *** Joins: ProgramFOX (ProgramFOX@moz-rq6.366.176.91.IP)
+[07:50:04] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[07:50:04] -ghservo- [13servo] 15bors-servo pushed 0 new commits to 06tmp: 02http://git.io/vegbv
+[07:50:04] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[07:50:05] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[07:50:05] -ghservo- [13servo] 15bors-servo merged 06tmp into 06auto: 02http://git.io/vegbf
+[07:50:05] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[07:50:07] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[07:50:07] -ghservo- [13servo] 15bors-servo closed pull request #5523: Use quasiquotes for attributes in `plugins` crate. (06master...06use-quasiquote-for-attributes) 02http://git.io/veG2S
+[07:50:07] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[07:50:30] *** Joins: caitp- (caitp@moz-lmogh4.cable.rogers.com)
+[07:53:19] *** Joins: psd (psd@moz-acc.mpg.78.202.IP)
+[07:54:54] *** Quits: caitp- (caitp@moz-lmogh4.cable.rogers.com) (Ping timeout: 121 seconds)
+[07:56:49] *** Joins: bjz (bjz@moz-4l6.mjm.52.113.IP)
+[08:03:27] *** Quits: gsingh93 (gulshan@moz-3fu4am.mi.comcast.net) (Ping timeout: 121 seconds)
+[08:04:22] *** Joins: aravindavk (aravinda@moz-m6j.f0d.244.121.IP)
+[08:04:24] *** zz_kimundi is now known as kimundi
+[08:04:52] *** Joins: laumann (thomas@moz-33d.hq0.225.130.IP)
+[08:06:10] *** Quits: bjz (bjz@moz-4l6.mjm.52.113.IP) (Ping timeout: 121 seconds)
+[08:06:32] *** Quits: gfxmonk (tim@moz-jq6k9h.internode.on.net) (Ping timeout: 121 seconds)
+[08:07:04] *** Quits: Nekit1234007 (nekit@moz-0e9.tce.51.84.IP) (A TLS packet with unexpected length was received.)
+[08:07:46] *** Joins: Nekit1234007 (nekit@moz-0e9.tce.51.84.IP)
+[08:08:44] *** Quits: mihneadb (mihneadb@moz-b5r.gbu.120.86.IP) (Connection closed)
+[08:09:03] *** Joins: mihneadb (mihneadb@moz-b5r.gbu.120.86.IP)
+[08:10:00] *** Quits: Guest64 (textual@moz-am5.a3e.152.1.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[08:17:18] *** Quits: mihneadb (mihneadb@moz-b5r.gbu.120.86.IP) (Quit: Computer gone to sleep - Zzzz...)
+[08:19:33] *** Joins: mihneadb (mihneadb@moz-b5r.gbu.120.86.IP)
+[08:19:53] *** Quits: mihneadb (mihneadb@moz-b5r.gbu.120.86.IP) (Connection closed)
+[08:20:07] *** Joins: mihneadb (mihneadb@moz-b5r.gbu.120.86.IP)
+[08:22:16] *** Quits: psd (psd@moz-acc.mpg.78.202.IP) (Ping timeout: 121 seconds)
+[08:24:19] *** jandem-away is now known as jandem
+[08:24:31] *** Joins: mystor (mystor@moz-ldavpp.home3.cgocable.net)
+[08:27:09] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[08:28:38] *** Quits: mystor (mystor@moz-ldavpp.home3.cgocable.net) (Ping timeout: 121 seconds)
+[08:31:27] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[08:32:54] *** Joins: erickt (erickt@moz-njt.vqi.14.76.IP)
+[08:33:12] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[08:33:12] -ghservo- [13servo] 15bors-servo merged 06tmp into 06auto: 02http://git.io/ve2kH
+[08:33:12] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[08:33:13] *** Joins: canhtak (canhtak@moz-kcs.u0t.149.5.IP)
+[08:33:15] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[08:33:15] -ghservo- [13servo] 15bors-servo closed pull request #5525: Add basic HTMLDialogElement interface (06master...06master) 02http://git.io/veZz3
+[08:33:15] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[08:34:23] <nox> "100 % and 16 issues"
+[08:34:31] <nox> Guess I have something to occupy my time with.
+[08:35:09] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[08:35:09] -ghservo- [13servo] 15Ms2ger opened issue #5561: Element::get_attribute_by_name should call parsed_name itself. 02http://git.io/ve2Io
+[08:35:09] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[08:36:10] <Ms2ger> nox, look like they aren't that bad :)
+[08:36:26] <nox> :)
+[08:36:43] <nox> Oh, why should get_attribute_by_name call parsed_name itself?
+[08:37:02] *** Quits: erickt (erickt@moz-njt.vqi.14.76.IP) (Ping timeout: 121 seconds)
+[08:38:00] *** Quits: Temur (Tarmashirin@moz-1bk.gu9.221.117.IP) (Quit: Leaving)
+[08:42:48] <Ms2ger> nox, it's kinda confusing to have a method that's named after a spec algorithm but only implements part of the algorithm
+[08:42:56] <Ms2ger> Also, DRY :)
+[08:43:03] *** Joins: bjz (bjz@moz-puppgq.tpgi.com.au)
+[08:43:35] <nox> Ok.
+[08:52:56] *** Joins: eibwen (eibwen@moz-bu00v3.dip0.t-ipconnect.de)
+[08:55:01] *** Quits: canhtak (canhtak@moz-kcs.u0t.149.5.IP) (Client exited)
+[08:56:09] *** Joins: moa (Cedric@moz-b43.0qg.164.37.IP)
+[09:00:22] *** Joins: canhtak (canhtak@moz-kcs.u0t.149.5.IP)
+[09:01:15] *** Joins: Jesse (jruderman@moz-pqc1f5.ca.comcast.net)
+[09:01:28] *** mdoglio|afk is now known as mdoglio
+[09:17:00] *** Joins: filsmick (filsmick@moz-nn9sf3.abo.wanadoo.fr)
+[09:20:37] <nox> Got one last issue to fix, but first let's go to work.
+[09:21:24] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[09:22:31] *** darkowlzz|afk is now known as darkowlzz
+[09:23:29] *** Quits: filsmick (filsmick@moz-nn9sf3.abo.wanadoo.fr) (Connection closed)
+[09:23:50] *** Joins: filsmick (filsmick@moz-nn9sf3.abo.wanadoo.fr)
+[09:24:04] *** Joins: Temur (Tarmashirin@moz-1bk.gu9.221.117.IP)
+[09:24:32] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[09:24:32] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/ve28s
+[09:24:32] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[09:24:33] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[09:24:33] -ghservo- [13servo] 15bors-servo closed pull request #5526: Utilize Option::expect (06master...06expect) 02http://git.io/venJ6
+[09:24:33] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[09:25:05] *** Joins: mystor (mystor@moz-ldavpp.home3.cgocable.net)
+[09:25:37] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[09:27:02] *** darkowlzz is now known as darkowlzz|afk
+[09:28:42] *** Joins: caitp (caitp@moz-lmogh4.cable.rogers.com)
+[09:29:31] *** Quits: mystor (mystor@moz-ldavpp.home3.cgocable.net) (Ping timeout: 121 seconds)
+[09:30:33] *** Quits: filsmick (filsmick@moz-nn9sf3.abo.wanadoo.fr) (Connection closed)
+[09:30:34] *** Joins: filsmick (filsmick@moz-nn9sf3.abo.wanadoo.fr)
+[09:33:13] *** Quits: caitp (caitp@moz-lmogh4.cable.rogers.com) (Ping timeout: 121 seconds)
+[09:38:49] *** Joins: mihneadb_ (mihneadb@moz-hqm.mqa.46.89.IP)
+[09:39:11] *** Quits: mihneadb (mihneadb@moz-b5r.gbu.120.86.IP) (Ping timeout: 121 seconds)
+[09:47:33] *** Quits: nrc (nrc@moz-4bhi2i.xtra.co.nz) (Ping timeout: 121 seconds)
+[09:51:18] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[09:51:18] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/ve2ab
+[09:51:18] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[09:54:21] <Manishearth> barosl: the links to the builders are broken, btw
+[09:54:21] <Manishearth> https://github.com/servo/servo/pull/5558#issuecomment-90490555
+[09:54:22] <crowbot> PR #5558: Remove compositor dependency on net crate. - https://github.com/servo/servo/pull/5558
+[09:55:43] <barosl> Manishearth, Hmm, yeah, it seems that the build_url is incorrectly configured
+[09:55:44] <barosl> https://github.com/servo/saltfs/blob/master/homu/cfg.toml#L45
+[09:55:56] <barosl> `/homu` needs to be removed
+[09:56:11] *** Quits: moa (Cedric@moz-b43.0qg.164.37.IP) (Ping timeout: 121 seconds)
+[09:56:11] <barosl> Oh wait
+[09:56:17] <barosl> `/buildbot` also needs to b eremoved
+[09:56:31] <barosl> Just `http://build.servo.org`
+[09:57:33] *** Joins: nrc (nrc@moz-4bhi2i.xtra.co.nz)
+[09:58:50] *** Quits: Jesse (jruderman@moz-pqc1f5.ca.comcast.net) (Client exited)
+[09:59:02] <nox> Is master broken, or is it my code? :P
+[10:02:34] *** Quits: canhtak (canhtak@moz-kcs.u0t.149.5.IP) (Client exited)
+[10:03:30] <Manishearth> barosl: isn't that also needed for communication between homu and buildbot?
+[10:03:36] <Manishearth> or is that key solely for linking to logs?
+[10:04:47] *** Quits: slyu (slyu@moz-2hf62a.HINET-IP.hinet.net) (A TLS packet with unexpected length was received.)
+[10:04:51] <barosl> Manishearth, Yes, it is also used to instruct Buildbot to stop builds
+[10:05:15] *** Quits: mihneadb_ (mihneadb@moz-hqm.mqa.46.89.IP) (Quit: Computer gone to sleep - Zzzz...)
+[10:05:21] <barosl> So `@homu force` must not work currently
+[10:06:24] <Manishearth> barosl: okay
+[10:06:34] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[10:06:34] -ghservo- [13saltfs] 15Manishearth created 06Manishearth-patch-1 (+1 new commit): 02http://git.io/ve263
+[10:06:34] -ghservo- 13saltfs/06Manishearth-patch-1 14ae80397 15Manish Goregaokar: Fix buildbot link
+[10:06:34] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[10:06:43] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[10:06:43] -ghservo- [13saltfs] 15Manishearth opened pull request #26: Fix buildbot link (06master...06Manishearth-patch-1) 02http://git.io/ve26n
+[10:06:43] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[10:07:58] <nox> And it's my code.
+[10:09:53] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[10:09:53] -ghservo- [13servo] 15mmatyas opened pull request #5562: Canvas: added lineWidth support. (06master...06canvas_linewidth) 02http://git.io/ve2iE
+[10:09:53] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[10:13:50] *** Joins: gfxmonk (tim@moz-jq6k9h.internode.on.net)
+[10:15:29] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[10:17:14] <barosl> Oh, interesting. So even though we don't support some features currently, we've had test cases for it (specified with `expected: FAIL`)
+[10:18:01] <Ms2ger> Yes
+[10:19:17] <nox> Ms2ger: https://critic.hoppipolla.co.uk/showcomment?chain=11535 If I try to do as in this issue, Servo crashes pretty much on everything.
+[10:19:28] <Ms2ger> Uh-oh :)
+[10:19:48] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[10:20:07] <Ms2ger> Ugh
+[10:20:10] <nox> Ms2ger: Am I right in the comment?
+[10:20:24] <Ms2ger> Yeah, that doesn't work
+[10:20:37] <nox> Ms2ger: Any idea how I should do it?
+[10:20:57] <Ms2ger> I need to think about it
+[10:21:17] <nox> Ms2ger: Should I remove TreeIterator from the PR?
+[10:22:06] <Ms2ger> That's probably the easiest way forward right now
+[10:22:38] <Ms2ger> I guess you could use Box<RootedVec<>>, but that sucks too
+[10:22:45] * Ms2ger defers to jdm
+[10:23:07] <nox> You coward, deferring to someone absent! :P
+[10:23:40] <Yurume> Ms2ger derefs to jdm*
+[10:23:52] <nox> Ah ah.
+[10:23:59] *** Quits: nrc (nrc@moz-4bhi2i.xtra.co.nz) (Ping timeout: 121 seconds)
+[10:24:03] * Ms2ger impls Deref<Target=Yurume>
+[10:24:20] <Ms2ger> nox, and let me say that I'm really really glad you're doing this :)
+[10:24:29] <nox> Ms2ger: Ah ah, you're welcome.
+[10:26:18] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[10:26:18] -ghservo- [13servo] 15mmatyas opened pull request #5563: Canvas: added support for the globalAlpha attribute. (06master...06canvas_globalalpha) 02http://git.io/ve2y0
+[10:26:18] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[10:27:26] *** Joins: moa (Cedric@moz-b43.0qg.164.37.IP)
+[10:27:41] *** Joins: canhtak (canhtak@moz-kcs.u0t.149.5.IP)
+[10:28:36] * jgraham wonders what Ms2ger is glad he is not doing
+[10:28:51] <nox> jgraham: Removing get_unsound_ref_forever from iterators.
+[10:29:13] <jgraham> nox: Sounds good :)
+[10:29:23] <nox> jgraham: Yes but https://critic.hoppipolla.co.uk/showcomment?chain=11535
+[10:30:07] <jgraham> nox: I said good, not easy!
+[10:30:23] <nox> Ah ah.
+[10:33:02] *** Joins: mihneadb (mihneadb@moz-b5r.gbu.120.86.IP)
+[10:34:56] *** Joins: mihneadb_ (mihneadb@moz-hqm.mqa.46.89.IP)
+[10:36:57] *** Joins: Tarmashirin (Tarmashirin@moz-j3g.nld.91.59.IP)
+[10:37:29] *** Quits: mihneadb (mihneadb@moz-b5r.gbu.120.86.IP) (Ping timeout: 121 seconds)
+[10:40:14] *** Quits: Temur (Tarmashirin@moz-1bk.gu9.221.117.IP) (Ping timeout: 121 seconds)
+[10:41:58] *** Quits: Tarmashirin (Tarmashirin@moz-j3g.nld.91.59.IP) (Quit: Leaving)
+[10:43:58] *** Joins: Temur (Tarmashirin@moz-j3g.nld.91.59.IP)
+[10:44:22] *** Quits: mihneadb_ (mihneadb@moz-hqm.mqa.46.89.IP) (Quit: Computer gone to sleep - Zzzz...)
+[10:45:15] *** Quits: Temur (Tarmashirin@moz-j3g.nld.91.59.IP) (Quit: Leaving)
+[10:47:30] *** Quits: commandoline (commandolin@moz-s9gqj7.marten-de-vries.nl) (Quit: Bye!)
+[10:47:49] *** Joins: commandoline (commandolin@moz-s9gqj7.marten-de-vries.nl)
+[10:48:32] *** darkowlzz|afk is now known as darkowlzz
+[10:48:53] *** Joins: cakecatz (textual@moz-1souik.smart2j.com)
+[10:51:22] *** Quits: Pierre (pierre@moz-f6adg6.9gkk.jgog.e800.2404.IP) (Ping timeout: 121 seconds)
+[10:57:50] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[10:57:50] -ghservo- [13servo] 15bors-servo pushed 0 new commits to 06tmp: 02http://git.io/ve2AO
+[10:57:50] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[10:57:52] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[10:57:52] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02https://github.com/servo/servo/compare/07520de97047...8ae82b1b9623
+[10:57:52] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[10:57:54] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[10:57:54] -ghservo- [13servo] 15bors-servo closed pull request #5552: layout: Correctly take the inline size of cleared floats into account when estimating the inline size of block formatting contexts. (06master...06block-formatting-context-cleared-floats) 02http://git.io/vezzy
+[10:57:54] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[10:58:50] *** Joins: jevin (jevin@moz-sra.ovp.12.72.IP)
+[10:59:27] *** Quits: jevin (jevin@moz-sra.ovp.12.72.IP) (Connection closed)
+[10:59:43] *** Joins: Pierre (pierre@moz-lmh.0pq.89.116.IP)
+[11:00:22] *** Joins: jevin (jevin@moz-sra.ovp.12.72.IP)
+[11:01:40] *** Quits: jevin_ (jevin@moz-sra.ovp.12.72.IP) (Ping timeout: 121 seconds)
+[11:06:01] *** Joins: mib_fy2lep (Mibbit@moz-juv.9o3.252.72.IP)
+[11:09:38] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[11:09:43] *** Quits: mib_fy2lep (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[11:11:54] *** Joins: Temur (Tarmashirin@moz-j3g.nld.91.59.IP)
+[11:12:19] *** Quits: Temur (Tarmashirin@moz-j3g.nld.91.59.IP) (Quit: Leaving)
+[11:13:56] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[11:15:57] *** Quits: moa (Cedric@moz-b43.0qg.164.37.IP) (Ping timeout: 121 seconds)
+[11:17:10] *** Joins: mihneadb (mihneadb@moz-716.4cl.85.141.IP)
+[11:19:58] *** Quits: palodequeso (quassel@moz-45ieh4.dhcp.embarqhsd.net) (Ping timeout: 121 seconds)
+[11:22:28] *** Joins: psd (psd@moz-fqs.v8f.203.116.IP)
+[11:23:32] *** darkowlzz is now known as darkowlzz|afk
+[11:25:27] *** Quits: filsmick (filsmick@moz-nn9sf3.abo.wanadoo.fr) (Connection closed)
+[11:25:53] *** Joins: filsmick (filsmick@moz-nn9sf3.abo.wanadoo.fr)
+[11:26:23] *** Joins: mystor (mystor@moz-ldavpp.home3.cgocable.net)
+[11:27:02] *** Quits: filsmick (filsmick@moz-nn9sf3.abo.wanadoo.fr) (Connection closed)
+[11:27:03] *** Joins: filsmick (filsmick@moz-nn9sf3.abo.wanadoo.fr)
+[11:27:18] *** Quits: dstrbad (dstrbad@moz-rhd2ng.cable.xnet.hr) (A TLS packet with unexpected length was received.)
+[11:29:51] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[11:29:51] -ghservo- [13servo] 15bors-servo 04force-pushed 06auto from 148ae82b1 to 141161d83: 02http://git.io/A9I6iA
+[11:29:51] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[11:30:49] <nox> Ms2ger: http://build.servo.org/homu/buildbot/builders/linux2/builds/1316 :(
+[11:30:52] *** Quits: mystor (mystor@moz-ldavpp.home3.cgocable.net) (Ping timeout: 121 seconds)
+[11:31:26] <Manishearth>  nox remove the /homu/buildbot bit
+[11:31:54] <nox> Oh. Anyway the test error is a stupidity on my part.
+[11:35:11] *** Quits: psd (psd@moz-fqs.v8f.203.116.IP) (Ping timeout: 121 seconds)
+[11:37:35] *** Joins: psd (psd@moz-76l.ne5.215.180.IP)
+[11:47:20] *** Joins: caitp (caitp@moz-lmogh4.cable.rogers.com)
+[11:52:02] *** Joins: dstrbad (dstrbad@moz-rhd2ng.cable.xnet.hr)
+[11:55:14] *** kimundi is now known as zz_kimundi
+[11:59:39] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[11:59:39] -ghservo- [13servo] 15bors-servo 04force-pushed 06tmp from 141161d83 to 1407520de: 02http://git.io/veWu4
+[11:59:39] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[11:59:41] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[11:59:41] -ghservo- [13servo] 15bors-servo 04force-pushed 06auto from 141161d83 to 14fb78f9f: 02http://git.io/A9I6iA
+[11:59:41] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[12:00:02] *** Quits: aravindavk (aravinda@moz-m6j.f0d.244.121.IP) (Quit: Konversation terminated!)
+[12:02:31] *** Quits: canhtak (canhtak@moz-kcs.u0t.149.5.IP) (Client exited)
+[12:03:18] *** Joins: canhtak (canhtak@moz-csi.7d2.251.178.IP)
+[12:03:57] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[12:07:38] *** Quits: canhtak (canhtak@moz-csi.7d2.251.178.IP) (Ping timeout: 121 seconds)
+[12:08:06] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[12:08:19] *** Quits: dstrbad (dstrbad@moz-rhd2ng.cable.xnet.hr) (A TLS packet with unexpected length was received.)
+[12:08:55] *** Quits: cakecatz (textual@moz-1souik.smart2j.com) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[12:09:11] *** Quits: dinfuehr (dinfuehr@moz-c25.u8s.112.91.IP) (Connection closed)
+[12:09:32] *** Joins: dinfuehr (dinfuehr@moz-c25.u8s.112.91.IP)
+[12:13:34] *** Quits: dinfuehr (dinfuehr@moz-c25.u8s.112.91.IP) (Ping timeout: 121 seconds)
+[12:14:20] *** Quits: gw (uid31717@moz-hcr55a.charlton.irccloud.com) (Quit: Connection closed for inactivity)
+[12:15:49] <jgraham> So what, in servo, is invariant/identifies a particular browsing context (and remains unchanged after navigation of that browsing context)?
+[12:17:18] *** Joins: cengizIO (textual@moz-qvo.c4h.188.78.IP)
+[12:17:41] *** Joins: ldng (ldng@moz-q2un3b.abo.bbox.fr)
+[12:21:20] *** jandem is now known as jandem-away
+[12:21:22] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[12:21:22] -ghservo- [13servo] 15Ms2ger opened pull request #5564: Cleanup some JS conversions. (06master...06FromJSValConvertible) 02http://git.io/vea87
+[12:21:22] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[12:24:58] *** Joins: palodequeso (quassel@moz-ebjt83.hfc.comcastbusiness.net)
+[12:31:23] *** Joins: dstrbad (dstrbad@moz-rhd2ng.cable.xnet.hr)
+[12:34:36] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[12:34:36] -ghservo- [13servo] 15jdm closed issue #3218: Resource task failure in pageload-image.html 02http://git.io/rOOIUQ
+[12:34:36] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[12:36:38] *** Joins: Temur (Tarmashirin@moz-j3g.nld.91.59.IP)
+[12:39:50] *** Joins: caitp- (caitp@moz-lmogh4.cable.rogers.com)
+[12:40:38] <larsberg> barosl: are you sure we should remove the /homu/buildbot bit from the cfg file? When we didn't have it before, we got errors from buildbot:
+[12:40:41] <larsberg> https://www.irccloud.com/pastebin/1kPDhPdo
+[12:42:08] <larsberg> Manishearth:  are things running OK now? it was a bit chaos last night, but I was kinda fading :-)
+[12:42:29] <Manishearth> larsberg: seems like it
+[12:42:57] <larsberg> I have no idea what was going on with what jdm was seeing where it was building stuff from Days Long Past. Which it certainly was; some of those logs are at least pre-mach :-)
+[12:43:15] <Manishearth> hah
+[12:43:20] <Manishearth> I was asleep then I think
+[12:43:38] *** Quits: gfxmonk (tim@moz-jq6k9h.internode.on.net) (Quit: Ex-Chat)
+[12:44:16] <larsberg> looks like the only ones marked failed really did fail (and you commented with the break - nice!)
+[12:44:17] *** Quits: caitp- (caitp@moz-lmogh4.cable.rogers.com) (Ping timeout: 121 seconds)
+[12:44:27] <Ms2ger> larsberg, let's wait until the queue clears
+[12:44:35] <Manishearth> yeah
+[12:44:39] <Manishearth> I was watching for that
+[12:44:51] * Manishearth -> class
+[12:45:42] <larsberg> Ms2ger: yeah, I was kinda hoping it would have done so while I slept, but our builds are still taking a while
+[12:46:20] <nox> Oh… I think I broke own of my own PRs. :(
+[12:46:51] <nox> I rebased and force-pushed the wrong one while it was already in testing… -_-
+[12:47:15] <nox> Manishearth: https://github.com/servo/servo/pull/5490 Could you reapprove it?
+[12:47:15] <crowbot> PR #5490: Implement NamedNodeMap::getNamedItem*() (fixes #5454) - https://github.com/servo/servo/pull/5490
+[12:48:19] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[12:48:19] -ghservo- [13servo] 15Ms2ger closed pull request #5506: Update web-platform-tests. (06master...06wpt_20150330) 02http://git.io/vet9u
+[12:48:19] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[12:48:20] *** Quits: Temur (Tarmashirin@moz-j3g.nld.91.59.IP) (Quit: Leaving)
+[12:48:20] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[12:48:20] -ghservo- [13servo] 15bors-servo 04force-pushed 06tmp from 14fb78f9f to 1407520de: 02http://git.io/veWu4
+[12:48:20] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[12:48:21] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[12:48:21] -ghservo- [13servo] 15bors-servo 04force-pushed 06auto from 14fb78f9f to 14df8d4b2: 02http://git.io/A9I6iA
+[12:48:21] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[12:48:33] *** Joins: gvfjvhgoy (bjkvgr@moz-deq.rfo.193.197.IP)
+[12:48:37] *** Quits: gvfjvhgoy (bjkvgr@moz-deq.rfo.193.197.IP) (RecvQ exceeded)
+[12:48:44] *** Joins: gvfjvhgoy (bjkvgr@moz-deq.rfo.193.197.IP)
+[12:49:01] <gvfjvhgoy> .
+[12:49:01] <gvfjvhgoy> did usa intelligence supply isis with weapons like they did with al-qaeda to justify creating wars?
+[12:49:01] <gvfjvhgoy> did usa excute the creative mess in the middle east like they said they will, does the creative mess include explosions with uncertain responsibles to create wars?
+[12:49:01] <gvfjvhgoy> I was prevented on facebook & twitter. So plz, send my qs to help limiting usa & israel aggression against others may then lessen number of people killed in the middle east.
+[12:49:01] <gvfjvhgoy> .did usa intelligence supply isis with weapons like they did with al-qaeda to justify creating wars?
+[12:49:01] <gvfjvhgoy> did usa excute the creative mess in the middle east like they said they will, does the creative mess include explosions with uncertain responsibles to create wars?
+[12:49:01] <gvfjvhgoy> I was prevented on facebook & twitter. So plz, send my qs to help limiting usa & israel aggression against others may then lessen number of people killed in the middle east.
+[12:49:01] <gvfjvhgoy> plz, send my qs to help limiting usa&israel aggression against others.
+[12:49:26] *** Quits: filsmick (filsmick@moz-nn9sf3.abo.wanadoo.fr) (Connection closed)
+[12:49:28] <barosl> larsberg, I think that error was caused by a different reason. I cannot think of one, though
+[12:49:38] <barosl> Hopefully a temporal one
+[12:49:57] *** Joins: filsmick (filsmick@moz-nn9sf3.abo.wanadoo.fr)
+[12:50:17] <larsberg> barosl: it seems to be working fine as-is, though:  https://www.irccloud.com/pastebin/ubY0r0Ir
+[12:50:30] *** Parts: gvfjvhgoy (bjkvgr@moz-deq.rfo.193.197.IP) ()
+[12:51:08] <barosl> larsberg, Is it currently using the URL without `/home/buildbot`?
+[12:51:23] <Ms2ger> larsberg, mac1 takes 50 minutes now :(
+[12:51:30] <nox> Manishearth: Nevermind, I force-pushed the previous commit.
+[12:51:53] <larsberg> No, with it. But http://build.servo.org/homu/buildbot is an nginx redirect to http://build.servo.org:54856/buildbot, if that matters
+[12:52:06] <larsberg> Ms2ger: that... is double-plus ungood
+[12:52:09] <barosl> Huh
+[12:53:17] <Ms2ger>  git update ( 6 mins, 8 secs ) 
+[12:53:18] <barosl> larsberg, The primary concern with the URL with `/homu/buildbot` was that it produces invalid test result URLs
+[12:53:29] <barosl> e.g. https://github.com/servo/servo/pull/5558#issuecomment-90490555
+[12:53:29] <crowbot> PR #5558: Remove compositor dependency on net crate. - https://github.com/servo/servo/pull/5558
+[12:53:35] <Ms2ger> I guess that's jgraham's fault
+[12:54:04] <larsberg> Ms2ger: omg, 13.5 minutes to compile; 10+ to try to compile CEF, and 13.5 minutes to re-compile AGAIN for unit tests...
+[12:54:38] <Ms2ger> larsberg, can we make it not remove the srcdir?
+[12:55:41] <larsberg> Ms2ger: you mean to save the 294 seconds spent re-doing the clone? Probably, though I'd want to add a `git clean -f -d` or similar
+[12:56:10] <larsberg> barosl: aha, that is unfortunate. So you're thinking my change of the URL in the cfg.toml was actually unrelated and is only used for those links?
+[12:56:22] <barosl> I guess so
+[12:56:32] <barosl> AFAIK the Rust project also uses the URL without the prefix
+[12:56:39] <barosl> But I'm contacting acrichto to make sure of it
+[12:56:59] <Ms2ger> larsberg, yeah, that's the most wasteful part, I guess
+[12:57:56] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[12:59:13] *** Joins: ahal (ahal@moz-b8e0a0.cpe.pppoe.ca)
+[13:01:34] <jgraham> Yeah, recloning every time is pretty insane
+[13:02:14] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[13:02:14] *** Quits: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP) (Ping timeout: 121 seconds)
+[13:02:27] *** Quits: mihneadb (mihneadb@moz-716.4cl.85.141.IP) (Ping timeout: 121 seconds)
+[13:02:34] *** Joins: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP)
+[13:02:44] *** Joins: bdero (bran@moz-u8a.gci.189.18.IP)
+[13:02:44] <jgraham> But yeah you could clean and assert that |git status -z --ignored| gives no output
+[13:03:16] <SimonSapin> larsberg: if conflicts on pull are a concern, there could be a bare repo separate from a checkout, with (only) the latter being nuked for every build
+[13:03:35] *** Quits: bdero (bran@moz-u8a.gci.189.18.IP) (Quit: Leaving.)
+[13:03:36] *** Joins: bdero (bran@moz-tv7jqp.mit.edu)
+[13:03:52] <jgraham> Oh yeah, that's also a reasonable idea
+[13:03:56] *** Joins: jdm (jdm@moz-ilbt2e.cable.teksavvy.com)
+[13:03:56] *** ChanServ sets mode: +qo jdm jdm
+[13:04:02] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[13:04:02] -ghservo- [13servo] 15jdm closed pull request #5562: Canvas: added lineWidth support. (06master...06canvas_linewidth) 02http://git.io/ve2iE
+[13:04:02] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[13:04:03] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[13:04:03] -ghservo- [13servo] 15jdm reopened pull request #5562: Canvas: added lineWidth support. (06master...06canvas_linewidth) 02http://git.io/ve2iE
+[13:04:03] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[13:04:08] <jgraham> Pretty sure I've seen that implemented before
+[13:04:47] <larsberg> barosl: thanks, I'm just afraid to change it after we finally seem to have gotten the spiderweb hanging together :-)
+[13:05:49] <Ms2ger> larsberg, you're going to make pretty graphs, aren't you? ;)
+[13:06:51] <larsberg> Ms2ger: no way! If I show off the UML charts I threw together to figure out what the workflow was, I'd lost all my cred. "he's one of those lolololol enterprise architect types, eh?"
+[13:07:12] <Ms2ger> larsberg, we already know you are: )
+[13:08:07] <larsberg> True story: one of my directs was employee #8 and the former CTO of Rational (which made all the earliest UML tools). He could freehand basically perfect circles, squares, etc. at lightspeed on a whiteboard. It was like watching a human pen plotter (for those old enough to remember those).
+[13:08:32] <Ms2ger> A what? ;)
+[13:10:06] <SimonSapin> Checking out files: 100% (106958/106958), done.
+[13:10:13] <SimonSapin> 10 seconds
+[13:11:11] <larsberg> SimonSapin: http://build.servo.org/builders/mac1/builds/1534/steps/git/logs/stdio says 232 seconds, unless I'm misreading?
+[13:11:29] <SimonSapin> larsberg: sorry, unrelated to the discussion
+[13:11:36] <SimonSapin> 10 seconds is on my laptop
+[13:11:50] <larsberg> aha
+[13:12:20] <SimonSapin> doesn’t Linode have SSDs?
+[13:12:35] <jgraham> It does
+[13:13:41] <SimonSapin> then I wonder what makes such a difference
+[13:13:44] <jgraham> Seems hard to believe that the same operation would be more than an order of magnitude slower on linode compared to your laptop. *Is* it the same operation?
+[13:14:28] <SimonSapin> Mine was `git checkout master` from a branch before the huge PR
+[13:14:53] <jgraham> git clone --branch auto https://github.com/servo/servo .
+[13:16:04] <SimonSapin> ok, so maybe most of that 232 seconds is network?
+[13:16:10] <SimonSapin> or other non-checkout things
+[13:16:28] <larsberg> it's on one of the mac minis (macstadium). On linode it's http://build.servo.org/builders/linux1/builds/1321/steps/git/logs/stdio and 15s
+[13:17:03] *** Joins: playjax (chatzilla@moz-vfko5l.optusnet.com.au)
+[13:17:21] <SimonSapin> larsberg: which minis do we use? Do they have SSDs?
+[13:18:02] <jgraham> I wonder why linode is so much faster than my computer :)
+[13:18:17] *** Joins: caitp- (caitp@moz-lmogh4.cable.rogers.com)
+[13:18:18] <nox> To push things in my Box<RootedVec<…>>, I should do foo.deref_mut.push(…), right?
+[13:18:28] <nox> deref_mut()*
+[13:18:29] <Ms2ger> Shouldn't need to deref_mut()
+[13:18:31] <larsberg> simonsapin: macstadium stats for our machines  https://www.irccloud.com/pastebin/aoDCuCrg
+[13:18:31] *** Quits: filsmick (filsmick@moz-nn9sf3.abo.wanadoo.fr) (Connection closed)
+[13:18:32] *** Joins: filsmick (filsmick@moz-nn9sf3.abo.wanadoo.fr)
+[13:18:39] *** Quits: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP) (Ping timeout: 121 seconds)
+[13:19:00] <jgraham> So IO on the macs is super-expensive
+[13:19:07] <jgraham> in terms of time
+[13:19:16] <SimonSapin> ok, HDD vs SSD probably explains 232 seconds vs 15 seconds
+[13:19:25] <larsberg> I think we can move to SSDs and a 2.8GHz for $10/month more, with the new pricing since we last purchased
+[13:19:48] <nox> Ms2ger: let mut stack = box RootedVec::new(); stack.push(JS::from_rooted(root)); "error: cannot borrow immutable borrowed content as mutable"
+[13:19:55] <larsberg> getting to a quad core with SSDs is super pricey, though http://macstadium.com/mac-mini
+[13:20:36] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[13:20:36] -ghservo- [13servo] 15bors-servo 04force-pushed 06tmp from 14df8d4b2 to 1407520de: 02http://git.io/veWu4
+[13:20:36] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[13:20:37] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[13:20:37] -ghservo- [13servo] 15bors-servo 04force-pushed 06auto from 14df8d4b2 to 1448ee056: 02http://git.io/A9I6iA
+[13:20:37] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[13:20:38] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[13:20:38] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/veaS1
+[13:20:38] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[13:20:55] <jgraham> It's hard to compare since nothing on there looks like what we already have :)
+[13:22:06] *** Quits: caitp (caitp@moz-lmogh4.cable.rogers.com) (Ping timeout: 121 seconds)
+[13:22:27] <jgraham> Anyway if we can't afford machines with SSDs, doing less IO seems like a big, easy, win
+[13:23:17] <nox> Ms2ger: (&mut *stack).push(…) seems to work, but it looks weird doesn't it?
+[13:23:34] <Ms2ger> A little, yeah
+[13:24:06] <Ms2ger> Better than deref_mut(), IMO
+[13:24:28] <SimonSapin> nox, Ms2ger: could be https://github.com/rust-lang/rust/issues/15609
+[13:24:28] <crowbot> Issue #15609: Autoderef chooses deref() when deref_mut() is needed for ref mut pattern - https://github.com/rust-lang/rust/issues/15609
+[13:24:35] <nox> SimonSapin: Probably.
+[13:25:36] <nox> Ms2ger: I think that too.
+[13:25:45] <nox> Anyway, seems like it's compiling.
+[13:25:45] <SimonSapin> larsberg: #5300 is apparently pre CSS tests PR. Is this a problem?
+[13:25:46] <crowbot> Issue #5300: layout: Implement most of `border-collapse` per CSS 2.1 § 17.6.2. - https://github.com/servo/servo/pull/5300
+[13:25:54] <jgraham> jdm: So, on another topic, I did a little bit of work to stand up very basic webdriver support (basically: able to start a session and get notified when a new global is created). Now I have a couple of questions:
+[13:26:26] <nox> Is it unsafe to box a Temporary btw?
+[13:26:42] <larsberg> SimonSapin: it looks like GitHub implemented the timeout (it now says "can't automatically merge") so it's not crucial to close or rebase it this second. I do expect that any other tools that look at it will hit the horrible git behavior, though.
+[13:26:48] <jdm> nox: yes, since Temporary relies on being on the stack
+[13:26:55] <nox> jdm: Mmmh,
+[13:27:19] <nox> jdm: so we can't box Output in TNode. (Re: our selectors' discussion yesterday), can we?
+[13:27:20] <jgraham> 1) How to identify the browsing that webdriver commands go to? The WD cpncept is that each tab/chrome window has a handle, one of which is selected at a time and that commands like Get() go to the window in that bc
+[13:27:30] <SimonSapin> larsberg: Critic seems OK, but I’ll remember not to have it try to review a rebase
+[13:27:50] *** Joins: Temur (Tarmashirin@moz-j3g.nld.91.59.IP)
+[13:27:56] *** Joins: mystor (mystor@moz-ldavpp.home3.cgocable.net)
+[13:28:01] *** jandem-away is now known as jandem
+[13:28:03] <jgraham> So I think I want something like pipeline_id but that doesn't change on navigation
+[13:28:09] <SimonSapin> (which would build an "equivalent merge" that includes CSS tests)
+[13:28:31] <jdm> jgraham: so in #5556 I proposed a different model than my original "notify on global creation" design
+[13:28:31] <crowbot> Issue #5556: Process the Get command - https://github.com/servo/servo/issues/5556
+[13:29:03] <jgraham> 2) Is passing channels-over-channels verboten these days? i.e. should I implement commands like that or with one channel in each direction?
+[13:29:05] <Ms2ger> jdm, Temporary doesn't, does it?
+[13:29:07] *** Joins: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP)
+[13:29:20] <jdm> Ms2ger: in this version of spidermonkey it does
+[13:29:29] <nox> Well if it doesn't, what would be wrong with Vec<Temporary<_>>?
+[13:29:32] <jdm> hence why it contains a *mut JSObject
+[13:29:48] <Ms2ger> Oh, it does
+[13:29:54] *** Quits: Temur (Tarmashirin@moz-j3g.nld.91.59.IP) (Quit: Leaving)
+[13:30:06] <jgraham> jdm: I see. Sounds like that would solve the first problem if there's a root pipeline that never changes?
+[13:30:38] <jdm> jgraham: well, it's not that the root pipeline never changes, since navigation will change it
+[13:30:39] <jgraham> Or maybe it doesn't even matter
+[13:31:09] <jdm> but we can either provide the ability to fetch the current id, or we can add new commands for "do this to the root frame"
+[13:31:25] <jgraham> OK
+[13:31:43] <jgraham> So I guess my problem here might be one level higher (or lack of understanding)
+[13:31:56] <jdm> if webdriver is not concerned with targetting specific iframes, I think dealing with the constellation is the best model
+[13:32:11] *** Quits: mystor (mystor@moz-ldavpp.home3.cgocable.net) (Ping timeout: 121 seconds)
+[13:32:18] <jgraham> It can target specific iframes (e.g. for script injection)
+[13:32:34] <jgraham> But e.g. Get runs against the top level browsing context
+[13:32:34] <ted> jdm: how old is Servo's spidermonkey (OOC)?
+[13:32:50] <jdm> ted: sept 2012, afair
+[13:33:04] <ted> ouch
+[13:33:15] <ted> is updating just painful because you have to munge the rust->C bindings?
+[13:33:16] <jgraham> jdm: So one thing I'm not sure about still is what happens when there are multiple top level browsing contexts
+[13:33:29] <jgraham> e.g. multiple tabs
+[13:33:47] <jdm> ted: it's painful because we need to do the transition to exact rooting as well
+[13:33:58] <ted> oh, that
+[13:33:58] <jdm> ted: and spidermonkey soon after moved to full c++
+[13:34:08] <ted> ...and doing C++ FFI is a PITA
+[13:34:09] <jdm> so those bindings are twice as painful
+[13:34:15] <nox> I'm starting to have the intuition of where to use this or that type.
+[13:34:29] <ted> jdm: are the spidermonkey bindings all lovingly hand-crafted?
+[13:34:35] <jgraham> The webdriver model is basically that webdriver is a singleton and each session (of which there is basically one) is tied to a tlbc
+[13:34:35] <jdm> jgraham: so here's the thing - a regular servo instance doesn't have multiple top level browsing contexts
+[13:34:56] <jdm> ted: historically it was a combination of machine-generated and artisanally adapted
+[13:35:13] <jdm> ted: mwu now has significantly improved the bindings we can produce from c++ headers, though
+[13:35:28] <ted> cool
+[13:35:29] <jgraham> jdm: What happens with e.g. servo_shell for example? And what will happen in the future?
+[13:36:22] <jdm> jgraham: unclear what that means for servo_shell, since there's still only one top-level context there
+[13:36:49] <jdm> jgraham: I imagine browser.html + firefox would have this same issue
+[13:37:31] <jdm> jgraham: the miniservo ports had multiple constellations
+[13:37:37] <jgraham> I think with the browser-in-an-iframe thing you need a way to say "this iframe is actually like a top-level-browsing-context"
+[13:37:57] * jdm wonders if you get webdriver support for free with a full CEF port
+[13:38:03] <jgraham> You don't want to window.parent your way out of the iframe, for example
+[13:38:27] <jdm> yeah, interesting point
+[13:39:17] <jgraham> I think you would if you implement the chrome devtools protocol. I don't know if that's part of CEF though
+[13:39:23] <Ms2ger> Speaking of upgrading SM
+[13:39:26] <Ms2ger> mwu++
+[13:39:40] <jgraham> AIUI the webdriver support in chrome is devtools + a proxy
+[13:39:42] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[13:39:42] -ghservo- [13servo] 15soul268 opened issue #5565: Error building for the first time [wheezy, rustc 1.0.0-beta (9854143cb 2015-04-02)] 02http://git.io/veaNR
+[13:39:42] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[13:39:59] <SimonSapin> So, out of 18 crates that we run `cargo test` on (which takes at least as much time as `cargo build`), only 5 have any unit tests
+[13:40:20] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[13:40:20] -ghservo- [13servo] 15Ms2ger closed issue #5565: Error building for the first time [wheezy, rustc 1.0.0-beta (9854143cb 2015-04-02)] 02http://git.io/veaNR
+[13:40:20] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[13:40:24] <SimonSapin> `cargo test` also runs rustdoc --test just to find out there aren’t any doctests
+[13:41:19] <jgraham> I see SimonSapin has got out his clownshoeometer
+[13:42:54] *** Joins: system64 (uid17738@moz-7c4aav.uxbridge.irccloud.com)
+[13:45:29] *** AutomatedTester|AFK is now known as AutomatedTester
+[13:45:31] <nox> Ms2ger: Crashes hard with the box too.
+[13:45:47] <nox> Want me to push the code to see if I did something blatantly wrong?
+[13:48:19] <larsberg> jgraham: I'll probably try to migrate to SSD boxes on MacStadium, since that seems like a clear win across the board. Not today, though, as I have already more than met my quota for "complete ops chaos" for the week. I think I hit it Sunday afternoon, in fact...
+[13:48:32] <jgraham> Hah
+[13:49:45] *** Quits: je_julie (uid29643@moz-2q4j9e.brockwell.irccloud.com) (Quit: Connection closed for inactivity)
+[13:50:26] *** Quits: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP) (Ping timeout: 121 seconds)
+[13:52:06] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[13:52:11] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[13:52:11] -ghservo- [13servo] 15jdm opened issue #5566: Merge rust-xlib and x11-rs 02http://git.io/veajx
+[13:52:11] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[13:53:15] *** Joins: deokjinkim (Mibbit@moz-g81.0bj.108.114.IP)
+[13:53:23] *** Quits: playjax (chatzilla@moz-vfko5l.optusnet.com.au) (Connection closed)
+[13:53:53] <nox> Ms2ger: (pid:26488) "thread 'ScriptTask' panicked at 'assertion failed: unrooted == rooted.js_ptr', /Users/nox/src/servo/components/script/dom/bindings/js.rs:646" It breaks LIFO, right?
+[13:55:10] <SimonSapin> larsberg: your weeks start on Sunday? Is that like Fahrenheit weeks?
+[13:55:30] <jdm> jgraham: does https://github.com/servo/servo/pull/5433#issuecomment-90357133 mean anything to you?
+[13:55:31] <crowbot> PR #5433: Implements drawImage for html image as ImageSource - https://github.com/servo/servo/pull/5433
+[13:55:33] <jdm> nox: yep
+[13:55:38] *** Joins: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP)
+[13:55:56] <nox> jdm: Ok, I'll try to fix TreeIterator in another PR then.
+[13:56:24] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[13:57:15] <jgraham> jdm: Hmm, I wonder if we released a new mozrunner or something
+[13:57:50] <larsberg> SimonSapin: http://en.wikipedia.org/wiki/Week#Week_numbering - see the world map on the right :-)
+[13:59:48] *** Quits: bogdan_maris (Instantbird@moz-662.esi.231.62.IP) (Client exited)
+[14:00:48] <nox> jdm: Rebased, both code and Critic review.
+[14:02:52] *** Quits: psd (psd@moz-76l.ne5.215.180.IP) (Quit: Leaving)
+[14:03:15] *** Joins: psd (psd@moz-acc.mpg.78.202.IP)
+[14:07:56] *** zz_kimundi is now known as kimundi
+[14:10:03] *** Quits: filsmick (filsmick@moz-nn9sf3.abo.wanadoo.fr) (Ping timeout: 121 seconds)
+[14:11:33] *** Joins: filsmick (filsmick@moz-22g0vl.abo.wanadoo.fr)
+[14:12:07] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[14:12:07] -ghservo- [13servo] 15nox closed pull request #5545: Remove get_unsound_ref_forever() from TreeWalker (06master...06treewalker-get-unsound) 02http://git.io/ve0A6
+[14:12:07] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[14:15:13] *** Joins: Temur (Tarmashirin@moz-j3g.nld.91.59.IP)
+[14:15:48] *** Quits: jevin (jevin@moz-sra.ovp.12.72.IP) (Connection closed)
+[14:16:08] <nox> jdm: What about the still open issue?
+[14:16:12] *** Joins: jevin (jevin@moz-sra.ovp.12.72.IP)
+[14:16:37] *** Joins: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at)
+[14:16:41] *** Quits: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at) (Connection closed)
+[14:16:43] *** Joins: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at)
+[14:17:35] *** Quits: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at) (Connection closed)
+[14:17:36] <nox> Yay.
+[14:24:57] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[14:24:57] *** ChanServ sets mode: +o brson
+[14:25:54] <SimonSapin> larsberg: how do you feel about disabling all doctests?
+[14:26:07] <SimonSapin> we don’t have any, but if someone tries to add some they silently won’t be run
+[14:26:38] <nox> jdm: I pushed something by mistake on https://github.com/servo/servo/pull/5490 and then pushed back the older changes, but looking at the PR queue I think homu saw through my mistake and disregarded the PR.
+[14:26:38] <crowbot> PR #5490: Implement NamedNodeMap::getNamedItem*() (fixes #5454) - https://github.com/servo/servo/pull/5490
+[14:28:56] *** Joins: mystor (mystor@moz-ldavpp.home3.cgocable.net)
+[14:31:21] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[14:31:21] -ghservo- [13servo] 15bors-servo pushed 0 new commits to 06tmp: 02http://git.io/veVZY
+[14:31:21] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[14:31:23] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[14:31:23] -ghservo- [13servo] 15bors-servo merged 06tmp into 06auto: 02http://git.io/veVZ3
+[14:31:23] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[14:31:24] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[14:31:24] -ghservo- [13servo] 15bors-servo closed pull request #5536: Remove int/uint from devtools/devtools_traits. (06master...06devtools_uint) 02http://git.io/veROJ
+[14:31:24] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[14:33:18] *** Quits: mystor (mystor@moz-ldavpp.home3.cgocable.net) (Ping timeout: 121 seconds)
+[14:36:16] *** Quits: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP) (Ping timeout: 121 seconds)
+[14:37:10] *** Joins: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP)
+[14:38:58] <larsberg> SimonSapin: seems fine to me to disable them
+[14:39:37] <larsberg> Also, I opened a support ticket on MacStadium to migrate the two macs to SSD, so there may be a server "hiccup" on those two machines in the next couple of hours.
+[14:44:23] <Ms2ger> SimonSapin, we have some, but they're all disabled because of linking issues
+[14:44:30] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[14:44:30] -ghservo- [13saltfs] 15metajack pushed 1 new commit to 06master: 02http://git.io/veV8B
+[14:44:30] -ghservo- 13saltfs/06master 143354d33 15Jack Moffitt: Merge pull request #26 from servo/Manishearth-patch-1...
+[14:44:30] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[14:44:32] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[14:44:32] -ghservo- [13saltfs] 15metajack 04deleted 06Manishearth-patch-1 at 14ae80397: 02http://git.io/veV8R
+[14:44:32] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[14:46:19] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[14:47:13] <jack> larsberg: do we expect that to improve build performance? I'd imagine so, but I can't remember ever not using an SSD now
+[14:47:30] *** Quits: cengizIO (textual@moz-qvo.c4h.188.78.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[14:48:31] <larsberg> jack: yes, lots! Check the backscroll for how long checkouts were taking (232 vs. 10 secs) in addition to all of the building. I didn't even remember they weren't SSDs until we were looking at mac1 vs. linux1 perf
+[14:48:56] *** Quits: fabrice (fabrice@moz-r84lgh.ca.comcast.net) (Quit: Leaving.)
+[14:49:08] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[14:49:08] -ghservo- [13servo] 15boghison opened pull request #5567: Make mouse_over_targets a RootedVec (06master...06document_rootedvec) 02http://git.io/veVBC
+[14:49:08] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[14:49:17] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[14:49:17] -ghservo- [13servo] 15jdm opened pull request #5568: Remove int_uint from net. (06master...06net_uint) 02http://git.io/veVBB
+[14:49:17] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[14:50:33] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[14:51:12] <Ms2ger> jdm, why move the cast into dom/storage?
+[14:51:30] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[14:51:30] -ghservo- [13servo] 15jdm reopened pull request #5567: Make mouse_over_targets a RootedVec (06master...06document_rootedvec) 02http://git.io/veVBC
+[14:51:30] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[14:52:04] <jdm> because?
+[14:52:11] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[14:52:11] -ghservo- [13servo] 15jdm closed pull request #5567: Make mouse_over_targets a RootedVec (06master...06document_rootedvec) 02http://git.io/veVBC
+[14:52:11] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[14:52:12] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[14:52:12] -ghservo- [13servo] 15jdm reopened pull request #5567: Make mouse_over_targets a RootedVec (06master...06document_rootedvec) 02http://git.io/veVBC
+[14:52:12] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[14:52:25] <jdm> jgraham: critic is stuck on 5567
+[14:53:13] <jgraham> Silly critic
+[14:53:36] <Ms2ger> I guess it's fine either way
+[14:53:44] *** Quits: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP) (Ping timeout: 121 seconds)
+[14:54:20] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[14:54:20] -ghservo- [13servo] 15jgraham closed pull request #5567: Make mouse_over_targets a RootedVec (06master...06document_rootedvec) 02http://git.io/veVBC
+[14:54:20] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[14:54:21] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[14:54:21] -ghservo- [13servo] 15jgraham reopened pull request #5567: Make mouse_over_targets a RootedVec (06master...06document_rootedvec) 02http://git.io/veVBC
+[14:54:21] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[14:54:25] *** Joins: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP)
+[14:55:10] <Ms2ger> 37 total, 15 approved
+[14:57:18] <larsberg> That's awesome! Though we do have the 14 I had to close pending rebase - https://github.com/servo/servo/issues?utf8=%E2%9C%93&q=label%3A%22S-closed+for+rebase%22
+[14:57:47] * larsberg is not sure how many of them have been revived as new PRs yet
+[14:57:55] <Ms2ger> Yeah
+[14:58:58] *** Quits: dstrbad (dstrbad@moz-rhd2ng.cable.xnet.hr) (A TLS packet with unexpected length was received.)
+[15:00:28] *** Quits: deokjinkim (Mibbit@moz-g81.0bj.108.114.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:00:49] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[15:00:49] -ghservo- [13servo] 15luniv reopened pull request #5553: Use iterators for iterating through CSS rules (06master...06css-rule-iterators) 02http://git.io/vezjM
+[15:00:49] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[15:02:33] *** Quits: jevin (jevin@moz-sra.ovp.12.72.IP) (Connection closed)
+[15:02:36] *** Quits: mskrzypkows (m.skrzypkow@moz-u9sv8i.itsa.net.pl) (Ping timeout: 121 seconds)
+[15:03:04] *** Joins: jevin (jevin@moz-sra.ovp.12.72.IP)
+[15:04:34] <jgraham> jdm: Well I deleted my virtualenv and tried again and everything seemed to work…
+[15:04:51] <jdm> :/
+[15:06:30] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[15:06:30] -ghservo- [13servo] 15Ms2ger opened pull request #5569: Implement support for object in IDL. (06master...06object) 02http://git.io/veVwv
+[15:06:30] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[15:06:49] <Ms2ger> jdm, ^
+[15:07:01] <jdm> ooh
+[15:07:02] *** Joins: cengizIO (textual@moz-qvo.c4h.188.78.IP)
+[15:07:24] *** Quits: cengizIO (textual@moz-qvo.c4h.188.78.IP) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[15:08:59] <Ms2ger> jdm, and thanks for the int_uint; looks like it's just gfx and ports now \o/
+[15:09:09] <jdm> Ms2ger: I'm in the middle of gfx, fwiw
+[15:09:17] <Ms2ger> Excellent
+[15:10:46] <SimonSapin> Ms2ger: Cookie::default_path is private but used in tests. How do you feel about making it public to move tests into their own crate?
+[15:11:32] <Ms2ger> SimonSapin, jdm is our cookie monster, but I'm not necessarily opposed
+[15:12:02] <jdm> I am willing to make sacrifices in the name of more convenient tests
+[15:12:54] *** AutomatedTester is now known as AutomatedTester|AFK
+[15:12:57] <Ms2ger> Looking at #5567
+[15:12:57] <crowbot> Issue #5567: Make mouse_over_targets a RootedVec - https://github.com/servo/servo/pull/5567
+[15:13:31] *** Joins: dbaron (dbaron@moz-rb4k89.dynamic.fusionbroadband.com)
+[15:16:52] <larsberg> Manishearth: since jack merged your saltfs pr to change the config path, I updated the salt repo and hup'd homu
+[15:16:58] <larsberg> we shall see what happens :-)
+[15:18:00] *** Joins: dstrbad (dstrbad@moz-3geb2b.dsl.iskon.hr)
+[15:18:12] *** Joins: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at)
+[15:19:19] *** Quits: filsmick (filsmick@moz-22g0vl.abo.wanadoo.fr) (Connection closed)
+[15:19:40] *** Joins: filsmick (filsmick@moz-22g0vl.abo.wanadoo.fr)
+[15:22:12] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[15:22:12] -ghservo- [13servo] 15bors-servo fast-forwarded 06master from 1448ee056 to 14e521860: 02http://git.io/veVZ3
+[15:22:12] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[15:22:13] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[15:22:13] -ghservo- [13servo] 15bors-servo merged 06tmp into 06auto: 02http://git.io/veV1m
+[15:22:13] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[15:22:15] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[15:22:15] -ghservo- [13servo] 15bors-servo closed pull request #5490: Implement NamedNodeMap::getNamedItem*() (fixes #5454) (06master...06namednodemap) 02http://git.io/veJVK
+[15:22:15] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[15:22:16] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[15:22:16] -ghservo- [13servo] 15bors-servo closed issue #5454: Implement named access to NamedNodeMap 02http://git.io/jo2d
+[15:22:16] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[15:22:19] *** Quits: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at) (Ping timeout: 121 seconds)
+[15:22:26] *** Joins: fabrice (fabrice@moz-etdrcn.mh2d.1ibb.0101.2620.IP)
+[15:22:39] <nox> Yay.
+[15:23:55] <Ms2ger> \o/
+[15:24:37] *** kimundi is now known as zz_kimundi
+[15:24:49] * Ms2ger has a look at int/uint in cef
+[15:25:24] *** Joins: dstrbad_ (dstrbad@moz-o0cqfh.dsl.iskon.hr)
+[15:26:40] *** Quits: Temur (Tarmashirin@moz-j3g.nld.91.59.IP) (Quit: Leaving)
+[15:27:11] *** Quits: jevin (jevin@moz-sra.ovp.12.72.IP) (Connection closed)
+[15:27:14] *** Joins: jevin (jevin@moz-sra.ovp.12.72.IP)
+[15:28:00] *** Joins: dstrbad__ (dstrbad@moz-o0cqfh.dsl.iskon.hr)
+[15:28:02] *** Quits: dstrbad (dstrbad@moz-3geb2b.dsl.iskon.hr) (Ping timeout: 121 seconds)
+[15:28:02] *** Quits: dstrbad_ (dstrbad@moz-o0cqfh.dsl.iskon.hr) (Connection closed)
+[15:28:52] *** Joins: cakecatz (textual@moz-1m7v28.sannet.ne.jp)
+[15:29:46] *** Joins: mystor (mystor@moz-ldavpp.home3.cgocable.net)
+[15:29:49] <Ms2ger> larsberg, I've removed the S-closed for rebase tags from the PRs where I found a rebased version
+[15:29:55] *** Quits: dstrbad__ (dstrbad@moz-o0cqfh.dsl.iskon.hr) (Connection closed)
+[15:30:06] *** Joins: dstrbad (dstrbad@moz-o0cqfh.dsl.iskon.hr)
+[15:30:10] <larsberg> Ms2ger: thanks!
+[15:30:45] <nox> https://github.com/servo/servo/pull/5567 I think this will conflict with my PR currently under test.
+[15:30:45] <crowbot> PR #5567: Make mouse_over_targets a RootedVec - https://github.com/servo/servo/pull/5567
+[15:34:01] *** Quits: mystor (mystor@moz-ldavpp.home3.cgocable.net) (Ping timeout: 121 seconds)
+[15:38:05] *** Joins: Jackneill (Jackneill@moz-j207sg.pool.digikabel.hu)
+[15:38:41] <jdm> Ms2ger: did you intend to ok the change from storing a Vec<JS<T>> to RootedVec<JS<T>> in ScriptTask? I'm surprised that doesn't end up asserting.
+[15:38:41] *** Quits: kmicu (kmicu@moz-uga.edn.218.91.IP) (Connection closed)
+[15:39:25] *** Joins: mihneadb (mihneadb@moz-h4q.4cl.85.141.IP)
+[15:39:26] *** Joins: kmicu (kmicu@moz-uga.edn.218.91.IP)
+[15:39:41] <Ms2ger> jdm, I hoped tests would catch it if it was wrong :)
+[15:40:02] <jdm> well, let's make sure that the tests have been run
+[15:40:24] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[15:40:43] *** Joins: Pierre_ (pierre@moz-mssjpl.9gkk.jgog.e800.2404.IP)
+[15:40:47] *** Quits: Pierre (pierre@moz-lmh.0pq.89.116.IP) (Ping timeout: 121 seconds)
+[15:41:09] <Ms2ger> Sounds good
+[15:41:12] <jdm> why did I take on gfx
+[15:41:15] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[15:41:20] * jdm is lost in a maze of twisty int/uint
+[15:44:43] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[15:45:10] *** Quits: filsmick (filsmick@moz-22g0vl.abo.wanadoo.fr) (Connection closed)
+[15:45:11] *** Joins: filsmick (filsmick@moz-22g0vl.abo.wanadoo.fr)
+[15:47:16] *** Joins: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net)
+[15:47:16] *** ChanServ sets mode: +o pcwalton
+[15:48:31] *** Quits: acgtyrant (acgtyrant@moz-3kd.b79.160.124.IP) (Ping timeout: 121 seconds)
+[15:51:02] *** Joins: Savago (Savago@moz-8hd.3b6.246.162.IP)
+[15:52:15] <Savago> Good morning.
+[15:54:14] *** Joins: doener (doener@moz-929cn9.unity-media.net)
+[15:56:46] *** Quits: system64 (uid17738@moz-7c4aav.uxbridge.irccloud.com) (Quit: Connection closed for inactivity)
+[15:57:47] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[15:57:47] -ghservo- [13servo] 15Ms2ger opened pull request #5570: Cleanup cef/wrappers.rs. (06master...06cef) 02http://git.io/vewvv
+[15:57:47] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[15:57:49] <barosl> Good night!
+[15:58:50] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[15:58:50] -ghservo- [13servo] 15jdm opened pull request #5571: Remove int_uint feature from gfx. (06master...06gfx_uint) 02http://git.io/vewv2
+[15:58:50] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[15:59:28] *** jandem is now known as jandem-away
+[16:01:33] *** Joins: dstrbad_ (dstrbad@moz-i7prfu.dialin.iskon.hr)
+[16:02:16] *** Quits: pcwalton (pcwalton@moz-6kjabm.ca.comcast.net) (Client exited)
+[16:03:33] * jdm highfives saneyuki
+[16:03:54] *** Joins: tetsuharu (tetsuharu@moz-fmjbd6.ucom.ne.jp)
+[16:04:11] *** Quits: dstrbad (dstrbad@moz-o0cqfh.dsl.iskon.hr) (Ping timeout: 121 seconds)
+[16:04:15] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[16:04:15] -ghservo- [13servo] 15laumann opened pull request #5572: Only send unused buffers messages if there are actually any buffers (06master...06remove-unnecessary-buffer-sends) 02http://git.io/vewUr
+[16:04:15] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[16:05:04] * tetsuharu highfives jdm
+[16:08:07] *** Joins: dstrbad (dstrbad@moz-7om.pfr.217.31.IP)
+[16:09:12] *** Quits: mihneadb (mihneadb@moz-h4q.4cl.85.141.IP) (Quit: Computer gone to sleep - Zzzz...)
+[16:11:43] *** Quits: dstrbad_ (dstrbad@moz-i7prfu.dialin.iskon.hr) (Ping timeout: 121 seconds)
+[16:12:14] *** ahal is now known as ahal|lunch
+[16:13:40] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[16:13:40] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/vewLy
+[16:13:40] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[16:13:42] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[16:13:42] -ghservo- [13servo] 15bors-servo closed pull request #5541: Use Temporary values in node iterators (06master...06node-iterators-temporary) 02http://git.io/veRMP
+[16:13:42] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[16:14:24] *** Joins: gsingh93 (gulshan@moz-3fu4am.mi.comcast.net)
+[16:14:45] *** Joins: Debloper (debloper@moz-m6j.f0d.244.121.IP)
+[16:15:23] <Manishearth> larsberg: it worked
+[16:15:34] <Manishearth> https://github.com/servo/servo/pull/5541#issuecomment-90626517
+[16:15:35] <crowbot> PR #5541: Use Temporary values in node iterators - https://github.com/servo/servo/pull/5541
+[16:15:56] <larsberg> Manishearth: oooooh, working links! :-)
+[16:16:18] *** Quits: Debloper (debloper@moz-m6j.f0d.244.121.IP) (Quit: Leaving.)
+[16:16:23] *** Joins: Temur (Tarmashirin@moz-j3g.nld.91.59.IP)
+[16:16:26] <nox> Oh it got merged. I'm liking this bot.
+[16:16:36] *** Quits: Temur (Tarmashirin@moz-j3g.nld.91.59.IP) (Connection closed)
+[16:18:51] <jdm> yay for links
+[16:18:58] *** Joins: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at)
+[16:19:27] *** Joins: Temur (Tarmashirin@moz-j3g.nld.91.59.IP)
+[16:23:05] *** Quits: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at) (Ping timeout: 121 seconds)
+[16:26:29] <kmc> yay
+[16:27:27] *** zz_kimundi is now known as kimundi
+[16:29:12] *** Joins: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com)
+[16:30:50] *** Joins: mystor (mystor@moz-ldavpp.home3.cgocable.net)
+[16:34:34] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[16:34:41] *** Joins: bdero1 (bran@moz-u8a.gci.189.18.IP)
+[16:34:52] *** Quits: mystor (mystor@moz-ldavpp.home3.cgocable.net) (Ping timeout: 121 seconds)
+[16:35:25] <jdm> jgraham: when I run WPT tests via `python serve` and load them in servo, I see http://mxr.mozilla.org/servo/source/tests/wpt/harness/wptrunner/testharnessreport.js#5 doesn't get preprocessed correctly
+[16:35:31] <jdm> ie. servo reports a syntax error
+[16:36:06] *** Joins: pcwalton (pcwalton@moz-nh2.o1i.216.216.IP)
+[16:36:06] *** ChanServ sets mode: +o pcwalton
+[16:36:39] *** Quits: pcwalton (pcwalton@moz-nh2.o1i.216.216.IP) (Client exited)
+[16:37:10] *** Joins: pcwalton (pcwalton@moz-nh2.o1i.216.216.IP)
+[16:37:10] *** ChanServ sets mode: +o pcwalton
+[16:38:13] *** Quits: bdero (bran@moz-tv7jqp.mit.edu) (Ping timeout: 121 seconds)
+[16:38:34] <jgraham> jdm: That won't break anything. But that file should be used when you aren't using wptrunner, I agree
+[16:38:53] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[16:41:03] *** Quits: Temur (Tarmashirin@moz-j3g.nld.91.59.IP) (Quit: Leaving)
+[16:41:55] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[16:41:55] -ghservo- [13servo] 15nox opened pull request #5573: Implement ParentNode attributes (06master...06parentnode-attributes) 02http://git.io/vew86
+[16:41:55] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[16:44:39] <SimonSapin> \o/ 
+[16:44:51] <SimonSapin> `./mach test-unit` in 22 seconds
+[16:44:55] <SimonSapin> after `./mach build`
+[16:47:04] <larsberg> yay!
+[16:47:11] <jdm> :o
+[16:47:27] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[16:47:27] -ghservo- [13servo] 15SimonSapin created 06unit-tests (+8 new commits): 02http://git.io/vewRW
+[16:47:27] -ghservo- 13servo/06unit-tests 14514962f 15Simon Sapin: Move util crate unit tests into a new unit_tests crate
+[16:47:27] -ghservo- 13servo/06unit-tests 14ab60288 15Simon Sapin: Move gfx unit tests to the unit_tests crate.
+[16:47:27] -ghservo- 13servo/06unit-tests 141bf9ab4 15Simon Sapin: Move net::cookie unit tests into the unit_tests crate.
+[16:47:27] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[16:47:55] <SimonSapin> based on #5542 because it would conflict otherwise
+[16:47:55] <crowbot> Issue #5542: Make mach test-unit a little bit smarter - https://github.com/servo/servo/pull/5542
+[16:48:59] *** Quits: laumann (thomas@moz-33d.hq0.225.130.IP) (Ping timeout: 121 seconds)
+[16:49:45] *** Quits: dstrbad (dstrbad@moz-7om.pfr.217.31.IP) (A TLS packet with unexpected length was received.)
+[16:50:31] <Manishearth> SimonSapin: maaaagiiic
+[16:50:48] <SimonSapin> Manishearth: it’s what happens when you don’t build everything twice :)
+[16:52:22] *** Joins: azita (Azita@moz-cfhap5.mtv2.mozilla.com)
+[16:56:51] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[16:56:51] -ghservo- [13servo] 15bors-servo pushed 0 new commits to 06tmp: 02http://git.io/vewzb
+[16:56:51] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[16:56:52] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[16:56:52] -ghservo- [13servo] 15bors-servo merged 06tmp into 06auto: 02http://git.io/vewzN
+[16:56:52] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[16:56:54] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[16:56:54] -ghservo- [13servo] 15bors-servo closed pull request #5542: Make mach test-unit a little bit smarter (06master...06test-unit) 02http://git.io/ve0XL
+[16:56:54] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[16:58:02] <Manishearth> haha
+[16:59:10] * nox is back to NamedNodeMap.
+[16:59:46] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[16:59:46] -ghservo- [13servo] 15SimonSapin opened pull request #5574: Move unit tests to their own crates, cut time by 96% (06master...06unit-tests) 02http://git.io/vew28
+[16:59:46] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[17:00:00] <SimonSapin> who wants to review that one? :) ↑
+[17:01:10] *** Joins: bholley (bholley@moz-hb3rtc.ca.comcast.net)
+[17:01:11] <SimonSapin> larsberg: after that lands you might want to move jobs around between builders
+[17:07:49] *** Joins: system64 (uid17738@moz-7c4aav.uxbridge.irccloud.com)
+[17:09:52] <mbrubeck> nice, SimonSapin 
+[17:10:43] <nox> Mmh, I see that do_remove_attribute() propagates some sort of damage when the attribute is 'style' and whatnot. Why am I not seeing the same thing in do_set_attribute()?
+[17:10:58] <nox> Is it done elsewhere through Attr:set_value()?
+[17:12:51] *** Joins: chmanchester (Chris@moz-q7mede.2rkg.9kg1.0101.2620.IP)
+[17:13:01] <kmc> http://frontendhq.com/pinger is cute
+[17:14:03] <nox> Wouldn't it be better if NamedGetter and friends were generated?
+[17:15:09] <jdm> nox: maybe. I haven't looked closely at whether they ever do anything special.
+[17:16:05] *** Joins: dstrbad (dstrbad@moz-31ihjp.dsl.iskon.hr)
+[17:16:20] *** Joins: MrZeus (Orestes@moz-n8pa5v.skybroadband.com)
+[17:16:31] <jdm> nox: damage for setting attributes happens in after_set_attr
+[17:16:40] <nox> Thanks.
+[17:16:57] <jdm> before_remove_attr does damaging too, so I wonder if the stuff in do_remove_attr is necessary
+[17:19:38] *** Joins: bholley_ (bholley@moz-hb3rtc.ca.comcast.net)
+[17:19:45] *** Joins: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at)
+[17:20:16] *** Joins: mystor (mystor@moz-ldavpp.home3.cgocable.net)
+[17:20:30] *** Quits: bholley (bholley@moz-hb3rtc.ca.comcast.net) (Ping timeout: 121 seconds)
+[17:20:46] *** ahal|lunch is now known as ahal
+[17:22:01] *** Quits: dstrbad (dstrbad@moz-31ihjp.dsl.iskon.hr) (A TLS packet with unexpected length was received.)
+[17:22:23] *** Quits: psd (psd@moz-acc.mpg.78.202.IP) (Ping timeout: 121 seconds)
+[17:23:52] *** Quits: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at) (Ping timeout: 121 seconds)
+[17:28:43] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[17:31:26] *** Quits: barosl (barosl@moz-tmp.qma.67.220.IP) (Quit: Leaving)
+[17:31:56] *** Joins: jevin_ (jevin@moz-sra.ovp.12.72.IP)
+[17:32:03] *** Joins: azakai (alon@moz-fo726a.ujol.1ibb.0101.2620.IP)
+[17:32:26] *** Quits: jevin (jevin@moz-sra.ovp.12.72.IP) (Connection closed)
+[17:32:51] *** Quits: azakai (alon@moz-fo726a.ujol.1ibb.0101.2620.IP) (Quit: Ex-Chat)
+[17:33:00] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[17:33:48] *** Joins: barosl (barosl@moz-tmp.qma.67.220.IP)
+[17:36:04] <mbrubeck> SimonSapin: Seems like the one downside to this is that the unit test crate can only test public interfaces... Though it looks like that's already true for the most part...
+[17:37:06] *** Quits: jdm (jdm@moz-ilbt2e.cable.teksavvy.com) (Quit: )
+[17:39:28] <SimonSapin> mbrubeck: yes, and I did have to make some private things public in order to test them
+[17:40:01] <SimonSapin> but even without tests, it’s kinda hard to properly encapsulate things with privacy
+[17:40:12] <SimonSapin> I tried in libstyle, it was a big mess of `pub use`
+[17:40:43] <SimonSapin> I untangled it recently by making almost everything public
+[17:43:04] *** Joins: psd (psd@moz-024.at3.215.180.IP)
+[17:43:06] *** Quits: psd (psd@moz-024.at3.215.180.IP) (Connection closed)
+[17:43:16] *** Joins: psd (psd@moz-024.at3.215.180.IP)
+[17:43:25] <mbrubeck> layout has a good number of non-public methods, which I find useful for knowing the scope of a change I'm making... but I guess we don't unit-test those anyway. :/
+[17:43:39] *** Quits: psd (psd@moz-024.at3.215.180.IP) (Connection closed)
+[17:44:13] <nox> How can I see how are the IDL files parsed by the Python code?
+[17:44:25] *** Quits: matt-r (mattr@moz-2ou06k.dh.suddenlink.net) (Ping timeout: 121 seconds)
+[17:44:53] <mbrubeck> nox: You can see the Rust output in components/script/dom/bindings/codegen/Bindings
+[17:45:19] *** Joins: psd (psd@moz-024.at3.215.180.IP)
+[17:46:20] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[17:46:20] -ghservo- [13servo] 15metajack closed pull request #5574: Move unit tests to their own crates, cut time by 96% (06master...06unit-tests) 02http://git.io/vew28
+[17:46:20] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[17:46:23] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[17:46:23] -ghservo- [13servo] 15metajack reopened pull request #5574: Move unit tests to their own crates, cut time by 96% (06master...06unit-tests) 02http://git.io/vew28
+[17:46:23] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[17:48:08] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[17:48:08] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/vewNp
+[17:48:08] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[17:48:10] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[17:48:10] -ghservo- [13servo] 15bors-servo closed pull request #5543: RootCollection: Start using RootedVec instead of SmallVec32. (06master...06jag/slashdot) 02http://git.io/ve0D8
+[17:48:10] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[17:48:40] <jack> SimonSapin: Does it just so happen to be hte case that none of our unit tests depend on internal representations?
+[17:49:24] *** Joins: caitp (caitp@moz-lmogh4.cable.rogers.com)
+[17:49:36] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[17:49:36] -ghservo- [13servo] 15nox opened pull request #5575: Implement NamedNodeMap::removeNamedItem*() (06master...06namednodemap-remove) 02http://git.io/vewAP
+[17:49:36] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[17:49:39] *** Joins: psd_mo (uid62508@moz-m8sano.charlton.irccloud.com)
+[17:50:13] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[17:50:13] -ghservo- [13servo] 15jagtalon opened pull request #5576: net/storage_task.rs: Fix remove_item (06master...06jag/slashdot-storage) 02http://git.io/vewAp
+[17:50:13] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[17:50:28] *** Quits: dbaron (dbaron@moz-rb4k89.dynamic.fusionbroadband.com) (Ping timeout: 121 seconds)
+[17:50:42] <Ms2ger> jack, he made a couple of things public
+[17:52:08] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[17:52:08] -ghservo- [13servo] 15pcwalton opened pull request #5577: script: Implement the `width` and `height` attributes for iframes per HTML5 § 4.8.6. (06master...06iframe-size-attributes) 02http://git.io/vewxX
+[17:52:08] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[17:52:26] *** Quits: pcwalton (pcwalton@moz-nh2.o1i.216.216.IP) (Client exited)
+[17:53:41] *** Quits: caitp (caitp@moz-lmogh4.cable.rogers.com) (Ping timeout: 121 seconds)
+[17:53:59] <SimonSapin> jack: what internal representation?
+[17:54:16] <mbrubeck> private types or functions
+[17:54:44] <SimonSapin> There is one CSS parsing test that's basically assert_eq with a big AST
+[17:55:26] <SimonSapin> And some more like it for Media Queries
+[17:57:24] <jack> SimonSapin: You made some private modules public as well as osme private functions. I guess my point is that this may not scale forever.
+[17:57:38] <jack> But we should take the gains while we can :)
+[17:58:31] *** Quits: tetsuharu (tetsuharu@moz-fmjbd6.ucom.ne.jp) (Quit: )
+[18:01:03] <mbrubeck> Yeah, I agree.
+[18:01:15] <mbrubeck> We don't use unit tests that heavily anyway (since we have all these fancy integration tests)
+[18:01:16] <SimonSapin> Right, this means kinda giving up on having private things
+[18:01:25] *** Quits: cakecatz (textual@moz-1m7v28.sannet.ne.jp) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[18:01:28] <larsberg> I'm also somewhat glad to hear that about the private types. Previous projects I've been on where people went too nuts on "unit test all the private bits to hit the code coverage targets!" all devolved into states where it was a horror to change anything architecturally (because you break hundreds of semi-meaningless unit tests) so people didn't.
+[18:01:30] <mbrubeck> so making them more limited isn't really costing us much, and buys us a lot
+[18:01:41] *** Joins: Jesse (jruderman@moz-pqc1f5.ca.comcast.net)
+[18:03:00] <nox> I see the same problem with people using mocks.
+[18:04:48] <Ms2ger> If it takes 15 minutes off our turnaround time, I'll take it
+[18:06:18] <larsberg> nox: I see you share some of my battle scars. "if the only abstractions in your system exist solely to support the unit test runner..."
+[18:06:32] <nox> larsberg: Ah ah.
+[18:06:41] <nox> larsberg: And you end up not even testing the actual code.
+[18:07:08] <larsberg> nox: gotta make sure you throw ArgumentOutOfRangeException if the integer is less than zero on that purely private interface 20 levels deep!
+[18:07:28] <nox> It always baffles me people would build gigantic infrastructures through monkey-patching or dependency inversion to mock out a call to an HTTP client, while they could have just used a lightweight web server in front of it.
+[18:07:47] *** Joins: tikue (tkuehn@moz-n71.k1b.0.198.IP)
+[18:08:28] <nox> I could understand that it is difficult to test things related to time and dates and things like that, but that's another topic.
+[18:08:40] <larsberg> nox: can't hit that 95% arbitrary code coverage goal otherwise :-)
+[18:08:47] * larsberg gets down off his soapbox now
+[18:08:55] <nox> Ah ah.
+[18:10:07] <nox> larsberg: And if you really can't hit a line of private code through actual use of the code, why is that line even here?
+[18:13:06] *** Joins: dkk (deepak@moz-92i.cnp.199.117.IP)
+[18:19:10] *** Quits: dkk (deepak@moz-92i.cnp.199.117.IP) (Ping timeout: 121 seconds)
+[18:20:52] *** Joins: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at)
+[18:21:13] *** Joins: neojski (Mibbit@moz-7rd5gn.adsl.inetia.pl)
+[18:21:41] *** Joins: dkk (deepak@moz-6ic.ec0.199.117.IP)
+[18:21:53] <neojski> I have a problem with 'mach build'. It complains that 'unable to update https://github.com/servo/glutin?branch=servo#3814e0ca'.
+[18:22:03] <jgraham> nox: Some people are very attached to the *unit* in unit tests
+[18:22:12] <neojski> When run with 'verbose' it says: Caused by:   Revspec '3814e0cadc85f558b7a417c9d4b97337382aeb36' not found.
+[18:22:13] <jgraham> Even when it doesn't make sense
+[18:22:24] <nox> jgraham: I like testing from a distance.
+[18:22:35] *** Quits: kimundi (kimundi@moz-94ap69.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[18:22:36] *** Quits: chmanchester (Chris@moz-q7mede.2rkg.9kg1.0101.2620.IP) (A TLS packet with unexpected length was received.)
+[18:22:51] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[18:22:55] <jgraham> nox: Oh, man, if I ever write an autobiography, that's so the title
+[18:23:09] <jgraham> OTOH, if that ever happens, something really bad happened in the world
+[18:23:21] <nox> You should have kept that for yourself, I'll ask for hefty royalties.
+[18:23:23] <kmc> spooky testing at a distance
+[18:23:44] *** Joins: chmanchester (chmancheste@moz-gcm8rj.2rkg.9kg1.0101.2620.IP)
+[18:23:57] <nox> In a perfect world, all languages would have their own QuviQ-level quickcheck tool.
+[18:24:23] <neojski> However, github says there's commit named like that: https://github.com/servo/glutin/commit/3814e0cadc85f558b7a417c9d4b97337382aeb36. So I'm confused.
+[18:24:40] *** Joins: dbaron (dbaron@moz-frmnrv.2rkg.9kg1.0101.2620.IP)
+[18:24:59] *** Quits: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at) (Ping timeout: 121 seconds)
+[18:25:43] *** Quits: dkk (deepak@moz-6ic.ec0.199.117.IP) (Ping timeout: 121 seconds)
+[18:26:08] <neojski> Oh, but that commit doesn't seem to be in the servo branch.
+[18:27:08] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[18:27:33] *** Joins: dkk (deepak@moz-6mn.nh3.199.117.IP)
+[18:28:13] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[18:28:13] -ghservo- [13servo] 15nox opened pull request #5578: Use a Temporary iterator in Node::collect_text_contents() (06master...06collect_text_contents-unsound) 02http://git.io/verGc
+[18:28:13] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[18:32:02] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[18:32:02] -ghservo- [13servo] 15bors-servo merged 06auto into 06master: 02http://git.io/vewNp
+[18:32:02] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[18:32:03] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[18:32:03] -ghservo- [13servo] 15bors-servo pushed 0 new commits to 06tmp: 02http://git.io/vernn
+[18:32:03] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[18:32:04] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[18:32:04] -ghservo- [13servo] 15bors-servo merged 06tmp into 06auto: 02http://git.io/vernc
+[18:32:04] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[18:32:05] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[18:32:05] -ghservo- [13servo] 15bors-servo closed pull request #5005: Implement MIME sniffing (06master...06mime-sniffing) 02http://git.io/AR1D
+[18:32:05] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[18:32:14] *** Parts: dkk (deepak@moz-6mn.nh3.199.117.IP) ()
+[18:32:17] *** jandem-away is now known as jandem
+[18:32:42] *** Joins: user7181 (user@moz-6a2pbf.mullvad.net)
+[18:34:53] *** Joins: user7181_ (user@moz-manmml.mullvad.net)
+[18:35:04] *** Joins: mib_b5b8m6 (Mibbit@moz-juv.9o3.252.72.IP)
+[18:38:04] *** Quits: user7181 (user@moz-6a2pbf.mullvad.net) (Ping timeout: 121 seconds)
+[18:39:12] *** Quits: chmanchester (chmancheste@moz-gcm8rj.2rkg.9kg1.0101.2620.IP) (Connection closed)
+[18:41:10] *** Joins: chmanchester (chmancheste@moz-u3dg2t.sfo1.mozilla.com)
+[18:44:27] *** Quits: Jesse (jruderman@moz-pqc1f5.ca.comcast.net) (Client exited)
+[18:44:33] *** Quits: filsmick (filsmick@moz-22g0vl.abo.wanadoo.fr) (Connection closed)
+[18:44:54] *** Joins: filsmick (filsmick@moz-22g0vl.abo.wanadoo.fr)
+[18:45:57] *** Quits: filsmick (filsmick@moz-22g0vl.abo.wanadoo.fr) (Connection closed)
+[18:45:59] *** Joins: filsmick (filsmick@moz-22g0vl.abo.wanadoo.fr)
+[18:46:15] *** Joins: gozala (uid5923@moz-ftm4af.brockwell.irccloud.com)
+[18:48:28] *** Joins: Jayflux (Jason@moz-78vg9c.as13285.net)
+[18:48:40] *** Joins: nrc (nrc@moz-4bhi2i.xtra.co.nz)
+[18:52:47] *** Quits: zmike (discomfitor@moz-2dc.ce5.237.64.IP) (Quit: ah. I see.)
+[18:53:28] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[18:53:28] *** ChanServ sets mode: +o pcwalton
+[18:58:23] *** chmanchester is now known as chmanchester|lunch
+[18:59:59] *** Quits: palodequeso (quassel@moz-ebjt83.hfc.comcastbusiness.net) (Ping timeout: 121 seconds)
+[19:03:08] *** Quits: ProgramFOX (ProgramFOX@moz-rq6.366.176.91.IP) (Quit: ChatZilla 0.9.91.1 [Firefox 37.0.1/20150402191859])
+[19:12:48] <nox> Why is Attr createAttribute(DOMString localName) in Document.webidl not marked with [NewObject] while it is in the spec?
+[19:13:55] *** Quits: mib_b5b8m6 (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[19:16:31] <Ms2ger> Because it wasn't when we copied from the spec, probably
+[19:17:01] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[19:18:28] <nox> Ms2ger: Oh ok.
+[19:19:05] *** AutomatedTester|AFK is now known as AutomatedTester
+[19:19:38] *** Joins: kimundi (kimundi@moz-94ap69.dip0.t-ipconnect.de)
+[19:21:19] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[19:21:38] *** Joins: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at)
+[19:25:33] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[19:25:33] -ghservo- [13servo] 15bors-servo merged 06auto into 06master: 02http://git.io/vernc
+[19:25:33] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[19:25:34] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[19:25:34] -ghservo- [13servo] 15bors-servo merged 06tmp into 06auto: 02http://git.io/verXx
+[19:25:34] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[19:25:37] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[19:25:37] -ghservo- [13servo] 15bors-servo closed pull request #5569: Implement support for object in IDL. (06master...06object) 02http://git.io/veVwv
+[19:25:37] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[19:25:45] *** Quits: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at) (Ping timeout: 121 seconds)
+[19:26:46] *** Quits: system64 (uid17738@moz-7c4aav.uxbridge.irccloud.com) (Quit: Connection closed for inactivity)
+[19:29:49] *** Quits: Jackneill (Jackneill@moz-j207sg.pool.digikabel.hu) (Ping timeout: 121 seconds)
+[19:34:09] *** Quits: bholley_ (bholley@moz-hb3rtc.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[19:39:53] *** Joins: Nefzaoui (nefzaoui@moz-bec.clk.2.197.IP)
+[19:40:20] *** Quits: psd (psd@moz-024.at3.215.180.IP) (Ping timeout: 121 seconds)
+[19:43:08] *** Joins: psd (psd@moz-024.at3.215.180.IP)
+[19:44:54] <nox> Ms2ger: Would it be weird to add 2 functions for https://dom.spec.whatwg.org/#validate in components/script/dom/create.rs?
+[19:50:07] *** chmanchester|lunch is now known as chmanchester
+[19:50:59] *** Joins: gw (uid31717@moz-hcr55a.charlton.irccloud.com)
+[19:50:59] *** ChanServ sets mode: +o gw
+[19:55:15] *** Quits: bdero1 (bran@moz-u8a.gci.189.18.IP) (Ping timeout: 121 seconds)
+[19:57:49] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[19:57:49] -ghservo- [13servo] 15bors-servo 04force-pushed 06tmp from 14f7bb5c1 to 143fb666c: 02http://git.io/veWu4
+[19:57:49] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[19:57:52] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[19:57:52] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/verbi
+[19:57:52] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[19:59:22] <nox> There or elsewhere of course.
+[20:00:49] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[20:01:47] *** Quits: fabrice (fabrice@moz-etdrcn.mh2d.1ibb.0101.2620.IP) (Connection closed)
+[20:02:47] *** Joins: fabrice (fabrice@moz-etdrcn.mh2d.1ibb.0101.2620.IP)
+[20:03:43] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[20:04:09] *** Joins: dstrbad (dstrbad@moz-f0msc0.dsl.iskon.hr)
+[20:08:17] *** Quits: fabrice (fabrice@moz-etdrcn.mh2d.1ibb.0101.2620.IP) (Ping timeout: 121 seconds)
+[20:09:22] *** Joins: zmike (discomfitor@moz-oek0ra.ct.comcast.net)
+[20:10:24] *** Joins: chmanchester_ (Chris@moz-lu2lt3.rgd2.9kg1.0101.2620.IP)
+[20:11:01] *** Quits: dstrbad (dstrbad@moz-f0msc0.dsl.iskon.hr) (A TLS packet with unexpected length was received.)
+[20:11:08] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[20:12:26] *** Quits: chmanchester (chmancheste@moz-u3dg2t.sfo1.mozilla.com) (Ping timeout: 121 seconds)
+[20:12:41] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[20:12:41] -ghservo- [13servo] 15dhodder opened pull request #5579: Use canonical GitHub URL for Rust (06master...06master) 02http://git.io/veoe2
+[20:12:41] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[20:14:15] *** Joins: fabrice (fabrice@moz-etdrcn.mh2d.1ibb.0101.2620.IP)
+[20:15:28] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[20:15:33] <Ms2ger> nox, seems sensible?
+[20:16:02] <nox> Ms2ger: Is the place I suggested good?
+[20:16:27] *** Joins: laumann (thomas@moz-n9e72h.0.fullrate.dk)
+[20:16:34] <Ms2ger> As good as any
+[20:17:25] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[20:17:25] -ghservo- [13servo] 15jdm opened issue #5580: Reenable /dom/nodes/getElementsByClassName-31.htm 02http://git.io/veoJV
+[20:17:25] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[20:17:44] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[20:17:44] -ghservo- [13servo] 15Ms2ger reopened pull request #5575: Implement NamedNodeMap::removeNamedItem*() (06master...06namednodemap-remove) 02http://git.io/vewAP
+[20:17:44] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[20:18:11] *** Quits: filsmick (filsmick@moz-22g0vl.abo.wanadoo.fr) (Connection closed)
+[20:18:32] *** Joins: filsmick (filsmick@moz-22g0vl.abo.wanadoo.fr)
+[20:19:33] *** Joins: jdm (jdm@moz-gh3.gum.189.205.IP)
+[20:19:33] *** ChanServ sets mode: +qo jdm jdm
+[20:21:18] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[20:22:24] *** Joins: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at)
+[20:23:17] <nox> Ms2ger: I added a fixup on the other PR, in case you didn't notice.
+[20:23:28] *** Quits: zmike (discomfitor@moz-oek0ra.ct.comcast.net) (Ping timeout: 121 seconds)
+[20:23:30] <Ms2ger> Dammit jdm 
+[20:23:37] <jdm> hmm?
+[20:23:40] <Ms2ger> #5005 bitrotted test-unit
+[20:23:41] <crowbot> Issue #5005: Implement MIME sniffing - https://github.com/servo/servo/pull/5005
+[20:23:49] <Ms2ger> Wanna rebase? :)
+[20:23:54] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[20:24:11] <jdm> heh
+[20:24:22] <jdm> sure
+[20:24:52] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[20:26:27] *** Quits: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at) (Ping timeout: 121 seconds)
+[20:26:37] <Ms2ger> nox, please squash #5573
+[20:26:37] <crowbot> Issue #5573: Implement ParentNode attributes - https://github.com/servo/servo/pull/5573
+[20:26:44] <nox> Yes.
+[20:27:16] <pcwalton> the WPT reftest that failed has identical output in my branch
+[20:27:21] <pcwalton> help?
+[20:27:49] <jdm> neojski: do you have a local glutin override that you're accidentally using?
+[20:27:49] <pcwalton> can I get the images or whatever?
+[20:28:13] <nox> Ms2ger: Done.
+[20:28:23] <barosl> https://critic.hoppipolla.co.uk/showcomment?chain=11571
+[20:28:27] <jdm> pcwalton: you can probably run the webserver and visit it in servo
+[20:28:33] <barosl> Oh, this is great. So you can directly suggest a new code
+[20:28:36] <pcwalton> how do I do that?
+[20:29:03] <Ms2ger> ./servo in tests/wpt/web-*
+[20:29:05] <jdm> pcwalton: https://github.com/servo/servo/tree/master/tests/wpt#running-the-tests-manually
+[20:29:11] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[20:29:11] -ghservo- [13servo] 15Ms2ger 04deleted 06console-variadic at 14c8c7962: 02http://git.io/veoL7
+[20:29:11] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[20:29:16] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[20:29:16] -ghservo- [13servo] 15Ms2ger 04deleted 06load-failure-panic at 144e9bb15: 02http://git.io/veoLd
+[20:29:16] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[20:29:21] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[20:29:21] -ghservo- [13servo] 15Ms2ger 04deleted 06add-event-handlers at 146288a46: 02http://git.io/veoLx
+[20:29:21] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[20:29:22] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[20:29:22] -ghservo- [13servo] 15Ms2ger 04deleted 06script-for-event at 14fdcf961: 02http://git.io/veoLj
+[20:29:22] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[20:29:33] <barosl> Flood!
+[20:30:20] <pcwalton> "python serve.py" exits immediately with success and no output
+[20:30:47] <nox> Ms2ger: https://critic.hoppipolla.co.uk/showcomment?chain=11573 Not sure I get this one.
+[20:31:07] <nox> Ms2ger: Isn't it weird? The 'where' then lines up with the first line of the function's body.
+[20:31:13] <jdm> pcwalton: right, it's `python serve`
+[20:31:21] <pcwalton> ah, ok
+[20:31:33] * jdm isn't quite sure why that changed recently
+[20:31:55] <Ms2ger> It's ./serve
+[20:31:58] *** Quits: doener (doener@moz-929cn9.unity-media.net) (Quit: leaving)
+[20:32:04] *** Joins: Jesse (jruderman@moz-aksuqb.ujol.1ibb.0101.2620.IP)
+[20:32:09] <Ms2ger> jgraham redesigned it all
+[20:32:25] <nox> Ms2ger: Or should the opening brace be on its own line in that case, like do_set_attribute()?
+[20:32:52] <Ms2ger> nox, yeah, I'd go with that
+[20:33:33] *** Quits: psd (psd@moz-024.at3.215.180.IP) (A TLS packet with unexpected length was received.)
+[20:33:43] <nox> Ms2ger: Nitfix pushed.
+[20:33:50] *** Joins: psd (psd@moz-024.at3.215.180.IP)
+[20:34:43] <Ms2ger> nox, thanks, please squash
+[20:35:08] <nox> Ms2ger: Done.
+[20:36:05] *** Quits: tikue (tkuehn@moz-n71.k1b.0.198.IP) (Client exited)
+[20:36:09] *** Joins: zmike (discomfitor@moz-91f8oi.openskytelcom.net)
+[20:38:38] *** Joins: mib_03bm78 (Mibbit@moz-juv.9o3.252.72.IP)
+[20:40:35] *** Joins: Nefzaoui_ (nefzaoui@moz-0d8.335.104.154.IP)
+[20:43:55] *** Quits: Nefzaoui (nefzaoui@moz-bec.clk.2.197.IP) (Ping timeout: 121 seconds)
+[20:44:13] *** Joins: caitp (caitp@moz-lmogh4.cable.rogers.com)
+[20:44:20] *** Nefzaoui_ is now known as Nefzaoui
+[20:48:48] <larsberg> warning: the mac servers are going offline shortly for the upgrade to SSDs!
+[20:49:44] *** Quits: Jesse (jruderman@moz-aksuqb.ujol.1ibb.0101.2620.IP) (Connection closed)
+[20:50:19] *** Joins: Jesse (jruderman@moz-cfhap5.mtv2.mozilla.com)
+[20:51:14] *** Quits: kaksmet (kaksmet@moz-ismsth.se.alltele.net) (Connection closed)
+[20:53:14] *** Joins: tikue (tkuehn@moz-n71.k1b.0.198.IP)
+[20:53:22] <nox> Found a typo that could be horrible in some cases.
+[20:54:03] <nox> match … { …, … => if … { … }, … } instead of match … { …, … if … => { … }, … }.
+[20:54:34] <nox> (Found a kind of typo*, didn't mean I find that in the code.)
+[20:55:33] <nox> I wonder if one could make up a code snippet similar to Apple's if (…) goto; goto; with this.
+[20:55:57] * larsberg just discovered that almost 5% of the stuff marked spam by the mozilla gmail automatic filters was not in fact spam...
+[20:56:30] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[20:59:40] *** Quits: mib_03bm78 (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[21:00:00] *** Quits: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com) (Client exited)
+[21:00:51] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[21:02:50] <seanmonstar> jdm: this page fails for me in Firefox https://www.w3c-test.org/XMLHttpRequest/getresponseheader-chunked-trailer.htm
+[21:03:03] <seanmonstar> there is no response body at all
+[21:03:18] <jdm> interesting
+[21:03:57] <seanmonstar> same in chrome
+[21:04:16] *** Joins: pcwalton (pcwalton@moz-l8ebtf.sfo1.mozilla.com)
+[21:04:16] *** ChanServ sets mode: +o pcwalton
+[21:04:32] <jdm> want to file an issue in web-platform-tests?
+[21:04:53] <jdm> SimonSapin: is it still test-unit with your pr?
+[21:05:01] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[21:05:18] <pcwalton> this feels like a style sharing bug
+[21:06:57] *** Joins: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at)
+[21:07:51] <mbrubeck> jdm: Yes, but there's no more crate/package argument, since it's just a single small crate now.
+[21:08:30] <nox> Ms2ger: I'm putting them in utils.
+[21:08:46] * jdm to train
+[21:09:13] <neojski> I wanted to fix #1745 but apparently adding && *element.namespace() == ns!(HTML) to GetElementsByName doesn't fix the issue.
+[21:09:14] <crowbot> Issue #1745: Document.getElementsByName and friends should only return elements in the HTML namespace - https://github.com/servo/servo/issues/1745
+[21:09:22] <neojski> I'm confused why is that.
+[21:10:18] *** Quits: jdm (jdm@moz-gh3.gum.189.205.IP) (Quit: )
+[21:10:24] <neojski> By the way, what does the r() method and where is it implemented?
+[21:10:44] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[21:10:44] -ghservo- [13servo] 15jdm 04force-pushed 06unit-tests from 14768b924 to 1448c850d: 02http://git.io/veoBd
+[21:10:44] -ghservo- 13servo/06unit-tests 146d5406e 15Simon Sapin: Move util crate unit tests into a new unit_tests crate
+[21:10:44] -ghservo- 13servo/06unit-tests 14e0b98a3 15Simon Sapin: Move gfx unit tests to the unit_tests crate.
+[21:10:44] -ghservo- 13servo/06unit-tests 146912226 15Simon Sapin: Move net::cookie unit tests into the unit_tests crate.
+[21:10:44] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[21:10:58] <mbrubeck> neojski: For the .r() method, see https://github.com/servo/servo/wiki/Using-DOM-types
+[21:11:24] *** Joins: mib_tbkas2 (Mibbit@moz-juv.9o3.252.72.IP)
+[21:11:30] <mbrubeck> neojski: Source code at https://github.com/servo/servo/blob/master/components/script/dom/bindings/js.rs
+[21:12:18] <neojski> mbrubeck: Thanks.
+[21:12:55] <jack> larsberg: What's the status of buildbot now? I have some time to poke around while waiting at the airport.
+[21:13:36] <larsberg> jack: Everything seems to be working now! The mac1 and mac2 builders are currently offline while macstadium clones their HDDs to new SSDs, but once that's done it should all just come back upe.
+[21:13:38] <mbrubeck> neojski: Does the `ns!(HTML)` check have any effect at all?
+[21:14:11] <neojski> mbrubeck: It doesn't have any effect on the document.getElementsByName-namespace.xhtml test.
+[21:14:25] <jack> larsberg: Where you able to get push notifications for branch updates or are we back on the GitPoller?
+[21:14:59] *** Joins: ghservo (ghservo@moz-0l2.5u0.30.192.IP)
+[21:14:59] -ghservo- [13saltfs] 15larsbergstrom pushed 1 new commit to 06master: 02http://git.io/veo0G
+[21:14:59] -ghservo- 13saltfs/06master 1496dd6e5 15Lars Bergstrom: Disable the PBChangeSource and instead use the GitPoller
+[21:14:59] *** Parts: ghservo (ghservo@moz-0l2.5u0.30.192.IP) ()
+[21:15:10] *** Quits: ldng (ldng@moz-q2un3b.abo.bbox.fr) (Quit: Leaving)
+[21:15:16] <larsberg> jack: We're back on the poller - sorry, just pushed that change to the salt repo.
+[21:16:03] <jack> No problem. better it works than is maximally efficient at not working
+[21:16:15] <larsberg> The problem with push notifications is here - http://logs.glob.uno/?c=mozilla%23servo#c197297
+[21:16:45] *** Quits: psd (psd@moz-024.at3.215.180.IP) (Ping timeout: 121 seconds)
+[21:16:54] <larsberg> Basically, because homu pushes to tmp then to auto, the notifications for auto that we get do not have anything in the PushEvent "commits" area, which causes the git webhook handler to drop it
+[21:17:04] <jack> barosl: Is this something you can fix in homu? It would be nice to have it all push based instead of polling.
+[21:17:20] <jack> What is the current polling interval?
+[21:17:34] <larsberg> Right here is where they drop it - https://github.com/servo/saltfs/blob/master/buildbot/github_buildbot.py#L156-L161
+[21:17:41] <larsberg> It polls every 60 seconds :-)
+[21:18:02] <mbrubeck> neojski: I have no idea what the problem might be... I'd try adding some logging or running in a debugger to make sure your new code is being run, and see what the value of `element.namespace` is
+[21:18:04] <barosl> Oh
+[21:18:10] <barosl> larsberg, Is that related to the `tmp` branch issue?
+[21:18:16] <barosl> That you said yesterday?
+[21:18:27] <larsberg> barosl: yeah, that's the issue we were running into yesterday
+[21:18:34] <barosl> Hmm, I got it
+[21:18:50] *** Quits: mib_tbkas2 (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[21:18:55] <larsberg> jack: We could also try to fix the web hook not to drop it on the floor if there are no commits, but I don't know if that would break something else in the PBChangeSource stuff (I didn't look into it)
+[21:19:14] <barosl> I think eliminating tmp entirely would be viable
+[21:19:39] <jack> Bors resets auto to master, then pushes the new commits
+[21:19:56] <jack> So it appears as if some are made to hte branch. homu seems to reset auto to tmp, which comes thorugh as no commits.
+[21:20:03] <neojski> mbrubeck: The additional problem right now is that compilation takes almost 10 minutes so debugging is very annoying. Is this normal?
+[21:20:15] <jack> neojski: what module are you hacking on?
+[21:20:36] <neojski> Ok, that was more like 5 minutes. It is script stuff.
+[21:20:37] <larsberg> jack: yeah, so that "dropping" was probably important for bors so that we didn't get a change event when auto was reset to master :-)
+[21:20:59] <barosl> I did it because the Rust project's Buildbot was still using the poller, so I was afraid that the "intermediate" state of the auto branch would be seen by the Buildbot
+[21:21:01] <jack> neojski: script is the slowest component to compile unfortunately. Rust has whole-crate compilation units, not individual files.
+[21:21:15] <mbrubeck> neojski: Yes, unfortunately changes in `script` cause really long rebuilds. :(
+[21:21:24] <barosl> e.g. There are multiple commits to be applied to auto
+[21:21:36] <jack> larsberg: I don't think github_listener was written with bors in mind
+[21:21:44] <mbrubeck> I wonder if there's a way to enable that parallel codegen feature in rustc...
+[21:22:07] <Ms2ger> neojski, == ns!(HTML) should work, fwiw
+[21:22:09] <larsberg> barosl: yeah, if you did the two pushes to auto, I think our use of the poller would certainly try to build it twice
+[21:22:55] <jack> You basically want one push of all the commits. Alternatively you could interface homu with buildbot directly to announce the code changes.
+[21:23:05] <barosl> However AFAIK the Buildbot poller has a feature that "waiting for the branch until it doesn't change for a certain amount time"
+[21:23:21] <jack> Or trigger the bulid without listening to the repo
+[21:23:27] <jack> after all, homu knows when the merge is done :)
+[21:23:31] <jack> And what hte SHA is
+[21:23:31] <barosl> I think it was enabled by default, but I don't remember the exact amount of time
+[21:23:48] <jack> You could remove this whole changelistener interface
+[21:24:17] <jack> (The buildbot internal API should have a build this SHA function, since the UI supports the feature as I recall)
+[21:25:28] *** Quits: Nefzaoui (nefzaoui@moz-0d8.335.104.154.IP) (Quit: Ex-Chat)
+[21:25:32] <barosl> jack, Hmm, the multiple pushes were primarily done due to the automatic rollup feature... But it was obsolete and nowadays Homu makes a rollup PR rather than trying to automatically push multiple commits, so I think we can be certain that Homu always pushes only once per merge
+[21:25:37] <larsberg> Maybe there's another type of buildbot 'change_source' that is basically web requests from something like homu? That would interface nicely with our buildbot config and wouldn't require queueing on all the builders
+[21:26:03] <barosl> I'll just elimiate the try branch in a few days
+[21:26:08] <barosl> s/try/tmp
+[21:26:13] <neojski> Ms2ger: It doesn't for some reason. Oh, `namespace::Namespace` doesn't implement `fmt::Display` :-(
+[21:26:18] *** Quits: Ms2ger (Ms2ger@moz-15i.9ho.190.193.IP) (Quit: nn)
+[21:26:36] <jack> What I mean is that buildbot has a changelistener to trigger builds from a well known event. But you could trigger builds manually.
+[21:26:40] <larsberg> Yeah, looks like you could send a "change_hook" http://docs.buildbot.net/latest/manual/cfg-statustargets.html#change-hooks
+[21:26:43] <barosl> Creating another trigger to Buildbot seems to be overly complex
+[21:27:07] <jack> So it's not another trigger. You remove repository watching completely and just have homu tell it "Start a build on rev X now"
+[21:27:29] <jack> That is a much more reliable trigger than trying to trick the repository watcher into thinking it has a code chnage to build
+[21:28:05] <barosl> Yeah, I got the idea, but... I think it would be still better to have an option to manually push a certain commit to auto
+[21:28:06] <jack> Maybe I'll try to add this. Is homu hard to test? :)
+[21:28:11] <barosl> Just in case Homu doesn't work properly
+[21:28:36] <jack> If homu isn't working, don't we have bigger problems? :)
+[21:28:37] *** Quits: Savago (Savago@moz-8hd.3b6.246.162.IP) (Client exited)
+[21:28:44] <barosl> Well, I think not! In fact I'm running a local Buildbot instance to test Homu
+[21:29:06] <barosl> But unfortunately all I do for debugging is print()ing...
+[21:29:11] <barosl> Sorry for that :P
+[21:29:41] <barosl> Homu really needs some debugging and logging infrastructure to be built in, but it wasn't realized yet
+[21:30:20] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[21:30:45] *** AutomatedTester is now known as AutomatedTester|AFK
+[21:32:47] <barosl> larsberg, Wait. How has the Buildbot been possible to be notified until you changed to GitPoller?
+[21:33:10] <barosl> Does PBChangeSource work *sometimes* currently?
+[21:33:54] <larsberg> barosl: I think it might have, but I was unable to figure out when it would do so. We were also doing all sorts of mad stuff during the bors->homu transition, so it's not clear it was really working until now :-)
+[21:34:09] <barosl> Huh, I see
+[21:34:15] <larsberg> jack: another issue with homu right now is that it runs in a screen session instead of as a daemon that actually logs sensibly and can be restarted :-)
+[21:35:00] <barosl> I need to prioritize this. It will be fixed as soon as possible
+[21:35:09] <larsberg> jack: I also didn't salt-ify the steps manish did to set up the venv bits for homu:  https://www.irccloud.com/pastebin/TeGJ0mA7
+[21:35:17] *** Quits: binkarus (textual@moz-014tff.ca.comcast.net) (Ping timeout: 121 seconds)
+[21:35:19] <larsberg> barosl: awesome, thanks!
+[21:40:35] <barosl> jack, Also note that `pyvenv-3.4` is not installed by default in the latest Ubuntu versions. Starting from Ubuntu 14.10, a separate package named `python3.4-venv` is needed to use it
+[21:40:48] <barosl> But wait... Does the build server use Ubuntu?
+[21:40:54] *** Quits: tikue (tkuehn@moz-n71.k1b.0.198.IP) (Client exited)
+[21:41:23] <nox> Is Some(&"xml") a valid pattern for an Option<&str>?
+[21:41:44] <mbrubeck> nox: I think it's just Some("xml")
+[21:41:56] <mbrubeck> string literals have type &str
+[21:41:58] <nox> Ok.
+[21:42:03] <pcwalton> kmc: is it possible that html5ever will not always collapse adjacent Text nodes together?
+[21:42:14] <pcwalton> depending on the chunks that are handed to it
+[21:42:38] <kmc> yes
+[21:42:45] <pcwalton> it appears what is happening here is something like: the Text node boundaries depend on some sort of input chunking
+[21:42:48] <pcwalton> aha
+[21:42:56] <pcwalton> this was a fun bug to figure out
+[21:42:58] <jack> larsberg: to fix the former just look at the config for github_listener.py which also doesn't have this support. upstart does all that for you.
+[21:43:00] <barosl> jack, It seems that `pyvenv-3.4` could be just substituted with `python3 -m venv`... It won't require any external scripts and/or packages
+[21:43:02] <kmc> I think when I originally wrote it I was under the impression that the DOM combines adjacent text nodes anyway
+[21:43:03] <jack> (so does systemd)
+[21:43:05] <kmc> but this is not the case :(
+[21:43:07] <kmc> what's to be done
+[21:43:32] <pcwalton> I was wondering why <pre> and <pre x=x> was OK but <pre dir=ltr>, <pre xdir=xltr>, <pre abc=def> were not
+[21:43:38] <barosl> So the first line should be `python3 -mvenv _venv --without-pip`
+[21:43:41] <pcwalton> affected the html5ever chunking boundaries
+[21:43:46] <barosl> Hmm, I need to update Homu's README
+[21:43:53] <pcwalton> which affected where the text nodes where chopped up
+[21:43:55] <pcwalton> tickling a bug
+[21:44:01] <pcwalton> were chopped up*
+[21:44:04] <kmc> yeah
+[21:44:06] <kmc> we should fix that
+[21:44:46] <nox> Will you people hate me if I check whether two equalities are equal?
+[21:45:07] <mbrubeck> nox: Like `(a == b) == (x == y)`?
+[21:45:08] <kmc> no
+[21:45:13] <nox> Yes.
+[21:45:19] <mbrubeck> seems fine to me
+[21:45:29] <kmc> if that's what most clearly expresses the intent, then go ahead
+[21:45:30] <barosl> Ha! gh5566 is marked as `less easy`. Looks interesting :)
+[21:45:38] <mbrubeck> Maybe give a name to each side if there's a name that make sense.
+[21:45:47] <nox> kmc: Hah!
+[21:45:53] <nox> Something clearly expressing the intent of DOM?
+[21:46:02] <kmc> fair point
+[21:47:04] <mbrubeck> let sameName = (a == b); let samePlanet = (x == y); if sameName == samePlanet { ... }
+[21:47:10] *** Joins: psd (psd@moz-024.at3.215.180.IP)
+[21:47:42] *** Joins: moa (Cedric@moz-hov6n4.abo.wanadoo.fr)
+[21:47:59] <nox> I remember the day I looked frantically for an inclusive and in whatever language and then realised it was equality of booleans.
+[21:48:11] *** Quits: Nekit1234007 (nekit@moz-0e9.tce.51.84.IP) (Quit: leaving)
+[21:49:00] *** Quits: kmicu (kmicu@moz-uga.edn.218.91.IP) (Client exited)
+[21:49:48] <jgraham> nox: The point of DOM is clearly to make a tree API for mid-90s Java :)
+[21:49:57] <jgraham> s/point/intent/
+[21:50:31] <nox> But the intent of Java is to convert huge trees into stacktraces, isn't it?
+[21:50:47] <mbrubeck> pcwalton: I'm seeing some issues with the :focus selector, wondering if they are incremental reflow bugs or something.
+[21:50:57] <mbrubeck> pcwalton: Test case - http://limpet.net/inputs.html
+[21:51:05] <pcwalton> mbrubeck: try disabling style sharing
+[21:51:12] <mbrubeck> pcwalton: Oh, good idea.
+[21:51:15] <pcwalton> that's my first guess
+[21:51:22] <mbrubeck> Yes, I'm pretty sure that's it.
+[21:51:29] <mbrubeck> I need to add focus state to the style sharing test.
+[21:51:42] <mbrubeck> I'll see how many of my bugs that fixes. :)
+[21:51:52] <pcwalton> bz is saying "I told you so" :)
+[21:51:52] <nox> (ns, ("xmlns", _) | (_, "xmlns")) That's a valid pattern, right?
+[21:52:02] <pcwalton> style sharing is such an enormous optimization
+[21:52:06] <pcwalton> but it's so fragile
+[21:52:08] <nox> (Asking on IRC > compiling. Sorry. :P)
+[21:52:13] <pcwalton> so painful and so indispensable
+[21:52:20] <mbrubeck> pcwalton: We don't have a command-line flag to disable it, do we?
+[21:52:28] <pcwalton> mbrubeck: adding that would be a good idea :)
+[21:52:34] <mbrubeck> yeah
+[21:52:59] <kmc> nox: you can't 'or' arbitrary patterns
+[21:53:03] <kmc> | is part of the syntax of 'match'
+[21:53:08] <kmc> (kind of?)
+[21:53:59] *** Joins: bholley (bholley@moz-hb3rtc.ca.comcast.net)
+[21:54:14] *** Quits: bholley (bholley@moz-hb3rtc.ca.comcast.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[21:54:14] <jack> mbrubeck: file that :)
+[21:54:33] <jack> `-i` is such a great debugging tool. I imagine a flag to disable style sharing would be even more useful.
+[21:55:11] *** chmanchester_ is now known as chmanchester
+[21:55:14] <mbrubeck> yup
+[21:55:52] *** Quits: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at) (Connection closed)
+[21:57:03] <nox> kmc: Damn it.
+[21:57:22] <kmc> i know, right
+[21:57:22] <nox> mbrubeck: Any plan to change that in the far future btw?
+[21:57:34] <nox> Damn fingers on the damn keyboard. kmc*
+[21:57:45] <kmc> don't know
+[21:57:53] <nox> kmc: And here I thought I could be clever and whatnot.
+[21:58:19] <nox> "If either qualifiedName or prefix is "xmlns" and namespace is not the XMLNS namespace, throw a NamespaceError exception." '(ns, ("xmlns", _) | (_, "xmlns")) if ns != ns!(XMLNS)' Wasn't that cool?
+[21:59:56] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[21:59:56] -ghservo- [13servo] 15mbrubeck opened issue #5581: Add a command-line option to disable style sharing 02http://git.io/veoyo
+[21:59:56] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[22:01:04] <mbrubeck> nox: It's under consideration at least. It was proposed a while ago but postponed until after 1.0
+[22:01:16] <nox> Cool!
+[22:01:27] <mbrubeck> nox: https://github.com/rust-lang/rust/issues/17180
+[22:01:28] <crowbot> Issue #17180: Allow alternation within sub-patterns - https://github.com/rust-lang/rust/issues/17180
+[22:02:24] <nox> Nice.
+[22:02:33] <mbrubeck> We need the thing from Firefox's `mach build` that pops up an OS notification when it finishes.
+[22:02:59] *** Quits: filsmick (filsmick@moz-22g0vl.abo.wanadoo.fr) (Connection closed)
+[22:03:00] *** Joins: filsmick (filsmick@moz-22g0vl.abo.wanadoo.fr)
+[22:04:11] *** Quits: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com) (Connection closed)
+[22:04:30] *** Joins: mccr8 (mccr8@moz-cfhap5.mtv2.mozilla.com)
+[22:05:21] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[22:05:58] *** Quits: filsmick (filsmick@moz-22g0vl.abo.wanadoo.fr) (Quit: )
+[22:06:17] *** Quits: gsingh93 (gulshan@moz-3fu4am.mi.comcast.net) (Ping timeout: 121 seconds)
+[22:06:33] *** Joins: ghservo (ghservo@moz-l3t.5u0.30.192.IP)
+[22:06:33] -ghservo- [13servo] 15mbrubeck opened issue #5582: Display a notification after a long `mach build` command 02http://git.io/veoHk
+[22:06:33] *** Parts: ghservo (ghservo@moz-l3t.5u0.30.192.IP) ()
+[22:07:02] * kmc has no OS notifications or desktop UI besides 1px borders on windows
+[22:07:06] <kmc> but I still think that's a cool idea :)
+[22:08:02] <pcwalton> mbrubeck: fixed https://github.com/servo/servo/pull/5493
+[22:08:03] <crowbot> PR #5493: layout: Simplify and improve the correctness of whitespace stripping in text layout, and unify the inline layout paths for pre- and normally-formatted text. - https://github.com/servo/servo/pull/5493
+[22:09:33] <mbrubeck> pcwalton: cool, reviewing
+[22:09:55] <mbrubeck> pcwalton: r+
+[22:10:00] <pcwalton> thanks :)
+[22:10:59] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[22:10:59] -ghservo- [13servo] 15pcwalton opened pull request #5583: layout: Don't take collapsible top margin into account when determining the float ceiling. (06master...06float-ceiling-top-margin-redux) 02http://git.io/veo7I
+[22:10:59] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[22:12:46] <gw> pcwalton: nice to be getting some of those layout edge cases sorted :)
+[22:12:56] <pcwalton> gw: got a review for you in a sec
+[22:12:56] *** Quits: ahal (ahal@moz-b8e0a0.cpe.pppoe.ca) (A TLS packet with unexpected length was received.)
+[22:13:51] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[22:13:51] -ghservo- [13servo] 15pcwalton opened pull request #5584: layout: Remove the bogus `assign_block_size_for_inorder_child_if_necessary` logic from table wrapper flows. (06master...06fix-a-float-redux) 02http://git.io/veo5U
+[22:13:51] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[22:13:56] <pcwalton> gw: r? https://github.com/servo/servo/pull/5584
+[22:13:56] <crowbot> PR #5584: layout: Remove the bogus `assign_block_size_for_inorder_child_if_necessary` logic from table wrapper flows. - https://github.com/servo/servo/pull/5584
+[22:14:04] <gw> looking now
+[22:15:51] <gw> pcwalton: r+'ed it
+[22:15:55] <pcwalton> gw: cool, thanks
+[22:16:31] <pcwalton> wow, 18 approved PRs in the queue
+[22:16:32] <nox> validate-and-extract seems written four times in the code.
+[22:17:54] <neojski> Can you guys have a look at this: https://pastebin.mozilla.org/8829150? Is servo supposed to log http://www.w3.org/2000/svg?
+[22:18:38] <neojski> Firefox does that. It's a simplified (probable) reason my fix for #1745 does not work.
+[22:18:39] <crowbot> Issue #1745: Document.getElementsByName and friends should only return elements in the HTML namespace - https://github.com/servo/servo/issues/1745
+[22:18:50] *** Quits: psd (psd@moz-024.at3.215.180.IP) (Ping timeout: 121 seconds)
+[22:19:24] *** Quits: Jayflux (Jason@moz-78vg9c.as13285.net) (Quit: Leaving)
+[22:19:49] *** Joins: bdero (bran@moz-lbs.91h.47.73.IP)
+[22:21:29] *** Quits: bjz (bjz@moz-puppgq.tpgi.com.au) (Quit: My Mac has gone to sleep. ZZZzzz…)
+[22:24:45] *** Quits: mystor (mystor@moz-ldavpp.home3.cgocable.net) (Connection closed)
+[22:25:41] <nox> I'm badmouthing the code, only 2 times.
+[22:25:53] <kmc> pcwalton: ah, you ran into https://github.com/servo/servo/issues/3701
+[22:25:53] <crowbot> Issue #3701: Stop using AppendChild in the HTML parser - https://github.com/servo/servo/issues/3701
+[22:26:12] <kmc> I think h5e itself is working correctly; it tells you to merge adjacent text nodes in the tree sink
+[22:26:43] <pcwalton> kmc: no worries, I worked around it with a one line fix
+[22:26:52] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[22:26:52] -ghservo- [13servo] 15neojski opened issue #5585: Incorrect `namespaceURI`. 02http://git.io/veoNO
+[22:26:52] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[22:26:59] <kmc> cool
+[22:27:16] *** Joins: Jayflux (Jason@moz-78vg9c.as13285.net)
+[22:28:42] <kmc> I suppose we could make a DOM call equivalent to the JS "document.normalize()" after parsing, and this would fix the spec compliance issue
+[22:28:53] <kmc> it's probably faster to not create those text nodes in the first place... iirc DOM creating is slow
+[22:34:50] *** Quits: eibwen (eibwen@moz-bu00v3.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[22:35:29] <mbrubeck> Hmm, does not seem to be a style-sharing bug.
+[22:37:26] <pcwalton> hmm
+[22:37:28] <pcwalton> was worth a shot anyway
+[22:38:54] <mbrubeck> I'm seeing another issue, possibly unrelated, but making debugging difficult.  When I click or hover over an element, :hover and :focus styles aren't applied immediately.
+[22:39:20] <mbrubeck> But if I press a key to type into an <input>, for example, then the reflow happens (including :hover and :focus updates)
+[22:40:07] <gw> mbrubeck: sounds like there is no call to reflow occurring when the click or hover occurs?
+[22:40:10] <mbrubeck> We do call `window.r().reflow(ReflowGoal::ForDisplay, ...)` in `DocumentHelpers::handle_click_event` after committing the focus...
+[22:40:46] <gw> mbrubeck: in that case, I wonder if those styles aren't dirtying a node? the reflow early exits if it thinks no nodes are dirty
+[22:40:52] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[22:40:52] -ghservo- [13servo] 15pcwalton opened pull request #5586: net: Don't load the placeholder image for background images, only for image fragments. (06master...06no-broken-background-image-redux) 02http://git.io/veohc
+[22:40:52] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[22:41:14] <mbrubeck> gw: Ah, let me check that...
+[22:42:22] *** Joins: Savago (Savago@moz-u5uq1t.tmodns.net)
+[22:43:14] *** Joins: qrlpx (smuxi@moz-pr2f58.dip0.t-ipconnect.de)
+[22:43:31] *** Joins: ghservo (ghservo@moz-l7j.5u0.30.192.IP)
+[22:43:31] -ghservo- [13servo] 15pcwalton opened pull request #5587: layout: Position and size list images properly in the block direction. (06master...06list-style-image-sizing-redux) 02http://git.io/veojJ
+[22:43:31] *** Parts: ghservo (ghservo@moz-l7j.5u0.30.192.IP) ()
+[22:43:35] <pcwalton> gw: r? https://github.com/servo/servo/pull/5587
+[22:43:36] <crowbot> PR #5587: layout: Position and size list images properly in the block direction. - https://github.com/servo/servo/pull/5587
+[22:45:17] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[22:45:17] -ghservo- [13servo] 15SimonSapin pushed 3 new commits to 06unit-tests: 02http://git.io/veoju
+[22:45:17] -ghservo- 13servo/06unit-tests 141543291 15Simon Sapin: Add license headers in tests/unit
+[22:45:17] -ghservo- 13servo/06unit-tests 14096f3b2 15Simon Sapin: Check license headers in ./tests
+[22:45:17] -ghservo- 13servo/06unit-tests 14d0be9bf 15Simon Sapin: Remove now-empty module.
+[22:45:17] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[22:46:02] <larsberg> the macs have been upgraded to SSD drives and hopefully will start churning through those PRs again more quickly now :-)
+[22:46:08] * larsberg hopes he didn't break something else...
+[22:46:33] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[22:46:33] -ghservo- [13servo] 15pcwalton opened pull request #5588: layout: During inline layout, make `place_between_floats` use the same line height computation logic as final block size assignment. (06master...06line-height-float-placement-redux) 02http://git.io/veojF
+[22:46:33] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[22:47:23] <pcwalton> we may need to rollup soon
+[22:47:28] <larsberg> looks like update was 255.792968s, now is ~30s, so at least some big fixes!
+[22:47:29] <pcwalton> with our 19 approved PRs
+[22:48:18] <larsberg> The biggest problems were that the builders have been taking ~50 minutes for OSX before this and then they were offline for the last 2 hours. I think we should churn through things overnight if we're back near 30 minutes total...
+[22:48:29] <pcwalton> ok
+[22:48:32] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[22:48:32] -ghservo- [13servo] 15SimonSapin pushed 1 new commit to 06unit-tests: 02http://git.io/veKe1
+[22:48:32] -ghservo- 13servo/06unit-tests 1436ab6fc 15Simon Sapin: Use the correct license header.
+[22:48:32] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[22:49:17] <larsberg> But, in theory, rollup should just work like it does for Rust now that homu is working :-)
+[22:49:48] *** Joins: mystor (mystor@moz-va2.r78.15.130.IP)
+[22:50:11] * pcwalton really wants the "jumpiness" branch to land because layout is almost undebuggable at present
+[22:50:21] *** Quits: mystor (mystor@moz-va2.r78.15.130.IP) (Connection closed)
+[22:50:28] <SimonSapin> jack: issues addressed https://github.com/servo/servo/pull/5574
+[22:50:29] <crowbot> PR #5574: Move unit tests to their own crates, cut time by 96% - https://github.com/servo/servo/pull/5574
+[22:50:42] *** Joins: mystor (mystor@moz-va2.r78.15.130.IP)
+[22:51:01] <SimonSapin> someone just turned off the lights in the office, I think it’s a sign
+[22:52:03] *** Quits: valentin (icecold@moz-7pj.d10.25.188.IP) (Ping timeout: 121 seconds)
+[22:52:08] *** Quits: neojski (Mibbit@moz-7rd5gn.adsl.inetia.pl) (Quit: http://www.mibbit.com ajax IRC Client)
+[22:53:43] *** Joins: valentin (icecold@moz-7pj.d10.25.188.IP)
+[22:54:26] *** Quits: valentin (icecold@moz-7pj.d10.25.188.IP) (Connection closed)
+[22:54:26] *** Joins: valentin1 (icecold@moz-7pj.d10.25.188.IP)
+[22:54:34] <nox> I can't use collections::borrow::ToOwned in Servo, can I?
+[22:55:06] <mbrubeck> nox: I think yo ucan
+[22:55:16] <mbrubeck> We have `use std::borrow::ToOwned;` all over the place
+[22:55:25] <nox> That's not implemented for Option.
+[22:55:36] <nox> Nevermind, can't read.
+[22:55:51] <mbrubeck> std::borrow should be a re-export of collections::borrow
+[22:55:53] <nox> Mistook the "hey use this trait" note for "hey implement this trait you dummy" one.
+[22:56:39] *** Joins: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at)
+[22:56:43] *** Joins: erickt (erickt@moz-4hh.6p3.217.74.IP)
+[22:58:00] *** Quits: Savago (Savago@moz-u5uq1t.tmodns.net) (Client exited)
+[22:58:14] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[22:58:14] -ghservo- [13servo] 15SimonSapin pushed 1 new commit to 06unit-tests: 02http://git.io/veKJ6
+[22:58:14] -ghservo- 13servo/06unit-tests 14d580e80 15Simon Sapin: Apply again unit tests build fixes that apparenlty have been lost in translation^Wrebase
+[22:58:14] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[22:58:32] *** Quits: laumann (thomas@moz-n9e72h.0.fullrate.dk) (Ping timeout: 121 seconds)
+[22:59:12] <larsberg> wow, compiles on OSX went from 889s to 484s. 
+[22:59:42] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[22:59:42] -ghservo- [13servo] 15mbrubeck opened pull request #5589: Set dirty flag on hover or focus change (06master...06dirty) 02http://git.io/veKUt
+[22:59:42] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[22:59:51] <jack> Are we using Box::new or box keyword these days?
+[22:59:56] <mbrubeck> jack: Box::new
+[23:00:10] <mbrubeck> err
+[23:00:22] <mbrubeck> jack: sorry, box keyword
+[23:00:43] *** Quits: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at) (Ping timeout: 121 seconds)
+[23:00:55] <mbrubeck> (I'd just been looking at non-Servo code that was using Box::new)
+[23:05:40] <SimonSapin> jack, mbrubeck: I chose to avoid unstable features in tests, as they’re not as performance-critical
+[23:05:52] <jack> Ah. Then mark that as resolved and squash.
+[23:06:12] <jack> r=me
+[23:06:41] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[23:08:10] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[23:08:10] -ghservo- [13servo] 15SimonSapin 04force-pushed 06unit-tests from 14d580e80 to 1484e5f1e: 02http://git.io/veoBd
+[23:08:10] -ghservo- 13servo/06unit-tests 14d88770e 15Simon Sapin: Move net::{data_loader,image_cache_task} unit tests into the unit_tests crate.
+[23:08:10] -ghservo- 13servo/06unit-tests 14e27c967 15Simon Sapin: Move net::resource_task unit tests into the unit_tests crate.
+[23:08:10] -ghservo- 13servo/06unit-tests 14e5466a3 15Simon Sapin: Move style crate unit tests into the unit_tests crate.
+[23:08:10] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[23:11:02] *** Quits: crowbot (nodebot@moz-4pids4.compute-1.amazonaws.com) (A TLS packet with unexpected length was received.)
+[23:11:02] *** Joins: crowbot1 (nodebot@moz-9phts6.compute-1.amazonaws.com)
+[23:11:44] *** Joins: dstrbad (dstrbad@moz-f0msc0.dsl.iskon.hr)
+[23:13:09] <nox> Oops.
+[23:13:13] *** Quits: azita (Azita@moz-cfhap5.mtv2.mozilla.com) (Client exited)
+[23:13:34] <nox> I just refactored a bit of code, thinking I was doing the same as before, and suddenly more tests pass.
+[23:15:33] *** Joins: ghservo (ghservo@moz-abh.5u0.30.192.IP)
+[23:15:33] -ghservo- [13servo] 15bors-servo 04force-pushed 06tmp from 14c642632 to 143fb666c: 02http://git.io/veWu4
+[23:15:33] *** Parts: ghservo (ghservo@moz-abh.5u0.30.192.IP) ()
+[23:15:37] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[23:15:37] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/veKLV
+[23:15:37] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[23:15:53] *** Quits: dstrbad (dstrbad@moz-f0msc0.dsl.iskon.hr) (Ping timeout: 121 seconds)
+[23:17:04] *** Joins: qrlpx_ (smuxi@moz-ht3b67.dip0.t-ipconnect.de)
+[23:17:05] *** Quits: qrlpx (smuxi@moz-pr2f58.dip0.t-ipconnect.de) (Ping timeout: 121 seconds)
+[23:20:27] *** Joins: Guest64 (textual@moz-hcmq7s.optusnet.com.au)
+[23:22:38] <SimonSapin> <3 homu
+[23:22:51] <SimonSapin> No 3 minutes polling
+[23:24:37] *** Quits: user7181_ (user@moz-manmml.mullvad.net) (Quit: leaving)
+[23:25:13] <mbrubeck> Are these mac crashes related to the reboots? https://github.com/servo/servo/pull/5527#issuecomment-90757247
+[23:25:13] <crowbot1> PR #5527: opts.rs: don't accept multiple URLs. Fixes #5520. - https://github.com/servo/servo/pull/5527
+[23:28:00] <nox> AH! I see.
+[23:28:20] <nox> "If either qualifiedName or prefix is "xmlns""
+[23:28:36] <nox> "match (…, prefix_from_qname, local_name_from_qname)"
+[23:28:49] *** Quits: _zxq9_ (ceverett@moz-qsm369.mesh.ad.jp) (Quit: Konversation terminated!)
+[23:33:14] *** Joins: Rym (y@moz-m9s4ac.in-addr.btopenworld.com)
+[23:34:29] *** Quits: erickt (erickt@moz-4hh.6p3.217.74.IP) (Ping timeout: 121 seconds)
+[23:37:32] *** Quits: Rym (y@moz-m9s4ac.in-addr.btopenworld.com) (Ping timeout: 121 seconds)
+[23:38:36] *** Joins: ghservo (ghservo@moz-ij9.5u0.30.192.IP)
+[23:38:36] -ghservo- [13servo] 15bors-servo 04force-pushed 06tmp from 148803171 to 143fb666c: 02http://git.io/veWu4
+[23:38:36] *** Parts: ghservo (ghservo@moz-ij9.5u0.30.192.IP) ()
+[23:38:38] *** Joins: ghservo (ghservo@moz-m9l.5u0.30.192.IP)
+[23:38:38] -ghservo- [13servo] 15bors-servo merged 06auto into 06tmp: 02http://git.io/veK3X
+[23:38:38] *** Parts: ghservo (ghservo@moz-m9l.5u0.30.192.IP) ()
+[23:41:03] *** Quits: darkowlzz|afk (Elite12883@moz-kue6ah.elitebnc.org) (Ping timeout: 121 seconds)
+[23:43:11] *** Joins: mib_6igj6n (Mibbit@moz-juv.9o3.252.72.IP)
+[23:44:51] *** Quits: mib_6igj6n (Mibbit@moz-juv.9o3.252.72.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[23:49:39] <larsberg> gah, I can't connect via VNC to the minis to open up a session so they don't keep dying on all the graphics-requiring tests.... urgh
+[23:52:31] *** Joins: darkowlzz|afk (Elite12883@moz-kue6ah.elitebnc.org)
+[23:53:39] <mbrubeck> Making changes in script, it can take 60s of build time just to get a type error. :/
+[23:54:09] <nox> It's killing me.
+[23:55:47] *** Quits: dawehner (quassel@moz-h829oe.hsi6.kabel-badenwuerttemberg.de) (Ping timeout: 121 seconds)
+[23:56:00] * mbrubeck wonders how much moving to a fast desktop would improve this
+[23:56:37] <gw> mbrubeck: I work on a 8 core i7 desktop, and the build times are still awful.
+[23:57:03] *** Quits: darkowlzz|afk (Elite12883@moz-kue6ah.elitebnc.org) (Ping timeout: 121 seconds)
+[23:57:04] <mbrubeck> things were not this bad a few months ago
+[23:57:33] <mbrubeck> hopefully optimizing compile times is one of the things the Rust team will be able to do with their new-found free time :)
+[23:57:45] *** Joins: dinfuehr (dinfuehr@moz-sqjs7a.highway.telekom.at)
+[23:58:19] <gw> build times have definitely regressed, but even a few months ago they were still bad compared to the c/c++ code bases I've worked with

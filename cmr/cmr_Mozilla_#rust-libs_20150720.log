@@ -1,0 +1,143 @@
+[00:10:10] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[00:14:25] *** Quits: blank_na1e (blank_name@moz-ms6nj1.mi.frontiernet.net) (Quit: leaving)
+[00:15:29] *** Joins: blank_name (blank_name@moz-ms6nj1.mi.frontiernet.net)
+[00:47:48] <Gankro> Stupid combinatorics
+[00:47:52] <Gankro> Adding like 40 benches
+[00:48:14] <Gankro> At least collections will make a bit of a comeback against string searching
+[00:51:01] <reem> Someone should make a tool like quickcheck but for benchmarks not tests
+[00:54:17] <huon> reem: what'd it do?
+[00:54:21] <ChrisMorgan> Hmm, in my quest to change std::cell::Ref<T> to a Ref2<&T> type which can then be mapped much more expressively (leaving type Ref<T> = Ref2<&T>) I have discovered that the Deref -> &*T is not what I want; I want Deref -> &T and DerefMut -> &mut T instead.
+[00:54:48] <huon> reem: (i.e. does it somehow identify "failing" benchmarks... how?)
+[00:55:05] <reem> huon: no it would just generate cases for you
+[00:55:13] <reem> based on some minimal input
+[00:55:47] <huon> ChrisMorgan: ... isn't that exactly what the two traits do?
+[00:56:27] <ChrisMorgan> huon: I mean the implementations of it for Ref
+[00:56:41] <huon> oh
+[00:57:00] <ChrisMorgan> std::cell::Ref<T> is designed to act like &T in that regards; but I want it to act like &&T.
+[00:57:14] <huon> &&T doesn't allow -> &mut T
+[00:57:15] <ChrisMorgan> And that part, alas, *would* be a backwards-incompatible change.
+[00:57:26] <huon> (neither does &mut &T or &&mut T)
+[00:57:28] <ChrisMorgan> OK, I want it to act like &mut &T rather.
+[00:57:46] <reem> .. why?
+[00:57:53] <ChrisMorgan> It’s the mapping behaviour (Ref::map) that is important. I want it to be able to return things other than references.
+[00:57:56] <ChrisMorgan> e.g. Cow<str>.
+[00:58:37] <ChrisMorgan> But then after I’d done that (for which the existing Deref behaviour is suitable), I wanted to do it for other types that don’t implement Deref, but I still wanted to get references to them.
+[00:59:23] <ChrisMorgan> This idea has all come out of updating mucell to use the latest RefCell techniques.
+[01:02:01] <reem> I believe this is an HKT issue
+[01:02:29] <reem> you want the bound on F in Ref::map to be for<‘a> FnOnce(&’a T) -> U<‘a>
+[01:02:48] <ChrisMorgan> No, no HKT issue.
+[01:03:27] <ChrisMorgan> It all works just fine, I’ve simply discovered that for reasons of backwards compatibility I can’t *quite* take it as far as I want with Deref, so I’ll need to add a couple of new methods for accessing the value instead.
+[01:03:41] <reem> if you want it to be able to return things other than references and refer to the lifetime of the &T that is passed in, I think you need HKT
+[01:04:14] <reem> e.g. U = Cow<??, str> requires HKT because what is ??
+[01:04:58] <reem> Deref itself has the same problem
+[01:04:59] <ChrisMorgan> No, HKT ain’t needed. We’re dealing with FnOnce(T) -> U where T: 'b and U: 'b.
+[01:05:44] <reem> I think that’s incorrect - if T: ‘b then you can move it out to the enclosing context, which would allow you to escape the Ref
+[01:05:57] <reem> You *need* a fresh HR lifetime on F
+[01:06:07] <reem> it must be shorter than ‘b
+[01:08:21] <ChrisMorgan> reem: https://github.com/chris-morgan/rust/compare/master...refcell-ref-with-deref
+[01:08:44] <ChrisMorgan> I believe it’s all sound.
+[01:08:53] <ChrisMorgan> And backwards-compatible.
+[01:10:48] <ChrisMorgan> SimonSapin: ^ this is what I was talking about on Friday or whenever it was.
+[01:12:05] <reem> ChrisMorgan: I’m pretty confident that the current signature for map allows moving T out of the Ref context
+[01:12:15] <reem> the one in that patch I mean
+[01:12:45] <reem> basically I can get an &T into a RefCell not bound by a Ref, so later borrow_muts would be UB
+[01:21:03] <ChrisMorgan> reem: how?
+[01:22:12] <ChrisMorgan> I don’t see how it could be achieved; lifetimes still protect it.
+[01:24:40] <ChrisMorgan> If you can come up with a way in which it undermines memory safety I’d like to know, but I believe it’s safe, although at first glance it might feel otherwise.
+[01:31:16] <reem> ChrisMorgan: let mut x = None; let ref = cell.borrow(); Ref::map(cell, |a| x = Some(a)); drop(ref); // x is now a ref into cell without a guard
+[01:31:30] <reem> a has to have a *shorter* lifetime than ref
+[01:34:58] <ChrisMorgan> reem: Ref::map takes ref, not cell.
+[01:35:48] <reem> true
+[01:35:52] <reem> but doesn’t change the example
+[01:36:10] <reem> x holds a &’a b
+[01:36:11] <ChrisMorgan> reem: your example doesn’t work, either, because of lifetimes. `let cell = RefCell::new(1); /* 'x */ let x: Option<&'x i32> = None; /* 'y */ let ref_: Ref2<'y, &'y i32> = cell.borrow(); Ref2::map(ref_, |a: &'y i32| -> () x = Some(a))` 'y < 'x, so the assignment fails to compile.
+[01:36:13] <reem> &’b T
+[01:36:42] <reem> ChrisMorgan: declare x and ref in the same let then
+[01:36:59] <ChrisMorgan> How?
+[01:37:08] <reem> let (ref, x) = (cell.borrow(), None);
+[01:37:23] <ChrisMorgan> Oh, yeah, of course. Let me think and try…
+[01:40:39] <ChrisMorgan> ☹
+[01:40:52] <reem> this is why you need HKT
+[01:41:01] <ChrisMorgan> You are correct, the scheme does indeed break for RefCell after all.
+[01:41:03] <reem> at least to write map correctly, the other changes may be fine
+[01:42:27] <ChrisMorgan> Hmm… how about—as a theoretical question only, it’d break backwards compatibility—if F had the 'static bound added? That way you couldn’t cause things to escape the environment.
+[01:43:11] <reem> ChrisMorgan: hmm, I think that does work but would be an annoying restriction
+[01:44:24] <ChrisMorgan> I wonder how serious a restriction it actually is. Certainly the sort of things that I want to do with it are not impeded by such a thing, they don’t need any environment.
+[01:45:33] <reem> mostly I think it just hurts because you can’t do stuff like capture variables just by reference for logic
+[01:45:50] <reem> like if you want to branch on something from outside the closure
+[01:46:39] <ChrisMorgan> Or it could take Fn instead of FnMut.
+[01:46:44] <ChrisMorgan> That would fix the problem completely.
+[01:46:51] <reem> just capture another RefCell then
+[01:46:55] <ChrisMorgan> s/FnMut/FnOnce/
+[01:47:42] <reem> I don’t think that does it
+[01:47:54] <reem> T is still by-value
+[01:47:57] <reem> even if captures aren't
+[01:48:24] <ChrisMorgan> But isn’t moving it out to the environment the problem?
+[01:49:14] <reem> making it FnMut doesn’t change T
+[01:49:33] <reem> I can still capture an &mut Option<T> and move into it
+[01:50:22] <ChrisMorgan> Oh yeah, I misunderstood what you meant by capturing another RefCell. I see why that approach won’t work now.
+[01:50:54] <Gankro> reem: I'd rather just be able to declare a general bench and ranges of values and have it do all the combinations for me
+[01:51:34] <Gankro> And then spit it out in a format where you can fix some dimensions of the benches and compare across others
+[01:51:59] <Gankro> Right now I basically eyeball it and am like "this looks better"
+[01:52:01] <reem> That’s basically what I had in mind
+[01:54:17] <Gankro> Also be able to compare runs
+[01:54:38] <reem> might be a nice feature for travis-cargo
+[01:54:45] <Gankro> cargo bench --compare HEAD HEAD~1
+[01:54:48] <reem> record your benches and warn you of regressions and let you know of speed increases
+[01:55:44] <Gankro> I can't imagine travis is a very reliable execution environment...
+[01:55:59] <Gankro> But I suppose if you have it do both on the spot it's probably fine
+[02:07:50] <ChrisMorgan> reem: actually, changing Ref::{map, filter_map} to take F: 'static *is* something that could legitimately be done, because they’re still unstable methods…
+[02:09:09] <ChrisMorgan> I’m sad that my nice scheme has fallen down around my ears ☹
+[02:11:07] <ChrisMorgan> I guess .inner() and .inner_mut() wouldn’t be suitable either, as they could allow copying of the reference.
+[02:11:21] <ChrisMorgan> Sigh.
+[02:11:57] <reem> This would all basically Just Work if Deref used HKT
+[02:12:35] <ChrisMorgan> My cant of “I am glad Rust doesn’t have HKT, purely for marketing reasons” is becoming steadily weaker…
+[02:13:52] <reem> I find myself running into something that needs HKT about once a month
+[02:14:08] <reem> more often if I’m using a lot of smart pointers
+[02:48:37] *** Quits: kimundi (kimundi@moz-kjthpr.63qo.amhv.57bc.2002.IP) (Ping timeout: 121 seconds)
+[02:53:44] *** Joins: kimundi (kimundi@moz-cd45a7.dip0.t-ipconnect.de)
+[02:54:29] <ChrisMorgan> Oh to be able to express “the funciton is safe if F: 'static and is unsafe but permitted otherwise” without duplicating the function.
+[02:56:19] *** Joins: c74d (c74d3a4ebb6@moz-0ersgu.oc.cox.net)
+[04:51:54] <Gankro> ChrisMorgan: demand "safety specialization" :P
+[04:54:48] <ChrisMorgan> Gankro: I’m not too fussy; HKT will be enough for me this time.
+[04:55:08] <Gankro> Seems reasonable
+[05:03:26] *** Quits: Rym (uid91135@moz-n2i7qm.charlton.irccloud.com) (Quit: Connection closed for inactivity)
+[05:36:22] *** Quits: carllerche (sid50851@moz-8i75uq.brockwell.irccloud.com) (Ping timeout: 121 seconds)
+[05:42:37] *** Joins: carllerche (sid50851@moz-8i75uq.brockwell.irccloud.com)
+[07:29:26] *** Joins: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua)
+[07:31:15] *** Quits: rdgawdzi (sid91768@moz-36ps68.ealing.irccloud.com) (Ping timeout: 121 seconds)
+[07:31:32] *** Quits: carllerche (sid50851@moz-8i75uq.brockwell.irccloud.com) (Ping timeout: 121 seconds)
+[07:31:45] *** Quits: scott (uid25790@moz-e5ok1n.brockwell.irccloud.com) (Error in the push function.)
+[07:47:24] *** Joins: carllerche (sid50851@moz-8i75uq.brockwell.irccloud.com)
+[07:47:25] *** Joins: scott (uid25790@moz-e5ok1n.brockwell.irccloud.com)
+[07:53:41] *** Joins: rdgawdzi (sid91768@moz-36ps68.ealing.irccloud.com)
+[08:54:42] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[13:30:39] *** Joins: Rym (uid91135@moz-n2i7qm.charlton.irccloud.com)
+[15:52:56] *** Quits: Rym (uid91135@moz-n2i7qm.charlton.irccloud.com) (Quit: Connection closed for inactivity)
+[16:39:13] *** Joins: brson (brson@moz-cfhap5.mtv2.mozilla.com)
+[16:39:14] *** ChanServ sets mode: +qo brson brson
+[17:36:56] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (Ping timeout: 121 seconds)
+[19:18:46] *** Joins: nagisa (nagisa@moz-8t068g.static.zebra.lt)
+[20:17:30] <Gankro> Is it fine to accept an RFC with "naming TBD"?
+[20:19:21] <brson> Gankro: I'd prefer not
+[20:25:27] <Gankro> brson: bluuuh bikesheds
+[20:26:56] *** Joins: apasel422 (Mibbit@moz-6ga37r.ma.comcast.net)
+[20:40:32] *** Joins: achanda (achanda@moz-fr1.spq.217.162.IP)
+[20:46:45] *** Quits: apasel422 (Mibbit@moz-6ga37r.ma.comcast.net) (Quit: http://www.mibbit.com ajax IRC Client)
+[21:23:04] *** Joins: steveklabnik (root@moz-fft.uo8.55.45.IP)
+[21:23:05] *** ChanServ sets mode: +o steveklabnik
+[21:23:21] <steveklabnik> why is there a BufRead trait but not a BufWrite one?
+[21:23:35] <steveklabnik> i guess the interface isn't different
+[21:23:55] <steveklabnik> scratch that last sentence, i am still confused :)
+[21:32:20] <WindowsBunny> steveklabnik: well, what would BufWrite have that Write doesn't have?
+[21:32:38] <steveklabnik> yeah, i guess that last sentence was actually correct
+[21:32:44] <steveklabnik> BufRead actually cahnges interface
+[21:32:47] <steveklabnik> changes
+[21:50:32] *** Quits: nagisa (nagisa@moz-8t068g.static.zebra.lt) (Quit: Leaving.)
+[22:10:28] *** Quits: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au) (Ping timeout: 121 seconds)
+[22:24:10] *** Joins: ChrisMorgan (ChrisMorgan@moz-g6osuq.tpgi.com.au)
+[23:01:00] *** Quits: gleb (gleb@moz-3u1drv.rusanovka-net.kiev.ua) (Ping timeout: 121 seconds)
+[23:16:51] <SimonSapin> Is there any way to replace str::is_char_boundary on stable rust without catching a panic?
+[23:17:51] <SimonSapin> I know that the reasoning is that you normally only slice at indices you got from elsewhere and know are valid. But this is fuzzing code that takes random slices
+[23:20:10] <SimonSapin> well I suppose I can copy its implementation
+[23:59:25] *** Quits: achanda (achanda@moz-fr1.spq.217.162.IP) (Connection closed)

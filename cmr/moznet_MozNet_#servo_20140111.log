@@ -1,0 +1,658 @@
+[00:00:14] * jdm needs to go home soon
+[00:02:02] <jack> it's failing in set_owner_doc for me
+[00:02:39] <jdm> I saw that as well
+[00:02:48] <jdm> I'm playing with the shadowing in the reflect methods
+[00:03:04] <jdm> same problem
+[00:04:20] * jdm might try making a reduced testcase later
+[00:04:28] <jdm> there's not too much code to copy
+[00:05:26] *** Quits: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net) (Ping timeout)
+[00:06:49] <jack> transmute_copy cause a segfault
+[00:07:01] <jack> if i put a refcount print right after that and change it back to trasnmute, the refcount is 5.
+[00:07:47] * jdm will ponder as he leaves the office
+[00:08:07] <jdm> keep talking out loud for the benefit of the backlog if anything appears
+[00:08:11] *** Quits: jdm (jdm@13F2CEC5.7672369.D8E68FF6.IP) (Quit: Lost terminal)
+[00:13:59] <jack> transmute_copy seems to be segfaulting directly for me
+[00:14:21] <jack> maybe i have to pass &@mut HTMLDocument?
+[00:15:44] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[00:17:35] <jack> wooho..
+[00:17:39] <jack> got a refcount of 1 wher ei want it.
+[00:17:50] <jack> and now the documen tnode gets dropped as expected.
+[00:17:53] <jack> halfway there.
+[00:20:15] <jack> totally new segfault obtained.
+[00:20:21] <jack> it's now reaping elements when it's supposed to
+[00:20:34] <jack> Assertion failure: &obj->asGlobal() == compartment()->maybeGlobal(), at /Users/jack/src/servo/src/support/spidermonkey/mozjs/js/src/jsobjinlines.h:1209
+[00:24:45] *** Quits: eholk (eholk@moz-58C5EE6F.wavecable.com) (Ping timeout)
+[00:25:34] *** Joins: eholk (eholk@moz-58C5EE6F.wavecable.com)
+[00:27:04] *** Joins: TimAbraldes (quassel@moz-204A2E3F.hsd1.or.comcast.net)
+[00:27:22] <jack> now we're segfaulting in reap_layout_data called from the node destructor.
+[00:27:28] <jack> specifically here:             let js_window = utils::global_object_for_dom_object(self);
+[00:28:00] <jack> so apparnetly the node is already dead when the destructor runs?
+[00:29:52] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[00:30:36] <jack> the finalize hasn't run when node destructor runs, which is good.
+[00:32:03] <jack> and we crash in GetGlobalObjectForObjectCrossCompartment
+[00:45:24] *** kimundi is now known as zz_kimundi
+[00:47:12] *** Quits: dbaron (dbaron@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: 8403864 bytes have been tenured, next gc will be global.)
+[00:52:55] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[00:54:07] <pcwalton> I think the node shouldn't be dead at that point
+[00:56:15] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[00:57:46] *** Quits: eholk (eholk@moz-58C5EE6F.wavecable.com) (Quit: eholk)
+[00:57:57] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[00:58:46] *** Quits: ramitos (ramitos@moz-60679625.socal.res.rr.com) (Quit: Textual IRC Client: www.textualapp.com)
+[01:00:59] *** Joins: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca)
+[01:06:00] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[01:08:01] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[01:08:05] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[01:24:39] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[01:26:22] <jack> yeah, the Drop runs before finalize
+[01:26:28] <jack> or rather, before it's printed.
+[01:27:56] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[01:28:40] <jack> yeah. i don't see anythign that destroys it
+[01:30:23] <jack> we aren't in teh right compartment i guess
+[01:30:39] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[01:30:39] *** ChanServ sets mode: +qo dherman dherman
+[01:32:56] *** Quits: TimAbraldes (quassel@moz-204A2E3F.hsd1.or.comcast.net) (Connection reset by peer)
+[01:35:51] <jack> where does         let global = GetGlobalForObjectCrossCompartment(obj); come from?
+[01:35:57] <jack> that symbol is not defined anywhere that i can see
+[01:36:42] <jack> wow. it's in rust-mozjs but never imported.
+[01:36:46] <jack> how is rustc finding it?
+[01:36:56] <jack> neat little bug i guess
+[01:37:09] <jack> nm. i missed the stupid glob
+[01:47:23] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[01:52:33] *** Quits: jet (jet@moz-DFAA4E15.p2p.sfo1.mozilla.com) (Quit: jet)
+[01:55:13] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[01:56:32] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[01:57:00] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Ping timeout)
+[01:58:04] *** Quits: canhtak (canhtak@moz-DB18D73D.wl.t.ulaval.ca) (Quit: canhtak)
+[01:58:17] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[01:59:39] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[02:12:02] <jack> i can't figure out why we'd be in a different compartment.
+[02:12:05] <jack> this page should only have one
+[02:17:52] *** Joins: canhtak (canhtak@moz-DB18D73D.wl.t.ulaval.ca)
+[02:29:49] <jack> oh i see the problem ithink. Comaprtment and Context get dropped before these dtors run.
+[02:31:52] <jack> Which is expected since the global object is owned by the context it hink, and is @mut Window
+[02:33:12] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[02:42:50] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[02:42:50] *** ChanServ sets mode: +qo dherman dherman
+[02:53:24] <pcwalton> jack: any luck?
+[02:53:44] <jack> i think i can't access the global object once JS_DestroyContext is called
+[02:54:00] <jack> so i'm trying to figure out a way to call JS_SetGlobalObject(NULL) so that Window will be freed
+[02:57:09] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[02:57:50] <pcwalton> jack: shu says he isn't sure but nulling it out will probably allow it to be gc'd
+[02:58:51] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[02:59:30] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[02:59:56] <jack> the spidermonkey api and rust-mozjs dont' quite line up, so i'm not sure how to do it.
+[03:00:07] <jack> for example, we don't call JS_SetGlobalObject ever
+[03:00:26] <jack> it creates an @mut Compartment and i'm not sure how the global appears
+[03:00:51] <pcwalton> oh, blech
+[03:01:07] *** Quits: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca) (Quit: eatkinson)
+[03:01:41] <jack> another think i don't undestand is we seem to call set_cx_private twice.
+[03:01:50] <jack> the first time we stash @mut Compartment
+[03:01:52] <jack> and the second time @mut Page
+[03:02:53] <pcwalton> weird
+[03:03:14] <pcwalton> jack: I think we need to destroy the context later
+[03:03:42] <jack> well i'm the one making it get destroyed. so i can fix that.
+[03:04:02] <jack> the problem is that if the global object isn't detached, the Window will remain rooted
+[03:05:54] <jack> ok, so ScriptTask::load calls JS_NewContext
+[03:06:07] <jack> then it calls initialize_js_info
+[03:06:19] <jack> which calls Cx::new_compartment_with_global
+[03:07:32] <jack> it seems something has to set what the global object is, but i can't figure out what.
+[03:08:40] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[03:08:40] *** ChanServ sets mode: +qo dherman dherman
+[03:09:47] <jack> maybe because it's the first object created spidermonkey just knows?
+[03:10:34] <pcwalton> I'm not sure, maybe #jsapi will know?
+[03:11:46] <jack> Window::new does it i think
+[03:11:50] <jack> it calls CreateDOMGlobal
+[03:12:06] <jack> i still not sure how it knows the compartment.
+[03:12:15] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[03:12:23] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[03:14:06] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Ping timeout)
+[03:14:33] *** Quits: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com) (Quit: pcwalton)
+[03:14:35] <jack> ok. CreateDOMGlobal calls JS_NewGlobalObject
+[03:14:36] <jack> ok
+[03:14:43] <jack> so if i get a context I think i can just clear the global
+[03:19:38] <jack> almost.
+[03:19:46] <jack> i got it to reap one thing and then it didn't reap anything else.
+[03:21:20] <jack> hahaha
+[03:21:23] <jack> calling JS_GC twice fixed it.
+[03:21:39] <jack> because first it collects Window, then it collects all the newly daed stuff.
+[03:22:11] *** Quits: zz_kimundi (kimundi@moz-1273C77B.dip0.t-ipconnect.de) (Ping timeout)
+[03:22:23] <jack> this doesn't seem like the right solution though.
+[03:23:11] *** Joins: jdm (jdm@moz-AC9499B2.cable.teksavvy.com)
+[03:23:11] *** ChanServ sets mode: +o jdm
+[03:23:15] <jack> jdm!
+[03:23:18] <jack> i missed you so much!
+[03:23:23] <jack> and i have wonderful news for you
+[03:23:27] <jdm> jack: sounds like you're having fun with spidermonkey
+[03:23:37] <jack> transmute_copy works you just needed &document
+[03:23:45] <jack> so now we have the right refcounts
+[03:23:50] <jack> but then we crash in spidermonkey
+[03:23:57] <jdm> double gc, nice
+[03:24:04] <jack> oh, you have backlog
+[03:24:30] <jack> we can't seem to call GetGlobalForObjectCrossCompartment when JS_DestroyContext has run.
+[03:24:46] <jack> which means our nodes crash in finalization
+[03:24:56] <jack> but this is progress.
+[03:25:02] <jack> the double GC works around this.
+[03:25:02] <jdm> jack: huh, with the change to transmute_copy, I don't have any segfault running test_title
+[03:25:10] <jdm> and no double gc
+[03:25:44] *** Joins: zz_kimundi (kimundi@moz-B4EEA79E.dip0.t-ipconnect.de)
+[03:25:46] *** zz_kimundi is now known as kimundi
+[03:26:02] <jack> do you drop frame or js_info first?
+[03:26:10] <jdm> frame
+[03:27:02] <jack> i get this every time followed by segfault: Assertion failure: &obj->asGlobal() == compartment()->maybeGlobal(), at /Users/jack/src/servo/src/support/spidermonkey/mozjs/js/src/jsobjinlines.h:1209
+[03:27:20] <jack> you removed forget() too right?
+[03:27:32] <jack> and transmute_copy on both node and document?
+[03:27:35] <jdm> jack: yes
+[03:27:40] <jdm> yep
+[03:27:45] * jdm pastebins his diff
+[03:28:46] <jdm> https://pastebin.mozilla.org/3986231
+[03:32:07] <jack> looks the same.
+[03:32:42] <jdm> weirdd
+[03:32:43] <jack> maybe it's only on osx 
+[03:33:02] <jdm> what's the backtrace from your assertion?
+[03:33:43] <jack> jdm: https://gist.github.com/metajack/8366640
+[03:35:27] *** Joins: doomlord_ (servitor@moz-CA917A47.range86-184.btcentralplus.com)
+[03:35:28] <jack> that one was from linux.
+[03:35:33] <jack> bu ti'm trying it again without the JS_GC call
+[03:36:07] <jack> my rustup-20131219-jsfun branch has the latest code btw
+[03:36:42] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[03:37:50] <jdm> jack: if necessary we should be able to avoid using get_global_for_dom_object
+[03:38:05] <jdm> since nodes have an owner_doc field that's always non-null
+[03:38:12] <jdm> and from that we can get the window
+[03:39:19] <jack> the code on my branch segfaults too
+[03:39:36] <jdm> I'm giving my idea a shot
+[03:41:32] *** Quits: azakai (alon@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[03:42:13] <jdm> -            let js_window = utils::global_object_for_dom_object(self);
+[03:42:13] <jdm> -            (*js_window).data.page.reap_dead_layout_data(layout_data)
+[03:42:13] <jdm> +            let window = self.owner_doc().document().window;
+[03:42:14] <jdm> +            window.page.reap_dead_layout_data(layout_data)
+[03:42:26] <jack> doing it that way actually turns unsafe code safe
+[03:42:28] <jdm> jack: try ^ in Node::reap_layout_data
+[03:42:40] <jack> i just made that same change :)
+[03:42:42] <jdm> heh
+[03:42:54] *** Joins: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca)
+[03:42:59] <jack> oh
+[03:43:10] <jack> i found that set_cx_private is called twice when Window is created
+[03:43:20] <jack> the first time it's in rust.rs and we stuff the compartment in there
+[03:43:25] <jack> the second time we stuff page in there.
+[03:43:30] <jack> that seemed relaly wonky
+[03:43:48] <jack> jdm: now i just get a segfault with no assert
+[03:44:06] <jdm> I remember noticing that private stuff before
+[03:44:18] <jdm> it's just overlooked, not important
+[03:44:31] <jdm> where's the segfault from?
+[03:44:47] <jack> getting backtrace form linux
+[03:46:42] <jack> didn't segfault in gdb
+[03:46:49] <jack> ah, second time it did
+[03:47:05] <jack> https://gist.github.com/metajack/8366748
+[03:47:18] <jack> almost hte same.
+[03:47:38] <jack> DestroyContext calls gc, calls finalize on HeadElement
+[03:48:04] <jack> document and htmlelement both finalized fine before it did this one.
+[03:49:00] <jack> that line is this:             let window = self.owner_doc().document().window;
+[03:49:05] <jack> node.rs:777
+[03:49:11] <jack> oh duh
+[03:49:15] <jack> we just finalized the document.
+[03:49:19] <jdm> yeah
+[03:49:25] <jdm> this is an unfortunate situation
+[03:50:08] <jdm> this code almost seems like it should run from the JS finalizer instead of the rust destructor
+[03:50:17] <jdm> no, that wouldn't help
+[03:50:33] <jdm> the document could conceivably still be dead I guess
+[03:51:04] <jack> wait
+[03:51:08] <jack> we only need window to get page
+[03:51:13] <jack> to get access to this reap function.
+[03:51:17] <jack> let' sjust move that stupid function.
+[03:51:33] <jack> oh. we need layout_chan
+[03:51:37] <jdm> right
+[03:55:07] <jack> i can't think of anything do do offhand other than stuff layout_chan into all the nodes.
+[03:55:18] <jack> that does not seem ideal
+[03:55:23] <jdm> that doesn't fill me with happiness
+[03:56:08] <jdm> so here's a question
+[03:56:17] <jdm> does the behaviour change if we correctly trace the owner_doc field?
+[03:56:36] <jack> how do we not correctly trace it now?
+[03:56:41] <jdm> we don't trace it, period
+[03:56:53] <jdm> dom/bindings/node.rs
+[03:57:36] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[03:57:37] <jdm> dom::bindings::utils::trace_option
+[03:58:10] <jdm> actually that won't work, you need something like         self.page.frame.map(|frame| trace_reflector(tracer, "document", frame.document.reflector()));
+[03:59:03] <jack> so we trac enodes, but they don't trace into the document?
+[03:59:17] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[03:59:31] <jack> ah i see now
+[03:59:35] <jack> why dont' we do that?
+[04:00:30] <jdm> error of omission
+[04:00:37] <jdm> unintentional
+[04:00:55] <jack> seems like that would solve it
+[04:00:59] <jack> becaus eit would finalize nodes first
+[04:02:03] <jack> we still need to get window :)
+[04:02:31] <jack> why do we need frame?
+[04:03:23] <jdm> can you expand on that question?
+[04:04:18] <jdm> oh, the snippet
+[04:04:25] <jdm> that was copied and pasted from the window trace hook
+[04:04:28] <jdm> adapt as necessary
+[04:04:35] <jack>         self.owner_doc.map(|owner_doc| {
+[04:04:36] <jack>             trace_reflector(tracer, "document", owner_doc.document().reflector());
+[04:04:36] <jack>         });
+[04:04:40] <jdm> yep
+[04:05:01] <jack> owner_doc is private
+[04:05:01] <jdm> infact, just owner_doc.reflector()
+[04:05:12] <jdm> self.owner_doc().map
+[04:05:14] <jdm> er, no
+[04:05:17] <jack> yeah
+[04:05:19] <jack> that will fail :)
+[04:05:20] <jdm> self.owner_doc().relector()
+[04:05:52] <jack> what if owner_doc is none?
+[04:05:55] <jdm> it isn't
+[04:05:56] <jack> will it never be none?
+[04:05:59] <jdm> hence the owner_doc method
+[04:06:17] <jdm> it is null so we are able to create the document at the start
+[04:06:24] <jdm> which is itself a node
+[04:06:38] <jdm> everything else comes into being with a document
+[04:07:01] <jack> when we change the title node, it doesn't remove the old node from the document?
+[04:07:11] <jack> it still has owner_doc set to where it came from?
+[04:07:21] <jdm> yes
+[04:07:35] <jdm> we set the is_in_document flag to indicate its non-included state
+[04:07:40] <jack> that still finalizes document first.
+[04:07:47] <jdm> bleah
+[04:07:50] *** Quits: ibnc (ibnc@moz-718F3037.client.mchsi.com) (Quit: )
+[04:08:16] <jdm> my suspicion is that finalization order from JS_DestroyContext is arbitrary
+[04:08:32] <jack> might as well be, teh whole thing is coming down.
+[04:09:08] <jack> it's probably in order of creation
+[04:09:16] <jack> i'm guessing it walks the live heap
+[04:09:20] <jdm> depressingly likely
+[04:10:08] <jdm> so, what about this:
+[04:10:25] <jdm> we have an explicit JS_GC call right before we initiate shutdown procedures
+[04:10:43] <jdm> that should flush out the nodes etc. that aren't rooted
+[04:10:54] <jack> and then do what we did before ?
+[04:10:57] <jack> that seems fragile
+[04:10:59] <jdm> then we have an explicit teardown phase which walks the tree
+[04:11:07] <jdm> and gets rid of the layout data for any live nodes
+[04:11:17] <jack> but it should work 
+[04:11:20] <jdm> and then we proceed to shutdown the js stuff
+[04:11:50] <jdm> that way we only try to do reaping when we know the document and window are still alive
+[04:12:12] <jack> but it's not enough
+[04:12:15] <jdm> and the node destructors that execute after js_destroycontext don't need to reap
+[04:12:31] <jack> there could be an unattached element rooted by window
+[04:12:52] <jack> we don't walk all objects, only the document
+[04:13:02] <jdm> yuck, yeah
+[04:13:22] <jack> and it seems like weird edge cases are likely to occur
+[04:13:53] <jack> another thing we could do is to shut down layout and then free the memory ourselves.
+[04:14:23] <jdm> how?
+[04:15:05] <jack> nm
+[04:15:15] <jack> layoutdata would need to live in script
+[04:15:25] <jack> that seems ugly
+[04:15:41] <jack> the other idea is TLS
+[04:15:59] <jack> i'm calling JS_DestroyContext and the correct layout is known
+[04:16:06] <jack> becaus ei'm tlaking to it in the same function.
+[04:16:23] <jack> but that is pretty hacky too
+[04:16:46] <jack> it's too bad we can't get the js context in the destructor
+[04:16:55] <jack> then we could get page out of hte private data
+[04:17:21] <jdm> the fact that we're destroying it...
+[04:17:26] <jdm> who knows what that would entail
+[04:17:32] <jack> it's still alive until the destructor is done right?
+[04:17:48] <jdm> no idea
+[04:18:07] <jack> https://bugzilla.mozilla.org/show_bug.cgi?id=737365
+[04:18:35] <jack> what is jsfreeop?
+[04:19:05] <jdm> I've never figured that out
+[04:19:36] <jack> it has the runtime in it
+[04:21:15] <jack> acn we stash stuff in the runtime?
+[04:21:26] *** Joins: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca)
+[04:21:39] <jack> ie, stash_in_runtime(layout_chan); page.js_info = None; stash_in_runtime(NULL);
+[04:21:51] <jack> then we can read hte layout_chan out of the runtime in JSFreeOp
+[04:22:24] <jdm> :(
+[04:22:46] <jdm> that does sound like it would work
+[04:23:07] <jdm> how do you get the runtime from the destructor?
+[04:24:23] <jack> that's what JSFreeOp is
+[04:24:36] <jack> JSRuntime * is the only thing in it
+[04:25:24] <jack> do we use SetRuntimePrivate now?
+[04:25:48] <jack> no!
+[04:25:49] <jack> yay
+[04:27:09] <jdm> jack: yeah, but how does the runtime reaach Node::drop from the JS finalizer?
+[04:27:26] <jack> look at the type signature of finalize :)
+[04:27:33] <jack> the runtime is passed in
+[04:27:36] <jack> oh
+[04:27:41] <jack> i see
+[04:27:47] <jack> there is a missing step.
+[04:28:17] * jack sighs
+[04:29:01] *** Joins: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP)
+[04:30:23] <jack> what about making LayoutData a trait that implements reap()
+[04:30:55] <jack> that helps but then script now triggers the frees
+[04:31:04] <jack> which isn't great either.
+[04:31:15] <jdm> triggers in what sense?
+[04:31:40] <jack> node::drop would call LayoutData::Reap
+[04:31:48] <jdm> that doesn't sound good at all
+[04:31:51] <jack> which layout would ipmlement somehow
+[04:31:55] <jdm> oh
+[04:31:57] <jack> and it would know how to free the data
+[04:32:04] <jdm> but it would execute on the script task?
+[04:32:08] <jack> but the problem is that you'd have to be very careful that layout wasn't running 
+[04:32:11] <jack> exactly
+[04:32:49] <jack> i mean, layout can stuff a chan in there, but that is no differen than node having a chan
+[04:32:57] <jack> except htat only nodes with layoutdata would be bigger
+[04:33:25] <jdm> it may be what we need to do for the time being
+[04:33:48] <jack> i'd rather do TLS i think.
+[04:33:50] <jack> it's safer
+[04:35:17] <jdm> when would we set the TLS?
+[04:35:34] <jdm> given that there are multiple layout tasks for a single script task
+[04:40:53] <jack> right befor ehte destructor runs.
+[04:40:59] <jack> it's not that bad actually
+[04:41:03] <jack> lamost finished
+[04:47:17] <jack> seems to work!
+[04:49:15] <jack> jdm: https://github.com/metajack/servo/commit/753688234684bb8ee0acb60a0b860a4c04c8b599
+[04:50:47] <jdm> jack: that won't work for arbitrary JS GCs though, right?
+[04:51:06] <jack> damn you and your logic.
+[04:51:06] <jdm> the Node destructor will run and the TLS won't be set
+[04:51:59] <jack> i suppose we'll need to confer with pcwalton to see what he thinks of script freeing the memory via virtual call
+[04:52:40] <jack> maybe putting the chan into the LayoutData isn't so bad.
+[04:53:06] <jdm> yeah, that's the only workable idea we've come up with so far
+[04:53:12] <jdm> I'd say go with it at this point
+[04:53:17] <jdm> we can always re-evaluate later
+[04:53:32] <jack> well, at least we fixed a lot of bugs getting here.
+[04:53:37] <jack> di dyou look at set_cx_private?
+[04:53:50] <jack> should we nuke the one in rust-mozjs?
+[04:54:32] <jack> https://github.com/mozilla-servo/rust-mozjs/blob/master/rust.rs#L183
+[04:54:47] <jack> not sure if anything depends on that. but if it does it's broken because we immediately stuff Page in there.
+[04:54:51] <jdm> yes, we should nuke that one
+[04:54:56] <jack> this probably means we also leak Context
+[04:55:22] <jack> i'll file a bug.
+[04:56:35] *** Joins: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP)
+[04:56:35] <ghservo> [13rust-mozjs] 15metajack opened issue #46: context private data not used 02http://git.io/YA47dg
+[04:56:35] *** Parts: ghservo (ghservo@1E8607E8.6A2AE50.F3114085.IP) ()
+[04:56:44] <jack> i'll work on the layout_chan stuffing tomorrow. tired now.
+[04:57:46] <jdm> you have earned yourself a weekend
+[04:57:55] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[04:59:38] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[04:59:57] *** Quits: sankha93 (Instantbir@7061CD01.D6BD0D91.22D41759.IP) (Quit: Gone to save the world!)
+[05:10:18] *** Quits: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca) (Quit: eatkinson)
+[05:16:54] *** Quits: jdm (jdm@moz-AC9499B2.cable.teksavvy.com) (Quit: Lost terminal)
+[05:18:31] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[05:21:38] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[05:23:34] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[05:26:59] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[05:30:22] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[05:47:13] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[05:47:14] *** ChanServ sets mode: +o pcwalton
+[05:48:55] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[05:50:03] <jack> pcwalping
+[05:55:27] *** Quits: maxiepoo (mnew@moz-6F50ADE.hsd1.il.comcast.net) (Quit: Leaving)
+[05:58:13] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[05:59:54] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[06:12:20] *** Joins: eholk (eholk@moz-58C5EE6F.wavecable.com)
+[06:16:35] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Leaving...)
+[06:19:52] *** Quits: hoverbear (hoverbear@moz-86FCBF4B.gv.shawcable.net) (Quit: Taking a nap.)
+[06:24:01] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[06:34:52] *** Quits: maxli (maxli@moz-EE42E0E.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[06:37:40] *** Joins: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net)
+[06:40:06] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[06:41:56] *** Quits: eholk (eholk@moz-58C5EE6F.wavecable.com) (Quit: eholk)
+[06:52:14] *** Quits: canhtak (canhtak@moz-DB18D73D.wl.t.ulaval.ca) (Quit: canhtak)
+[06:58:42] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[07:00:30] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[07:06:28] *** Quits: lurk_ (chatzilla@moz-F088D030.hsd1.in.comcast.net) (Quit: ChatZilla 0.9.90.1-rdmsoft [XULRunner 22.0/20130619132145])
+[07:12:24] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[07:24:44] *** Joins: Ms2ger (Ms2ger@D324D80C.3387515C.187A1082.IP)
+[07:30:48] *** Joins: lurk_ (chatzilla@moz-F088D030.hsd1.in.comcast.net)
+[07:51:29] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[07:51:54] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[07:53:59] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[07:57:53] *** Quits: Ms2ger (Ms2ger@D324D80C.3387515C.187A1082.IP) (Ping timeout)
+[07:59:14] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[08:01:02] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[08:12:24] *** Joins: Ms2ger (Ms2ger@moz-27A0DD9D.ugent.be)
+[08:12:56] *** Quits: Ms2ger (Ms2ger@moz-27A0DD9D.ugent.be) (Connection reset by peer)
+[08:15:04] *** Joins: Ms2ger (Ms2ger@D324D80C.3387515C.187A1082.IP)
+[08:18:33] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Quit: leaving)
+[08:21:43] *** Quits: Ms2ger (Ms2ger@D324D80C.3387515C.187A1082.IP) (Quit: Leaving)
+[08:21:51] *** Joins: Ms2ger (Ms2ger@D324D80C.3387515C.187A1082.IP)
+[08:23:43] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[08:25:34] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[08:29:52] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[08:33:29] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[08:42:48] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.2)
+[08:42:56] *** Quits: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP) (Ping timeout)
+[08:43:20] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[08:45:12] *** Joins: victorporof (victorporo@5EC92F85.71368607.9B1E38F4.IP)
+[08:46:20] *** Quits: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net) (Ping timeout)
+[08:47:33] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Ping timeout)
+[08:56:08] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[08:59:46] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[09:01:32] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[09:07:25] *** Quits: lurk_ (chatzilla@moz-F088D030.hsd1.in.comcast.net) (Ping timeout)
+[09:11:35] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Client exited)
+[09:23:40] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[09:34:47] *** Joins: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP)
+[09:43:15] *** Quits: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP) (Quit: Kostic)
+[10:00:16] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[10:02:01] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[10:17:27] *** Quits: kimundi (kimundi@moz-B4EEA79E.dip0.t-ipconnect.de) (Ping timeout)
+[10:20:53] *** Joins: zz_kimundi (kimundi@moz-73A8AA3F.dip0.t-ipconnect.de)
+[10:20:54] *** zz_kimundi is now known as kimundi
+[10:22:47] *** Joins: jackneill (jackneill@moz-8864B729.pool.digikabel.hu)
+[10:24:05] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[10:24:16] *** Quits: kimundi (kimundi@moz-73A8AA3F.dip0.t-ipconnect.de) (Ping timeout)
+[10:27:53] *** Joins: zz_kimundi (kimundi@moz-805FAAC7.dip0.t-ipconnect.de)
+[10:27:54] *** zz_kimundi is now known as kimundi
+[10:30:20] *** Quits: Houm (Houm@moz-25669AA8.fbx.proxad.net) (Ping timeout)
+[10:35:49] *** Quits: johns (johns@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[10:36:00] *** Joins: johns (johns@moz-BBE3ABD.mv.mozilla.com)
+[10:45:52] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[10:49:14] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[10:54:29] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[10:54:54] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[11:00:45] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[11:02:29] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[11:12:41] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[11:17:26] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Ping timeout)
+[11:32:24] *** Joins: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP)
+[11:37:02] *** Quits: eddyb (eddy@EE946B63.921A1753.FCAAE698.IP) (Ping timeout)
+[11:55:06] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[12:01:04] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[12:02:59] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[12:09:01] *** Joins: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP)
+[12:24:14] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[12:28:36] *** Quits: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP) (Client exited)
+[12:33:38] *** Joins: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP)
+[13:01:35] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[13:03:19] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[13:33:32] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[13:40:49] *** Joins: canhtak (canhtak@moz-DB18D73D.wl.t.ulaval.ca)
+[13:53:57] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[13:54:00] *** Quits: victorporof (victorporo@5EC92F85.71368607.9B1E38F4.IP) (Quit: victorporof)
+[13:57:18] *** Joins: sedman_ (sedman@E4D2F0A.47298EC7.57E8EAD3.IP)
+[14:02:07] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[14:03:50] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[14:19:43] *** Joins: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net)
+[14:19:44] *** ChanServ sets mode: +qo dherman dherman
+[14:19:56] *** Quits: dherman (dherman@moz-6CA476B1.hsd1.ca.comcast.net) (Quit: dherman)
+[14:23:08] *** Joins: eddyb (eddy@EDE07015.D51DAF03.FB866788.IP)
+[14:33:31] *** Quits: Kostic (marko@C4D4CB5C.58A2DD99.2168A69F.IP) (Quit: Kostic)
+[14:55:05] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[15:02:41] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[15:04:30] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[15:16:33] *** Joins: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca)
+[15:21:10] <larsberg> jack: ping
+[15:22:04] <jack> larsberg: pong
+[15:22:23] <larsberg> had an idea - how about storing the layout data in a hashmap in layout
+[15:22:27] <larsberg> and just have the dom nodes hold an index
+[15:22:31] <larsberg> can use reap to try to reclaim them
+[15:22:36] <larsberg> but if there's junk left over at shutdown
+[15:22:43] <larsberg> no biggie, because the layout task will just reap it all itself
+[15:24:06] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[15:24:50] <larsberg> I was just starting to play around with it, but I have a ton of errands this afternoon and probably wouldn't touch it again until tonight, so wanted to see what you thought first :-)
+[15:33:34] <jack> might work. the problem isnt so much where to put the data, but where to get layout_chan from.
+[15:36:51] <jack> i can chat more about it in about 15 mins
+[15:54:48] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[15:56:50] *** Joins: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca)
+[16:02:59] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[16:04:46] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[16:13:04] <jack> larsberg: ping
+[16:13:11] <larsberg> jack: pong
+[16:13:40] <larsberg> so the layout_chan problem is because the document can die before the nodes do during GC, making it impossible to request reapage?
+[16:13:44] <jack> i tried what i described above last night. i made layout data  ~Trait with a reap() method
+[16:14:01] <jack> i figured that the struct implementing the trait could store the chan and send itself over the chan to layout
+[16:14:27] <jack> that almost worked.
+[16:14:39] <larsberg> what broke with it?
+[16:14:48] <larsberg> GC timing issues at shutdown?
+[16:14:49] <jack> well Any isn't quite up to the task.
+[16:15:07] <jack> so on the layout side, you ahve to do some nasty casts to get the data back.
+[16:15:33] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[16:15:49] <jack> i've already forgotten the final straw that made me abandon it
+[16:15:58] <jack> let me go look at the code and see what i stopped on
+[16:16:01] <larsberg> yeah, I keep thinking this feels a bit painful. hideous casts to store it in the JS node, then more nastiness to get it back, when the JS node never really touches it anyway, and all sorts of lifetime issues associated with the JS node having a pointer to it
+[16:16:40] <jack> well there are no casts on teh js side.
+[16:16:42] <jack> that part got cleaner.
+[16:16:56] <larsberg> nice :-)
+[16:16:58] <jack> It's Option<~LayoutData> there
+[16:17:08] <jack> sorry, RefCell<Option<~LayoutData>>
+[16:17:22] <jack> and the only thing script does is check if is_some and then layout_data.reap()
+[16:17:45] <jack> on the layout side, it gets a message with ~LayoutData which it knows is actually a ~PrivateLayoutData struct
+[16:17:52] <jack> so it just casts and does whatever it wants.
+[16:17:54] <jack> oh i remember now
+[16:18:00] <larsberg> but we still have the problem that all of those reaps *have* to happen before layout closes or we crash, right?
+[16:18:13] <jack> because it's ~LayoutData, it will get freed by script 
+[16:18:25] <jack> or potentially freed by script
+[16:18:50] <jack> so that seems like the opposite of what we were trying to accomplish.
+[16:19:00] <larsberg> aha
+[16:19:08] <jack> you could accidentally move out and then script would free memory layout owns
+[16:19:46] <jack> so my second attempt was to do something like struct Layoutdata { chan: LayoutChan, data: *() }
+[16:20:01] <jack> and RefCell<Option<Layoutdata>>
+[16:20:19] <jack> now we can't accidentally free the memory
+[16:20:44] <jack> but the problem then becomes, how do you stick chan in there? :)
+[16:20:54] <jack> Node::new has no idea about a layout task
+[16:21:05] <jack> layout_task does, so you could do it there during traversal
+[16:21:24] <jack> but then i started worrying about data races.
+[16:21:43] <jack> is it possible for JS GC to run while layout is setting up the nodes?
+[16:22:01] <jack> after thinking about it, i realized that we had this problem before.
+[16:22:17] <larsberg> I would assume so, but reap just sends a message, which would just sit in the queue until layout calls recv() again
+[16:22:23] <jack> and it's probably safe right now because we stop JS on layout calculation
+[16:22:49] <jack> but the chan is memory layout owns
+[16:23:13] <jack> calling is_some on that option is slightly dangerous
+[16:23:23] <jack> you need to know that layout isn't actively mutating that memory
+[16:23:31] <jack> so i think that will work.
+[16:24:35] <jack> script will initialize layout_data to RefCell::new(None), and during layout it will mutate it to Some(LayoutData { chan: chan, data: cast::transmute(private_layout_data) })
+[16:24:54] <jack> then script can grab it out and send it over.
+[16:25:28] <jack> there's potentially a borrow checker issue
+[16:25:37] <jack> since i have to borrow the REfCell to get the chan
+[16:25:40] <jack> buti can clone the chan i suppose
+[16:26:23] <jack> or i could put the chan in an option
+[16:26:49] <jack> then i coudl take_unwrap() it and the borrow can be over.
+[16:26:56] <jack> any thoughts?
+[16:27:51] <larsberg> so, the private_layout_data is still allocated by layout and needs to be freed bit it via a reap, right?
+[16:28:09] *** Joins: victorporof (victorporo@5EC92F85.71368607.9B1E38F4.IP)
+[16:28:21] <larsberg> my biggest concern is related to shutdown issues and the JS GC
+[16:28:36] <larsberg> but I may be misunderstanding your changes to the private_layout_data
+[16:28:58] <larsberg> e.g., if it no longer performs any local_allocs
+[16:29:28] <larsberg> s/bit/by
+[16:31:02] <larsberg> and on the chan, it seems reasonable just to clone it and let script own it, though we might need to do chan.try_send instead of .send in case the other end has closed if the reaping happens much later
+[16:32:15] <jack> yeah, you still allocate it in layotu and must send it to layout to free it.
+[16:32:21] <jack> and that happens only from JS GC calls
+[16:34:01] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[16:34:35] <larsberg> I think that unless layout is the real "owner" of the data, we're going to end up having a stream of fixes like calling JS_GC <N> times, manually disconnecting parts of the tree, etc. to make sure the JS GC calls happen at the right time.
+[16:42:47] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[17:00:21] <jack> we fixed that problem.
+[17:00:28] <jack> JS_GC is only called once
+[17:00:46] <jack> er, it's called by the JS engine
+[17:00:51] <jack> we don't have to call it ourselves.
+[17:02:15] <larsberg> that sounds great! then it sounds like this approach should get the content tests working and hopefully land the new rust
+[17:02:51] <larsberg> I've been burned a lot in the past by relying on GC actually running and cleaning up all the trash in one go in systems
+[17:03:28] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[17:03:42] <larsberg> but if it's working, I'm not going to argue against it :-)
+[17:04:11] <larsberg> thanks for the brain dump on where you're at with things!
+[17:05:15] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[17:09:10] *** Quits: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca) (Quit: eatkinson)
+[17:13:59] <Ms2ger> If it's working, can we merge?
+[17:14:23] *** Joins: hoverbear (hoverbear@moz-86FCBF4B.gv.shawcable.net)
+[17:23:27] *** Joins: vodik (simon@moz-35088AE9.dsl.bell.ca)
+[17:41:19] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Leaving...)
+[17:42:35] *** Joins: lurk_ (chatzilla@moz-F088D030.hsd1.in.comcast.net)
+[17:46:44] *** Quits: sedman_ (sedman@E4D2F0A.47298EC7.57E8EAD3.IP) (Ping timeout)
+[17:53:18] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[17:54:43] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[17:54:53] *** Quits: vodik (simon@moz-35088AE9.dsl.bell.ca) (Connection reset by peer)
+[17:57:53] *** Joins: jaeholee (uid4856@moz-31ABA2C0.irccloud.com)
+[18:03:57] <jack> ms2ger it's not working yet. we did fix the DOM leak though
+[18:04:00] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[18:04:07] <jack> taking me a while to get the types alright.
+[18:04:15] <Ms2ger> That's good to hear
+[18:04:18] <jack> should have a version ready for review after lunch.
+[18:05:44] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[18:07:39] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Leaving...)
+[18:12:39] *** Joins: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net)
+[18:13:41] *** Quits: miketaylr (mtaylor@moz-8ACC7131.dyn.grandenetworks.net) (Quit: Leaving...)
+[18:26:08] *** Joins: dbaron (dbaron@moz-A9D01D68.dsl.dynamic.sonic.net)
+[18:28:06] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[18:38:04] *** Joins: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca)
+[18:50:49] *** Quits: victorporof (victorporo@5EC92F85.71368607.9B1E38F4.IP) (Quit: victorporof)
+[18:56:13] *** Quits: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca) (Quit: eatkinson)
+[19:01:18] *** Joins: Houm (Houm@moz-25669AA8.fbx.proxad.net)
+[19:04:32] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[19:04:43] *** Joins: victorporof (victorporo@5EC92F85.71368607.9B1E38F4.IP)
+[19:06:18] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[19:15:05] *** Joins: jet (jet@moz-79F891EE.hsd1.ca.comcast.net)
+[19:30:33] *** Quits: jet (jet@moz-79F891EE.hsd1.ca.comcast.net) (Quit: jet)
+[19:40:41] *** Joins: eholk (eholk@moz-815A5DDF.wavecable.com)
+[19:42:26] *** Quits: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com) (Ping timeout)
+[19:43:56] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[19:50:30] *** Quits: Houm (Houm@moz-25669AA8.fbx.proxad.net) (Ping timeout)
+[19:55:57] *** Quits: victorporof (victorporo@5EC92F85.71368607.9B1E38F4.IP) (Quit: victorporof)
+[19:59:23] *** Quits: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca) (Quit: Leaving.)
+[20:05:09] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[20:06:53] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[20:07:42] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[20:19:25] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[20:27:36] *** Joins: eatkinson (eatkinson@C0A89863.ED78EA15.5FF071F1.IP)
+[20:32:53] *** Joins: ^emi (glenlivet@moz-9FE842F.cpe.net.cable.rogers.com)
+[20:46:23] <cmr> larsberg: TWiS?
+[20:46:43] <Ms2ger> ITW: fighting a rust upgrade
+[20:48:33] *** Quits: eatkinson (eatkinson@C0A89863.ED78EA15.5FF071F1.IP) (Quit: eatkinson)
+[20:51:39] *** Quits: dbaron (dbaron@moz-A9D01D68.dsl.dynamic.sonic.net) (Ping timeout)
+[20:55:19] *** Joins: eatkinson (eatkinson@C0A89863.ED78EA15.5FF071F1.IP)
+[21:00:03] *** Joins: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca)
+[21:00:37] *** Quits: eatkinson (eatkinson@C0A89863.ED78EA15.5FF071F1.IP) (Quit: eatkinson)
+[21:01:46] *** Quits: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca) (Ping timeout)
+[21:05:45] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[21:07:28] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[21:07:39] *** Quits: eholk (eholk@moz-815A5DDF.wavecable.com) (Quit: eholk)
+[21:28:06] *** Joins: eatkinson (eatkinson@moz-C52156BC.dsl.bell.ca)
+[21:29:16] *** Joins: khodzha1 (khodzha@E048973E.2AEE264E.CA6E2165.IP)
+[21:29:44] *** Quits: khodzha (khodzha@58A7E199.A859D9FD.CA6E2165.IP) (Ping timeout)
+[21:37:37] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[21:39:21] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Ping timeout)
+[21:42:08] *** Joins: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net)
+[21:55:24] *** Joins: dbaron (dbaron@moz-A9D01D68.dsl.dynamic.sonic.net)
+[22:01:36] *** Quits: Ms2ger (Ms2ger@D324D80C.3387515C.187A1082.IP) (Quit: nn)
+[22:03:15] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Client exited)
+[22:06:17] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[22:07:59] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[22:19:39] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[22:20:17] *** Joins: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net)
+[22:21:31] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Ping timeout)
+[22:23:34] *** Quits: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net) (Quit: tikue)
+[22:33:02] *** Quits: azita (Azita@moz-C1FB2A8.hsd1.ca.comcast.net) (Quit: azita)
+[22:37:37] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[22:38:15] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[22:38:22] *** Joins: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca)
+[22:40:04] *** Quits: maxli (maxli@moz-F47DD19B.student.cs.uwaterloo.ca) (Ping timeout)
+[22:50:10] *** Joins: harth (heather@moz-42412102.hsd1.ca.comcast.net)
+[22:58:41] *** Joins: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net)
+[23:06:48] *** Joins: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP)
+[23:08:30] *** Quits: jackneill (jackneill@moz-8864B729.pool.digikabel.hu) (Ping timeout)
+[23:08:39] *** Quits: yichoi (yichoi@5AB4884B.FCC4549.14D5B978.IP) (Ping timeout)
+[23:09:41] <jack> ok. i have a patch for layout data.
+[23:12:38] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[23:12:39] *** ChanServ sets mode: +o brson
+[23:12:46] <jack> well, not quite i guess. test_title works now, but test_childnodes segfaults.
+[23:18:53] *** Quits: brson (brson@moz-BBE3ABD.mv.mozilla.com) (Ping timeout)
+[23:24:02] *** Quits: tikue (tkuehn@moz-879E86A9.hsd1.ca.comcast.net) (Quit: tikue)
+[23:31:26] <larsberg> What's the segfault? Same as before?
+[23:33:33] *** Joins: brson (brson@moz-BBE3ABD.mv.mozilla.com)
+[23:33:33] *** ChanServ sets mode: +o brson
+[23:38:26] <jack> dunno. having trouble getting my VM up
+[23:38:33] <jack> it apparently lost all its networking.
+[23:38:37] <jack> i am cursed.
+[23:39:17] *** Joins: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca)
+[23:40:59] *** Quits: maxli (maxli@moz-B19F68ED.student.cs.uwaterloo.ca) (Ping timeout)
+[23:41:25] <jack> larsberg: i pushed my branch if you want to try
+[23:41:31] <jack> -jsfun branch same as before.
+[23:41:38] <jack> you can also see what i did.
+[23:43:28] <jack> there is also still an occasional send on closed channel.
+[23:45:10] *** Quits: harth (heather@moz-42412102.hsd1.ca.comcast.net) (Ping timeout)
+[23:48:12] <jack> and i don't think we've touched the hang problem yet :(
+[23:55:02] *** Joins: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net)
+[23:58:52] *** Joins: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net)

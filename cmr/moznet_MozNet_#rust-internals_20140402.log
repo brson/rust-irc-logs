@@ -1,0 +1,1345 @@
+[00:00:28] *** Quits: japaric_ (japaric@8436FA78.BF52D463.3E85381A.IP) (Ping timeout)
+[00:01:20] *** Joins: japaric_ (japaric@2FEED3C6.68214967.A936879B.IP)
+[00:06:17] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[00:06:29] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[00:08:12] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.3)
+[00:08:14] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[00:09:47] <nmatsakis> strcat: I see. I've been assuming the allocator will track the alloc size in the end one way or another (via bins or some other mechanism). (AFAIK, C++'s delete[] vs delete has to do with running destructors, not helping the allocator -- you need to distinguish T*-the-pointer-to-a-T from T*-the-pointer-to-an-array-of-T's)
+[00:10:03] <strcat> nmatsakis: I don't mean delete[] vs. delete
+[00:10:19] <strcat> nmatsakis: http://en.cppreference.com/w/cpp/concept/Allocator
+[00:10:31] <strcat> hm
+[00:10:46] <strcat> ah it actually always takes a length
+[00:10:49] <strcat> I haven't dealt with it in so long
+[00:10:54] <strcat> I was remembering something else
+[00:11:22] <strcat> unless n is an optional parameter..
+[00:11:29] <nmatsakis> ah, ok.
+[00:12:03] *** Quits: blank_name (blank_name@BF0550F3.66204B68.6D228269.IP) (Ping timeout)
+[00:12:05] *** Joins: blank_name (blank_name@BF0550F3.66204B68.6D228269.IP)
+[00:13:36] <strcat> nmatsakis: for example with a naive allocator using only free lists with various bucket sizes, you know which one to put an allocation back into without any metadata
+[00:13:48] <nmatsakis> yes, sure.
+[00:14:41] <strcat> rusti: Some(~())
+[00:14:57] <strcat> .
+[00:14:59] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Broken pipe)
+[00:15:05] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[00:15:08] <strcat> rusti: Some(~())
+[00:15:09] -rusti- None
+[00:15:14] <strcat> nmatsakis: and there's that issue ;p
+[00:15:24] <strcat> an easy way to solve it would be having the length in free
+[00:15:33] <strcat> other solution is clamping sizes to 1 from 0
+[00:15:39] <strcat> but that's sad
+[00:15:46] <strcat> because ~Trait with unit structs is useful
+[00:15:48] <nmatsakis> strcat: I can imagine it makes some trivial things easier. I'm just not sure if that's worth the price. I also have to review my notes on the alloc design I worked out to ensure that the size is always known. 
+[00:16:45] <strcat> I don't think there's usually a price - you usually have a known type or an array with a length
+[00:16:48] <nmatsakis> I'm not sure about the ~() issue, I don't immediately see the problem. I guess you're thinking of ~[()]? Or a converted ~[T, ..0]?
+[00:17:05] <nmatsakis> the price is that ~[] is kind of useless
+[00:17:05] <strcat> nmatsakis: because we guarantee ~ is non-null
+[00:17:10] <strcat> but atm ~() is null
+[00:17:13] <strcat> rusti: Some(~())
+[00:17:14] -rusti- None
+[00:17:15] <nmatsakis> sure
+[00:17:15] <strcat> so that happens
+[00:17:31] <nmatsakis> yes, the bug is that ~() is null, I feel like we could make it (e.g.) 1
+[00:17:38] *** Joins: mawuli (mawuli@moz-781516AB.com.gh)
+[00:17:40] <strcat> but then we'll call free(1)
+[00:17:49] <strcat> it could check for 1
+[00:18:02] <nmatsakis> yes, I see, it doesn't work with slices.
+[00:18:22] <strcat> I thought about doing
+[00:18:23] <nmatsakis> presumably we'd have to check in the Vec->~[] routine
+[00:18:27] <strcat> static EMPTY: () = ();
+[00:18:28] <nmatsakis> and free the (empty) buffer
+[00:18:30] <strcat> and returning &EMPTY
+[00:18:32] <nmatsakis> immediately
+[00:18:33] <strcat> and checking for it in free
+[00:18:41] <nmatsakis> no, I think we just don't call free
+[00:18:48] <strcat> well if we know the size there ;P
+[00:18:52] <nmatsakis> when freeing trait objects we do have to do a check, but we need to do that anyway
+[00:18:55] <nmatsakis> no, from the type
+[00:19:20] <nmatsakis> I feel like it can be made to work, anyway, but it's clearly easier if we track the size.
+[00:20:31] <strcat> nmatsakis: the advantage of ~[T] is the lack of a capacity field
+[00:20:56] <strcat> but I think when it matters, say in a recursive enum, you would probably be willing to pay for the old representation (but done correctly)
+[00:21:02] <strcat> ptr -> { len, cap, data[] }
+[00:21:04] <strcat> since that's smaller
+[00:21:17] *** Joins: lkuper (lkuper@moz-C0CD33ED.hsd1.in.comcast.net)
+[00:22:09] <nmatsakis> I like the symmetry of ~[T] being "an array whose length won't change" and so forth. Admittedly, we can have the best of both by having the allocator have a "resize to fit" operation -- for those that know the length anyway,
+[00:22:13] <nmatsakis> this is just a no-op.
+[00:22:29] <nmatsakis> for others, it'd be an alloc-copy-and-free
+[00:22:43] <nmatsakis> that's probably the best design
+[00:22:57] <nmatsakis> I need to writeup the allocators+gc design that pnkfelix and I hashed out at work week
+[00:23:17] <nmatsakis> so much to do, so much to do.
+[00:23:30] <nmatsakis> strcat: gotta go, I'll think it over and try to write up my thoughts.
+[00:23:35] <strcat> \o
+[00:23:36] <nmatsakis> but thanks for explaining, makes sense
+[00:25:28] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[00:25:46] *** Quits: mankyKitty (Instantbir@19559281.CA335678.BC02889B.IP) (Quit: mankyKitty)
+[00:26:16] *** Quits: lkuper (lkuper@moz-C0CD33ED.hsd1.in.comcast.net) (Quit: lkuper)
+[00:28:02] *** Quits: Nekit1234007 (Nekit12340@3126F0EA.D0169432.4707F662.IP) (Ping timeout)
+[00:29:14] *** Joins: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com)
+[00:39:20] *** Joins: radford (Adium@moz-AC76BE6B.dhcp.mtpk.ca.charter.com)
+[00:42:54] *** Joins: Nekit1234007 (Nekit12340@DC1D6696.9C28A5C7.4707F662.IP)
+[00:43:02] *** Quits: tjc (tjc@moz-6EB4E533.dsl.tsoft.com) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[00:44:18] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[00:48:54] *** Quits: blank_name (blank_name@BF0550F3.66204B68.6D228269.IP) (Ping timeout)
+[00:50:35] *** Joins: blank_name (blank_name@BF0550F3.66204B68.6D228269.IP)
+[00:54:19] *** Joins: bellows (Mibbit@3E3094EC.34458CF2.CC1A2609.IP)
+[00:56:02] *** Quits: bellows (Mibbit@3E3094EC.34458CF2.CC1A2609.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[01:03:10] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.3)
+[01:03:15] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[01:03:15] *** Quits: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[01:03:56] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[01:04:44] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[01:04:55] *** Joins: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com)
+[01:07:17] *** Joins: mankyKitty (Instantbir@19559281.CA335678.BC02889B.IP)
+[01:07:24] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[01:07:33] *** Parts: mankyKitty (Instantbir@19559281.CA335678.BC02889B.IP) ()
+[01:11:45] *** Joins: ghrust (ghrust@5AC7F92B.6A2AE50.F3114085.IP)
+[01:11:45] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/N74t7g
+[01:11:45] *** Parts: ghrust (ghrust@5AC7F92B.6A2AE50.F3114085.IP) ()
+[01:16:45] *** Joins: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP)
+[01:16:45] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/eZV3QA
+[01:16:45] *** Parts: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP) ()
+[01:16:46] *** Joins: ghrust (ghrust@2E45E35D.6A2AE50.F3114085.IP)
+[01:16:46] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/f7vNwA
+[01:16:46] <ghrust> 13rust/06auto 14e481ced 15klutzy: doc: Update windows status on FAQ
+[01:16:46] <ghrust> 13rust/06auto 140c13fcc 15bors: auto merge of #13235 : klutzy/rust/doc-faq-win, r=alexcrichton
+[01:16:46] *** Parts: ghrust (ghrust@2E45E35D.6A2AE50.F3114085.IP) ()
+[01:18:59] *** Quits: blank_name (blank_name@BF0550F3.66204B68.6D228269.IP) (Ping timeout)
+[01:20:14] *** Joins: blank_name (blank_name@5799AF77.3C877FC9.53C6B850.IP)
+[01:26:37] *** Quits: radford (Adium@moz-AC76BE6B.dhcp.mtpk.ca.charter.com) (Quit: Leaving.)
+[01:27:52] *** Joins: mankyKitty (Instantbir@19559281.CA335678.BC02889B.IP)
+[01:37:22] *** Quits: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com) (Ping timeout)
+[01:38:36] <nrc> nmatsakis: ping
+[01:38:48] <nmatsakis> nrc: pong
+[01:39:29] <nrc> nmatsakis: hi, I'm looking at the checking getting done in kind.rs and TypeContents, and trying to work out how to implement uniszed checking in that context
+[01:40:15] *** Joins: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com)
+[01:40:40] <nrc> there is already the sized `anti-kind` in TC, do you think using builtin bounds checking to use that is the way forward?
+[01:40:52] <nrc> Or better to do something a little more ad-hoc
+[01:41:45] <nrc> I had assumed from the plan to remove the 'sized' 'kind' that you wanted to avoid the former strategy, but it is not clear to me why
+[01:42:07] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[01:42:25] <nrc> My current solution does explicit (and ad-hoc) unsized checking, but does it in vtable - that works but is a partial solution
+[01:42:28] <nmatsakis> nrc: I wanted to keep the internal code using a Sized kind, I tihnk.
+[01:42:41] <nmatsakis> that said, I really like pnkfelix's proposal,
+[01:42:45] <nmatsakis> which keeps a Sized bound in any case.
+[01:42:48] <nmatsakis> but I'm not sure that's what you're asking.
+[01:43:18] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[01:43:42] <nmatsakis> I'm not quite sure what you mean by "using builtin bounds checking to use that"
+[01:43:50] <nrc> so, when you say remove the Sized bound, you meant just the 'kind' not the internals?
+[01:44:20] <nmatsakis> I guess I just meant the public facing trait
+[01:44:21] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[01:44:37] <nmatsakis> in particular,
+[01:44:40] <nmatsakis> I think the code will work out cleaner,
+[01:44:47] <nmatsakis> if we stick to the "true" abstraction
+[01:44:59] <nmatsakis> maybe it doesn't matter
+[01:45:00] <nrc> we currently check types satisfy 'kinds'/built-in bounds, whether we should use the same checking for unsized
+[01:45:05] <nmatsakis> do you have a branch I can look at?
+[01:45:06] <nrc> "true"?
+[01:45:13] <nmatsakis> that is, T, T:Sized, etc
+[01:45:26] <nmatsakis> i.e., that Sized is a bound, vs the unsized anti-bound, which interacts strangely with inheritance etc
+[01:45:35] <nrc> internally or in surface syntax?
+[01:45:36] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[01:45:40] <nmatsakis> I'm talking about internally
+[01:45:47] <nrc> OK, right
+[01:46:10] <nrc> I do have a branch, it does not do any kind checking stuff yet
+[01:46:38] <nrc> https://github.com/nick29581/rust/tree/unsized
+[01:46:57] <nrc> I think that (the branch) is the wrong approach though :-s
+[01:47:27] <nrc> In that it does totally ad-hoc checking of sized-ness, rather than using the built-in bound approach
+[01:48:41] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[01:48:54] *** Joins: lpy (lpy@1834E2CB.F09091A8.1348A864.IP)
+[01:48:57] *** Joins: andrew-__ (andrew-d_w@2A1732C4.9DFA657C.CC0301A2.IP)
+[01:49:19] *** Quits: mankyKitty (Instantbir@19559281.CA335678.BC02889B.IP) (Quit: mankyKitty)
+[01:49:52] *** Quits: andrew-__ (andrew-d_w@2A1732C4.9DFA657C.CC0301A2.IP) (Input/output error)
+[01:49:55] *** Quits: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Ping timeout)
+[01:50:00] <nmatsakis> nrc: ok. I ... feel like I'm not sure just what needs to change, maybe I need to poke at the code. 
+[01:50:12] *** Joins: andrew-d_w (andrew-d_w@2A1732C4.9DFA657C.CC0301A2.IP)
+[01:52:26] <nrc> nmatsakis: I think the type contents stuff just needs to be wired up to the syntax
+[01:53:24] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: sleep)
+[01:53:35] <nrc> and check that we end up doing the right thing in all cases
+[01:54:20] <nrc> don't worry, I just needed to clarify what you had in mind - whether that was a working strategy or something to be removed
+[01:54:37] *** Quits: andrew-d_w (andrew-d_w@2A1732C4.9DFA657C.CC0301A2.IP) (Ping timeout)
+[01:55:59] <nmatsakis> nrc: ok. I was thinking that starting tomorrow I'm going to start writing RFCs, I think I have some spare time now -- I'll have a bit more after next week
+[02:01:32] <nrc> cool
+[02:01:42] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[02:02:02] *** Quits: lpy (lpy@1834E2CB.F09091A8.1348A864.IP) (Client exited)
+[02:10:03] *** Joins: ChrisMorgan (chris@moz-8DCBEA52.vic.adsl.internode.on.net)
+[02:19:24] *** Quits: brson (brson@moz-62518563.mtv2.mozilla.com) (Ping timeout)
+[02:23:23] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[02:24:49] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[02:28:19] <nrc> what is the policy with syntactic sugar and pretty printing? If there is sugar, should that be preserved when we pretty print, or should it pront the longhand version?
+[02:28:55] <nrc> related - should desugaring happen as we put data into the AST or when we convert the AST to ty, etc.?
+[02:34:38] *** Quits: zz_kimundi (kimundi@moz-EBF89014.dip0.t-ipconnect.de) (Ping timeout)
+[02:36:12] <sfackler> nrc: It's preserved in general
+[02:36:22] <sfackler> e.g. there's special tracking of sugared docs
+[02:36:43] <nrc> sugared docs?
+[02:36:49] <sfackler> /// foo
+[02:36:54] <sfackler> instead of #[doc="foo"]
+[02:37:25] <nrc> ah, I see
+[02:37:32] <nrc> sfackler: thanks!
+[02:37:37] *** Joins: radford (Adium@moz-AC76BE6B.dhcp.mtpk.ca.charter.com)
+[02:37:52] *** Joins: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net)
+[02:37:53] *** ChanServ sets mode: +ao pcwalton pcwalton
+[02:38:24] *** Joins: zz_kimundi (kimundi@moz-CEAAC5E6.dip0.t-ipconnect.de)
+[02:38:25] *** zz_kimundi is now known as kimundi
+[02:38:26] *** Joins: aurynj (Eon@583ABBE5.60FA2E28.B9E25744.IP)
+[02:40:31] *** Joins: mankyKitty (Instantbir@19559281.CA335678.BC02889B.IP)
+[02:40:50] *** Parts: mankyKitty (Instantbir@19559281.CA335678.BC02889B.IP) ()
+[02:42:20] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (No route to host)
+[02:42:38] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[02:42:41] *** Quits: tikue (tkuehn@CB7FC854.FAD414BA.D74CC41D.IP) (Quit: tikue)
+[02:44:46] *** Joins: dwrensha (chatzilla@moz-DE44EA45.hsd1.pa.comcast.net)
+[02:59:23] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[03:07:42] *** Joins: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[03:09:24] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Ping timeout)
+[03:09:56] *** Quits: Sharp (Sharp@moz-633F3606.hsd1.ca.comcast.net) (Ping timeout)
+[03:10:46] *** Quits: luz (lu.cy@moz-CD18B14B.customer.cdi.no) (Connection reset by peer)
+[03:11:00] *** Joins: Sharp (Sharp@moz-633F3606.hsd1.ca.comcast.net)
+[03:13:10] *** Joins: luz (lu.cy@moz-CD18B14B.customer.cdi.no)
+[03:20:11] *** Quits: radford (Adium@moz-AC76BE6B.dhcp.mtpk.ca.charter.com) (Quit: Leaving.)
+[03:21:45] *** Joins: ghrust (ghrust@99CAE845.6A2AE50.F3114085.IP)
+[03:21:45] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/0QSPnQ
+[03:21:45] <ghrust> 13rust/06auto 14e481ced 15klutzy: doc: Update windows status on FAQ
+[03:21:45] <ghrust> 13rust/06auto 14438abce 15bors: auto merge of #13235 : klutzy/rust/doc-faq-win, r=alexcrichton
+[03:21:45] *** Parts: ghrust (ghrust@99CAE845.6A2AE50.F3114085.IP) ()
+[03:21:47] *** Joins: ghrust (ghrust@99CAE845.6A2AE50.F3114085.IP)
+[03:21:48] <ghrust> [13rust] 15bors 04force-pushed 06auto from 140c13fcc to 14e63346b: 02http://git.io/N3iJvQ
+[03:21:48] *** Parts: ghrust (ghrust@99CAE845.6A2AE50.F3114085.IP) ()
+[03:26:40] *** Joins: radford (Adium@moz-AC76BE6B.dhcp.mtpk.ca.charter.com)
+[03:43:24] *** Quits: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca) (Quit: canhtak)
+[03:51:41] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[03:57:34] *** Quits: dwrensha (chatzilla@moz-DE44EA45.hsd1.pa.comcast.net) (Ping timeout)
+[04:14:17] *** Joins: c74d3 (c74d3a4ebb@moz-E2EAC718.oc.oc.cox.net)
+[04:21:54] *** Joins: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP)
+[04:21:54] <ghrust> [13rust] 15bors 04force-pushed 06auto from 14438abce to 14e63346b: 02http://git.io/N3iJvQ
+[04:21:54] *** Parts: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP) ()
+[04:30:09] *** Joins: erickt (erickt@49C4075F.3AC15C18.2321E71E.IP)
+[04:31:03] *** Quits: [o__o] (~o__o@604A2740.DB688352.F4ADE383.IP) (Ping timeout)
+[04:38:44] *** Joins: [o__o] (~o__o@604A2740.DB688352.F4ADE383.IP)
+[04:39:38] *** Quits: tedh (tedh@moz-F3B34318.hsd1.il.comcast.net) (Ping timeout)
+[04:40:00] *** Joins: tedh (tedh@moz-F3B34318.hsd1.il.comcast.net)
+[04:42:09] *** Quits: tedh (tedh@moz-F3B34318.hsd1.il.comcast.net) (Ping timeout)
+[04:42:30] *** Joins: tedh (tedh@moz-F3B34318.hsd1.il.comcast.net)
+[04:46:39] <nrc> Oh look, there are a lot more `pub`s around nowadays
+[04:47:58] *** Quits: radford (Adium@moz-AC76BE6B.dhcp.mtpk.ca.charter.com) (Quit: Leaving.)
+[04:49:33] *** Joins: radford (Adium@moz-AC76BE6B.dhcp.mtpk.ca.charter.com)
+[04:57:59] <klutzy> retry retry retry retry retry
+[04:58:01] <klutzy> come on bors :O
+[04:58:12] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[04:59:21] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[05:00:29] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[05:01:52] *** Quits: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com) (Ping timeout)
+[05:05:13] *** Quits: pcwalton (pcwalton@moz-DA87EE4.hsd1.ca.comcast.net) (Quit: pcwalton)
+[05:07:48] *** Joins: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com)
+[05:14:32] *** Quits: enix (enix@moz-A50569DD.c3-0.slvr-ubr1.lnh-slvr.md.cable.rcn.com) (Ping timeout)
+[05:15:51] <ChrisMorgan> This priv-by-default has broken almost all real Rust code. I pity Servo.
+[05:18:30] *** Joins: edwardw (Mibbit@EE646FE3.EE06708D.4BFBD933.IP)
+[05:18:32] *** fredy is now known as fredy_test
+[05:20:03] *** fredy_test is now known as fredy
+[05:21:14] *** Joins: eddyb (eddy@F8B50789.F33C1089.FB866788.IP)
+[05:21:14] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[05:21:25] <eddyb> huon: 'tis a glorious day :)
+[05:21:42] <edwardw> 0.10?
+[05:23:20] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[05:28:51] <eddyb> not that :P
+[05:30:28] *** Quits: radford (Adium@moz-AC76BE6B.dhcp.mtpk.ca.charter.com) (Quit: Leaving.)
+[05:31:05] <eddyb> woo https://github.com/mozilla/rust/pull/13234
+[05:31:42] *** Quits: erickt (erickt@49C4075F.3AC15C18.2321E71E.IP) (Ping timeout)
+[05:36:44] *** Joins: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP)
+[05:36:44] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/QyHREQ
+[05:36:44] *** Parts: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP) ()
+[05:36:53] *** Joins: erickt (erickt@49C4075F.3AC15C18.2321E71E.IP)
+[05:40:15] *** Quits: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net) (Ping timeout)
+[05:41:44] *** Joins: ghrust (ghrust@49477F7E.6A2AE50.F3114085.IP)
+[05:41:44] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/4PnQEA
+[05:41:44] <ghrust> 13rust/06auto 14e481ced 15klutzy: doc: Update windows status on FAQ
+[05:41:44] <ghrust> 13rust/06auto 14b06b366 15bors: auto merge of #13235 : klutzy/rust/doc-faq-win, r=alexcrichton
+[05:41:45] *** Parts: ghrust (ghrust@49477F7E.6A2AE50.F3114085.IP) ()
+[05:58:09] *** Joins: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[05:59:58] *** Joins: mankyKitty (Instantbir@19559281.CA335678.BC02889B.IP)
+[06:00:32] *** Quits: erickt_ (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[06:01:44] *** Joins: sigma (sigma@moz-6739E92E.range86-184.btcentralplus.com)
+[06:05:31] *** Quits: edwardw (Mibbit@EE646FE3.EE06708D.4BFBD933.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[06:15:32] *** Quits: sigma (sigma@moz-6739E92E.range86-184.btcentralplus.com) (Client exited)
+[06:19:52] *** Quits: ChrisMorgan (chris@moz-8DCBEA52.vic.adsl.internode.on.net) (Ping timeout)
+[06:20:54] <eddyb> time: 1.037 s	coherence checking
+[06:20:56] <eddyb> time: 20.861 s	type checking
+[06:20:57] <eddyb> make: Leaving directory `/home/eddy/Projects/rust'
+[06:20:59] <eddyb> *** Exited with return code: 2 ***
+[06:21:02] <eddyb> acrichto: no stderr output at all :(
+[06:23:32] <eddyb> cmr: how close is this to the line from Zelda? I can't remember it http://www.reddit.com/r/rust/comments/21zrd5/looking_for_newbie_friends_on_rust/cghzay8
+[06:25:52] <sfackler> eddyb: "It's dangerous to go alone! Take this"
+[06:26:12] <eddyb> oh, right, thanks :)
+[06:28:26] *** Quits: zw01 (zev@3C32E5CD.21A2D65F.BCF77D2A.IP) (Ping timeout)
+[06:29:17] *** Quits: mankyKitty (Instantbir@19559281.CA335678.BC02889B.IP) (Ping timeout)
+[06:31:47] *** Joins: zw01 (zev@3C32E5CD.21A2D65F.BCF77D2A.IP)
+[06:35:20] *** Joins: mankyKitty (Instantbir@19559281.CA335678.BC02889B.IP)
+[06:36:25] *** Joins: zimbabao (rajaram@47769425.AE842F9B.81C3DAA1.IP)
+[06:37:00] *** Joins: rajaram_ (rajaram@47769425.AE842F9B.81C3DAA1.IP)
+[06:38:06] *** Quits: zimbabao (rajaram@47769425.AE842F9B.81C3DAA1.IP) (Quit: Leaving)
+[06:40:49] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[06:40:49] *** ChanServ sets mode: +o pnkfelix
+[06:43:26] *** Quits: erickt (erickt@49C4075F.3AC15C18.2321E71E.IP) (Ping timeout)
+[06:44:32] *** Quits: mankyKitty (Instantbir@19559281.CA335678.BC02889B.IP) (Quit: mankyKitty)
+[06:45:20] <pnkfelix> acrichto: ping
+[06:52:33] *** Quits: rajaram_ (rajaram@47769425.AE842F9B.81C3DAA1.IP) (Ping timeout)
+[06:53:38] *** Joins: rajaram_ (rajaram@47769425.AE842F9B.81C3DAA1.IP)
+[06:55:31] *** Quits: rajaram_ (rajaram@47769425.AE842F9B.81C3DAA1.IP) (Ping timeout)
+[06:56:06] *** Joins: Zr40 (zr40@EE4BB9F5.926C319A.BE2F4011.IP)
+[06:56:43] *** Joins: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP)
+[06:56:44] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/4PnQEA
+[06:56:44] *** Parts: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP) ()
+[07:00:08] <acrichto> pnkfelix: pong
+[07:01:42] *** Joins: ghrust (ghrust@4BC7FFDD.6A2AE50.F3114085.IP)
+[07:01:42] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/EleGHQ
+[07:01:42] *** Parts: ghrust (ghrust@4BC7FFDD.6A2AE50.F3114085.IP) ()
+[07:03:14] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[07:04:28] <Eridius> acrichto: I just commented on the Rust article about the weekly meeting, in regards to Vec<T> vs ~[T]: http://www.reddit.com/r/rust/comments/21y9tw/meetingweekly20140401_vect_vs_t_virtual_structs/cghztkv
+[07:04:44] <Eridius> tl;dr: I don't see the benefit of returning ~[T] from libstd functions. We should just standardize on Vec<T>
+[07:06:40] *** Joins: edwardw (Mibbit@E9739E5B.EE06708D.4BFBD933.IP)
+[07:06:42] *** Joins: ghrust (ghrust@C95C9FF.6A2AE50.F3114085.IP)
+[07:06:43] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/EleGHQ
+[07:06:43] *** Parts: ghrust (ghrust@C95C9FF.6A2AE50.F3114085.IP) ()
+[07:07:17] <eddyb> std? no
+[07:07:50] <eddyb> ~[T] is for specific usecases, like the AST or the internals of some other structure
+[07:07:52] <eddyb> note: consider using an explicit lifetime parameter as shown: fn add_to_set<'a>(tcx: &ty::ctxt, set: &mut Vec<Opt>, val: Opt<'a>)
+[07:08:23] <eddyb> nmatsakis: okay, this is odd. not sure if the suggestion works, but it basically wants me to explicitly give something a lifetime it... doesn't need :|
+[07:10:11] *** Joins: rajaram_ (rajaram@47769425.AE842F9B.81C3DAA1.IP)
+[07:12:04] *** Joins: TheHydroImpulse_ (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[07:12:05] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[07:12:05] *** TheHydroImpulse_ is now known as TheHydroImpulse
+[07:12:48] *** Joins: mankyKitty (Instantbir@19559281.CA335678.BC02889B.IP)
+[07:13:28] <Eridius> eddyb: I basically feel that, in a post-DST world, ~[T] is basically only useful if you have a legitimate need to save a word, such as in an AST or DOM
+[07:13:42] <eddyb> sure
+[07:13:56] <Eridius> and as such, the standard libraries should never choose to give you a ~[T], but instead should merely provide a way to cheaply convert from Vec<T> to ~[T] and let you make the decision yourself
+[07:14:40] *** flaper87|afk is now known as flaper87
+[07:14:51] <flaper87> o/
+[07:16:41] <pnkfelix> Eridius: but if you don't assume shrink-to-fit, and you *do* assume tight-integration with the allocator, then presumably one can cheaply go back from ~[T] back to Vec<T>.
+[07:16:58] <sfackler> pnkfelix: but why bother?
+[07:18:20] * pnkfelix shrugs
+[07:19:58] <pnkfelix> acrichto: sorry, was out walking dog
+[07:20:16] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[07:20:30] <pnkfelix> acrichto: I wanted to check about something with the compiletest dependencies in the crates.mk
+[07:21:00] <Eridius> pnkfelix: sure, if you have both, you can cheaply reverse the process. But as sfackler said, why bother? What benefit do you have for going to ~[T] in the first place?
+[07:22:09] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[07:23:01] <nrc> ~[T] is fixed size and we favour immutability and succinct syntax
+[07:23:10] <pnkfelix> Eridius: my instinct was that having the signature return ~[T] gives the stdlib more freedom about what it chooses to do internally.  But its a weak argument.  I simply haven't given much thought to the issue overall.
+[07:23:12] <pnkfelix> acrichto: I'm still trying to use `make check-stage1` and hitting problems.  run=pass-fulldeps/quote-unused-sp-no-warning.rs
+[07:23:26] <Eridius> nrc: syntax is pretty much the only thing going for ~[T]. Vec<T> and ~[T] are equally mutable/immutable
+[07:23:59] <pnkfelix> acrichto: the above test is saying: found possibly newer version of crate `std` which `syntax`; perhaps this crate needs to be recompiled?w
+[07:24:06] <nrc> Eridius: not post-DST, Vec<T> can be expanded, ~[T] can't
+[07:24:08] <Eridius> for a long time I was in favor of keeping ~[T] as vector syntax, but I've come around to thinking we should just go whole-hog on Vec<T>. Most vector types that the user has to write will be &[T] anyway
+[07:24:16] <Eridius> nrc: ~[T] can still be mutated
+[07:24:19] <Eridius> if it's in a mutable slot
+[07:24:34] <nrc> I don't believe it will have a push method
+[07:24:39] <pnkfelix> acrichto: So my questions are, 1. does run-pass-fulldeps imply that all of the other crates are supposed to be rebuilt?
+[07:24:41] <nrc> (it does now, but it won't soon)
+[07:24:46] <Eridius> and, heck, there's nothing stopping you from writing a function that does in fact expand ~[T]. The only reason why we wouldn't have one by default is because it would require a realloc on every push
+[07:24:48] <nrc> mut or not
+[07:25:08] <Eridius> nrc: why is not having a push method considered a bonus?
+[07:25:23] <nrc> because if you want a push method, you should be using Vec
+[07:25:27] <Eridius> and if that's really your concern, you could define FrozenVec<T> that's identical to Vec<T> except that it doesn't expose a push method
+[07:25:37] <nrc> oh, sorry, I mis-parsed your question
+[07:25:47] <Eridius> well yeah, if you want a push method you should use a type that has a push method. That doesn't mean the lack of a push method is a bonus
+[07:26:04] <Eridius> ~[T] won't have push because it can't be reasonably implemented (reallocating on every push isn't reasonable), not because it's desirable to not have a push method
+[07:26:54] <pnkfelix> acrichto: 2. If the answer to previous question is "no", then: Does TOOL_DEPS_compiletest need a dependency on every extern crate pulled in by a test?
+[07:27:20] <nrc> ~[T] is a data structure corresponding to a C array, i.e., a fixed length sequence of memory - that signifies programmer intent, and is meaningfully different from Vec, which could be much larger than its length and may not even be sequential, but is resizable
+[07:28:10] <pnkfelix> Eridius: a case where you probably do want to use ~[T] instead of Vec<T>, if possible, is when you return a ~[~[T]] (or Vec<~[T]>)
+[07:28:27] <Eridius> nrc: ~[T] can be much larger than its length too, but there's no way to actually query it to find out if that's the case. That was one of my two concerns in my reddit comment
+[07:28:30] <pnkfelix> Eridius: which is essentially your "if you are concerned about size" point above.
+[07:29:13] <Eridius> pnkfelix: assuming the outer vector can reasonably be assumed to contain potentially more than a few hundred elements, sure, I can see that being a case where a library function chooses to use ~[T]. But I would say Vec<~[T]> there
+[07:29:42] <Eridius> although I think that if you're using ~[T] because of size concerns then you need to shrink-to-fit when converting to ~[T], because otherwise you're not actually saving anything
+[07:30:36] <pnkfelix> Eridius: its not just size concerns
+[07:30:52] <pnkfelix> Eridius: the other reason to favor Vec<~[T]> or ~[~[T]]
+[07:31:19] <pnkfelix> Eridius: is that under DST, one should be able to coerce ~[~[T]] directly to &[&[T]]
+[07:31:46] <nrc> Eridius: there is no reason not to have a shrink to fit function which operates directly on ~[T]
+[07:31:53] <pnkfelix> Eridius: so that's for interoperability
+[07:32:05] <pnkfelix> nrc: The reason not to have it is if your allocator doesn't support it
+[07:32:07] <Eridius> pnkfelix: hrm, I hadn't considered that. That's a good point. But this still only concerns itself with vectors of vectors
+[07:32:39] <nrc> but your allocator _could_ support it, and if you cared about such things, you would use such an allocator, right?
+[07:32:54] <pnkfelix> nrc: or... I guess I am wrong, even with a brain-dead allocator
+[07:33:08] <pnkfelix> nrc: You can always stupidly realloc even if you had the right amount of space in the first place
+[07:33:40] <nrc> I would hope with a smart allocator you could shrink without realloc-ing
+[07:33:46] <pnkfelix> nrc: yes of course
+[07:33:59] <nrc> good, good
+[07:33:59] <pnkfelix> nrc: it was more a hypothetical argument against supporting a shrink_to_fit method on ~[T] itself
+[07:34:06] <nrc> oh, I see
+[07:34:07] <Eridius> pnkfelix: reallocating every ~[T] on the off chance that it contains wasted space is not very nice
+[07:34:22] <nrc> Eridius: that is worst case scenario though
+[07:34:30] <pnkfelix> Eridius: yes I realize this, maybe I should have put asterisks around "stupidly" and "break-dead"
+[07:34:46] <Eridius> nrc: shrink without realloc-ing may not be possible depending on the design of the allocator. For example, if the allocator uses buckets to group same-sized allocations together, you can't drop an allocation size without requiring reallocation
+[07:34:47] <pnkfelix> s/break-dead/brain-dead/
+[07:38:57] <nrc> Eridius: right, so if you care about memory and shrink to fit, you should be using an allocator which can do that
+[07:39:35] <Eridius> nrc: or just stick with Vec<T>, which can support shrink-to-fit regardless of allocator
+[07:39:52] <Eridius> and then the caller can decide if they want to convert to ~[T]
+[07:40:03] <Eridius> (and can decide if they want to do that cheaply, or want to shrink-to-fit first)
+[07:40:23] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[07:42:39] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[07:44:16] <pnkfelix> Eridius: perhaps the tension here arises from what POV one takes
+[07:44:46] *** Quits: doomlord_ (servitor@moz-56F8DA57.range86-148.btcentralplus.com) (Connection reset by peer)
+[07:44:49] <acrichto> pnkfelix: the fulldeps tests only depend on TARGET_CRATES I think, when they should also depend on HOST_CRATES (libsyntax/rustc/etc)
+[07:44:54] <pnkfelix> Eridius: I assume there are some cases where the stdlib will definitely want to return ~[T].  E.g. maybe it mmaps a file and you cannot push onto that mmap'ed storage.
+[07:45:38] <acrichto> pnkfelix: https://github.com/mozilla/rust/blob/master/mk/tests.mk#L345-L348 <- this line is wrong for fulldeps
+[07:45:44] <acrichto> but correct for non-fulldeps tests
+[07:45:57] <pnkfelix> acrichto: okay, will fix
+[07:46:11] <acrichto> pnkfelix: that shouldn't have it added though, b/c it'd pull in too many deps for other tests
+[07:47:10] <Eridius> pnkfelix: ok sure, mmapping a file is another good example, but can that even be represented as ~[T]? Don't you need to call munmap() on the result, not free()?
+[07:47:13] <acrichto> wait hm, maybe that's not the right line
+[07:47:34] <Eridius> pnkfelix: I guess my point is, we should default to Vec<T> unless there's a good reason to use ~[T]
+[07:47:55] <pnkfelix> Eridius: (regarding needing to use munmap instead of free: That is a good counterpoin)
+[07:48:02] <pnkfelix> Eridius: So this brings up my POV question
+[07:48:10] <acrichto> pnkfelix: https://github.com/mozilla/rust/blob/master/mk/tests.mk#L563
+[07:48:12] <acrichto> that's the line
+[07:48:15] <acrichto> I think
+[07:48:39] <pnkfelix> Eridius: You say "Use Vec<>T unless there's good reason to use ~[T]."  While pcwalton said "use ~[T] unless you think caller will have good reason to want to push"
+[07:48:50] <Eridius> pnkfelix: I don't see how a libstd function can make that judgement call
+[07:48:52] <pnkfelix> Eridius: I suspect that your argument is easier to support
+[07:48:58] <pnkfelix> Eridius: for exactly the reason you just said
+[07:49:42] <pnkfelix> Eridius: but on the other hand
+[07:50:18] <pnkfelix> Eridius: the whole instinctual "favor immutability" (even if only of the vec length), mumble mumble.
+[07:50:43] <pnkfelix> Eridius: anyway, the real point of that conversation during the meeting, from my POV, was that ~[T] itself is not going away
+[07:51:10] <Eridius> pnkfelix: if I have a Vec<T> in an immutable slot, it _is_ immutable, even if it has a capacity. And if I have a Vec<T> in a mutable slot, then it's mutable, and so is ~[T]. I don't see how removing the ability to cheaply push makes it any more immutable
+[07:51:18] <pnkfelix> Eridius: maybe next week we can revisit this question of what the stdlib defaults should be, i.e., to favor Vec<T> since presumably the user can make their own local decision about changing to ~[T].
+[07:51:29] <Eridius> sure, ~[T] isn't going away. But that doesn't mean we need to use it just because it's there
+[07:52:01] <pnkfelix> Eridius: I'll put an item on the agenda.
+[07:52:17] <Eridius> You've made some good points about cases where it really does make sense for ~[T] to be used (e.g. in Vec<~[T]>), but those are the exception, not the rule
+[07:52:20] <Eridius> thanks
+[07:56:57] *** Quits: edwardw (Mibbit@E9739E5B.EE06708D.4BFBD933.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[07:57:14] <pnkfelix> Eridius: np, thanks for the feedback
+[07:58:07] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[07:59:58] * Eridius heads to bed
+[08:00:34] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[08:02:08] <eddyb> ~[~[T]]?
+[08:02:11] <eddyb> ~[[T]] pls
+[08:02:40] <pnkfelix> eddyb: I don't know if support for `~[[T]]` is going to arrive with the first iteration of DST
+[08:02:49] <pnkfelix> acrichto: that second link you gave
+[08:03:04] <eddyb> you mean [[T]] - I won't expect immediate library support anyway, just the basics
+[08:03:17] <eddyb> and yeah, we might start with unsized*1
+[08:03:31] <pnkfelix> acrichto: it doesn't have the TARGET / HOST distinction, at least not immediately within its definition
+[08:04:10] <pnkfelix> acrichto: or maybe it does, I need to check on what the T in TLIBRUSTC_DEFAULTS stands for
+[08:05:19] *** Quits: mankyKitty (Instantbir@19559281.CA335678.BC02889B.IP) (Ping timeout)
+[08:06:08] <eddyb> I do remember H for HOST
+[08:06:31] <pnkfelix> yeah but the comments in main.mk give me pause here
+[08:06:43] <acrichto> pnkfelix: hm, I think that TLIBRUSTC_DEFAULTS may need to be tweaked
+[08:06:50] <acrichto> that should say "depend on the relevant librustc"
+[08:08:53] <pnkfelix> acrichto: i.e. maybe it should be SREQ or CSREQ instead of TLIBRUSTC_DEFAULT ?
+[08:09:00] <acrichto> yes
+[08:09:03] <acrichto> CSREQ I think
+[08:09:07] <acrichto> "complete XXX reqs"
+[08:09:10] <pnkfelix> acrichto: agree
+[08:09:17] <acrichto> forget what the S means...
+[08:09:43] <acrichto> I almost wish we could test makefiles
+[08:09:44] <pnkfelix> I think they all have the SREQ
+[08:09:53] <acrichto> but who would test the makefile?!
+[08:09:53] <pnkfelix> i.e. the S stands for Stage I think
+[08:09:57] <acrichto> aaaah
+[08:09:57] <acrichto> yes
+[08:10:44] <pnkfelix> the sad thing is that this is still one of the better Makefiles of the large ones I have had to struggle with in my life
+[08:11:09] * acrichto runs away very quickly
+[08:12:30] <pnkfelix> compared to say this beast of a Makefile generator https://github.com/larcenists/larceny/blob/master/src/Rts/make-templates.sch
+[08:13:37] <acrichto> wow
+[08:22:37] <nrc> such makefile
+[08:30:49] <pnkfelix> acrichto: hmm.  It is unfortunate that in some places we say `rpass-full` and in others `rpass_full`.  I cannot tell whether the latter is a typo or a legitimate distinction being drawn.
+[08:30:56] *** Joins: erickt (erickt@49C4075F.3AC15C18.2321E71E.IP)
+[08:31:43] <pnkfelix> acrichto: though the more I read, the more i think the underscore variant, `rpass_full` is just wrong and the cause of much woe here.
+[08:32:51] *** Quits: erickt (erickt@49C4075F.3AC15C18.2321E71E.IP) (Ping timeout)
+[08:34:24] <pnkfelix> or do we somewhere tr - to _ ...
+[08:38:59] *** Quits: Zr40 (zr40@EE4BB9F5.926C319A.BE2F4011.IP) (Quit: leaving)
+[08:39:38] <pnkfelix> oh yes this was just an unused definition before.  Fantastic.
+[08:40:52] *** Joins: Zr40 (zr40@EE4BB9F5.926C319A.BE2F4011.IP)
+[08:40:55] *** Joins: mankyKitty (Instantbir@19559281.CA335678.BC02889B.IP)
+[08:58:39] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[09:00:31] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[09:09:11] *** Quits: fhahn (fhahn@moz-7924DB5C.vie.surfer.at) (Ping timeout)
+[09:10:58] <eddyb> error: mismatched traits: expected `std::iter::Iterator<&'a syntax::ast::Pat>` but found `std::iter::Iterator<&'a syntax::ast::Pat>` (lifetime mismatch)
+[09:11:00] <eddyb> I don't like this
+[09:11:45] *** Joins: ghrust (ghrust@5AC7F92B.6A2AE50.F3114085.IP)
+[09:11:46] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/j4uydw
+[09:11:46] *** Parts: ghrust (ghrust@5AC7F92B.6A2AE50.F3114085.IP) ()
+[09:12:27] <pnkfelix> eddyb: is it because you used the same lifetime name `'a` binding in different places?  E.g. on the type params of the trait/type as well as on the type params of the method?
+[09:12:44] <pnkfelix> eddyb: or is it something more obscure?
+[09:13:17] <eddyb> pnkfelix: much more, I'm afraid :(
+[09:13:35] <eddyb> pnkfelix: hang on :/
+[09:13:56] <eddyb> I have a &[&'a Pat] and I'm returning an Option<Vec<&'a Pat>>
+[09:14:07] <eddyb> do I need a lifetime on the slice itself?
+[09:14:47] <pnkfelix> eddyb: You're just copying the elements out of the input slice, right?
+[09:14:56] <eddyb> yupp
+[09:15:01] <pnkfelix> eddyb: don't see why that would require a lifetime on the slice
+[09:15:05] <eddyb> mhmm
+[09:15:09] <eddyb> I still have issues :(
+[09:15:19] <eddyb> pnkfelix: and there's another stupid thing
+[09:15:52] <eddyb> fn add_to_set(tcx: &ty::ctxt, set: &mut Vec<Opt>, val: Opt) { if set.iter().any(|l| opt_eq(tcx, l, &val)) {return;} set.push(val); }
+[09:16:16] <eddyb> fn opt_eq(tcx: &ty::ctxt, a: &Opt, b: &Opt) -> bool;
+[09:16:30] <eddyb> and I get error: cannot infer an appropriate lifetime due to conflicting requirements
+[09:16:45] *** Joins: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP)
+[09:16:45] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/n7L4XQ
+[09:16:45] *** Parts: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP) ()
+[09:17:03] *** Joins: fhahn (fhahn@moz-7924DB5C.vie.surfer.at)
+[09:17:48] <eddyb> pnkfelix: there are no lifetime requirements in the above two things
+[09:17:55] <eddyb> pnkfelix: yet, it complains
+[09:18:14] <pnkfelix> eddyb: usually those messages come with a pretty thorough note trying to explain the problem
+[09:18:18] <pnkfelix> eddyb: can you gist the note for me?
+[09:18:26] <eddyb> note: consider using an explicit lifetime parameter as shown: fn add_to_set<'a>(tcx: &ty::ctxt, set: &mut Vec<Opt>, val: Opt<'a>)
+[09:18:32] <eddyb> I think I pasted this earlier
+[09:18:54] <eddyb> pnkfelix: I feel like the compiler is just messing with me
+[09:19:01] <pnkfelix> eddyb: okay never mind I need to go anyway
+[09:19:15] <eddyb> it's literally just these two files. a silly error and some iterator stuff
+[09:19:26] <eddyb> out of almost 1k errors
+[09:21:43] *** Joins: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP)
+[09:21:43] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/j0bG2Q
+[09:21:43] <ghrust> 13rust/06auto 1450fca0f 15Huon Wilson: std: fix Cell's Show instance....
+[09:21:43] <ghrust> 13rust/06auto 14c987134 15bors: auto merge of #13243 : huonw/rust/cellshow, r=thestinger...
+[09:21:43] *** Parts: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP) ()
+[09:21:44] *** Joins: ghrust (ghrust@511FAEBD.6A2AE50.F3114085.IP)
+[09:21:44] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/n7L4XQ
+[09:21:44] *** Parts: ghrust (ghrust@511FAEBD.6A2AE50.F3114085.IP) ()
+[09:21:49] <pnkfelix> eddyb: you do realize that even if there are no explicit lifetimes
+[09:21:49] <pnkfelix>   in your code, that doesn't mean there aren't lifetime requirements.
+[09:21:50] <pnkfelix>   Your statement"there are no lifetime requirements in the above two things" is probably false.
+[09:22:08] *** Quits: Jesse (jruderman@moz-9754CB0.hsd1.ca.comcast.net) (Quit: Jesse)
+[09:22:13] <eddyb> pnkfelix: the opt_eq function requires no lifetime constraints
+[09:22:34] <eddyb> pnkfelix: it's probably those iterators again, messing regionck up :(
+[09:23:07] *** Quits: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP) (Client exited)
+[09:27:43] <kimundi> eddyb: Can you paste the error message in full?
+[09:28:00] <eddyb> that's the error message
+[09:28:14] <eddyb> I don't get no extra notes explaining the situation
+[09:28:33] <eddyb> pnkfelix: well, thanks, I realized it may just be the closure and any
+[09:29:40] <kimundi> Right, but I'm terrible at backtracking through an irc log - need a coherent paste to make sense of stuff :)
+[09:38:49] <eddyb> pnkfelix: I think I found the actual error, after working around the silly one =))
+[09:40:17] <eddyb> and now I get a different error from a different part of the file?
+[09:40:27] <eddyb> pnkfelix: it's sad how brittle our error checking is sometimes :(
+[09:40:52] <pnkfelix> eddyb: you mean in terms of its ability to recover from one error and continue checking for errors elsewhere?
+[09:41:04] <pnkfelix> eddyb: its a very common tension in compiler development
+[09:41:28] <eddyb> I think this has something to do with nested functions
+[09:41:40] <eddyb> since it works fine for completely different modules
+[09:47:23] <nmatsakis> eddyb: can you past the example
+[09:48:01] <eddyb> it's not a simple one :S
+[09:48:07] <eddyb> but I may be able to reproduce with rusti
+[09:48:34] <nmatsakis> eddyb: can you point me at your branch :)
+[09:48:50] <eddyb> it's all old code with minor changes
+[09:49:51] <nmatsakis> i'd like to see those minor changes, if you please.
+[09:50:16] <eddyb> I will, in a second :D
+[09:50:24] <eddyb> okay, so this errors at the right place http://ix.io/bqt
+[09:50:31] <eddyb> the note is still wrong
+[09:51:38] <pnkfelix> eddyb: I don't think that's wrong.  There's implciitly two distinct fresh lifetime variables there, no?
+[09:51:57] <eddyb> pnkfelix: it should replace the &int in the vector as well
+[09:52:07] <pnkfelix> eddyb: we aren't going to add the constraint between the lifetime within set's Vec type and the lifetime of val's type.
+[09:52:14] <nmatsakis> eddyb: are you saying there's a bug in the *suggestion* or in the *type checker*
+[09:52:30] <nmatsakis> I agree the suggestion is buggy
+[09:52:33] <eddyb> nmatsakis: both, I hope I can reproduce the nastier bug as well
+[09:52:42] <nmatsakis> though it is at least pointing in the correct direction
+[09:52:54] <eddyb> nmatsakis: aaand http://ix.io/bqw
+[09:53:09] <eddyb> it errors in the wrong place
+[09:53:15] <pnkfelix> eddyb: ah, I see, you are saying the suggested revision is buggy
+[09:53:21] <pnkfelix> eddyb: I think there's a bug open for that.
+[09:53:35] <eddyb> okay, that I don't care much for, only that it confused me more :P
+[09:53:51] <eddyb> had the error been on push, I would've fixed this hours ago
+[09:53:55] <pnkfelix> eddyb: i think this was the relevant fix: https://github.com/mozilla/rust/pull/13112
+[09:54:05] <pnkfelix> eddyb: (from this issue: https://github.com/mozilla/rust/issues/13058 )
+[09:54:30] <eddyb> nice, can't wait for that to land and a snapshot :)
+[09:55:02] <nmatsakis> pnkfelix: fix for the suggestion, at least
+[09:55:03] <eddyb> nmatsakis: I don't really understand how I'm getting that error... unless it's backflow from an inference failure on the push?
+[09:56:38] <pnkfelix> nmatsakis: yes, for the suggestion.  I think it fixes that, I should probably go review that code beyond the cursory look I already did.
+[09:57:04] <nmatsakis> wait, 1 sec
+[09:57:27] <nmatsakis> ah yes
+[09:57:34] <nmatsakis> there is no bug in the type checker, it's just the suggestion
+[09:57:46] <eddyb> nmatsakis: confirmed, it picks the first occurrence http://ix.io/bqA
+[09:57:51] <nmatsakis> well, there is another bug, but it's not that the type checker is giving the wrong error,
+[09:57:56] <nmatsakis> or rather, it's not that the code is not buggy.
+[09:58:10] <nmatsakis> it's just that the type checker is not doing a good job of picking a *span* 
+[09:58:27] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[09:58:28] <nmatsakis> which is definitely a known limitation, I've been reading papers on how to do a better job...
+[09:58:36] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Quit: rcirc on GNU Emacs 24.3.1)
+[09:58:44] <eddyb> I didn't realize it could be this bad >_>
+[09:58:52] <eddyb> (but I understand now)
+[09:59:13] <nmatsakis> I'm surprised you didn't get a bunch of notes -- though I did want to turn those off without an explicit compiler switch
+[09:59:17] <nmatsakis> maybe somebody went ahead and did it
+[09:59:27] <nmatsakis> maybe I even r+'d it ;)
+[09:59:34] <eddyb> nmatsakis: disabled because of the helper note
+[09:59:43] <eddyb> (AFAIK)
+[10:00:06] <eddyb> woo trans::_match typechecks \o/
+[10:00:07] <nmatsakis> which is good, by and large
+[10:00:25] <nmatsakis> I just don't recall seeing that in the code
+[10:00:31] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[10:00:46] <nmatsakis> i.e., iirc the code still printed all details, even with the helper note, but maybe I missed that part. This IS how I wanted it to behave, in any case, though ideally with pnkfelix's fix in there ;)
+[10:01:53] <nmatsakis> eddyb: nice
+[10:02:09] <eddyb> now I have middle::check_match to deal with
+[10:04:03] <eddyb> with its million vectors
+[10:08:41] *** Joins: bjz (bjz@B398BE78.F804C29E.D35A31DF.IP)
+[10:08:41] *** Quits: bjz_ (bjz@B398BE78.F804C29E.D35A31DF.IP) (Connection reset by peer)
+[10:23:12] *** Joins: NiccosSystem (NiccosSyst@moz-ED196BB4.customer.lyse.net)
+[10:25:24] *** Quits: mankyKitty (Instantbir@19559281.CA335678.BC02889B.IP) (Quit: mankyKitty)
+[10:31:44] *** Joins: ghrust (ghrust@94BD74B8.6A2AE50.F3114085.IP)
+[10:31:44] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/j0bG2Q
+[10:31:44] *** Parts: ghrust (ghrust@94BD74B8.6A2AE50.F3114085.IP) ()
+[10:36:40] *** Joins: ghrust (ghrust@38D6F008.6A2AE50.F3114085.IP)
+[10:36:40] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/s3ut7Q
+[10:36:40] *** Parts: ghrust (ghrust@38D6F008.6A2AE50.F3114085.IP) ()
+[10:36:41] *** Joins: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP)
+[10:36:41] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/kSiS2Q
+[10:36:41] <ghrust> 13rust/06auto 14a8308fb 15Ted Horst: make Cmplx fields public
+[10:36:41] <ghrust> 13rust/06auto 1404189c8 15bors: auto merge of #13248 : tedhorst/rust/master, r=alexcrichton
+[10:36:41] *** Parts: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP) ()
+[10:41:00] <eddyb> nmatsakis: error: mismatched traits: expected `std::iter::Iterator<&syntax::ast::Pat>` but found `std::iter::Iterator<&syntax::ast::Pat>` (lifetime mismatch)
+[10:41:11] <eddyb> nmatsakis: hmm, how well can I chain iterators?
+[10:41:15] *** Quits: victorporof (victorporo@moz-1C281963.dsl.bell.ca) (Quit: victorporof)
+[10:41:32] <eddyb> hmm
+[10:42:03] <eddyb> do I really need to write <'a> |x: &'a P<ast::Pat>| -> &'a ast::Pat?
+[10:42:15] <eddyb> I don't even think I can use that in an expression
+[10:42:39] <eddyb> rusti: let f = <'a> |x: &'a int| -> &'a int {x}; f(&0)
+[10:42:39] -rusti- <anon>:11:17: 11:18 error: unexpected token: `<`
+[10:42:40] -rusti- <anon>:11         let f = <'a> |x: &'a int| -> &'a int {x}; f(&0)
+[10:42:40] -rusti-                           ^
+[10:42:40] -rusti- playpen: application terminated with error code 101
+[10:43:05] <eddyb> rusti: let f: <'a> |&'a int| -> &'a int = |x| x; f(&0)
+[10:43:07] -rusti- pastebinned 16 lines of output: http://ix.io/bqD
+[10:44:19] <flaper87> eddyb: I think it's: 'a |x: &'a int| -> &'a int {x};
+[10:44:25] <eddyb> flaper87: not that ;)
+[10:45:11] <eddyb> haha
+[10:45:28] <eddyb> that explains it. I wasn't binding something important by ref
+[10:45:57] <eddyb> leading to much fun
+[10:47:40] <eddyb> nmatsakis: at least it doesn't push one element at a time to a vector now
+[10:48:46] <eddyb> (while ref-counting @)
+[10:55:16] <eddyb> lol, what order is it checking my patterns in?
+[10:55:32] <eddyb> looks alphabetical
+[10:56:44] <eddyb> kimundi: we should black-list append
+[10:58:12] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Quit: TheHydroImpulse)
+[10:59:09] <kimundi> eddyb: I'm still thinking about how to remove it without giving up its reason of existence
+[10:59:24] <eddyb> kimundi: there is no reason to use append
+[10:59:27] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[10:59:37] <eddyb> kimundi: this huge function that used append, I converted it to chained iterators
+[10:59:49] <eddyb> nmatsakis: I wish I didn't have to annotate my closures with -> &'a Pat
+[11:00:01] <eddyb> nmatsakis: I think this is a trait resolution issue
+[11:00:03] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[11:00:16] *** Joins: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP)
+[11:00:16] *** ChanServ sets mode: +o pnkfelix
+[11:00:46] <kimundi> eddyb: Sure, that works usually. But _a lot_ of old code uses append, and I'm not going to rewrite all 200+ locations beyond a failry local change. ;)
+[11:00:52] <eddyb> confirmed: alphabetical match checking. ugh
+[11:00:59] <eddyb> kimundi: I am
+[11:01:10] <eddyb> this is something I was misunderstood about earlier
+[11:01:12] <kimundi> I think adding a self, iter -> Self default method for extendable would do the trick for making it more generic
+[11:01:22] <eddyb> nobody is crazy enough to do that
+[11:01:25] <kimundi> eddyb: Heh, more power to you then :)
+[11:01:37] <eddyb> it's usually a waste of time
+[11:01:42] <eddyb> unless it's a hot loop or something
+[11:03:34] <eddyb> kimundi: I'm not asking for appreciation :P
+[11:11:03] <eddyb> nmatsakis: I don't see where it's sorting patterns alphabetically. this can be very confusing, when mixed with regionck errors
+[11:16:04] <eddyb> time: 19.857 s  type checking
+[11:16:09] <eddyb> and only 17 borrow errors
+[11:16:25] <eddyb> actually, no, match errors
+[11:23:59] *** Quits: rajaram_ (rajaram@47769425.AE842F9B.81C3DAA1.IP) (Ping timeout)
+[11:27:45] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[11:32:07] *** Joins: ghrust (ghrust@C95C9FF.6A2AE50.F3114085.IP)
+[11:32:08] <ghrust> [13rust] 15bors pushed 3 new commits to 06auto: 02http://git.io/DNKktQ
+[11:32:08] <ghrust> 13rust/06auto 14b16bfd1 15Alex Crichton: rustc: Require that vector indices are uints...
+[11:32:08] <ghrust> 13rust/06auto 14b0267d1 15Alex Crichton: Fix fallout of requiring uint indices
+[11:32:08] <ghrust> 13rust/06auto 14d16a2f7 15bors: auto merge of #13257 : alexcrichton/rust/index-uint, r=pnkfelix...
+[11:32:10] *** Parts: ghrust (ghrust@C95C9FF.6A2AE50.F3114085.IP) ()
+[11:37:57] <eddyb> error: aborting due to 183 previous errors
+[11:38:54] <huon> eddyb: it's a glorious day?
+[11:39:41] <eddyb> huon: woke up with 3 good arguments for P, even if ~T internally is not the best choice
+[11:40:02] <eddyb> oh, and I can make a lot of it in-place without changing the fold model ;)
+[11:40:50] *** Joins: dwrensha (chatzilla@moz-DE44EA45.hsd1.pa.comcast.net)
+[11:42:23] *** Quits: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net) (Quit: It's a joke, it's all a joke.)
+[11:42:29] *** Joins: SiegeLord (sl@moz-CAF07B4C.hsd1.ma.comcast.net)
+[11:56:21] *** Joins: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca)
+[12:10:17] <huon> pnkfelix: am I correct in my interpretation that the makefile variable CSREQ... essentially says "depend on every crate"?
+[12:10:31] *** Joins: lpy (lpy@186A8F3A.F09091A8.1348A864.IP)
+[12:10:52] <pnkfelix> huon: I think so?
+[12:11:16] <pnkfelix> huon: which is what acrichto and I were thinking was appropriate here, when we talked about it earlier.  But I'm open to counter-arguments.
+[12:11:34] <huon> pnkfelix: ok; the comment above CSREQ isn't clear, but the actual content seems to suggest it is in fact every crate.
+[12:11:46] <pnkfelix> huon: I had hoped that maybe the variable misnaming was the only bug here, but when I tried `make check-stage1` without also fixing the definition of the variable, I hit problems.
+[12:11:46] <huon> no, that seems like the correct thing for a "fulldeps" target
+[12:13:46] *** Quits: lpy (lpy@186A8F3A.F09091A8.1348A864.IP) (Connection reset by peer)
+[12:13:48] <huon> pnkfelix: I guess TLIBRUSTC is a historical variable and it never got removed because of the variable name typo?
+[12:13:49] *** Joins: lpy_ (lpy@207F51B2.F09091A8.1348A864.IP)
+[12:14:11] *** lpy_ is now known as lpy
+[12:14:53] <pnkfelix> huon: oh I thought it still might exist
+[12:15:05] <pnkfelix> huon: its just hard to tell due to the way we construct the names
+[12:15:16] <pnkfelix> huon: but I think I saw it in the `make --print-data-base` output
+[12:15:17] <huon> pnkfelix: I couldn't find any other mention of with grep, but yeah, the construction is a little round-about
+[12:15:22] * huon tries again
+[12:16:21] <huon> pnkfelix: there's certainly not many relevant mentions of 'DEFAULT' in the various .mk files
+[12:16:24] * huon history dives
+[12:16:46] <pnkfelix> huon: okay, maybe you are right, maybe I never saw this
+[12:16:47] *** Joins: ghrust (ghrust@C95C9FF.6A2AE50.F3114085.IP)
+[12:16:47] <ghrust> [13rust] 15bors pushed 3 new commits to 06auto: 02http://git.io/CHy8ZA
+[12:16:47] <ghrust> 13rust/06auto 142cddd68 15Felix S. Klock II: Avoid injecting unfulfilled dependence in compiletest on libnative.
+[12:16:47] <ghrust> 13rust/06auto 143cbd98e 15Felix S. Klock II: Two fixes to get `make check-stage1` working....
+[12:16:47] <ghrust> 13rust/06auto 14c3a7e6f 15bors: auto merge of #13260 : pnkfelix/rust/fsk-fix-13247, r=huonw...
+[12:16:49] *** Parts: ghrust (ghrust@C95C9FF.6A2AE50.F3114085.IP) ()
+[12:17:31] <huon> pnkfelix: also, you're on a roll with squashing type-param/lifetime related ICEs :)
+[12:18:30] *** Joins: victorporof (victorporo@moz-1C281963.dsl.bell.ca)
+[12:18:31] * flaper87 gives pnkfelix pop-tarts for fixing all those ICEs
+[12:18:53] <pnkfelix> well, its just nice to be landing something for once
+[12:19:18] <pnkfelix> I have a bunch of spinning plates, and some others that I still need to get spinning (e.g. the Allocators RFC)
+[12:19:53] <huon> pnkfelix: (looks like acrichto's build system rewrite 26114838944128ffe66d1e9fc897cb45b1a5eb1d did remove the TLIBRUSTC... variable, fwiw.)
+[12:29:09] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[12:29:23] *** Joins: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[12:38:04] *** Joins: rajaram_ (rajaram@33A9A431.471340E7.BE4CF869.IP)
+[12:39:25] *** Joins: edwardw (Mibbit@E9739E5B.EE06708D.4BFBD933.IP)
+[12:39:28] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.3)
+[12:39:31] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[12:39:31] *** Quits: dwrensha (chatzilla@moz-DE44EA45.hsd1.pa.comcast.net) (Ping timeout)
+[12:44:05] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[12:44:09] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[12:47:12] <eddyb> omg, ast_util is so tiny now
+[12:47:18] <eddyb> can't wait until it finally dies
+[12:47:24] <huon> all the mtwt stuff got moved
+[12:47:41] <edwardw> what?
+[12:47:58] <edwardw> oh, I read removed
+[12:48:36] * edwardw runs away.
+[13:01:45] *** Joins: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP)
+[13:01:45] <ghrust> [13rust] 15bors pushed 3 new commits to 06auto: 02http://git.io/38YGew
+[13:01:45] <ghrust> 13rust/06auto 14c5d8556 15Huon Wilson: rand: remove (almost) all ~[]'s from Vec....
+[13:01:45] <ghrust> 13rust/06auto 14846d1c7 15Huon Wilson: rand: replace Rng.shuffle's functionality with .shuffle_mut....
+[13:01:46] <ghrust> 13rust/06auto 1421273d5 15bors: auto merge of #13177 : huonw/rust/devec-rand, r=alexcrichton...
+[13:01:48] *** Parts: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP) ()
+[13:09:28] *** Quits: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca) (Quit: canhtak)
+[13:12:41] <eddyb> I wish ktt3ja was around so I could bug them about my changes interfering with https://github.com/mozilla/rust/pull/13112
+[13:13:45] *** Quits: lpy (lpy@207F51B2.F09091A8.1348A864.IP) (Ping timeout)
+[13:13:56] *** Joins: lpy (lpy@207F51B2.F09091A8.1348A864.IP)
+[13:17:20] <cmr> eddyb: email them
+[13:17:50] <eddyb> then again, I took a look at the patch and I should be fine
+[13:22:28] *** Joins: doomlord_ (servitor@moz-56F8DA57.range86-148.btcentralplus.com)
+[13:27:06] *** Quits: dcrewi (david@moz-AB8667CE.gyrae.net) (Ping timeout)
+[13:27:19] *** Joins: vfetwnuncszu (david@moz-AB8667CE.gyrae.net)
+[13:27:29] *** vfetwnuncszu is now known as dcrewi
+[13:28:12] <herrwolfe45> hi - I've been working on PR #13110 and I noticed that I'm only able to reproduce the bug when rustc is built using clang, would that be something useful to note in the PR?
+[13:29:46] <cmr> herrwolfe45: with --enable-clang, it's only used for building llvm, libuv, and the tiny amount of C glue we still have.
+[13:30:42] <cmr> herrwolfe45: that's really troublesome though. which bug to you refer to, the one in the PR description?
+[13:30:47] <cmr> (so I can try to repro)
+[13:30:47] <herrwolfe45> yes that one
+[13:30:51] <herrwolfe45> sure
+[13:30:56] *** Quits: victorporof (victorporo@moz-1C281963.dsl.bell.ca) (Quit: victorporof)
+[13:31:14] <herrwolfe45> https://github.com/mozilla/rust/issues/12865
+[13:32:34] <herrwolfe45> cmr: I was having enormous difficulty getting gdb to find the debug symbols on the rustc version I built on darwin with clang. I finally tried building rustc on linux virtual machine with g++ and the bug no longer occurred and I was able to use gdb.
+[13:33:36] <flaper87> mmh
+[13:33:47] <flaper87> I can give it a try on my linux box if you want
+[13:33:51] <flaper87> cmr: are you on OSx ?
+[13:34:06] <cmr> no.
+[13:34:18] <flaper87> ah then no need for me to try it if you're already doing it
+[13:44:06] <herrwolfe45> is there a flag to force usage of gcc?
+[13:44:27] <cmr> you can set the linker with -C linker=gcc
+[13:47:35] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[13:49:50] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[13:52:11] *** Joins: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca)
+[13:52:43] *** Quits: pnkfelix (pnkfelix@87C1F78E.1DE10CA8.D8E68FF6.IP) (Quit: rcirc on GNU Emacs 24.3.1)
+[13:54:43] *** Quits: lpy (lpy@207F51B2.F09091A8.1348A864.IP) (Client exited)
+[13:56:44] <cmr> herrwolfe45: I can't repro on linux at all.
+[13:57:19] <herrwolfe45> cmr: interesting
+[13:57:26] <herrwolfe45> I tried getting it to show up 1000 times
+[13:57:28] <herrwolfe45> and never got it to hit
+[13:57:52] <herrwolfe45> on OS X
+[13:58:05] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[13:58:08] <herrwolfe45> it was happening more than half of the time
+[13:58:30] *** Joins: erickt_ (erickt@49C4075F.3AC15C18.2321E71E.IP)
+[14:00:27] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[14:01:58] *** Quits: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca) (Quit: canhtak)
+[14:05:39] <herrwolfe45> cmr: that is, i tested for it on Linux 1000 times
+[14:06:02] <herrwolfe45> cmr: and at no point was i able to get the behaviour
+[14:11:45] *** Joins: ghrust (ghrust@511FAEBD.6A2AE50.F3114085.IP)
+[14:11:45] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/38YGew
+[14:11:45] *** Parts: ghrust (ghrust@511FAEBD.6A2AE50.F3114085.IP) ()
+[14:19:54] *** Quits: NiccosSystem (NiccosSyst@moz-ED196BB4.customer.lyse.net) (Quit: Leaving)
+[14:20:13] *** Joins: NiccosSystem (NiccosSyst@moz-ED196BB4.customer.lyse.net)
+[14:20:21] *** Quits: NiccosSystem (NiccosSyst@moz-ED196BB4.customer.lyse.net) (Client exited)
+[14:22:57] *** Quits: edwardw (Mibbit@E9739E5B.EE06708D.4BFBD933.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[14:24:52] *** Joins: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca)
+[14:29:09] <nmatsakis> eddyb: did you resolve your questions?
+[14:29:36] <eddyb> nmatsakis: fixing the last borrowck errors atm :)
+[14:29:54] <eddyb> most of them are related to the use of Rc in Def
+[14:30:09] <eddyb> (which I'll try to extract into a separate PR)
+[14:30:44] <eddyb> maybe we should be keeping Def Copy-able
+[14:31:37] <eddyb> nmatsakis: does DefUpvar really need that handle to the variable it closes over?
+[14:33:11] <eddyb> no it doesn't :)
+[14:36:07] <nmatsakis> :)
+[14:36:31] <eddyb> can I git grep a diff?
+[14:39:45] *** Joins: frogzilla (Mibbit@3E3094EC.34458CF2.CC1A2609.IP)
+[14:45:28] *** Joins: victorporof (victorporo@13F2CEC5.7672369.D8E68FF6.IP)
+[14:57:29] *** Quits: Zr40 (zr40@EE4BB9F5.926C319A.BE2F4011.IP) (Quit: leaving)
+[15:00:35] *** Joins: jdm (jdm@moz-AC9499B2.cable.teksavvy.com)
+[15:04:10] *** Quits: rajaram_ (rajaram@33A9A431.471340E7.BE4CF869.IP) (Ping timeout)
+[15:16:43] *** Joins: ghrust (ghrust@B750D19A.6A2AE50.F3114085.IP)
+[15:16:43] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/oFvecw
+[15:16:43] *** Parts: ghrust (ghrust@B750D19A.6A2AE50.F3114085.IP) ()
+[15:16:45] *** Joins: ghrust (ghrust@4089EBDC.6A2AE50.F3114085.IP)
+[15:16:45] <ghrust> [13rust] 15bors pushed 2 new commits to 06auto: 02http://git.io/mUNpNg
+[15:16:45] <ghrust> 13rust/06auto 14a8308fb 15Ted Horst: make Cmplx fields public
+[15:16:45] <ghrust> 13rust/06auto 143786b55 15bors: auto merge of #13248 : tedhorst/rust/master, r=alexcrichton
+[15:16:45] *** Parts: ghrust (ghrust@4089EBDC.6A2AE50.F3114085.IP) ()
+[15:17:34] <benh> thanks acrichto <:)
+[15:17:56] <cmr> r? https://github.com/mozilla/rust/pull/13244
+[15:18:05] *** Quits: frogzilla (Mibbit@3E3094EC.34458CF2.CC1A2609.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[15:19:13] *** Joins: edwardw (edwardw@6B6F4036.AB331A3B.FAED9FFC.IP)
+[15:26:36] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[15:28:56] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[15:35:01] <eddyb> cmr: uhh, simplest fix for this part of the code is to encode the side tables *before* the AST itself
+[15:35:07] <eddyb> cmr: I wonder if that will break
+[15:35:10] <eddyb> geranimo!
+[15:37:26] *** kimundi is now known as zz_kimundi
+[15:38:36] *** Quits: mawuli (mawuli@moz-781516AB.com.gh) (Ping timeout)
+[15:38:58] *** Joins: mawuli (mawuli@moz-781516AB.com.gh)
+[15:48:35] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[15:50:01] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[15:50:30] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Client exited)
+[15:50:43] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[15:50:43] *** ChanServ sets mode: +o pnkfelix
+[15:50:51] *** Joins: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp)
+[15:51:38] <pnkfelix> edwardw: wasn't noise, it was a totally reasonable thing to notice and question
+[15:52:01] <edwardw> ok :)
+[15:52:22] <pnkfelix> edwardw: even while I was walking a moment ago I was pondering trying to generalize the code in some other way, e.g. passing in two iterators rather than the ast:: or ty::Generics
+[15:52:32] *** Quits: ssira (ssira@moz-F6206352.kanagawa.ocn.ne.jp) (Ping timeout)
+[15:52:34] <pnkfelix> edwardw: but its probably more trouble than its worth
+[15:53:48] <edwardw> I can see that
+[15:57:29] *** Quits: jdm (jdm@moz-AC9499B2.cable.teksavvy.com) (Quit: Lost terminal)
+[15:58:31] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[15:59:30] *** Quits: edwardw (edwardw@6B6F4036.AB331A3B.FAED9FFC.IP) (Ping timeout)
+[16:00:31] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[16:03:29] <pnkfelix> acrichto: ping
+[16:16:29] *** Joins: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net)
+[16:16:44] *** Quits: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net) (Input/output error)
+[16:20:56] <acrichto> pnkfelix: pong
+[16:21:32] <pnkfelix> acrichto: re your comment on PR 13260
+[16:21:48] <pnkfelix> acrichto: when you say rpass-full needs the same treatment as crates-exec
+[16:22:03] <acrichto> if target isn't in CFG_HOST it should be a no-op
+[16:22:47] *** Quits: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca) (Quit: canhtak)
+[16:23:05] <pnkfelix> acrichto: i guess I was wondering if it might be easier to revise DEF_TEST_SETS itself
+[16:23:19] <acrichto> how so?
+[16:23:41] <pnkfelix> acrichto: to filter out the rpass-full dependences when the condition hodls
+[16:23:59] <acrichto> sure
+[16:23:59] <pnkfelix> acrichto: mostly I wasn't happy about how much trouble I'm having finding the definition for rpass-full
+[16:24:09] <acrichto> haha, yeah the testing makefile is quite opaque
+[16:24:14] <acrichto> most others have gotten better
+[16:24:30] <acrichto> nmatsakis: ping
+[16:24:37] <pnkfelix> (or rather, the definition of chcek-stage$(1)-T-$(2)-H-$(3)-rpass-full-exec ...)
+[16:24:48] <acrichto> I'd be ok with that
+[16:25:03] <cmr> nmatsakis: also ping
+[16:25:49] <pnkfelix> acrichto: I'm torn because I can see peppering the body of DEF_TEST_SETS with more ifneq ($$(findstring $(2),$$(CFG_HOST)),) wouldn't be *that* clean a revision
+[16:26:08] <pnkfelix> acrichto: I guess I'll try a little harder to see if I can figure out where rpass-full is defined.
+[16:26:12] <acrichto> yeah..., perhaps there should be an ALL_SUITES thing
+[16:26:17] <acrichto> which is cfg'd to be different
+[16:26:38] <acrichto> pnkfelix: search for (4)-exec
+[16:26:45] *** Joins: edwardw (edwardw@4112974A.B4358688.30F15291.IP)
+[16:26:50] <acrichto> $(4) is the name of the sutie
+[16:26:51] <acrichto> suite*
+[16:27:06] *** Joins: ghrust (ghrust@49477F7E.6A2AE50.F3114085.IP)
+[16:27:06] <ghrust> [13rust] 15bors merged 06auto into 06master: 02http://git.io/mUNpNg
+[16:27:06] *** Parts: ghrust (ghrust@49477F7E.6A2AE50.F3114085.IP) ()
+[16:27:10] <pnkfelix> acrichto: not the name of the crate ?
+[16:27:27] <pnkfelix> acrichto: I was trying to infer based on https://github.com/mozilla/rust/blob/master/mk/tests.mk#L425
+[16:27:27] <acrichto> it is in some cases
+[16:27:39] <pnkfelix> mmm
+[16:28:01] <acrichto> std-exec?!
+[16:28:06] <acrichto> I never even knew that existed
+[16:28:19] *** Quits: erickt_ (erickt@49C4075F.3AC15C18.2321E71E.IP) (Ping timeout)
+[16:28:25] <pnkfelix> acrichto: plus there's already this funny DEF_TEST_CRATE_RULES_arm-linux-androideabi special cased thing ...
+[16:28:28] <acrichto> oh wait, I see...
+[16:28:32] <acrichto> zomg what is going on here
+[16:29:04] <acrichto> pnkfelix: https://github.com/mozilla/rust/blob/master/mk/tests.mk#L578-L620
+[16:29:26] <acrichto> oh
+[16:29:33] <acrichto> looks like you can set CTEST_DISABLE_rpass-full
+[16:29:37] <acrichto> no
+[16:29:40] <acrichto> that's not per-target
+[16:30:36] *** Joins: doener (doener@moz-C68F600D.unity-media.net)
+[16:30:51] <pnkfelix> acrichto: your point here... its not just that android is a specal case
+[16:31:04] <pnkfelix> acrichto: i.e. ... we shouldn't be doing rpass-full for any cross-compilation instance, right?
+[16:31:07] <acrichto> we appear to have many special cases
+[16:31:08] <acrichto> yes
+[16:31:12] <acrichto> well hm, no
+[16:31:19] <acrichto> only if the target isn't in CFG_HOSTS
+[16:31:39] * pnkfelix thought that's what it meant to be cross-compiling
+[16:32:12] <pnkfelix> there's some subtlety here I'm not seeing, clearly
+[16:32:14] <acrichto> i686 and x86_64 in theory can run their own tests
+[16:32:17] *** Joins: ghrust (ghrust@2E45E35D.6A2AE50.F3114085.IP)
+[16:32:17] <ghrust> [13rust] 15bors pushed 0 new commits to 06auto: 02http://git.io/IYSWgQ
+[16:32:17] *** Parts: ghrust (ghrust@2E45E35D.6A2AE50.F3114085.IP) ()
+[16:32:18] *** Joins: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP)
+[16:32:18] <ghrust> [13rust] 15bors pushed 3 new commits to 06auto: 02http://git.io/2oiLVg
+[16:32:18] <ghrust> 13rust/06auto 14b16bfd1 15Alex Crichton: rustc: Require that vector indices are uints...
+[16:32:18] <ghrust> 13rust/06auto 1454c1d83 15Alex Crichton: Fix fallout of requiring uint indices
+[16:32:18] <ghrust> 13rust/06auto 14d6fac92 15bors: auto merge of #13257 : alexcrichton/rust/index-uint, r=pnkfelix...
+[16:32:20] *** Parts: ghrust (ghrust@88C0CBA2.6A2AE50.F3114085.IP) ()
+[16:32:21] <acrichto> they can both be hosts and both be targets
+[16:32:37] <pnkfelix> acrichto: ah okay and that's still cross-compilation, gotcha
+[16:33:37] <pnkfelix> acrichto: am I blind or is this https://github.com/mozilla/rust/blob/master/mk/tests.mk#L373
+[16:33:42] <acrichto> nmatsakis: unping, commented on the issue (#10553)
+[16:33:43] <pnkfelix> acrichto: the same as two lines above it?
+[16:34:11] <acrichto> pnkfelix: I think that's a copy-and-paste happy keyboard too
+[16:34:18] <acrichto> shouldn't be necessary
+[16:35:34] *** Joins: esummers (esummers@moz-3B015C90.wi.res.rr.com)
+[16:37:03] <pnkfelix> acrichto: I'm still trying to understand the thinking here
+[16:37:32] <pnkfelix> acrichto: we are currently allowing there to be many places that add dependencies of some form `check-stage$(1)-T-$(2)-H-$(3)-$(4)-exec: foo`, right?
+[16:37:48] <acrichto> it appears so, yeah
+[16:37:54] <pnkfelix> acrichto: e.g. the line you pointed out with the conditionally defined `check-stage$(1)-T-$(2)-H-$(3)-crates-exec: ...`
+[16:37:56] <acrichto> although $(4) is sometimes a suite name and sometimes a crate name
+[16:38:00] <acrichto> or that
+[16:38:01] <acrichto> :(
+[16:38:05] <pnkfelix> acrichto: that is just unioned with check-stage$(1)-T-$(2)-H-$(3)-$(4)-exec
+[16:38:17] <acrichto> I think it assumes that no other $(4) is called "crates"
+[16:38:57] <pnkfelix> acrichto: oh of course, crates is not on CTEST_NAMES
+[16:38:59] *** Joins: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca)
+[16:39:27] <pnkfelix> acrichto: but that doesn't make it any easier for me to remove the contents of rpass-full in this scenario
+[16:41:15] <pnkfelix> acrichto: actually, maybe this is not so bad
+[16:41:19] <acrichto> Luqman: do you mind if I rebase your patch and try to upstream it again (for the split-stack attribute)
+[16:42:06] *** Joins: dherman (dherman@moz-C07D5168.p2p.sfo1.mozilla.com)
+[16:42:06] *** ChanServ sets mode: +ao dherman dherman
+[16:42:58] <pnkfelix> acrichto: another option could be to change CTEST_DISABLE, extend it to be potnetially per-target
+[16:43:14] <acrichto> it may want to be called something else in that case
+[16:43:22] <pnkfelix> acrichto: and then do the or between the two
+[16:43:23] <acrichto> CTEST_DISABLE_TARGET or something like that
+[16:43:26] <pnkfelix> acrichto: yeah
+[16:43:33] <acrichto> sounds good to me
+[16:43:54] <pnkfelix> acrichto: although I guess we just got through discussing that this is not a target-specific issue
+[16:43:56] *** Joins: radford (Adium@moz-A69E09BD.warp2biz.com)
+[16:44:01] <pnkfelix> acrichto: but rather a cross-compilation one, right?  Sigh...
+[16:44:24] <pnkfelix> okay I'll poke at it on my own for a while
+[16:48:24] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[16:51:46] *** Joins: ghrust (ghrust@7BEB6F9D.6A2AE50.F3114085.IP)
+[16:51:46] <ghrust> [13rust] 15bors 04force-pushed 06auto from 14d6fac92 to 143786b55: 02http://git.io/N3iJvQ
+[16:51:46] *** Parts: ghrust (ghrust@7BEB6F9D.6A2AE50.F3114085.IP) ()
+[16:51:50] *** Joins: ghrust (ghrust@99CAE845.6A2AE50.F3114085.IP)
+[16:51:50] <ghrust> [13rust] 15bors pushed 3 new commits to 06auto: 02http://git.io/ayp9uQ
+[16:51:50] <ghrust> 13rust/06auto 14b16bfd1 15Alex Crichton: rustc: Require that vector indices are uints...
+[16:51:50] <ghrust> 13rust/06auto 14edb1333 15Alex Crichton: Fix fallout of requiring uint indices
+[16:51:50] <ghrust> 13rust/06auto 143716948 15bors: auto merge of #13257 : alexcrichton/rust/index-uint, r=pnkfelix...
+[16:51:52] *** Parts: ghrust (ghrust@99CAE845.6A2AE50.F3114085.IP) ()
+[16:52:03] *** Joins: TimAbraldes (quassel@moz-7FD19BDC.hsd1.or.comcast.net)
+[16:53:20] *** Quits: Sharp (Sharp@moz-633F3606.hsd1.ca.comcast.net) (Ping timeout)
+[16:53:46] *** Joins: Sharp (Sharp@moz-633F3606.hsd1.ca.comcast.net)
+[17:03:17] *** Joins: jdm (jdm@FCCEA34F.7672369.D8E68FF6.IP)
+[17:06:39] *** Joins: japaric (japaric@32EABCAF.E00EBC6F.F29ED47E.IP)
+[17:07:10] *** Quits: japaric_ (japaric@2FEED3C6.68214967.A936879B.IP) (Ping timeout)
+[17:07:52] *** Quits: eddyb (eddy@F8B50789.F33C1089.FB866788.IP) (Ping timeout)
+[17:10:21] *** Quits: Kxepal (Miranda@moz-5BF1FD2C.pppoe.mtu-net.ru) (Ping timeout)
+[17:10:53] *** Joins: eddyb (eddy@F8B50789.F33C1089.FB866788.IP)
+[17:11:50] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (No route to host)
+[17:14:16] *** Joins: Kxepal (Miranda@moz-B69B305D.pppoe.mtu-net.ru)
+[17:16:55] *** Joins: ghrust (ghrust@23EC81EC.6A2AE50.F3114085.IP)
+[17:16:55] <ghrust> [13rust] 15bors 04force-pushed 06auto from 143716948 to 143786b55: 02http://git.io/N3iJvQ
+[17:16:55] *** Parts: ghrust (ghrust@23EC81EC.6A2AE50.F3114085.IP) ()
+[17:16:55] *** Joins: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP)
+[17:16:55] <ghrust> [13rust] 15bors pushed 3 new commits to 06auto: 02http://git.io/lmvgLQ
+[17:16:55] <ghrust> 13rust/06auto 14b16bfd1 15Alex Crichton: rustc: Require that vector indices are uints...
+[17:16:55] <ghrust> 13rust/06auto 147523781 15Alex Crichton: Fix fallout of requiring uint indices
+[17:16:56] <ghrust> 13rust/06auto 1435916d6 15bors: auto merge of #13257 : alexcrichton/rust/index-uint, r=pnkfelix...
+[17:16:58] *** Parts: ghrust (ghrust@2DCF43EA.6A2AE50.F3114085.IP) ()
+[17:17:23] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[17:18:42] *** Joins: andrew-d_w (andrew-d_w@2DE5EA9.7A62F771.CC0301A2.IP)
+[17:19:20] *** Quits: radford (Adium@moz-A69E09BD.warp2biz.com) (Ping timeout)
+[17:19:27] *** Joins: radford (Adium@moz-A69E09BD.warp2biz.com)
+[17:30:54] *** Joins: brson (brson@moz-62518563.mtv2.mozilla.com)
+[17:30:54] *** ChanServ sets mode: +qo brson brson
+[17:31:00] <brson> restarting buildbot
+[17:31:43] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[17:32:53] *** Quits: radford (Adium@moz-A69E09BD.warp2biz.com) (Ping timeout)
+[17:34:18] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[17:38:06] *** Joins: japaric_ (japaric@350B7307.551A521E.212E9B57.IP)
+[17:38:19] *** Quits: japaric (japaric@32EABCAF.E00EBC6F.F29ED47E.IP) (Connection reset by peer)
+[17:47:48] *** Quits: steveklabnik (steev@B1BA5385.27F34CF7.5670445F.IP) (NickServ (GHOST command used by steve))
+[17:47:49] *** Joins: steveklabnik (steev@B1BA5385.27F34CF7.5670445F.IP)
+[17:48:17] *** Quits: steveklabnik (steev@B1BA5385.27F34CF7.5670445F.IP) (NickServ (GHOST command used by steve))
+[17:52:51] *** Joins: stevekla1nik (steev@B1BA5385.27F34CF7.5670445F.IP)
+[17:58:50] *** Quits: brson (brson@moz-62518563.mtv2.mozilla.com) (Ping timeout)
+[18:00:02] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[18:01:24] *** Joins: brson (brson@moz-62518563.mtv2.mozilla.com)
+[18:01:24] *** ChanServ sets mode: +qo brson brson
+[18:03:00] <eddyb> huon: first P test run
+[18:04:51] <eddyb> I don't recall any unsafeties
+[18:05:24] <cmr> eddyb: does that mean @ is gone? :)
+[18:06:49] <eddyb> cmr: need two commits for libsyntax
+[18:07:29] <eddyb> and some heavy duty anti-@ missiles for librustc
+[18:07:51] <eddyb> parallel effort would be nice ;)
+[18:08:12] <eddyb> cmr: oooh, after LLVM passes RAM usage drops to 100MB
+[18:08:22] <eddyb> at least with jemalloc
+[18:08:29] <eddyb> (unrelated to P)
+[18:08:54] <eddyb> just that I never noticed
+[18:09:22] <eddyb> aww it gets pretty far in libstd, but error: internal compiler error: node_id_to_type: no type for node `unknown node (id=4294967295)`
+[18:09:32] *** Quits: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com) (Quit: WeeChat 0.4.3)
+[18:11:02] *** Joins: pcwalton (pcwalton@moz-C07D5168.p2p.sfo1.mozilla.com)
+[18:11:02] *** ChanServ sets mode: +ao pcwalton pcwalton
+[18:11:48] *** Quits: Sharp (Sharp@moz-633F3606.hsd1.ca.comcast.net) (Quit: Sharp)
+[18:13:46] *** Joins: radford (Adium@moz-AC76BE6B.dhcp.mtpk.ca.charter.com)
+[18:14:28] *** Quits: rustilite (rustilite@moz-54F7FD49.cpe.net.cable.rogers.com) (Client exited)
+[18:15:38] <cmr> looks like -1
+[18:15:52] *** Quits: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com) (Ping timeout)
+[18:16:00] <eddyb> cmr: yeah, DUMMY_NODE_ID
+[18:16:03] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[18:16:05] <eddyb> aaaand I know I used a bunch of those
+[18:16:51] <eddyb> cmr: I used -1 instead of 0 (which is the crate ID) in a couple modules, where they were making dummy @ast::Pat's
+[18:17:03] <eddyb> they're now &'static ast::Pat btw :D
+[18:17:04] *** Joins: strcat (strcat@moz-54F7FD49.cpe.net.cable.rogers.com)
+[18:18:32] <eddyb> cmr: now... keep in mind what it was before. why was it able to take the type of the crate?
+[18:18:42] <eddyb> what does that even return?
+[18:18:59] <cmr> where?
+[18:19:03] <eddyb> acrichto: props for backtrace, really cool
+[18:19:18] <eddyb> cmr: dummy patterns in middle::check_match and maybe middle::trans::_match
+[18:19:47] <eddyb> if real_pat.id == 0 { ty::mk_nil() } // hehe
+[18:19:53] *** Joins: tikue (tkuehn@CB7FC854.FAD414BA.D74CC41D.IP)
+[18:20:36] *** Joins: Sharp (Sharp@moz-3301C7AB.static-ip.telepacific.net)
+[18:29:14] *** Joins: dmsky (dmsky@moz-FF2573B1.pppoe.spdop.ru)
+[18:29:42] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[18:31:00] *** Quits: dmsky (dmsky@moz-FF2573B1.pppoe.spdop.ru) (Ping timeout)
+[18:31:36] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[18:39:40] <eddyb> /home/eddy/Projects/rust/src/libstd/sync/deque.rs:159:44: 159:71 error: internal compiler error: no variable registered for id 124099
+[18:39:41] <eddyb> /home/eddy/Projects/rust/src/libstd/sync/deque.rs:159                 match pool.iter().position(|x| x.size() >= (1 << bits)) {
+[18:39:50] <eddyb> uuff, why that?
+[18:39:59] *** zz_kimundi is now known as kimundi
+[18:40:06] *** Joins: dmsky (dmsky@moz-FF2573B1.pppoe.spdop.ru)
+[18:40:13] <eddyb> cmr: this is what happens when you change out the entire sanguine system
+[18:40:17] <eddyb> somewhere a vein got nicked
+[18:40:29] *** Quits: radford (Adium@moz-AC76BE6B.dhcp.mtpk.ca.charter.com) (Quit: Leaving.)
+[18:42:16] <eddyb> and it's not as simple as "closure arguments aren't registered" or something like that
+[18:45:08] <eddyb> aah, upvars
+[18:46:08] *** Joins: rusti (rusti@moz-54F7FD49.cpe.net.cable.rogers.com)
+[18:47:30] *** Quits: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net) (Ping timeout)
+[18:49:22] <eddyb> minimal reproduction: let x = 0; ||||x;
+[18:50:52] <eddyb> nmatsakis: I may have broken DefUpvar :/
+[18:51:50] <eddyb> nmatsakis: the first NodeId inside isn't the parent but rather the root
+[18:52:23] * eddyb wonders if the distinction makes a difference
+[18:52:51] <nmatsakis> that system is a bit confusing
+[18:53:15] <eddyb> do you know offhand if anything cares?
+[18:53:33] <eddyb> I only remember loops who went up the upvar chain
+[18:53:40] <nmatsakis> i don't know off hand
+[18:55:23] <eddyb> of course freevars' loop isn't simple
+[18:56:16] <eddyb> it needs the correct depth
+[18:57:38] <eddyb> nmatsakis: yeah this can totally break region&borrow checking
+[18:57:47] *** Quits: dcrewi (david@moz-AB8667CE.gyrae.net) (Ping timeout)
+[18:58:11] *** Joins: tjc (tjc@moz-7EE2AFFC.hfc.comcastbusiness.net)
+[18:58:12] *** ChanServ sets mode: +o tjc
+[19:01:02] *** Joins: radford (Adium@moz-AC76BE6B.dhcp.mtpk.ca.charter.com)
+[19:02:34] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[19:07:42] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[19:09:57] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[19:11:46] *** Quits: brson (brson@moz-62518563.mtv2.mozilla.com) (Ping timeout)
+[19:12:33] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[19:14:25] *** Joins: vfetwnuncszu (david@moz-AB8667CE.gyrae.net)
+[19:14:40] *** vfetwnuncszu is now known as dcrewi
+[19:24:32] <eddyb> cmr: I'm too tired to fix this Upvar business so no benches today :(
+[19:28:24] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[19:29:40] *** Joins: brson (brson@moz-62518563.mtv2.mozilla.com)
+[19:29:40] *** ChanServ sets mode: +qo brson brson
+[19:30:28] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[19:35:56] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[19:38:16] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[19:40:06] <cmr> r? https://github.com/mozilla/rust/pull/13244
+[19:45:40] *** Quits: andrew-d_w (andrew-d_w@2DE5EA9.7A62F771.CC0301A2.IP) (Input/output error)
+[19:46:02] *** Joins: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[19:47:58] *** Quits: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca) (Quit: canhtak)
+[19:48:11] *** Quits: brson (brson@moz-62518563.mtv2.mozilla.com) (Ping timeout)
+[19:48:24] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[19:49:01] *** Quits: radford (Adium@moz-AC76BE6B.dhcp.mtpk.ca.charter.com) (Quit: Leaving.)
+[19:49:22] *** Joins: nrc (nrc@7BE24E90.A5032A01.3CFC199D.IP)
+[19:50:01] <flaper87> cmr: it looks good to me now
+[19:50:09] <flaper87> cmr: btw, sorry for the crazy coments there :P
+[19:50:31] <flaper87> Like: "Yes lets get rid of it. No wait don't. Nah yeah, lets do it. No no no, NOOO"
+[19:50:44] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[19:52:55] *** Joins: andrew-__ (andrew-d_w@2DE5EA9.7A62F771.CC0301A2.IP)
+[19:53:44] *** Quits: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Ping timeout)
+[19:55:17] *** Joins: pnkfelix (pnkfelix@moz-43495417.fbx.proxad.net)
+[19:55:17] *** ChanServ sets mode: +o pnkfelix
+[19:57:12] *** Quits: dcrewi (david@moz-AB8667CE.gyrae.net) (Ping timeout)
+[19:57:12] *** Joins: vfetwnuncszu (david@moz-AB8667CE.gyrae.net)
+[19:57:28] *** vfetwnuncszu is now known as dcrewi
+[19:58:06] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[20:00:01] *** Quits: andrew-__ (andrew-d_w@2DE5EA9.7A62F771.CC0301A2.IP) (Input/output error)
+[20:00:21] *** Joins: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[20:00:26] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[20:00:49] *** Joins: andrew-__ (andrew-d_w@2DE5EA9.7A62F771.CC0301A2.IP)
+[20:01:36] *** Quits: andrew-__ (andrew-d_w@2DE5EA9.7A62F771.CC0301A2.IP) (Input/output error)
+[20:01:57] *** Quits: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Connection reset by peer)
+[20:01:59] *** Joins: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[20:07:14] *** Joins: brson (brson@moz-62518563.mtv2.mozilla.com)
+[20:07:14] *** ChanServ sets mode: +qo brson brson
+[20:13:32] *** Quits: mawuli (mawuli@moz-781516AB.com.gh) (Client exited)
+[20:28:54] *** Joins: lkuper (lkuper@moz-AD4C50F5.dhcp-bl.indiana.edu)
+[20:31:44] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[20:32:13] *** Quits: edwardw (edwardw@4112974A.B4358688.30F15291.IP) (Quit: Leaving...)
+[20:34:31] *** Quits: tjc (tjc@moz-7EE2AFFC.hfc.comcastbusiness.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[20:34:52] *** Joins: andrew-__ (andrew-d_w@2DE5EA9.7A62F771.CC0301A2.IP)
+[20:35:00] *** Quits: bytbox (s@moz-E1E7FAC3.washdc.fios.verizon.net) (Ping timeout)
+[20:35:53] *** Quits: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Ping timeout)
+[20:38:44] *** Joins: bytbox (s@moz-E1E7FAC3.washdc.fios.verizon.net)
+[20:41:13] *** Joins: mib_dr5e9e (Mibbit@3E3094EC.34458CF2.CC1A2609.IP)
+[20:41:40] *** Quits: Leo` (Leo@moz-83832FE2.placeholder.fr) (Connection reset by peer)
+[20:43:30] *** Quits: mib_dr5e9e (Mibbit@3E3094EC.34458CF2.CC1A2609.IP) (Quit: http://www.mibbit.com ajax IRC Client)
+[20:43:31] *** Joins: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP)
+[20:44:55] *** Joins: Leo` (Leo@moz-83832FE2.placeholder.fr)
+[20:45:22] <eddyb> nmatsakis:  /// Wraps the given definition in the appropriate number of `def_upvar` wrappers.
+[20:45:24] *** Quits: summerlight (summerligh@327FC32B.2C956A45.501EFF44.IP) (Ping timeout)
+[20:45:27] <eddyb> nmatsakis: not exactly easy to fix :(
+[20:51:46] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[21:01:35] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[21:04:01] *** Joins: tjc (tjc@moz-7EE2AFFC.hfc.comcastbusiness.net)
+[21:04:01] *** ChanServ sets mode: +o tjc
+[21:06:49] <eddyb> nmatsakis: okay, I think I realized what's going on. ||||x has no occurrence of x in the outer closure, and there's really no NodeId to use
+[21:07:13] <eddyb> nmatsakis: I'm thinking a "depth" value might work
+[21:09:43] *** Quits: jdm (jdm@FCCEA34F.7672369.D8E68FF6.IP) (Quit: Lost terminal)
+[21:11:43] *** Quits: lkuper (lkuper@moz-AD4C50F5.dhcp-bl.indiana.edu) (Quit: lkuper)
+[21:12:32] *** Joins: radford (Adium@moz-AC76BE6B.dhcp.mtpk.ca.charter.com)
+[21:26:24] *** Quits: andrew-__ (andrew-d_w@2DE5EA9.7A62F771.CC0301A2.IP) (Input/output error)
+[21:26:45] *** Joins: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[21:29:56] *** Joins: andrew-__ (andrew-d_w@2DE5EA9.7A62F771.CC0301A2.IP)
+[21:31:05] *** Quits: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Ping timeout)
+[21:31:06] *** Joins: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP)
+[21:34:01] <eddyb> nmatsakis: okay, depth should work, but only freevars needs it #1aminvestigativework
+[21:34:31] *** Quits: andrew-__ (andrew-d_w@2DE5EA9.7A62F771.CC0301A2.IP) (Input/output error)
+[21:34:51] *** Quits: tjc (tjc@moz-7EE2AFFC.hfc.comcastbusiness.net) (Quit: My MacBook Pro has gone to sleep. ZZZzzz…)
+[21:34:54] *** Joins: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[21:35:46] <brson> new updated website design http://brson.github.io/rust-www/
+[21:36:02] <brson> bjz: ^ this addresses your 'molasses' comment
+[21:36:26] <cmr> it no longer fits on a single page on my laptop :( 1366x768
+[21:36:29] *** Quits: Nekit1234007 (Nekit12340@DC1D6696.9C28A5C7.4707F662.IP) (Ping timeout)
+[21:36:43] <cmr> a media query might help with this
+[21:37:11] * eddyb wishes cmr removed freevars completely
+[21:37:12] <brson> cmr: what do you mean by that?
+[21:37:22] <brson> can you screenshot?
+[21:37:24] <sfackler> brson: I like it
+[21:37:32] <eddyb> aww just has_freevars
+[21:37:48] <brson> sfackler: thanks
+[21:38:07] <sfackler> "prevents all crashes" is a pretty strong statement :P
+[21:38:15] <brson> sfackler: yeah, i'm going to add back the footnote
+[21:38:29] <cmr> brson: http://i.imgur.com/ooF6C9u.png
+[21:38:34] <cmr> brson: I also like it though.
+[21:38:44] <cmr> especially the example.
+[21:39:04] <eddyb> brson: I don't think we should keep a std docs link
+[21:39:32] <cmr> I think we should.
+[21:39:37] <sfackler> it's effectively an "all API docs" link now
+[21:39:39] <cmr> I want one clikc from the homepage to a search for all the docs.
+[21:39:42] <sfackler> maybe just rename it to "API docs"?
+[21:39:53] <eddyb> cmr: why not put a search bar on the doc index?
+[21:40:49] *** Joins: andrew-__ (andrew-d_w@2DE5EA9.7A62F771.CC0301A2.IP)
+[21:40:54] <cmr> that would also work I suppose.
+[21:41:51] *** Quits: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Ping timeout)
+[21:42:14] <eddyb> what is a "freevar" :/?
+[21:42:22] *** Quits: brson (brson@moz-62518563.mtv2.mozilla.com) (Ping timeout)
+[21:42:50] <cmr> eddyb: unbound upvars.
+[21:43:02] <eddyb> unbound in what way?
+[21:43:10] <eddyb> this just collects upvars AFAICT
+[21:43:18] *** Quits: bytbox (s@moz-E1E7FAC3.washdc.fios.verizon.net) (Ping timeout)
+[21:43:22] <cmr> well, all upvars I suppose
+[21:43:24] <cmr> unbound variables :p
+[21:43:30] *** Joins: bvssvni (Mibbit@moz-A47B6F8E.bb.online.no)
+[21:43:39] <cmr> https://en.wikipedia.org/wiki/Free_variables_and_bound_variables
+[21:44:32] * flaper87 likes the new style
+[21:44:33] <eddyb> it looks like a worse "capture map collection" phase
+[21:44:38] *** Joins: bytbox (s@moz-E1E7FAC3.washdc.fios.verizon.net)
+[21:44:39] <eddyb> cmr: hmm
+[21:45:07] <eddyb> cmr: freevars seems to collect everything but freevars
+[21:45:15] <eddyb> if my understanding is correct
+[21:45:18] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[21:47:23] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[21:50:02] <eddyb> cmr: or maybe "bound variables" are arguments?
+[21:50:12] <eddyb> cmr: and "free variables" are captures?
+[21:50:18] <cmr> eddyb: yes, exactly.
+[21:50:36] <cmr> the only source of bound variables is the function's arguments
+[21:50:41] *** Joins: Nekit1234007 (Nekit12340@A4D1747.7796E3F4.4707F662.IP)
+[21:50:42] <eddyb> okay, that makes sense
+[21:51:14] <eddyb> :/
+[21:51:27] <eddyb> cmr: the capture map is created by looking at the freevars
+[21:55:52] <eddyb> hang on
+[21:56:03] <eddyb> in ||||x both closures capture x
+[21:56:24] <eddyb> otherwise the inner one couldn't capture it
+[21:56:52] <eddyb> so... why do we care about the depth again?
+[21:58:49] <pnkfelix> in the "found possibly newer version of crate `foo` ... perhaps this crate needs to be recompiled?" message... how hard would it be to give me paths to the files involved?
+[21:59:08] * pnkfelix goes to see if there's an issue on this already
+[21:59:19] <cmr> pnkfelix: should be very easy!
+[22:00:34] *** Quits: aatch (James@moz-B437F499.pocketrent.com) (Ping timeout)
+[22:01:11] *** Joins: aatch (James@moz-B437F499.pocketrent.com)
+[22:02:23] <nrc> If I have `trait Foo<unsized X: T> { ... }`
+[22:03:01] <nrc> but `T` is not unsized, with the existing kinds work, the sized-ness of T overrides the unsizedness of X
+[22:03:09] <nrc> that seems wrong
+[22:03:27] <nrc> Does anyone think that is correct behaviour?
+[22:03:34] <pnkfelix> nrc: it sound to me like it should cause an error
+[22:03:49] <pnkfelix> nrc: and that you should have had to declare T unsized as well
+[22:03:50] <nrc> pnkfelix: that is what I thought too
+[22:03:55] <nrc> right
+[22:04:04] <kimundi> wait, what is T there? A trait?
+[22:04:08] <pnkfelix> nrc: I don't know if we have any other kinds that are like this
+[22:04:11] <nrc> kimundi: yes
+[22:04:15] <pnkfelix> nrc: where you are forbidden to mix them together
+[22:04:22] <nrc> pnkfelix: that was my next question :-)
+[22:04:31] <pnkfelix> nrc: so you might have to treat it as a special case.  not sure.
+[22:04:42] <nrc> and my next one :-p
+[22:04:55] <kimundi> And this is about T inheriting from "Sized" ?
+[22:05:12] <nrc> kimundi: pretty much (although that is implicit)
+[22:05:20] <nrc> which makes it trickier
+[22:05:41] <kimundi> Wait, how could this even be expressed.
+[22:05:47] <nrc> I think it is a special case because it is the only 'anti-bound'
+[22:05:55] <pnkfelix> kimundi: i'm inferring we're talking e.g. about `fn foo<T> { trait Foo<unsized X:T> { ... } ... }`
+[22:06:29] <nrc> kimundi: `trait T {} fn f3<unsized Y: T>(x: &Y) {...}`
+[22:06:30] <strcat> it would be really nice if we could make directories in run-pass
+[22:06:35] <pnkfelix> nrc: even in my `foo<type X:T>` proposal, 
+[22:06:36] <kimundi> oh, DS would allow such code, right?
+[22:06:55] *** Joins: ChrisMorgan (chris@moz-8DCBEA52.vic.adsl.internode.on.net)
+[22:06:57] <kimundi> And right now this is not possible as traits are not types, right?
+[22:06:58] <pnkfelix> nrc: it would presumably be an error to do `foo<type X:Unsized+T>` when T is Sied
+[22:07:05] <nrc> pnkfelix: I am going with you proposal (wrt the Sized bound), I just need to do s/type/unsized later
+[22:07:37] <pnkfelix> nrc: I guess I just mean that I do not see this as a consequence per se of "anti-bound"
+[22:08:06] <pnkfelix> nrc: or rather, it *is* in the design `unsized` is on the LHS of the colon
+[22:08:25] <pnkfelix> nrc: but when `Unsized` is on the RHS of the colon, and you use `type` as a generalization marker
+[22:08:26] <nrc> well, Unsized is the anti-bound of Sized, other bounds don't have anti-bounds, right?
+[22:08:55] <pnkfelix> nrc: ah, anti-bound meaning incompatible bound?  Okay, yes
+[22:09:04] <pnkfelix> nrc: I was thinking "anti-bound" meant something like `co-bound`
+[22:09:14] <pnkfelix> nrc: a la `co-induction`
+[22:09:28] <pnkfelix> nrc: where "co-bound" would be what others might call ... a "capability" ?
+[22:09:30] *** Quits: dcrewi (david@moz-AB8667CE.gyrae.net) (Ping timeout)
+[22:09:42] *** Joins: vfetwnuncszu (david@moz-AB8667CE.gyrae.net)
+[22:09:45] <nrc> not sure exactly what that would mean, but that is kind of what I mean, I think
+[22:09:53] *** vfetwnuncszu is now known as dcrewi
+[22:10:13] <pnkfelix> nrc: anyway, I'm just trying to back-justify my earlier responses.
+[22:10:14] <nrc> Actually, I think I meant that the problem is unique because there are no other generalisation markers
+[22:10:38] <pnkfelix> nrc: yeah.  And there are not currently any other mutually-incompatible traits, i think ...
+[22:11:06] <pnkfelix> nrc: so under either interpretation (`unsized T:` or `type T:Unsized`), the problem seems new for us, 
+[22:11:52] <nrc> OK, good, that answers one suspicion
+[22:12:30] <nrc> the next question is whether there is a generic implementation or whether I should just `if Sized ...`
+[22:13:20] *** Joins: Jesse (jruderman@moz-62518563.mtv2.mozilla.com)
+[22:13:26] <strcat> pnkfelix: https://github.com/mozilla/rust/pull/13267 r?
+[22:15:25] *** Quits: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP) (Ping timeout)
+[22:15:28] *** Joins: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP)
+[22:15:37] <strcat> works
+[22:15:47] * strcat has been really annoyed by that bug
+[22:15:54] <strcat> if only I remembered that I'd half fixed it ;s
+[22:16:03] <Luqman> acrichto: sure!
+[22:24:04] *** Quits: dcrewi (david@moz-AB8667CE.gyrae.net) (Ping timeout)
+[22:26:34] *** flaper87 is now known as flaper87|afk
+[22:28:26] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[22:30:34] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (Ping timeout)
+[22:31:52] *** Joins: ghrust (ghrust@7BEB6F9D.6A2AE50.F3114085.IP)
+[22:31:52] <ghrust> [13rust] 15bors pushed 3 new commits to 06auto: 02http://git.io/yc_ebA
+[22:31:52] <ghrust> 13rust/06auto 14818a6cd 15Alex Crichton: rustc: Require that vector indices are uints...
+[22:31:52] <ghrust> 13rust/06auto 1436adb6e 15Alex Crichton: Fix fallout of requiring uint indices
+[22:31:53] <ghrust> 13rust/06auto 148826d7e 15bors: auto merge of #13257 : alexcrichton/rust/index-uint, r=pnkfelix...
+[22:31:55] *** Parts: ghrust (ghrust@7BEB6F9D.6A2AE50.F3114085.IP) ()
+[22:31:57] *** Joins: ghrust (ghrust@7BEB6F9D.6A2AE50.F3114085.IP)
+[22:31:57] <ghrust> [13rust] 15bors 04force-pushed 06auto from 1435916d6 to 143786b55: 02http://git.io/N3iJvQ
+[22:31:57] *** Parts: ghrust (ghrust@7BEB6F9D.6A2AE50.F3114085.IP) ()
+[22:32:13] *** Joins: brson (brson@moz-62518563.mtv2.mozilla.com)
+[22:32:13] *** ChanServ sets mode: +qo brson brson
+[22:32:32] *** Joins: eibwen (kvirc@moz-A47B471B.dip0.t-ipconnect.de)
+[22:32:36] *** Quits: victorporof (victorporo@13F2CEC5.7672369.D8E68FF6.IP) (Quit: victorporof)
+[22:34:17] *** Quits: Jesse (jruderman@moz-62518563.mtv2.mozilla.com) (Connection reset by peer)
+[22:34:27] *** Joins: Jesse_ (jruderman@moz-62518563.mtv2.mozilla.com)
+[22:35:00] *** Quits: andrew-__ (andrew-d_w@2DE5EA9.7A62F771.CC0301A2.IP) (Input/output error)
+[22:35:21] *** Joins: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[22:35:40] *** Quits: brson (brson@moz-62518563.mtv2.mozilla.com) (Ping timeout)
+[22:35:53] *** Joins: andrew-__ (andrew-d_w@2DE5EA9.7A62F771.CC0301A2.IP)
+[22:36:16] *** Quits: Armavica (virgile@moz-AD428ED7.ens.fr) (Quit: leaving)
+[22:36:28] *** Joins: Armavica (virgile@moz-AD428ED7.ens.fr)
+[22:36:36] *** Joins: ktt3ja (ktt3ja@moz-8D2A07E1.hsd1.va.comcast.net)
+[22:36:54] <eddyb> ktt3ja: hi \o/
+[22:37:01] *** Quits: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Ping timeout)
+[22:37:06] <ktt3ja> eddyb: hi
+[22:37:15] <eddyb> ktt3ja: I totally moved your Rebuilder algorithm around :P
+[22:37:31] <eddyb> (in my not-yet-published P PR)
+[22:37:53] <ktt3ja> eddyb: ah k
+[22:37:54] <eddyb> ktt3ja: but the damage is minimal, we'll see who has to rebase first
+[22:40:23] *** Joins: vfetwnuncszu (david@moz-AB8667CE.gyrae.net)
+[22:40:39] *** vfetwnuncszu is now known as dcrewi
+[22:40:46] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[22:41:45] *** Joins: brson (brson@moz-62518563.mtv2.mozilla.com)
+[22:41:45] *** ChanServ sets mode: +qo brson brson
+[22:42:09] *** Quits: Axord (xord@moz-BC8E2FBC.static.rvsd.ca.charter.com) (Quit: I'm sure it's perfectly safe)
+[22:42:22] *** kimundi is now known as zz_kimundi
+[22:43:03] <acrichto> cmr: ping
+[22:43:22] *** Joins: dwrensha (chatzilla@moz-DE44EA45.hsd1.pa.comcast.net)
+[22:43:29] <cmr> acrichto: pong
+[22:43:38] <acrichto> cmr: what's the status on the libc branch?
+[22:44:04] <cmr> acrichto: dying for unknown and mysterious reasons on windows.
+[22:44:28] <acrichto> want me to investigate?
+[22:44:36] <cmr> <3
+[22:44:45] <cmr> I'll rebase later tonight (~2 hours)
+[22:49:54] *** Quits: dcrewi (david@moz-AB8667CE.gyrae.net) (Ping timeout)
+[22:50:14] *** Joins: vfetwnuncszu (david@moz-AB8667CE.gyrae.net)
+[22:50:41] *** vfetwnuncszu is now known as dcrewi
+[22:51:48] *** Joins: ghrust (ghrust@B750D19A.6A2AE50.F3114085.IP)
+[22:51:48] <ghrust> [13rust] 15bors 04force-pushed 06auto from 148826d7e to 143786b55: 02http://git.io/N3iJvQ
+[22:51:48] *** Parts: ghrust (ghrust@B750D19A.6A2AE50.F3114085.IP) ()
+[22:51:50] *** Joins: ghrust (ghrust@511FAEBD.6A2AE50.F3114085.IP)
+[22:51:50] <ghrust> [13rust] 15bors pushed 4 new commits to 06auto: 02http://git.io/tRHLbQ
+[22:51:50] <ghrust> 13rust/06auto 142cddd68 15Felix S. Klock II: Avoid injecting unfulfilled dependence in compiletest on libnative.
+[22:51:50] <ghrust> 13rust/06auto 143cbd98e 15Felix S. Klock II: Two fixes to get `make check-stage1` working....
+[22:51:50] <ghrust> 13rust/06auto 14a2bae86 15Felix S. Klock II: Fix android problems with newly fixed rpass-full variable definition....
+[22:51:52] *** Parts: ghrust (ghrust@511FAEBD.6A2AE50.F3114085.IP) ()
+[22:52:17] *** Quits: brson (brson@moz-62518563.mtv2.mozilla.com) (Ping timeout)
+[22:54:42] *** Joins: canhtak (canhtak@moz-4FB0FBC1.wl.t.ulaval.ca)
+[22:55:24] *** Quits: Nekit1234007 (Nekit12340@A4D1747.7796E3F4.4707F662.IP) (Input/output error)
+[22:56:19] *** Joins: victorporof (victorporo@moz-1C281963.dsl.bell.ca)
+[22:56:58] *** Joins: Nekit1234007 (Nekit12340@A4D1747.7796E3F4.4707F662.IP)
+[22:57:32] *** Quits: dcrewi (david@moz-AB8667CE.gyrae.net) (Ping timeout)
+[22:57:57] *** Quits: radford (Adium@moz-AC76BE6B.dhcp.mtpk.ca.charter.com) (Quit: Leaving.)
+[22:58:50] *** Joins: vfetwnuncszu (david@moz-AB8667CE.gyrae.net)
+[22:58:54] *** Joins: brson (brson@moz-62518563.mtv2.mozilla.com)
+[22:58:54] *** ChanServ sets mode: +qo brson brson
+[22:59:05] *** vfetwnuncszu is now known as dcrewi
+[23:00:06] *** Joins: radford (Adium@moz-AC76BE6B.dhcp.mtpk.ca.charter.com)
+[23:02:18] *** Joins: Axord (xord@moz-BC8E2FBC.static.rvsd.ca.charter.com)
+[23:02:42] *** Quits: andrew-__ (andrew-d_w@2DE5EA9.7A62F771.CC0301A2.IP) (Input/output error)
+[23:03:04] *** Joins: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net)
+[23:05:36] *** Quits: dmsky (dmsky@moz-FF2573B1.pppoe.spdop.ru) (Input/output error)
+[23:09:18] *** Quits: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP) (No route to host)
+[23:12:17] *** Quits: eddyb (eddy@F8B50789.F33C1089.FB866788.IP) (Ping timeout)
+[23:18:08] *** Joins: andrew-__ (andrew-d_w@2DE5EA9.7A62F771.CC0301A2.IP)
+[23:18:42] *** Quits: andrew-d_w (andrew-d_w@moz-9A2674DF.dsl.static.sonic.net) (Ping timeout)
+[23:19:08] *** Quits: jdm (jdm@CAB30FBD.8F96AEA7.2D179A7D.IP) (Quit: Lost terminal)
+[23:20:22] *** Joins: erickt (etryzelaar@8C9ECD8F.3A598286.F12515B4.IP)
+[23:21:43] <strcat> pnkfelix: heh
+[23:21:48] <strcat> pnkfelix: a strange test failure
+[23:21:55] <strcat> ~fail!() -> *** Error in `./unique-fail': free(): invalid pointer: 0x00000000004f5418 ***
+[23:22:11] <strcat> seriously we actually allocate memory for !
+[23:22:47] <cmr> ...... lol
+[23:23:03] <strcat>             // Unique boxes do not allocate for zero-size types. The standard library may assume
+[23:23:05] <strcat>             // that `free` is never called on the pointer returned for `~ZeroSizeType`.
+[23:23:07] <strcat>             if llsize_of_alloc(ccx, llty) == 0 {
+[23:23:09] <strcat> so
+[23:23:13] <strcat> hrm
+[23:23:37] * strcat thinks he sees the issue
+[23:25:03] <strcat> I think ty.rs says ! needs to be dropped
+[23:25:12] <strcat> ugh
+[23:25:19] *** Quits: ktt3ja (ktt3ja@moz-8D2A07E1.hsd1.va.comcast.net) (Quit: Leaving)
+[23:25:33] * strcat confused
+[23:28:14] <strcat> nmatsakis: any idea why type_contents(cx, ty) would return true for whatever the type of ~fail!() is ?
+[23:28:19] <strcat> ty_bot?
+[23:28:35] <strcat> hm
+[23:28:38] <strcat> actually
+[23:28:53] <cmr> I think eddyb broke ! recently.
+[23:28:58] <cmr> but that wouldn't have changed.
+[23:29:01] <strcat> how?
+[23:29:13] <strcat> cmr: this is failing from something I changed
+[23:29:17] <strcat> but because ! is acting funny
+[23:29:18] <cmr> rusti: Some("foo").unwrap_or(fail!())
+[23:29:25] -rusti- pastebinned 8 lines of output: http://ix.io/bqZ
+[23:29:34] <cmr> oh it got fixed
+[23:29:36] <cmr> nvm
+[23:29:43] <cmr> that iced for a bit with some RefMut crap
+[23:29:59] <strcat> alright so I think I see why
+[23:30:07] <strcat> somewhere in librustc, there's code handling ~foo()
+[23:30:16] <strcat> it allocates the unique ptr
+[23:30:21] <strcat> then calls the function
+[23:30:29] <strcat> so it needs to make a landing pad
+[23:30:40] <strcat> so I think that landing pad doesn't hit the normal code path when ! is involved
+[23:30:45] <strcat> now good luck to me finding it
+[23:32:14] <cmr> yup!
+[23:32:16] * strcat found it!
+[23:32:27] <strcat> tada
+[23:32:49] <cmr> wow!
+[23:33:24] <acrichto> cmr: do you remember the error that you were seeing on windows?
+[23:33:36] * strcat forgets how to make a null pointer of the proper type easily ;\
+[23:35:07] <cmr> acrichto: I'm convinced it was a makefile race. libstd couldn't link to liblibc's dll.
+[23:35:41] <acrichto> nmatsakis: do you have time to fill out changes to temporary lifetimes and details around Deref/DerefMut on the detailed release notes? https://github.com/mozilla/rust/wiki/Doc-detailed-release-notes#changes-to-temporary-lifetimes
+[23:35:48] <acrichto> if not, I can fill them out to the best of my knowledge
+[23:36:27] <sfackler> acrichto: is there anything else you want me to add to the syntax extension part on there?
+[23:36:51] *** Joins: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP)
+[23:36:51] <ghrust> [13rust] 15bors 04force-pushed 06auto from 14b4325de to 143786b55: 02http://git.io/N3iJvQ
+[23:36:52] *** Parts: ghrust (ghrust@C82447D.6A2AE50.F3114085.IP) ()
+[23:37:03] <acrichto> sfackler: that looks great, thanks!
+[23:37:04] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[23:41:47] *** Quits: eibwen (kvirc@moz-A47B471B.dip0.t-ipconnect.de) (Ping timeout)
+[23:45:13] <strcat> pnkfelix: r again? https://github.com/mozilla/rust/pull/13267 had to fix a deep part of the compiler still making calls
+[23:45:28] <strcat> (or someone else if pnkfelix isn't around anymore)
+[23:51:19] *** Quits: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net) (Connection reset by peer)
+[23:52:33] *** Joins: TheHydroImpulse (TheHydroIm@moz-A9FB1B83.ed.shawcable.net)
+[23:56:52] <brson> 91 new contributors to 0.10
+[23:57:07] <SiegeLord> \o/
+[23:57:32] <brson> thats of ~480 for all time
+[23:57:56] <SiegeLord> Aww, probably won't break 1000 before 1.0
+[23:57:56] <sfackler> brson: any estimate on new docs builds?
+[23:58:05] <brson> sfackler: they are up
+[23:58:26] <sfackler> oh!
+[23:58:30] <sfackler> woo

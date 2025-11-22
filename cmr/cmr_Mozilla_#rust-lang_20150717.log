@@ -1,0 +1,452 @@
+[02:02:50] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[06:21:59] *** Joins: brianpWins (brianpWins@moz-0t0.f5v.22.185.IP)
+[06:31:38] *** Parts: brianpWins (brianpWins@moz-0t0.f5v.22.185.IP) ()
+[09:24:21] *** Joins: Elaine (Elaine@moz-35s2fm.members.linode.com)
+[11:05:55] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[11:53:01] <pnkfelix> nmatsakis: I am right that we agreed to merge the macros-in-type-position RFC, and that I should do so (after appropriate edits)
+[11:53:04] <pnkfelix> nmatsakis: yes?
+[12:19:50] *** Quits: Tobba (Tobba@moz-o13d22.bredband.telia.com) (Ping timeout: 121 seconds)
+[12:29:44] <nmatsakis> pnkfelix: we did agree to that, I can also merge it if you prefer -- just link to the spreadsheet with the votes
+[12:30:26] <pnkfelix> nmatsakis: i'll take care of it.  just wanted to make sure; (I had put it down as an action item but with a question mark)
+[13:42:51] <nmatsakis> pnkfelix: so I was thinking this morning -- you remember the soundness changes regarding projection lifetimes I've been talking about
+[13:43:04] <pnkfelix> uh
+[13:43:11] <pnkfelix> you'll have to manually reload my cache
+[13:43:25] <nmatsakis> in particular, the main change has to do with making `T: 'a` more "syntactic" -- meaning e.g. `Trait<T>: 'a` requires that `T: 'a`
+[13:43:32] <pnkfelix> oh okay yes
+[13:43:37] <nmatsakis> whereas today it does not require that, because T is not actually reachable data
+[13:43:47] <nmatsakis> so the motivation for that was so that
+[13:43:52] <nmatsakis> if you had an impl like
+[13:44:03] <nmatsakis> impl<T> Foo for Trait<T> { type Assoc = T; ... }
+[13:44:25] <nmatsakis> it holds that Trait<T>: 'a => <Trait<T> as Foo>::Assoc: 'a
+[13:44:49] <nmatsakis> I ran some tests, adding this bound causes 19 root regressions
+[13:44:59] <nmatsakis> (some 50-odd total regressions)
+[13:45:18] <nmatsakis> anyway I realized that we could also just be more restrictive about the types/lifetimes you can use in assoc types
+[13:45:25] <nmatsakis> such that, e.g., this impl would be illegal
+[13:45:41] <nmatsakis> basically the rule would be a type or lifetime parameter must not only appear in the trait reference *somewhere*
+[13:46:17] <nmatsakis> but in an appropriate position (not sure how best to characterize it, but each parameter P must appear in some type U where U: 'a => P: 'a)
+[13:46:23] <nmatsakis> however writing this out
+[13:46:29] <nmatsakis> I'm not sure how I feel about it since
+[13:46:36] <nmatsakis> the syntactic thing had several advantages, among them being easy to explain
+[13:46:45] <nmatsakis> "T must appear in the impl header"
+[13:46:47] <nmatsakis> vs what I wrote above
+[13:46:59] <nmatsakis> and also that impl looks, you know, reasonable
+[13:47:05] <nmatsakis> like something someone might want to write
+[13:47:31] <pnkfelix> I ... think I agree
+[13:47:40] <nmatsakis> this partially came up as I've been digging into refactoring how we represent closures, and realizing some places where we deviate from how structs would behave -- fixing those places however causes quite reasonable code to fail
+[13:47:50] <nmatsakis> at least, fixing them in the naive way
+[13:47:57] <nmatsakis> one of which I think we talked about yesterday, the OIBIT thing
+[13:47:59] <pnkfelix> I don't have an intuition about what "an appropriate position" means.  The impl you wrote about seemed *fine* to me
+[13:48:05] <nmatsakis> right
+[13:48:10] <nmatsakis> it would mean "in a position representing reachable data"
+[13:48:17] <nmatsakis> but I think that's too subtle to inflict on people
+[13:48:24] <nmatsakis> so I'm preferring the current solution
+[13:48:26] <nmatsakis> the main question now
+[13:48:32] <nmatsakis> is can I phase this in with a warning?
+[13:48:40] <nmatsakis> I don't know how to implement that yet but I guess it's probably possible
+[13:48:58] <nmatsakis> in a similar fashion to what I did before, you add some things and check whether adding those constraints to inference would have produced any problem
+[13:49:18] <nmatsakis> the crates that fail are all like this:
+[13:49:31] <nmatsakis> struct Foo<'a, T> { f: Box<FnMut(&'a T)> }
+[13:49:39] <nmatsakis> er
+[13:49:47] <nmatsakis> struct Foo<'a, T> { f: &'a FnMut(T) }
+[13:49:50] <nmatsakis> this now requires T: 'a
+[13:50:03] <nmatsakis> I feel like people won't be upset about having to add that, it feels consistent
+[13:50:08] <nmatsakis> but they'd probably prefer a warning
+[13:50:27] <pnkfelix> yeah a warning phase seems warranted
+[13:50:29] <nmatsakis> the other example is interesting too, depending on just what we decided to do about WF rules, it might require t: 'a as well
+[13:50:35] <nmatsakis> struct Foo<'a, T> { f: Box<FnMut(&'a T)> }
+[13:50:43] <nmatsakis> I'm inclined to make it require T: 'a (and also to require a warning)
+[13:50:54] <nmatsakis> it's a bit tricky because of bound lifetimes, but there aren't any in use here
+[13:51:15] <pnkfelix> I'm suprised that the second example *wouldn't* require the addition of `T: 'a`
+[13:51:17] <nmatsakis> seems like a better user experience to error early and (more) consistently? I'm unsure
+[13:51:20] <nmatsakis> well
+[13:51:26] <nmatsakis> right now, when you pass through a binder
+[13:51:30] <nmatsakis> you don't require that the types are WF
+[13:51:35] <nmatsakis> instead you defer this validation
+[13:51:37] <pnkfelix> hmm
+[13:51:42] <nmatsakis> to the point where the binder is instantiated
+[13:51:43] <pnkfelix> right
+[13:51:49] <nmatsakis> to some extent this is inevitable
+[13:51:51] <nmatsakis> from what I can see
+[13:51:55] <nmatsakis> you can think of it as carrying implicit where clauses
+[13:52:01] <nmatsakis> FnMut(&'a T) where T: 'a
+[13:52:05] <nmatsakis> BUT
+[13:52:09] <nmatsakis> there are two exceptions:
+[13:52:19] <nmatsakis> 1. this case, where no bound regions exist, one could disallow this where clause
+[13:52:34] <nmatsakis> 2. in some cases, even WITH bound regions, we can see that there is no region for which the where clause could hold
+[13:52:49] <nmatsakis> e.g., &'a Box<T>: Clone
+[13:52:50] <nmatsakis> er
+[13:52:53] <nmatsakis> bad exmaple
+[13:52:56] <nmatsakis> &'a NotHashable: Hash
+[13:53:01] <nmatsakis> so if you had
+[13:53:12] <nmatsakis> for<'a> FnMut(HashSet<&'a NotHashable>)
+[13:53:35] <nmatsakis> if we wanted to be aggressive, we could probably get the trait logic to figure out that there does not exist a 'a that makes this WF
+[13:54:06] <nmatsakis> I'm not sure what's the best thing here, I could see writing the spec as sayin that cases (1) and (2) are errors,
+[13:54:11] <nmatsakis> and implementing them over time
+[13:54:13] <nmatsakis> 1 is easy
+[13:54:18] <nmatsakis> 2 is not hard but not trivial
+[13:54:36] <nmatsakis> in each case we'd clearly phase them in with warnings Ig uess as well, this SHOULD be relatively straightforward to do I think
+[13:55:06] <nmatsakis> ponder.
+[13:55:11] <pnkfelix> hmm.  my first instinct was to try to keep 2. as open ended as possible
+[13:55:27] <pnkfelix> (i.e. try to weasel word things so that an error would be allowed but not required)
+[13:55:40] <pnkfelix> but that's precisely the sort of thing that we probably *don't* want to be doing
+[13:56:24] <nmatsakis> pnkfelix: yes I went down a similar road :P
+[13:56:34] <nmatsakis> pnkfelix: that's another issue actually with #2
+[13:56:50] <nmatsakis> that is, if we improve the trait resolutoin infrastructure in some way so that it is more precise
+[13:57:12] <nmatsakis> I don't know, negative reasoning alreayd carries this risk -- and more so! -- around coherence
+[13:57:16] <nmatsakis> not sure how valid that concern is
+[13:57:38] <nmatsakis> well no it seems legit
+[13:57:51] <nmatsakis> that is, with coherence, if we get more precise such that we can show that an impl NEVER holds that we thought MIGHT hold before,
+[13:57:54] <nmatsakis> more programs become legal,
+[13:58:06] <nmatsakis> because that just can show less ovelap between impls
+[13:58:13] <nmatsakis> but in case (2) it might generate MORE errors
+[13:58:35] <nmatsakis> so I'm sort of inclined to just do (1), which seems less surprising and is also completely unambiguous
+[13:58:44] <nmatsakis> that is, seems less surprising than doing neither (1) nor (2)
+[13:59:28] <pnkfelix> nmatsakis: I think just (1) is fine
+[14:02:10] <nmatsakis> pnkfelix: ok yes I think this is what I plan to recommend/implement
+[15:27:34] <nmatsakis> pnkfelix: in implementing the MIR stuff,
+[15:27:40] <nmatsakis> I found a lot of weirdness about patterns and constants :(
+[15:27:51] <nmatsakis> in particular the "normalization" of constants makes things work that arguably should not
+[15:28:04] <nmatsakis> luckily I think fixing this is more of a bug fix than anything else
+[15:28:11] <nmatsakis> I need to file an issue I guess with my examples
+[15:28:21] <nmatsakis> in particular, if you have something like `match foo { C => ... }`
+[15:28:24] <nmatsakis> where C is (say) a struct constant:
+[15:28:28] <nmatsakis> struct Foo { x: u32 }
+[15:28:32] <nmatsakis> const C: Foo = Foo { x: 22 }
+[15:28:37] <nmatsakis> this is compiles but note that:
+[15:28:39] <nmatsakis> Foo does not implement PartialEq
+[15:28:50] <nmatsakis> this gets desugared into a structural match
+[15:28:57] <nmatsakis> this seems rather suboptimal to me
+[15:29:10] <nmatsakis> this CAN affect the exhaustiveness computation though
+[15:29:24] <nmatsakis> e.g., const TRUE: bool = true; const FALSE: bool = false;
+[15:29:31] <nmatsakis> match b { TRUE => { .. } FALSE => { ... } }
+[15:29:34] <nmatsakis> is that considered exhaustive?
+[15:29:40] <nmatsakis> (you can grow this test to tuples of booleans, etc)
+[15:29:46] <nmatsakis> (or structs with bool fields)
+[15:29:53] <pnkfelix> whoah
+[15:30:12] <nmatsakis> somewhat anonyingly
+[15:30:17] <nmatsakis> I apparently discovered some of this before
+[15:30:19] <nmatsakis> and created an issue
+[15:30:24] <nmatsakis> but then I landed a commit like
+[15:30:26] <nmatsakis> "this does not fix #1234"
+[15:30:29] <nmatsakis> which closed the issue
+[15:30:30] <pnkfelix> I guess this all depends on what interprets const-expressions as denoting
+[15:30:32] <nmatsakis> and I promptly forgot about it :)
+[15:30:36] <nmatsakis> but yes
+[15:30:41] <nmatsakis> it does
+[15:30:48] <nmatsakis> though I think the ida that
+[15:30:51] <nmatsakis> match foo { C => ... }
+[15:30:56] <nmatsakis> and match foo { x if x == C => ... }
+[15:30:58] <nmatsakis> are not the same
+[15:31:00] <nmatsakis> is very surprising to me
+[15:31:09] <nmatsakis> (modulo exhaustiveness, though even there...)
+[15:31:29] <nmatsakis> but the idea that the former might match where the latter does not
+[15:31:32] <nmatsakis> I find quite surprising
+[15:31:36] <pnkfelix> I assume you would just reject if `C` does not impl PartialEq
+[15:31:44] <pnkfelix> as opposed to silently treating it as a binding
+[15:31:47] <nmatsakis> right
+[15:31:49] <pnkfelix> k
+[15:31:50] <nmatsakis> in the MIR desguaring code
+[15:31:54] <nmatsakis> it compiles down to a call to PArtalEq::eq
+[15:32:05] <nmatsakis> which of course injects potentially arbitrary code into pattern matching
+[15:32:08] <nmatsakis> much like a box patern
+[15:32:19] <nmatsakis> but this is not a big deal for analysis, since it's all exposed clearly in the MIR
+[15:32:29] <nmatsakis> but people might not like it
+[15:32:30] <pnkfelix> hmm
+[15:32:36] <nmatsakis> but I can't see any other rational semantics
+[15:32:42] <nmatsakis> I guess I shouldn't say it like that
+[15:32:43] <nmatsakis> that's insulting
+[15:32:44] <pnkfelix> well
+[15:32:45] <nmatsakis> what I mean is:
+[15:32:49] <nmatsakis> I could see error as legit
+[15:32:51] <pnkfelix> oh I guess its fine
+[15:32:52] <nmatsakis> but it seems the ship has sailed
+[15:32:58] <pnkfelix> its only consts that get desugared like that
+[15:32:59] <nmatsakis> well I didn't test
+[15:33:02] <pnkfelix> not enum variants ?
+[15:33:10] <nmatsakis> not sure I understand
+[15:33:14] <pnkfelix> (because  otherwise I'd be concerned about circularity)
+[15:33:18] <nmatsakis> oh
+[15:33:19] <nmatsakis> yes
+[15:33:24] <nmatsakis> enum variants have recursive patterns
+[15:33:24] <pnkfelix> (If partial_eq is implemented in terms of match)
+[15:33:40] <nmatsakis> it's only equality comparisons against constants that get desugared like that
+[15:33:50] <pnkfelix> but at some point
+[15:33:51] <nmatsakis> (I mean it'd be easy enough to reproduce today's desguaring too, I just think it's wrong :P
+[15:33:57] <pnkfelix> you were also musing about habing enums
+[15:34:03] <pnkfelix> desugar into const definitiosn, right?
+[15:34:10] <nmatsakis> well, a const fn
+[15:34:22] <pnkfelix> ?
+[15:34:23] <pnkfelix> even nullary enums?
+[15:34:30] <nmatsakis> not those, but there is no difference then
+[15:34:33] <nmatsakis> well ok I see
+[15:34:34] <pnkfelix> that's what I'm talking about
+[15:34:34] <nmatsakis> there is
+[15:34:38] <nmatsakis> yeah, it's a good point.
+[15:34:41] <nmatsakis> that said
+[15:34:45] <nmatsakis> the big problem with that proposal
+[15:34:48] <nmatsakis> is pattern maching :)
+[15:34:54] <nmatsakis> that is, they are exactly like const fn -- except for pattern matching,
+[15:34:54] <pnkfelix> right
+[15:35:01] <nmatsakis> which makes sense there but not for arbitrary fns
+[15:35:06] <nmatsakis> so I don't think I ever really meant
+[15:35:09] <nmatsakis> that it should desugar into a const fn
+[15:35:15] <nmatsakis> but rather that it should come as close as possible to those semantics
+[15:35:27] <nmatsakis> though one could imaging defining some kind of "const variant" -- but I guess that's just a tuple struct
+[15:35:53] <nmatsakis> anyway, it's an interesting point.
+[15:36:03] <nmatsakis> to add to the fun:
+[15:36:06] <nmatsakis> this normalization is not always possible
+[15:36:08] <nmatsakis> e.g., in a generic constant
+[15:36:12] <nmatsakis> where you have an associated constant
+[15:36:13] <pnkfelix> and we already error on matching with NaN
+[15:36:16] <pnkfelix> (i think...)
+[15:36:17] <nmatsakis> (which are only partialled supported)
+[15:36:24] <nmatsakis> we cannot do this de-normalization
+[15:36:37] <nmatsakis> oh, I didn't know about that
+[15:36:39] <pnkfelix> ((i was trying to think of places where desugaring match to partial_eq could break...))
+[15:36:46] <nmatsakis> can you "write" NaN?
+[15:36:49] <pnkfelix> let me doible check that cleaim
+[15:36:56] <pnkfelix> you can make a const that evals to NaN
+[15:37:01] <nmatsakis> ok I see
+[15:37:07] <nmatsakis> good corner case to consider yes :0
+[15:37:39] <pnkfelix> yeah, E0003
+[15:38:14] <pnkfelix> but
+[15:38:24] <pnkfelix> that actually is interesting
+[15:38:32] <pnkfelix> your desugaring might start to let it through?
+[15:38:44] <pnkfelix> (it would never sucessfully match, but the compiles would start suceeding?)
+[15:38:57] <nmatsakis> well
+[15:39:03] <pnkfelix> okay, well, I trust you  to deal with it in some sane way.  :)
+[15:39:04] <nmatsakis> it would if if we had no other check, yes
+[15:39:12] <nmatsakis> this is another thing that
+[15:39:15] <nmatsakis> in generic code we cannot prevent
+[15:39:35] <nmatsakis> e.g., trait Foo { const T: f64 }
+[15:39:50] <nmatsakis> fn foo<F:Foo>(x: f64) { match x { F::T => ... } }
+[15:40:33] <nmatsakis> I guess we CAN do the struct desugaring there
+[15:40:35] <nmatsakis> since we know the type
+[15:40:54] <nmatsakis> not sure about how enum variants and things play in
+[15:41:05] <nmatsakis> but I don't know that we desugar THOSE kinds of constants actually
+[15:41:15] <nmatsakis> certainly the type is not enough 
+[15:41:32] <nmatsakis> pnkfelix: the other thing is -- I actually can't figure out how this works in trans :)
+[15:41:48] <nmatsakis> that is, the desugaring SEEMS to be jsut for the purpose of exhaustiveness checking, but reading the trans code I can't find where it takes place, but if you test it, it does
+[15:41:58] <nmatsakis> maybe somewhere it's just doing byte-equality?
+[15:42:02] <nmatsakis> I guess I coudl test that
+[15:42:14] * pnkfelix had forgtten that we had added associated_consts
+[15:42:30] <pnkfelix> why are people complaining about array generic code!
+[15:42:33] <pnkfelix> ;)
+[15:43:32] <pnkfelix> "associated consts cannot depend on type parameters or Self"  hmmm
+[15:43:52] * pnkfelix is trying to encode the above foo<F:Foo> exmaple
+[15:43:54] <nmatsakis> so
+[15:44:02] <nmatsakis> associated constants are currently suffering from some impl limitations
+[15:44:09] <nmatsakis> but if we work them out to their full expressiveness then yes
+[15:44:14] <nmatsakis> they make array generic code work
+[15:44:29] <nmatsakis> and there is no good reason not to add Foo<f32 X>, except that one can already do it with a trait
+[15:44:46] <nmatsakis> that example is just looking ahead
+[15:45:03] <nmatsakis> this example surprised me: https://play.rust-lang.org/?gist=adbd195538c9abbe20c4&version=stable
+[15:45:11] <nmatsakis> but I guess it gives a clue of how this works in trans
+[15:45:27] <pnkfelix> its an interesting example.  I guess the plan is ... just silently allow the attempt to match against NaN ?
+[15:45:34] <nmatsakis> that's what I'd prefer, yes,
+[15:45:37] <nmatsakis> with perhaps a lint when we can detect it
+[15:45:46] <nmatsakis> but I have a strong pref for PartialEq here
+[15:46:05] <nmatsakis> I'm coming around to the idea that match { C => } and match { x if x == C => } COULd be different
+[15:46:07] <pnkfelix> and not Eq outright ?
+[15:46:11] <pnkfelix> :)
+[15:46:15] <nmatsakis> but I still think it's asking for people to tweet about total confusion
+[15:46:16] <pnkfelix> probably would cause an uproar
+[15:46:26] <nmatsakis> I mean it's pretty non-obvious
+[15:46:51] <nmatsakis> I wish I'd noticed this patch going in :)
+[15:46:55] <nmatsakis> and/or thought about this before
+[15:46:57] <pnkfelix> (I meant about requiring Eq rather than PartialEq causing an uproar)
+[15:47:02] <nmatsakis> (or more deeply. ah well.)
+[15:47:04] <nmatsakis> o
+[15:47:05] <nmatsakis> *oh
+[15:47:10] <nmatsakis> well, I don't see the point myself
+[15:47:22] <nmatsakis> except if we were trying to pretend PartialEq and PartialOrd don't exist I guess
+[15:47:25] <pnkfelix> it disallows matching against float
+[15:47:26] <nmatsakis> which might be good :)
+[15:47:29] <nmatsakis> ah!
+[15:47:32] <nmatsakis> interesting
+[15:47:36] <nmatsakis> that...actually might make sense
+[15:47:46] <pnkfelix> it might
+[15:47:49] <nmatsakis> so long as we have this silly distinction, we should maybe use it
+[15:47:57] * nmatsakis regrets PartialEq/Eq sometimes =)
+[15:48:03] <pnkfelix> yeah I know
+[15:48:05] <nmatsakis> but here is yet another case where it could be useful
+[15:48:13] <pnkfelix> I can't decide which I regret more
+[15:48:17] <pnkfelix> the decision we came to
+[15:48:29] <pnkfelix> or the cumulative amount of time spent discussing it.  :)
+[15:48:32] <nmatsakis> heh
+[15:48:50] <nmatsakis> well whatever water under the bridge I guess
+[15:49:07] <nmatsakis> I actually like the idea of requring Eq
+[15:49:24] <nmatsakis> I feel like matching against floats is probably very unusual
+[15:49:28] <pnkfelix> how far would you go
+[15:49:30] <nmatsakis> and could get by with `==`
+[15:49:36] <nmatsakis> basically equality against floats is almos always a bug
+[15:49:37] <pnkfelix> e.g. not even matching against f64 directly ?
+[15:49:43] <nmatsakis> right
+[15:49:49] <nmatsakis> I mean, what else is there?
+[15:49:55] <nmatsakis> either you require Eq or you don't :)
+[15:50:02] <nmatsakis> oh, you mean only for assoc constants or something
+[15:50:03] <pnkfelix> you could make it a special case.  :)
+[15:50:12] <pnkfelix> but also
+[15:50:34] <nmatsakis> I feel like if you want bit equality for floats you should use u64 and cast to f64 :)
+[15:50:38] * nmatsakis now that will have people hopping mad
+[15:51:02] <nmatsakis> I still don't really grok how this works in trans, I shoudl try to step through one of the examples
+[15:51:13] <nmatsakis> be a good way to see how well the gdb support really works
+[15:51:19] <nmatsakis> which I'm always wondering
+[15:51:32] <pnkfelix> (matching f64/f32 alone, at highest level)
+[15:51:32] <pnkfelix> but also
+[15:51:32] <pnkfelix> We're only talkng about rejecting attempts to use non-Eq as a constant to match against
+[15:51:40] <pnkfelix> right?
+[15:51:50] <pnkfelix> i.e. you should *still* be able to *bind* an f32/f64 via match
+[15:52:05] <nmatsakis> oh of course
+[15:52:09] <nmatsakis> just constants yes
+[15:52:20] <pnkfelix> I think I could go along with that.  Combined with `pat if _ => ,,,` arms, it sounds pretty clean, actually
+[15:52:30] <nmatsakis> c
+[16:10:33] <pnkfelix> nmatsakis: I think I'm going to need to figure out how to provide better error messages for the region errors you get from the pulled-back dropck
+[16:11:02] <pnkfelix> nmatsakis: at least, I am struggling to figure out what the actual problem cases are in src/test/run-pass/sync-send-iterators-in-libcollections.rs
+[16:11:03] <nmatsakis> pnkfelix: I think it shoudl be doable, want to talk it ove?
+[16:11:09] <nmatsakis> heh
+[16:11:12] <pnkfelix> nmatsakis: (obviously I could blindly add the attribute everywhere)
+[16:11:17] <nmatsakis> always a good sign that a better error message is needed :)
+[16:11:20] <pnkfelix> nmatsakis: (everywhere that seems parametric)
+[16:11:36] <pnkfelix> nmatsakis: but I would prefer to suffer the way that a user suffers, at least for a bit
+[16:11:40] <nmatsakis> c
+[16:11:50] <pnkfelix> nmatsakis: so, in terms of idea
+[16:11:51] * nmatsakis loads that test case
+[16:11:53] <pnkfelix> *ideas
+[16:12:10] <nmatsakis> yes?
+[16:12:11] <pnkfelix> the test case alone may not help
+[16:12:15] <nmatsakis> yes, it's kind of a mess
+[16:12:22] <pnkfelix> I'll put up a gist, but it also may not help
+[16:12:24] <nmatsakis> that is, it's sort of the opposite of reduced
+[16:13:15] <pnkfelix> https://gist.githubusercontent.com/pnkfelix/1ecd71ad5db8f26672eb/raw/gistfile1.txt
+[16:13:44] <pnkfelix> I guess reducing it would be a good start.  :)
+[16:13:51] <pnkfelix> but before I do that
+[16:13:59] <pnkfelix> lets talk about ideas for better user feedback
+[16:14:22] <pnkfelix> e.g., I was hoping there might be some way to traverse the constraint graph
+[16:14:38] <pnkfelix> identifying edges that are ... "known pain points"
+[16:17:06] <pnkfelix> (the other odd thing in that test case is that I've *already added* the attribute to the drop impls in btree/node.rs ...)
+[16:17:16] <pnkfelix> (I guess i really should do the reduction)
+[16:18:08] <nmatsakis> pnkfelix: this is roughly my plan, yes
+[16:18:14] <nmatsakis> so the graph has a lot of data
+[16:18:18] <nmatsakis> as you probably recall
+[16:18:20] <nmatsakis> i.e., each edge has an origin
+[16:18:22] <nmatsakis> and each variable too
+[16:18:30] <nmatsakis> sometimes not as precise as I'd like but that can be improved
+[16:18:48] <nmatsakis> with some tooling I think we could make it possible to easily see which edges derive from dropck
+[16:18:58] <nmatsakis> this would be easier in the branch I've got locally but whatever
+[16:19:18] <nmatsakis> pnkfelix: if you look at the error reporting code, it already tries to be smart
+[16:19:28] <nmatsakis> it walks through the edges to uncover two concrete constraints that are in conflict
+[16:19:30] <nmatsakis> but the problem is
+[16:19:36] <nmatsakis> well it assumes this:
+[16:19:59] <nmatsakis> B1 -origin1-> ... <X> ... -origin2-> B2
+[16:20:07] <nmatsakis> where B2 < B1
+[16:20:12] <nmatsakis> it repors origin1 and origin2
+[16:20:14] <nmatsakis> but that is silly
+[16:20:22] <nmatsakis> what it probably SHOULD do is
+[16:20:42] <nmatsakis> find a good candidate like
+[16:20:58] <nmatsakis> B1 ... -origin1-> ... <X> ... -origin2-> ... B2
+[16:21:03] <nmatsakis> i.e., along the path from B1 to the error nod X,
+[16:21:13] <nmatsakis> it should find the origin that is most likely to be in error
+[16:21:17] <nmatsakis> and the same from X to b2
+[16:21:28] <nmatsakis> also, It hink all the annoying code about contracting and enlarging etc can prob go away
+[16:21:31] <nmatsakis> now that we have ReEmpty
+[16:21:33] <nmatsakis> but whatever
+[16:21:38] <pnkfelix> hmm
+[16:22:03] <nmatsakis> of course the tricky part is judging what is likely to be in error :)
+[16:22:11] <nmatsakis> cerainly we could begin with things like dropck
+[16:22:16] <nmatsakis> that are VERY suspicious
+[16:22:29] <nmatsakis> and I imagine this model might become gradually more sophisticated
+[16:22:37] <pnkfelix> another potential avenue
+[16:22:41] <nmatsakis> i.e., I'd like to identify subtyping edges that result from fn signatures
+[16:22:49] <nmatsakis> and try to guess when the fn signatures is liekly the problem
+[16:22:54] <nmatsakis> and hence blame the callee's fn signature declaration
+[16:22:56] <nmatsakis> and not the caller
+[16:23:10] <pnkfelix> instead of attempting to determine a priori what the most likely pair of edges along the path are to blame
+[16:23:25] <pnkfelix> we might consider trying to adopt more of a "compiler has dialogue with the user" model
+[16:23:37] <nmatsakis> yes, we might. I ... think that's a big step
+[16:23:40] <pnkfelix> where in particular, the user might query for different information
+[16:23:46] <nmatsakis> I'd want to do that in collaboration with tooling
+[16:23:48] <nmatsakis> but I've long wanted to have
+[16:23:51] <nmatsakis> rustc --server
+[16:23:53] <pnkfelix> it depends on how it is formulated.
+[16:23:57] <nmatsakis> which could not only help with incr. compilation
+[16:24:01] <nmatsakis> but also serve for interaction over errors :)
+[16:24:02] <pnkfelix> I agree an *actual* dialogue is quite difficult
+[16:24:06] <pnkfelix> but as a first stp
+[16:24:22] <pnkfelix> just having some pair of input parameters that tells rustc
+[16:24:24] <nmatsakis> I guess I think building the infrastructure for a dialog sounds much harder than trying to identify dtropck edges
+[16:24:26] <nmatsakis> but i'm listening :)
+[16:24:33] <pnkfelix> "go this many steps forward from the start of the path"
+[16:24:37] <nmatsakis> also, I think user's have no mental model
+[16:24:38] <pnkfelix> and "this many steps backward"
+[16:24:39] <nmatsakis> for what is happening here
+[16:24:48] <pnkfelix> Yes the lack of a mental model is definitely a problem
+[16:24:56] <nmatsakis> having a web browser would let us show pictures
+[16:25:00] <nmatsakis> which perhaps helps
+[16:25:11] <nmatsakis> you can e..g imagine showing the code
+[16:25:14] <nmatsakis> with edges overlaid
+[16:25:18] * nmatsakis gets excited to experiment with that
+[16:25:22] <nmatsakis> I've seen similar things in static analysis tools
+[16:27:16] <pnkfelix> hmm.  Apparently `x.difference(&BTreeSet::<usize>::new())` is treated as owning a `VecDeque<btree::node::AbsTraversal<btree::node::ElemsAndEdges<iter::Zip<slice::Iter<'_, usize>, slice::Iter<'_, ()>>, slice::Iter<'_, btree::node::Node<usize, ()>>>>>` ?
+[16:27:38] <pnkfelix> that was not immediately clear from my initial skim through the btree code
+[16:28:39] <pnkfelix> but okay, I see it now
+[16:29:00] <pnkfelix> hmm, so do I fix this, or do I try to explore improving our error output....
+[16:33:47] <nmatsakis> what a type =)
+[16:34:06] <nmatsakis> pnkfelix: my preference would be to fix and push towards getting a crater measurement, but log the interest tests and com eback
+[16:34:16] <pnkfelix> k
+[16:34:35] <pnkfelix> certainly the other path is its own rat hole
+[16:37:47] <nmatsakis> pnkfelix: indeed.
+[16:38:01] <nmatsakis> pnkfelix: but it seems emintently worth doing
+[16:38:13] <nmatsakis> I guess I still want to get a sense of whether we can get away with this change or not
+[18:35:43] <nmatsakis> f? https://github.com/nikomatsakis/rfcs/blob/projection-and-lifetimes/text/0000-projections-lifetimes-and-wf.md
+[18:47:06] *** Joins: brianpWins (brianpWins@moz-2s6.8e1.88.38.IP)
+[19:46:25] *** Joins: Tobba (Tobba@moz-o13d22.bredband.telia.com)
+[21:40:28] *** Quits: WindowsBunny (Peter@moz-vlal7g.east.verizon.net) (Ping timeout: 121 seconds)
+[21:43:49] *** Joins: WindowsBunny (Peter@moz-vlal7g.east.verizon.net)
+[22:23:42] <nmatsakis> huon: so can you explain to me why SIMD needs to be duck typed again?
+[22:23:54] <nmatsakis> or let me see if you wrote in the RFC
+[22:24:02] <huon> nmatsakis: I don't see an alternative
+[22:24:23] <huon> lang items are too restrictive: can't link more than one copy of `simd` into a compilation unit
+[22:24:33] <nmatsakis> (oh dear there are a lot of comments)
+[22:24:47] <nmatsakis> I guess I'm confused why we would want more than one set of canonical types
+[22:24:53] <nmatsakis> or not "confused" but just "unclear"
+[22:25:10] <nmatsakis> can't we just have `struct I32x4` and you newtype it or something?
+[22:26:08] <huon> so we have some canonical lang items somewhere that are guaranteed to only ever be linked in once?
+[22:26:15] <nmatsakis> right, in core or something?
+[22:26:23] <nmatsakis> or is that you want the set of lang items to vary by architecture
+[22:26:45] <nmatsakis> I mean i'm not AGAINST the duck typing
+[22:26:49] <nmatsakis> just want to understand it more deeply :)
+[22:26:56] <huon> hm, well, we thought it was a little strange to have some stuff in core and most of the stuff elsewhere
+[22:27:23] <huon> to be clear, it's only duck typing of definitions, not uses
+[22:28:51] <nmatsakis> it's interesting and somehow mind-blowing that the same intrinsic can be defined N times with distinct types
+[22:29:02] <nmatsakis> but I guess we always allow our intrinsics to be defined N times
+[22:29:06] <nmatsakis> right?
+[22:29:20] <nmatsakis> I kind of forget from time to time that intrinsics are not just lang items.
+[22:29:26] <huon> yeah
+[22:29:26] <huon> and same with C FFI
+[22:29:29] <nmatsakis> (I'm not really clear on why they are not)
+[22:29:31] <huon> (which is similarly duck-typed/structurally-typed, although without checks)
+[22:29:41] <nmatsakis> sure
+[22:31:11] <huon> do you have benefits in mind from not being duck typed?
+[22:31:23] <nmatsakis> no
+[22:31:25] <huon> (I couldn't really think of any)
+[22:31:32] <nmatsakis> just that it's without precedent
+[22:31:49] <nmatsakis> seems ok really
+[22:32:13] <nmatsakis> I guess I want to be using traits and stuff for this somehow, feels more "rusty", but I'm not sure you can,
+[22:32:18] <nmatsakis> and I don't think it matters that much
+[22:32:21] <nmatsakis> by which I guess I mean:
+[22:32:30] <nmatsakis> we should be doing the hard stuff, and we can come back to duck typing vs modeling with traits
+[22:32:40] <nmatsakis> so we should prob just accept the RFC and let you get on with it :)
+[22:34:29] <huon> I've got most of an implementation already
+[22:35:05] <huon> I was going to submit a PR and try to get it landed independent of the RFC, with the understanding I'd go back and ensure the compiler reflects the RFC
+[22:35:33] <huon> (so that there can be libraries that work on nightly)
+[22:36:01] <huon> and, yeah, I wasn't sure how to do anything properly-safely without having a pile of magic traits
+[23:02:52] <nmatsakis> huon: seems to me it's usually better to draw up the traits AFTER the impls
+[23:03:03] <nmatsakis> so you know what the range of your genericity ought to be
+[23:03:27] <nmatsakis> I guess the question will be how much we can still change things
+[23:03:30] <nmatsakis> given de facto locking
+[23:03:32] <nmatsakis> *lockin
+[23:03:35] * nmatsakis goes home now
+[23:03:57] <huon> nmatsakis: yeah, I agree
+[23:04:16] <nmatsakis> but I think as long as stuff mostly works we'll be able to do it :)
+[23:04:21] <nmatsakis> and we can "steer" people
